@@ -239,7 +239,7 @@
             "Claude Code": {
               "command": "npx",
               "args": [
-                "@zed-industries/claude-code-acp@latest"
+                "@agentclientprotocol/claude-agent-acp@latest"
               ],
               "env": {}
             },

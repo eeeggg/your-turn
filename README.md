@@ -39,7 +39,7 @@ The extension comes with default configurations for:
 | Agent | Command |
 |-------|---------|
 | GitHub Copilot | `npx @github/copilot-language-server@latest --acp` |
-| Claude Code | `npx @zed-industries/claude-code-acp@latest` |
+| Claude Code | `npx @agentclientprotocol/claude-agent-acp@latest` |
 | Gemini CLI | `npx @google/gemini-cli@latest --experimental-acp` |
 | Qwen Code | `npx @qwen-code/qwen-code@latest --acp --experimental-skills` |
 | Auggie CLI | `npx @augmentcode/auggie@latest --acp` |
