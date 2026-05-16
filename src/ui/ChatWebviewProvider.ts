@@ -118,26 +118,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Forward session update to webview.
    */
   private handleSessionUpdate(update: SessionNotification): void {
-    // Only forward updates for the active session
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (update.sessionId !== activeId) { return; }
-
-    // Persist available commands on session state
     const updateData = update.update as any;
-    if (updateData?.sessionUpdate === 'available_commands_update') {
-      const session = this.sessionManager.getSession(update.sessionId);
-      if (session) {
-        session.availableCommands = updateData.availableCommands || [];
-      }
-    }
 
-    // Persist config options on session state (ACP "Session Config Options")
+    // Persist session state BEFORE the active-session check. During session
+    // creation the agent can dispatch notifications (e.g.
+    // `available_commands_update`) before connectToAgent finishes setting
+    // `activeSessionId`. Without this, those updates would be dropped and
+    // the slash-command popup would never have commands to show.
+    if (updateData?.sessionUpdate === 'available_commands_update') {
+      this.sessionManager.applyAvailableCommands(
+        update.sessionId,
+        updateData.availableCommands || [],
+      );
+    }
     if (updateData?.sessionUpdate === 'config_option_update') {
       this.sessionManager.applyConfigOptions(
         update.sessionId,
         updateData.configOptions || [],
       );
     }
+
+    // Only forward to the webview if this is the active session — the
+    // webview only ever shows one session at a time.
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (update.sessionId !== activeId) { return; }
 
     this.postMessage({
       type: 'sessionUpdate',

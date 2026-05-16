@@ -45,6 +45,15 @@ export class SessionManager extends EventEmitter {
   /** Maps agentName → activeSessionId for the one-session-per-agent model. */
   private agentSessions: Map<string, string> = new Map();
 
+  /**
+   * Buffers session/update payloads that arrive before the corresponding
+   * session is registered in `this.sessions`. Drained by createAcpSession
+   * once the session is set up. This closes a microtask race between the
+   * resolution of `newSession` and the SDK's async notification dispatch.
+   */
+  private pendingAvailableCommands: Map<string, AvailableCommand[]> = new Map();
+  private pendingConfigOptions: Map<string, SessionConfigOption[]> = new Map();
+
   constructor(
     private readonly agentManager: AgentManager,
     private readonly connectionManager: ConnectionManager,
@@ -136,10 +145,11 @@ export class SessionManager extends EventEmitter {
         throw e;
       }
 
-      // Create ACP session (with auth handling)
+      // Create ACP session (with auth handling). The session is already
+      // registered in `this.sessions` by createAcpSession so that any
+      // notifications arriving during/after newSession can be persisted.
       const sessionInfo = await this.createAcpSession(agentName, agentId, connInfo, workspaceCwd);
 
-      this.sessions.set(sessionInfo.sessionId, sessionInfo);
       this.agentSessions.set(agentName, sessionInfo.sessionId);
       this.activeSessionId = sessionInfo.sessionId;
 
@@ -292,7 +302,7 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    return {
+    const sessionInfo: SessionInfo = {
       sessionId: sessionResponse.sessionId,
       agentId,
       agentName,
@@ -307,6 +317,27 @@ export class SessionManager extends EventEmitter {
       configOptions: (sessionResponse as any).configOptions ?? null,
       availableCommands: [],
     };
+
+    // Register the session into the map *synchronously* with newSession's
+    // resolution so that any session/update notifications dispatched by the
+    // agent (e.g. available_commands_update) can be persisted onto it. If
+    // we waited until connectToAgent's continuation, notifications would
+    // race and be dropped by handleSessionUpdate.
+    this.sessions.set(sessionInfo.sessionId, sessionInfo);
+
+    // Drain any buffered state captured before the session was registered.
+    const pendingCmds = this.pendingAvailableCommands.get(sessionInfo.sessionId);
+    if (pendingCmds) {
+      sessionInfo.availableCommands = pendingCmds;
+      this.pendingAvailableCommands.delete(sessionInfo.sessionId);
+    }
+    const pendingCfg = this.pendingConfigOptions.get(sessionInfo.sessionId);
+    if (pendingCfg !== undefined) {
+      sessionInfo.configOptions = pendingCfg;
+      this.pendingConfigOptions.delete(sessionInfo.sessionId);
+    }
+
+    return sessionInfo;
   }
 
   /**
@@ -448,9 +479,28 @@ export class SessionManager extends EventEmitter {
    */
   applyConfigOptions(sessionId: string, options: SessionConfigOption[] | null): void {
     const session = this.sessions.get(sessionId);
-    if (!session) { return; }
+    if (!session) {
+      // Buffer until the session is registered (handles the race where a
+      // notification is dispatched before createAcpSession finishes).
+      this.pendingConfigOptions.set(sessionId, options ?? []);
+      return;
+    }
     session.configOptions = options ?? null;
     this.emit('config-options-changed', sessionId, session.configOptions);
+  }
+
+  /**
+   * Replace a session's availableCommands and notify listeners. Buffers
+   * the value if the session isn't registered yet (race during creation).
+   */
+  applyAvailableCommands(sessionId: string, commands: AvailableCommand[]): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      this.pendingAvailableCommands.set(sessionId, commands);
+      return;
+    }
+    session.availableCommands = commands;
+    this.emit('available-commands-changed', sessionId, commands);
   }
 
   // --- Getters ---
