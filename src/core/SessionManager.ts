@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { EventEmitter } from 'node:events';
 
-import type { NewSessionResponse, PromptResponse, InitializeResponse, ContentBlock, SessionModeState, SessionModelState, AvailableCommand } from '@agentclientprotocol/sdk';
+import type { NewSessionResponse, PromptResponse, InitializeResponse, ContentBlock, SessionModeState, SessionModelState, AvailableCommand, SessionConfigOption } from '@agentclientprotocol/sdk';
 import { RequestError } from '@agentclientprotocol/sdk';
 
 import { AgentManager } from './AgentManager';
@@ -21,6 +21,13 @@ export interface SessionInfo {
   initResponse: InitializeResponse;
   modes: SessionModeState | null;
   models: SessionModelState | null;
+  /**
+   * Generic session config options (ACP "Session Config Options" — supersedes
+   * `modes` / `models`). `null` means the agent did not provide this field.
+   * Per spec, when both `configOptions` and `modes` are present, clients
+   * should use `configOptions` exclusively.
+   */
+  configOptions: SessionConfigOption[] | null;
   availableCommands: AvailableCommand[];
 }
 
@@ -297,6 +304,7 @@ export class SessionManager extends EventEmitter {
       initResponse: connInfo.initResponse,
       modes: sessionResponse.modes ?? null,
       models: (sessionResponse as any).models ?? null,
+      configOptions: (sessionResponse as any).configOptions ?? null,
       availableCommands: [],
     };
   }
@@ -346,10 +354,25 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Set the session mode (e.g., plan mode, code mode).
+   *
+   * If the active session uses `configOptions`, this is transparently
+   * routed to `setConfigOption` against the first option whose category is
+   * `mode` — this keeps user keybindings working across agents that have
+   * migrated to the new API.
    */
   async setMode(sessionId: string, modeId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
+
+    // Prefer configOptions if available (spec: clients that support
+    // configOptions MUST use it exclusively when both are present)
+    if (session.configOptions && session.configOptions.length > 0) {
+      const modeOpt = session.configOptions.find(o => o.category === 'mode');
+      if (modeOpt) {
+        await this.setConfigOption(sessionId, modeOpt.id, modeId);
+        return;
+      }
+    }
 
     const connInfo = this.connectionManager.getConnection(session.agentId);
     if (!connInfo) { return; }
@@ -365,10 +388,22 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Set the session model (experimental).
+   *
+   * If the active session uses `configOptions`, this is transparently
+   * routed to `setConfigOption` against the first option whose category is
+   * `model`.
    */
   async setModel(sessionId: string, modelId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
+
+    if (session.configOptions && session.configOptions.length > 0) {
+      const modelOpt = session.configOptions.find(o => o.category === 'model');
+      if (modelOpt) {
+        await this.setConfigOption(sessionId, modelOpt.id, modelId);
+        return;
+      }
+    }
 
     const connInfo = this.connectionManager.getConnection(session.agentId);
     if (!connInfo) { return; }
@@ -380,6 +415,42 @@ export class SessionManager extends EventEmitter {
       session.models.currentModelId = modelId;
     }
     this.emit('model-changed', sessionId, modelId);
+  }
+
+  /**
+   * Set a generic session config option (ACP "Session Config Options").
+   * The agent's response contains the full configOptions array — we
+   * replace our local copy so that cascading changes (e.g. changing the
+   * model adjusts thought-level options) are reflected.
+   */
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<SessionConfigOption[] | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session) { return null; }
+
+    const connInfo = this.connectionManager.getConnection(session.agentId);
+    if (!connInfo) { return null; }
+
+    const response = await connInfo.connection.setSessionConfigOption({
+      sessionId,
+      configId,
+      value,
+    });
+
+    const options = (response as any)?.configOptions ?? null;
+    this.applyConfigOptions(sessionId, options);
+    return options;
+  }
+
+  /**
+   * Replace a session's configOptions in place and notify listeners.
+   * Used by both the setter response and the `config_option_update`
+   * push-notification handler.
+   */
+  applyConfigOptions(sessionId: string, options: SessionConfigOption[] | null): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) { return; }
+    session.configOptions = options ?? null;
+    this.emit('config-options-changed', sessionId, session.configOptions);
   }
 
   // --- Getters ---

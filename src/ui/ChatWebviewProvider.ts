@@ -84,6 +84,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'setModel':
           await this.handleSetModel(message.modelId);
           break;
+        case 'setConfigOption':
+          await this.handleSetConfigOption(message.configId, message.value);
+          break;
         case 'executeCommand':
           if (message.command) {
             await vscode.commands.executeCommand(message.command);
@@ -126,6 +129,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       if (session) {
         session.availableCommands = updateData.availableCommands || [];
       }
+    }
+
+    // Persist config options on session state (ACP "Session Config Options")
+    if (updateData?.sessionUpdate === 'config_option_update') {
+      this.sessionManager.applyConfigOptions(
+        update.sessionId,
+        updateData.configOptions || [],
+      );
     }
 
     this.postMessage({
@@ -219,6 +230,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Handle generic config-option change from webview picker
+   * (ACP "Session Config Options"). The agent returns the full
+   * configOptions state which we re-broadcast so any cascading
+   * changes are reflected in the UI.
+   */
+  private async handleSetConfigOption(configId: string, value: string): Promise<void> {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId || !configId) { return; }
+    try {
+      const options = await this.sessionManager.setConfigOption(activeId, configId, value);
+      this.postMessage({ type: 'configOptionsUpdate', configOptions: options });
+    } catch (e: any) {
+      logError('Failed to set config option', e);
+      this.postMessage({ type: 'error', message: `Failed to set ${configId}: ${e.message}` });
+      // Roll back optimistic update on the webview by replaying current state
+      const session = this.sessionManager.getSession(activeId);
+      this.postMessage({
+        type: 'configOptionsUpdate',
+        configOptions: session?.configOptions ?? null,
+      });
+    }
+  }
+
+  /**
    * Send current session state to the webview on load.
    */
   private sendCurrentState(): void {
@@ -233,6 +268,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         cwd: session.cwd,
         modes: session.modes,
         models: session.models,
+        configOptions: session.configOptions,
         availableCommands: session.availableCommands,
       } : null,
     });
@@ -264,6 +300,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   notifyModelsUpdate(models: any): void {
     this.postMessage({ type: 'modelsUpdate', models });
+  }
+
+  /**
+   * Notify webview of session config-option state changes.
+   */
+  notifyConfigOptionsUpdate(configOptions: any): void {
+    this.postMessage({ type: 'configOptionsUpdate', configOptions });
   }
 
   /**
@@ -739,11 +782,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       gap: 4px;
       padding: 4px var(--container-padding) 0;
       flex-shrink: 0;
+      flex-wrap: wrap;
     }
 
     /* Picker wrapper — positioned relatively to anchor the dropdown */
     .picker-wrap {
       position: relative;
+      min-width: 0;
+      max-width: 100%;
     }
     .picker-wrap.hidden { display: none; }
 
@@ -761,7 +807,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       font-size: calc(var(--vscode-font-size) - 1px);
       cursor: pointer;
       white-space: nowrap;
-      max-width: 140px;
+      max-width: 100%;
+      min-width: 0;
       opacity: 0.8;
     }
     .picker-btn:hover {
@@ -775,6 +822,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     .picker-btn .picker-label {
       overflow: hidden;
       text-overflow: ellipsis;
+      min-width: 0;
     }
     .picker-btn .picker-chevron {
       flex-shrink: 0;
@@ -834,6 +882,26 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       text-overflow: ellipsis;
       white-space: nowrap;
       max-width: 100px;
+    }
+
+    /* Header for grouped picker options */
+    .picker-dropdown-group-header {
+      padding: 6px 10px 2px;
+      font-size: 0.75em;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      opacity: 0.6;
+      pointer-events: none;
+      color: var(--vscode-dropdown-foreground);
+    }
+    .picker-dropdown-group-header:not(:first-child) {
+      border-top: 1px solid var(--vscode-panel-border);
+      margin-top: 4px;
+    }
+
+    /* Dynamic config-options picker row — sits inline with legacy pickers */
+    .picker-row {
+      display: contents;
     }
 
     /* Toolbar spacer */
@@ -1010,6 +1078,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     </div>
     <div class="input-resize-handle" id="resizeHandle"></div>
     <div class="input-toolbar">
+      <!-- Dynamic config-options pickers (ACP "Session Config Options"). -->
+      <div class="picker-row" id="configOptionsContainer"></div>
+      <!-- Legacy pickers — used only when the agent has not migrated to configOptions -->
       <div class="picker-wrap hidden" id="modePickerWrap">
         <button class="picker-btn" id="modePickerBtn" title="Select mode">
           <span class="picker-icon">⚡</span>
@@ -1063,15 +1134,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const modelPickerBtn = document.getElementById('modelPickerBtn');
     const modelPickerLabel = document.getElementById('modelPickerLabel');
     const modelDropdown = document.getElementById('modelDropdown');
+    const configOptionsContainer = document.getElementById('configOptionsContainer');
 
     let hasActiveSession = false;
     let isProcessing = false;
 
-    // Modes / models state
+    // Modes / models state (legacy fallback path)
     let availableModes = [];
     let currentModeId = null;
     let availableModels = [];
     let currentModelId = null;
+
+    // ACP Session Config Options state (preferred path)
+    let configOptions = [];        // SessionConfigOption[]
+    let useConfigOptions = false;  // true when the agent provided configOptions
 
     // Thinking state
     let currentThoughtEl = null;
@@ -1426,6 +1502,177 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    // --- ACP Session Config Options ---
+
+    function iconForCategory(cat) {
+      switch (cat) {
+        case 'mode': return '⚡';
+        case 'model': return '🧠';
+        case 'thought_level': return '💭';
+        default: return '⚙';
+      }
+    }
+
+    function isGroupedOptions(opt) {
+      const arr = opt && opt.options;
+      if (!Array.isArray(arr) || arr.length === 0) return false;
+      const first = arr[0];
+      return !!(first && typeof first.group === 'string' && Array.isArray(first.options));
+    }
+
+    function findOptionValue(opt, value) {
+      if (!opt || !Array.isArray(opt.options)) return null;
+      if (isGroupedOptions(opt)) {
+        for (const group of opt.options) {
+          if (!group || !Array.isArray(group.options)) continue;
+          const hit = group.options.find(v => v && v.value === value);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      return opt.options.find(v => v && v.value === value) || null;
+    }
+
+    function pickerLabelFor(opt) {
+      const v = findOptionValue(opt, opt.currentValue);
+      return v && v.name ? v.name : (opt.name || 'Option');
+    }
+
+    function pickerTooltipFor(opt) {
+      const v = findOptionValue(opt, opt.currentValue);
+      return (v && v.description) || opt.description || opt.name || '';
+    }
+
+    function renderConfigPickers(opts) {
+      configOptionsContainer.innerHTML = '';
+      if (!Array.isArray(opts)) return;
+
+      for (const opt of opts) {
+        // Spec: ignore unknown types and empty option lists
+        if (!opt || opt.type !== 'select') continue;
+        if (!Array.isArray(opt.options) || opt.options.length === 0) continue;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'picker-wrap';
+        wrap.dataset.configId = opt.id;
+
+        const btn = document.createElement('button');
+        btn.className = 'picker-btn';
+        btn.title = pickerTooltipFor(opt);
+        btn.innerHTML =
+          '<span class="picker-icon">' + iconForCategory(opt.category) + '</span>' +
+          '<span class="picker-label"></span>' +
+          '<span class="picker-chevron">▾</span>';
+        btn.querySelector('.picker-label').textContent = pickerLabelFor(opt);
+        wrap.appendChild(btn);
+
+        const dropdown = document.createElement('div');
+        dropdown.className = 'picker-dropdown';
+        renderConfigDropdown(dropdown, opt);
+        wrap.appendChild(dropdown);
+
+        configOptionsContainer.appendChild(wrap);
+      }
+    }
+
+    function renderConfigDropdown(dropdown, opt) {
+      dropdown.innerHTML = '';
+      if (isGroupedOptions(opt)) {
+        for (const group of opt.options) {
+          if (!group || !Array.isArray(group.options)) continue;
+          const header = document.createElement('div');
+          header.className = 'picker-dropdown-group-header';
+          header.textContent = group.name || group.group || '';
+          dropdown.appendChild(header);
+          for (const v of group.options) {
+            dropdown.appendChild(buildConfigItem(opt, v));
+          }
+        }
+      } else {
+        for (const v of opt.options) {
+          dropdown.appendChild(buildConfigItem(opt, v));
+        }
+      }
+    }
+
+    function buildConfigItem(opt, v) {
+      const selected = v.value === opt.currentValue;
+      const item = document.createElement('div');
+      item.className = 'picker-dropdown-item' + (selected ? ' selected' : '');
+      item.dataset.value = v.value;
+      item.innerHTML =
+        '<span class="check">' + (selected ? '✓' : '') + '</span>' +
+        '<span class="item-label"></span>' +
+        (v.description ? '<span class="item-desc"></span>' : '');
+      item.querySelector('.item-label').textContent = v.name || v.value;
+      if (v.description) {
+        item.querySelector('.item-desc').textContent = v.description;
+      }
+      return item;
+    }
+
+    // Event delegation: handle clicks on dynamically-rendered config pickers
+    configOptionsContainer.addEventListener('click', (e) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+
+      const item = target.closest('.picker-dropdown-item');
+      if (item) {
+        e.stopPropagation();
+        const wrap = item.closest('.picker-wrap');
+        const dropdown = item.closest('.picker-dropdown');
+        if (!wrap || !dropdown) return;
+        const configId = wrap.dataset.configId;
+        const value = item.dataset.value;
+        if (!configId || value == null) return;
+
+        // Find option in current state
+        const opt = configOptions.find(o => o && o.id === configId);
+        if (!opt || value === opt.currentValue) {
+          dropdown.classList.remove('open');
+          return;
+        }
+
+        // Optimistic update — agent's response will replace with authoritative state
+        opt.currentValue = value;
+        const labelEl = wrap.querySelector('.picker-btn .picker-label');
+        const btn = wrap.querySelector('.picker-btn');
+        if (labelEl) labelEl.textContent = pickerLabelFor(opt);
+        if (btn) btn.title = pickerTooltipFor(opt);
+        renderConfigDropdown(dropdown, opt);
+
+        dropdown.classList.remove('open');
+        vscode.postMessage({ type: 'setConfigOption', configId, value });
+        return;
+      }
+
+      const btn = target.closest('.picker-btn');
+      if (btn) {
+        e.stopPropagation();
+        const wrap = btn.closest('.picker-wrap');
+        if (!wrap) return;
+        const dropdown = wrap.querySelector('.picker-dropdown');
+        if (!dropdown) return;
+        const wasOpen = dropdown.classList.contains('open');
+        closePickers();
+        if (!wasOpen) dropdown.classList.add('open');
+      }
+    });
+
+    function setConfigOptionsState(opts) {
+      configOptions = Array.isArray(opts) ? opts : [];
+      useConfigOptions = configOptions.length > 0;
+
+      if (useConfigOptions) {
+        // Hide legacy pickers — spec requires configOptions to be used exclusively
+        modePickerWrap.classList.add('hidden');
+        modelPickerWrap.classList.add('hidden');
+        renderConfigPickers(configOptions);
+      } else {
+        configOptionsContainer.innerHTML = '';
+      }
+    }
+
     // Toggle picker dropdowns
     modePickerBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -1444,6 +1691,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     function closePickers() {
       modeDropdown.classList.remove('open');
       modelDropdown.classList.remove('open');
+      // Close any dynamic config-option dropdowns
+      const open = configOptionsContainer.querySelectorAll('.picker-dropdown.open');
+      open.forEach(el => el.classList.remove('open'));
     }
 
     // Close pickers when clicking outside
@@ -1657,9 +1907,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       saveState();
       showSessionConnectedFromState(sessionState);
 
-      // Update pickers from session data
-      if (session.modes) updateModePicker(session.modes);
-      if (session.models) updateModelPicker(session.models);
+      // Prefer ACP "Session Config Options" when provided. Spec: clients
+      // that support configOptions MUST use them exclusively and ignore
+      // the legacy modes field.
+      const cfg = session.configOptions;
+      if (Array.isArray(cfg) && cfg.length > 0) {
+        setConfigOptionsState(cfg);
+      } else {
+        setConfigOptionsState([]);
+        if (session.modes) updateModePicker(session.modes);
+        if (session.models) updateModelPicker(session.models);
+      }
       // Restore available commands
       if (session.availableCommands) {
         availableCommands = session.availableCommands;
@@ -1687,6 +1945,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Hide pickers when disconnected
       modePickerWrap.classList.add('hidden');
       modelPickerWrap.classList.add('hidden');
+      setConfigOptionsState([]);
     }
 
     // Handle messages from the extension
@@ -1785,6 +2044,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           if (inputArea) inputArea.classList.add('disabled');
           modePickerWrap.classList.add('hidden');
           modelPickerWrap.classList.add('hidden');
+          setConfigOptionsState([]);
           setProcessing(false);
           break;
 
@@ -1802,6 +2062,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
         case 'modelsUpdate':
           updateModelPicker(msg.models);
+          break;
+
+        case 'configOptionsUpdate':
+          setConfigOptionsState(msg.configOptions || []);
           break;
 
         case 'markdownRendered': {
@@ -1933,6 +2197,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             modePickerLabel.textContent = current.name;
             renderModeDropdown();
           }
+          break;
+        }
+
+        case 'config_option_update': {
+          // Server pushed a full configOptions replacement
+          setConfigOptionsState(update.configOptions || []);
           break;
         }
 
