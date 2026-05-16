@@ -837,8 +837,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       bottom: 100%;
       left: 0;
       min-width: 180px;
-      max-width: 280px;
-      max-height: 200px;
+      max-width: min(420px, calc(100vw - 16px));
+      max-height: 240px;
       overflow-y: auto;
       background: var(--vscode-dropdown-background);
       border: 1px solid var(--vscode-dropdown-border);
@@ -870,19 +870,33 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
     }
     .picker-dropdown-item .item-label {
-      flex: 1;
+      flex: 1 1 auto;
+      min-width: 0;
+      white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
-      white-space: nowrap;
     }
-    .picker-dropdown-item .item-desc {
-      font-size: 0.85em;
-      opacity: 0.6;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      max-width: 100px;
+
+    /* Floating tooltip used by all picker dropdowns to show option
+       description on hover (positioned outside the dropdown). */
+    .picker-tooltip {
+      position: fixed;
+      display: none;
+      max-width: 280px;
+      padding: 6px 10px;
+      background: var(--vscode-editorHoverWidget-background);
+      color: var(--vscode-editorHoverWidget-foreground);
+      border: 1px solid var(--vscode-editorHoverWidget-border, var(--vscode-panel-border));
+      border-radius: 4px;
+      font-size: calc(var(--vscode-font-size) - 1px);
+      line-height: 1.4;
+      white-space: normal;
+      word-break: break-word;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      pointer-events: none;
+      z-index: 300;
     }
+    .picker-tooltip.visible { display: block; }
 
     /* Header for grouped picker options */
     .picker-dropdown-group-header {
@@ -1110,6 +1124,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       <button class="send-stop-btn send" id="sendStopBtn">Send</button>
     </div>
   </div>
+
+  <!-- Shared hover tooltip for picker dropdown items -->
+  <div class="picker-tooltip" id="pickerTooltip" role="tooltip"></div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -1443,10 +1460,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       for (const mode of availableModes) {
         const item = document.createElement('div');
         item.className = 'picker-dropdown-item' + (mode.id === currentModeId ? ' selected' : '');
+        item.dataset.desc = mode.description || '';
+        if (mode.description) item.title = mode.description;
         item.innerHTML =
           '<span class="check">' + (mode.id === currentModeId ? '✓' : '') + '</span>' +
-          '<span class="item-label">' + escapeHtml(mode.name) + '</span>' +
-          (mode.description ? '<span class="item-desc">' + escapeHtml(mode.description) + '</span>' : '');
+          '<span class="item-label">' + escapeHtml(mode.name) + '</span>';
         item.addEventListener('click', (e) => {
           e.stopPropagation();
           closePickers();
@@ -1483,10 +1501,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       for (const model of availableModels) {
         const item = document.createElement('div');
         item.className = 'picker-dropdown-item' + (model.modelId === currentModelId ? ' selected' : '');
+        item.dataset.desc = model.description || '';
+        if (model.description) item.title = model.description;
         item.innerHTML =
           '<span class="check">' + (model.modelId === currentModelId ? '✓' : '') + '</span>' +
-          '<span class="item-label">' + escapeHtml(model.name) + '</span>' +
-          (model.description ? '<span class="item-desc">' + escapeHtml(model.description) + '</span>' : '');
+          '<span class="item-label">' + escapeHtml(model.name) + '</span>';
         item.addEventListener('click', (e) => {
           e.stopPropagation();
           closePickers();
@@ -1600,14 +1619,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const item = document.createElement('div');
       item.className = 'picker-dropdown-item' + (selected ? ' selected' : '');
       item.dataset.value = v.value;
+      item.dataset.desc = v.description || '';
+      if (v.description) item.title = v.description;
       item.innerHTML =
         '<span class="check">' + (selected ? '✓' : '') + '</span>' +
-        '<span class="item-label"></span>' +
-        (v.description ? '<span class="item-desc"></span>' : '');
+        '<span class="item-label"></span>';
       item.querySelector('.item-label').textContent = v.name || v.value;
-      if (v.description) {
-        item.querySelector('.item-desc').textContent = v.description;
-      }
       return item;
     }
 
@@ -1694,6 +1711,91 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Close any dynamic config-option dropdowns
       const open = configOptionsContainer.querySelectorAll('.picker-dropdown.open');
       open.forEach(el => el.classList.remove('open'));
+      hidePickerTooltip();
+    }
+
+    // --- Picker hover tooltip (shared by all picker dropdowns) ---
+    const pickerTooltip = document.getElementById('pickerTooltip');
+
+    function hidePickerTooltip() {
+      if (pickerTooltip) pickerTooltip.classList.remove('visible');
+    }
+
+    function showPickerTooltip(itemEl) {
+      if (!pickerTooltip || !itemEl) return;
+      const desc = itemEl.dataset && itemEl.dataset.desc;
+      if (!desc) { hidePickerTooltip(); return; }
+
+      pickerTooltip.textContent = desc;
+      // Make it measurable while invisible to the user.
+      pickerTooltip.style.left = '-9999px';
+      pickerTooltip.style.top = '-9999px';
+      pickerTooltip.classList.add('visible');
+
+      const dropdown = itemEl.closest('.picker-dropdown');
+      if (!dropdown) { hidePickerTooltip(); return; }
+      const dropRect = dropdown.getBoundingClientRect();
+      const itemRect = itemEl.getBoundingClientRect();
+      const tipRect = pickerTooltip.getBoundingClientRect();
+      const gap = 6;
+
+      // Prefer left side; flip to right if not enough room.
+      let left = dropRect.left - tipRect.width - gap;
+      if (left < 4) left = dropRect.right + gap;
+      // Clamp horizontally inside the viewport.
+      const maxLeft = window.innerWidth - tipRect.width - 4;
+      if (left > maxLeft) left = Math.max(4, maxLeft);
+
+      // Vertically align with the hovered item, clamped inside the viewport.
+      let top = itemRect.top;
+      const maxTop = window.innerHeight - tipRect.height - 4;
+      if (top > maxTop) top = Math.max(4, maxTop);
+
+      pickerTooltip.style.left = left + 'px';
+      pickerTooltip.style.top = top + 'px';
+    }
+
+    // Delegated hover handling — one listener handles every picker dropdown.
+    document.addEventListener('mouseover', (e) => {
+      const target = e.target;
+      if (!(target instanceof Element)) return;
+      const item = target.closest('.picker-dropdown-item');
+      if (!item) return;
+      // Only consider items inside an open dropdown.
+      const dropdown = item.closest('.picker-dropdown');
+      if (!dropdown || !dropdown.classList.contains('open')) return;
+      showPickerTooltip(item);
+    });
+
+    document.addEventListener('mouseout', (e) => {
+      const target = e.target;
+      const related = e.relatedTarget;
+      if (!(target instanceof Element)) return;
+      const item = target.closest('.picker-dropdown-item');
+      if (!item) return;
+      // Stay visible if the mouse moved to another item inside the same dropdown.
+      if (related instanceof Element) {
+        const nextItem = related.closest('.picker-dropdown-item');
+        if (nextItem && nextItem !== item) return;
+      }
+      hidePickerTooltip();
+    });
+
+    // Hide the tooltip when the user scrolls a dropdown so it doesn't drift.
+    function attachScrollHide(dropdownEl) {
+      if (!dropdownEl || dropdownEl._tooltipScrollAttached) return;
+      dropdownEl._tooltipScrollAttached = true;
+      dropdownEl.addEventListener('scroll', hidePickerTooltip);
+    }
+    attachScrollHide(modeDropdown);
+    attachScrollHide(modelDropdown);
+    // Dynamic configOption dropdowns: rely on the same handler via event-delegation
+    // (they exist inside #configOptionsContainer); attach once per dropdown when created.
+    if (configOptionsContainer) {
+      const mo = new MutationObserver(() => {
+        configOptionsContainer.querySelectorAll('.picker-dropdown').forEach(attachScrollHide);
+      });
+      mo.observe(configOptionsContainer, { childList: true, subtree: true });
     }
 
     // Close pickers when clicking outside
