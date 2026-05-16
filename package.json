@@ -134,12 +134,50 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "acp.refreshSessions",
+        "title": "ACP: Refresh Sessions"
+      },
+      {
+        "command": "acp.openSession",
+        "title": "ACP: Open Session"
+      },
+      {
+        "command": "acp.loadMoreSessions",
+        "title": "ACP: Load More Sessions"
+      },
+      {
+        "command": "acp.copySessionId",
+        "title": "Copy Session ID"
+      },
+      {
+        "command": "acp.forgetSession",
+        "title": "Forget Session"
+      },
+      {
         "command": "acp.restartAgent",
         "title": "ACP: Restart Agent",
         "icon": "$(debug-restart)"
       }
     ],
     "menus": {
+      "commandPalette": [
+        {
+          "command": "acp.openSession",
+          "when": "false"
+        },
+        {
+          "command": "acp.loadMoreSessions",
+          "when": "false"
+        },
+        {
+          "command": "acp.copySessionId",
+          "when": "false"
+        },
+        {
+          "command": "acp.forgetSession",
+          "when": "false"
+        }
+      ],
       "view/title": [
         {
           "command": "acp.addAgent",
@@ -206,6 +244,21 @@
         {
           "command": "acp.restartAgent",
           "when": "view == acp-sessions && viewItem == agent-connected"
+        },
+        {
+          "command": "acp.refreshSessions",
+          "when": "view == acp-sessions && viewItem =~ /^agent/",
+          "group": "session@1"
+        },
+        {
+          "command": "acp.copySessionId",
+          "when": "view == acp-sessions && viewItem =~ /^session/",
+          "group": "session@1"
+        },
+        {
+          "command": "acp.forgetSession",
+          "when": "view == acp-sessions && viewItem == session-local",
+          "group": "session@2"
         }
       ]
     },
@@ -303,7 +356,9 @@
             },
             "Kiro CLI": {
               "command": "kiro-cli",
-              "args": ["acp"],
+              "args": [
+                "acp"
+              ],
               "env": {}
             },
             "Hermes Agent": {
@@ -349,7 +404,7 @@
     "test": "vscode-test"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.14.1",
+    "@agentclientprotocol/sdk": "^0.21.1",
     "@vscode/extension-telemetry": "^1.5.0",
     "marked": "^15.0.0"
   },

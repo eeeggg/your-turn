@@ -137,6 +137,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         updateData.configOptions || [],
       );
     }
+    if (updateData?.sessionUpdate === 'session_info_update') {
+      this.sessionManager.applySessionInfoUpdate(update.sessionId, {
+        title: updateData.title,
+        updatedAt: updateData.updatedAt,
+      });
+    }
 
     // Only forward to the webview if this is the active session — the
     // webview only ever shows one session at a time.
@@ -169,6 +175,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       messageLength: text.length,
     });
 
+    // Record the first prompt for the history store (used as a label
+    // fallback when no title is supplied by the agent).
+    this.sessionManager.recordFirstPrompt(activeId, text);
+
     // Tell webview we're processing
     this.postMessage({ type: 'promptStart' });
 
@@ -181,6 +191,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         stopReason: response.stopReason,
         usage: (response as any).usage,
       });
+      this.sessionManager.touchHistory(activeId);
     } catch (e: any) {
       logError('Prompt failed', e);
       this.postMessage({
@@ -269,6 +280,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       session: session ? {
         sessionId: session.sessionId,
         agentName: session.agentDisplayName,
+        title: session.title,
         cwd: session.cwd,
         modes: session.modes,
         models: session.models,
@@ -311,6 +323,25 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   notifyConfigOptionsUpdate(configOptions: any): void {
     this.postMessage({ type: 'configOptionsUpdate', configOptions });
+  }
+
+  /**
+   * Notify webview that a `session/load` replay is starting. The webview
+   * wipes any previously-displayed history, disables input, and shows a
+   * loading overlay until {@link notifyLoadSessionEnd} fires.
+   */
+  notifyLoadSessionStart(): void {
+    this.postMessage({ type: 'loadSessionStart' });
+  }
+
+  /** Notify webview that the active replay finished (success or failure). */
+  notifyLoadSessionEnd(ok: boolean): void {
+    this.postMessage({ type: 'loadSessionEnd', ok });
+  }
+
+  /** Notify webview that session title / metadata changed. */
+  notifySessionInfoUpdate(title: string | undefined | null): void {
+    this.postMessage({ type: 'sessionInfoUpdate', title: title ?? null });
   }
 
   /**
@@ -1061,6 +1092,31 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       opacity: 0.6;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Full-area overlay shown while a session is being loaded via session/load */
+    .load-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+      background: color-mix(in srgb, var(--vscode-sideBar-background) 88%, transparent);
+      backdrop-filter: blur(2px);
+      z-index: 400;
+      font-size: 0.9em;
+      color: var(--vscode-foreground);
+      pointer-events: all;
+    }
+    .load-overlay.visible { display: flex; }
+    .load-overlay .spinner {
+      width: 22px;
+      height: 22px;
+      border-width: 3px;
+      opacity: 0.9;
+    }
+    .load-overlay .label { opacity: 0.85; }
   </style>
 </head>
 <body>
@@ -1131,6 +1187,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   <!-- Shared hover tooltip for picker dropdown items -->
   <div class="picker-tooltip" id="pickerTooltip" role="tooltip"></div>
+
+  <!-- Overlay shown during session/load history replay -->
+  <div class="load-overlay" id="loadOverlay" role="status" aria-live="polite">
+    <div class="spinner"></div>
+    <div class="label">Loading conversation history…</div>
+  </div>
 
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -1396,6 +1458,77 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         sendStopBtn.disabled = false;
         promptInput.disabled = false;
         statusEl.textContent = '';
+      }
+    }
+
+    // --- Session/load overlay ---
+    const loadOverlay = document.getElementById('loadOverlay');
+    // True while a session/load replay is in progress. Used to suppress
+    // per-chunk markdown rendering until the replay finishes.
+    let isLoadingSession = false;
+
+    function handleLoadSessionStart() {
+      isLoadingSession = true;
+      // Reset all chat state; behaves like clearChat but keeps the session
+      // banner / input area structure intact.
+      chatHistory = [];
+      saveState();
+      currentAssistantEl = null;
+      currentAssistantText = '';
+      toolCalls = {};
+      currentTurnEl = null;
+      currentToolsListEl = null;
+      currentToolsCountEl = null;
+      currentToolCount = 0;
+      currentThoughtEl = null;
+      currentThoughtTextEl = null;
+      currentThoughtText = '';
+      thoughtStartTime = null;
+      thoughtEndTime = null;
+      messagesEl.innerHTML = '';
+      if (emptyState) {
+        messagesEl.appendChild(emptyState);
+        emptyState.style.display = 'none';
+      }
+      if (loadOverlay) loadOverlay.classList.add('visible');
+      if (inputArea) inputArea.classList.add('disabled');
+      setProcessing(false);
+    }
+
+    function handleLoadSessionEnd(ok) {
+      isLoadingSession = false;
+      // Commit any trailing assistant turn captured during the replay.
+      finalizeCurrentAssistantTurn();
+      if (loadOverlay) loadOverlay.classList.remove('visible');
+      if (inputArea) inputArea.classList.remove('disabled');
+      // Batch-render markdown for every assistant message captured during
+      // the replay (avoids per-chunk render storms).
+      const items = [];
+      for (let i = 0; i < chatHistory.length; i++) {
+        const item = chatHistory[i];
+        if (item.kind === 'message' && item.role === 'assistant') {
+          items.push({ index: i, text: item.text });
+        }
+      }
+      if (items.length > 0) {
+        vscode.postMessage({ type: 'renderMarkdown', items });
+      }
+      scrollToBottom();
+      if (!ok) {
+        addMessage('error', 'Failed to load session history.');
+      }
+    }
+
+    function handleSessionInfoUpdate(title) {
+      if (!sessionState) return;
+      if (typeof title === 'string') {
+        sessionState.title = title;
+      } else if (title === null) {
+        delete sessionState.title;
+      }
+      saveState();
+      if (bannerAgent) {
+        bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent';
       }
     }
 
@@ -1996,6 +2129,39 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    /**
+     * Commit the in-progress assistant turn to chatHistory (without firing
+     * the live promptEnd markdown-render request — replay does that
+     * batched at loadSessionEnd). Resets all per-turn DOM/state pointers so
+     * the next turn starts fresh.
+     */
+    function finalizeCurrentAssistantTurn() {
+      if (currentThoughtText) {
+        finalizeThought();
+        const tEnd = thoughtEndTime || Date.now();
+        chatHistory.push({
+          kind: 'thought',
+          text: currentThoughtText,
+          durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
+        });
+      }
+      if (currentAssistantText) {
+        chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
+        saveState();
+      }
+      currentAssistantEl = null;
+      currentAssistantText = '';
+      currentTurnEl = null;
+      currentToolsListEl = null;
+      currentToolsCountEl = null;
+      currentToolCount = 0;
+      currentThoughtEl = null;
+      currentThoughtTextEl = null;
+      currentThoughtText = '';
+      thoughtStartTime = null;
+      thoughtEndTime = null;
+    }
+
     function addThoughtDOM(text, durationSec) {
       hideEmpty();
       const el = document.createElement('details');
@@ -2009,7 +2175,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     function showSessionConnected(session) {
       hasActiveSession = true;
-      sessionState = { agentName: session.agentName, cwd: session.cwd };
+      sessionState = {
+        agentName: session.agentName,
+        cwd: session.cwd,
+        title: session.title || undefined,
+      };
       saveState();
       showSessionConnectedFromState(sessionState);
 
@@ -2034,7 +2204,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     function showSessionConnectedFromState(ss) {
       hasActiveSession = true;
       hideEmpty();
-      if (bannerAgent) bannerAgent.textContent = ss.agentName || 'Agent';
+      if (bannerAgent) bannerAgent.textContent = ss.title || ss.agentName || 'Agent';
       if (bannerCwd) bannerCwd.textContent = ss.cwd || '';
       if (sessionBanner) sessionBanner.classList.add('visible');
       if (inputArea) inputArea.classList.remove('disabled');
@@ -2174,6 +2344,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           setConfigOptionsState(msg.configOptions || []);
           break;
 
+        case 'loadSessionStart':
+          handleLoadSessionStart();
+          break;
+
+        case 'loadSessionEnd':
+          handleLoadSessionEnd(!!msg.ok);
+          break;
+
+        case 'sessionInfoUpdate':
+          handleSessionInfoUpdate(msg.title);
+          break;
+
         case 'markdownRendered': {
           // Extension sent back rendered HTML for messages
           const rendered = msg.items || [];
@@ -2239,8 +2421,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         }
 
-        case 'user_message_chunk':
+        case 'user_message_chunk': {
+          // Only the session/load replay path emits this; live prompts
+          // never echo the user's message. Use it to break apart historical
+          // turns: finalize any pending assistant turn first, then append
+          // the historical user message.
+          const content = update.content;
+          if (content && content.type === 'text' && typeof content.text === 'string') {
+            finalizeCurrentAssistantTurn();
+            // Coalesce consecutive user chunks into one message.
+            const last = chatHistory[chatHistory.length - 1];
+            if (last && last.kind === 'message' && last.role === 'user') {
+              last.text += content.text;
+              const allUser = messagesEl.querySelectorAll('.message.user');
+              const el = allUser[allUser.length - 1];
+              if (el) el.textContent = last.text;
+            } else {
+              addMessage('user', content.text);
+            }
+          }
           break;
+        }
 
         case 'agent_thought_chunk': {
           const content = update.content;
