@@ -384,6 +384,11 @@
           "default": "",
           "description": "Default working directory for agent sessions. Leave empty to use the current workspace folder."
         },
+        "acp.includeActiveFile": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attach the currently active editor file to each prompt as a resource_link content block."
+        },
         "acp.logTraffic": {
           "type": "boolean",
           "default": true,

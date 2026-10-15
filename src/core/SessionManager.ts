@@ -455,6 +455,21 @@ export class SessionManager extends EventEmitter {
       { type: 'text', text },
     ];
 
+    // Attach the active file when acp.includeActiveFile is enabled.
+    const cfg = vscode.workspace.getConfiguration('acp');
+    if (cfg.get<boolean>('includeActiveFile', true)) {
+      const editor = vscode.window.activeTextEditor ?? vscode.window.visibleTextEditors[0];
+      if (editor && editor.document && editor.document.uri.scheme !== 'output') {
+        log(`sendPrompt: attaching active file context: ${editor.document.uri.fsPath}`);
+        prompt.unshift({
+          type: 'resource_link',
+          uri: editor.document.uri.toString(),
+          name: editor.document.uri.fsPath,
+          mimeType: editor.document.uri.scheme === 'untitled' ? 'text/plain' : undefined,
+        });
+      }
+    }
+
     const response = await connInfo.connection.prompt({
       sessionId,
       prompt,
