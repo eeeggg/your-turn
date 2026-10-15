@@ -622,24 +622,32 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     .turn-tools-list { }
     .turn-tools-list.collapsed { display: none; }
 
-    /* Compact inline tool call */
+    /* Collapsible inline tool call — <summary> keeps the one-line look */
     .tool-call-inline {
-      display: flex;
-      align-items: center;
-      gap: 6px;
       padding: 3px 6px;
       font-size: 0.85em;
       border-radius: 4px;
       background: var(--vscode-editorWidget-background);
       opacity: 0.85;
     }
+    .tool-call-inline[open] { opacity: 1; }
+    .tool-call-inline > summary.tc-summary {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    .tool-call-inline > summary.tc-summary::-webkit-details-marker { display: none; }
     .tool-call-inline .tc-icon {
       flex-shrink: 0;
       width: 14px;
       text-align: center;
     }
     .tool-call-inline .tc-icon.pending { color: var(--vscode-badge-foreground); }
-    .tool-call-inline .tc-icon.running { color: var(--vscode-progressBar-background); }
+    .tool-call-inline .tc-icon.running,
+    .tool-call-inline .tc-icon.in_progress { color: var(--vscode-progressBar-background); }
     .tool-call-inline .tc-icon.completed { color: var(--vscode-testing-iconPassed); }
     .tool-call-inline .tc-icon.failed { color: var(--vscode-testing-iconFailed); }
     .tool-call-inline .tc-title {
@@ -647,6 +655,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .tool-call-inline .tc-body {
+      margin-top: 4px;
+      padding-top: 4px;
+      border-top: 1px solid var(--vscode-panel-border);
+    }
+    .tool-call-inline .tc-body-content {
+      max-height: 320px;
+      overflow-y: auto;
+      font-size: 0.95em;
+      line-height: 1.45;
+      opacity: 0.9;
+      font-family: var(--vscode-editor-font-family);
+    }
+    .tool-call-inline .tc-body-block {
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0 0 4px;
+    }
+    .tool-call-inline .tc-body-block:last-child { margin-bottom: 0; }
+    .tool-call-inline .tc-body-truncated {
+      margin-top: 4px;
+      opacity: 0.7;
+      font-style: italic;
     }
 
     /* Legacy standalone tool-call card (for history restore) */
@@ -1288,7 +1320,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             addThoughtDOM(item.text, item.durationSec || 0);
             break;
           case 'toolCall':
-            addToolCallDOM(item.toolCallId, item.title, item.status);
+            addToolCallDOM(item.toolCallId, item.title, item.status, item.content);
             break;
           case 'plan':
             addPlanDOM(item.plan);
@@ -1311,6 +1343,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     let currentToolsCountEl = null; // .turn-tools-summary counter
     let currentToolCount = 0;
     let toolCalls = {};
+    const TOOL_CALL_CONTENT_LIMIT = 20000;
 
     // --- Resize handle ---
     let inputAreaHeight = 140;
@@ -2008,13 +2041,106 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    function addToolCall(toolCallId, title, status) {
-      chatHistory.push({ kind: 'toolCall', toolCallId, title, status });
-      saveState();
-      addToolCallInline(toolCallId, title, status);
+    function toolStatusClass(status) {
+      return status === 'in_progress' ? 'running' : status;
     }
 
-    function addToolCallInline(toolCallId, title, status) {
+    function extractToolCallBlocks(content) {
+      if (!Array.isArray(content)) return [];
+      const blocks = [];
+      for (let i = 0; i < content.length; i++) {
+        const block = content[i];
+        if (!block || typeof block !== 'object') continue;
+        const inner = block.content;
+        if (block.type === 'content' && inner && typeof inner === 'object'
+          && inner.type === 'text' && typeof inner.text === 'string') {
+          blocks.push(inner.text);
+        } else if (block.type === 'text' && typeof block.text === 'string') {
+          blocks.push(block.text);
+        }
+      }
+      return blocks;
+    }
+
+    function setToolCallContent(el, blocks) {
+      const body = el.querySelector('.tc-body');
+      const contentEl = el.querySelector('.tc-body-content');
+      if (!body || !contentEl) return;
+
+      const texts = Array.isArray(blocks)
+        ? blocks.filter(function (t) { return typeof t === 'string' && t.length > 0; })
+        : [];
+      contentEl.textContent = '';
+      if (texts.length === 0) {
+        body.style.display = 'none';
+        return;
+      }
+
+      let used = 0;
+      let truncated = false;
+      for (let i = 0; i < texts.length; i++) {
+        if (used >= TOOL_CALL_CONTENT_LIMIT) { truncated = true; break; }
+        let text = texts[i];
+        const room = TOOL_CALL_CONTENT_LIMIT - used;
+        if (text.length > room) {
+          text = text.slice(0, room);
+          truncated = true;
+        }
+        used += text.length;
+        const blockEl = document.createElement('div');
+        blockEl.className = 'tc-body-block';
+        blockEl.textContent = text;
+        contentEl.appendChild(blockEl);
+      }
+      if (truncated) {
+        const noteEl = document.createElement('div');
+        noteEl.className = 'tc-body-truncated';
+        noteEl.textContent = '... (output truncated)';
+        contentEl.appendChild(noteEl);
+      }
+      body.style.display = '';
+    }
+
+    function createToolCallElement(toolCallId, title, status, blocks) {
+      const el = document.createElement('details');
+      el.className = 'tool-call-inline';
+      el.id = 'tc-' + toolCallId;
+
+      const summary = document.createElement('summary');
+      summary.className = 'tc-summary';
+
+      const iconEl = document.createElement('span');
+      iconEl.className = 'tc-icon ' + toolStatusClass(status);
+      iconEl.textContent = getStatusIcon(status);
+
+      const titleEl = document.createElement('span');
+      titleEl.className = 'tc-title';
+      titleEl.textContent = title || 'Tool Call';
+
+      summary.appendChild(iconEl);
+      summary.appendChild(titleEl);
+      el.appendChild(summary);
+
+      const body = document.createElement('div');
+      body.className = 'tc-body';
+      body.style.display = 'none';
+      const contentEl = document.createElement('div');
+      contentEl.className = 'tc-body-content';
+      body.appendChild(contentEl);
+      el.appendChild(body);
+
+      setToolCallContent(el, blocks);
+      return el;
+    }
+
+    function addToolCall(toolCallId, title, status, content) {
+      const blocks = extractToolCallBlocks(content);
+      chatHistory.push({ kind: 'toolCall', toolCallId, title, status, content: blocks });
+      saveState();
+      addToolCallInline(toolCallId, title, status, blocks);
+    }
+
+    function addToolCallInline(toolCallId, title, status, blocks) {
       hideEmpty();
       ensureTurnTools();
       currentToolCount++;
@@ -2023,35 +2149,29 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         currentToolsCountEl.textContent = '▾ ' + currentToolCount + ' tool call' + (currentToolCount !== 1 ? 's' : '');
       }
 
-      const el = document.createElement('div');
-      el.className = 'tool-call-inline';
-      el.id = 'tc-' + toolCallId;
-      el.innerHTML =
-        '<span class="tc-icon ' + status + '">' + getStatusIcon(status) + '</span>' +
-        '<span class="tc-title">' + escapeHtml(title || 'Tool Call') + '</span>';
+      const el = createToolCallElement(toolCallId, title, status, blocks);
       currentToolsListEl.appendChild(el);
       toolCalls[toolCallId] = el;
       scrollToBottom();
     }
 
-    // Fallback DOM builder for history restore (standalone card)
-    function addToolCallDOM(toolCallId, title, status) {
+    function addToolCallDOM(toolCallId, title, status, blocks) {
       hideEmpty();
-      const el = document.createElement('div');
-      el.className = 'tool-call';
-      el.id = 'tc-' + toolCallId;
-      el.innerHTML = '<span class="title">' + escapeHtml(title || 'Tool Call') + '</span>'
-        + '<span class="status-badge ' + status + '">' + status + '</span>';
+      const el = createToolCallElement(toolCallId, title, status, blocks);
       messagesEl.appendChild(el);
       toolCalls[toolCallId] = el;
       scrollToBottom();
     }
 
-    function updateToolCall(toolCallId, status, title) {
+    function updateToolCall(toolCallId, status, title, content) {
+      const hasContent = content !== undefined && content !== null;
+      const blocks = hasContent ? extractToolCallBlocks(content) : null;
+
       for (let i = chatHistory.length - 1; i >= 0; i--) {
         if (chatHistory[i].kind === 'toolCall' && chatHistory[i].toolCallId === toolCallId) {
           chatHistory[i].status = status;
           if (title) chatHistory[i].title = title;
+          if (hasContent) chatHistory[i].content = blocks;
           break;
         }
       }
@@ -2060,26 +2180,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
       if (!el) return;
 
-      // Inline style (turn-based)
       const iconEl = el.querySelector('.tc-icon');
       if (iconEl) {
-        iconEl.className = 'tc-icon ' + status;
+        iconEl.className = 'tc-icon ' + toolStatusClass(status);
         iconEl.textContent = getStatusIcon(status);
-        if (title) {
-          const titleEl = el.querySelector('.tc-title');
-          if (titleEl) titleEl.textContent = title;
-        }
-        return;
       }
-      // Legacy card style fallback
-      const badge = el.querySelector('.status-badge');
-      if (badge) {
-        badge.className = 'status-badge ' + status;
-        badge.textContent = status;
+      const titleEl = el.querySelector('.tc-title') || el.querySelector('.title');
+      if (titleEl && title) {
+        titleEl.textContent = title;
       }
-      if (title) {
-        const titleEl = el.querySelector('.title');
-        if (titleEl) titleEl.textContent = title;
+
+      if (hasContent) {
+        setToolCallContent(el, blocks);
+      }
+
+      // Auto-expand once if tool failed
+      if (status === 'failed' && el.tagName === 'DETAILS' && el.dataset.tcAutoExpanded !== '1') {
+        el.dataset.tcAutoExpanded = '1';
+        el.open = true;
       }
     }
 
@@ -2478,6 +2596,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             tc.toolCallId || 'unknown',
             tc.title || 'Tool Call',
             tc.status || 'pending',
+            tc.content,
           );
           break;
         }
@@ -2487,6 +2606,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             update.toolCallId || 'unknown',
             update.status || 'completed',
             update.title,
+            update.content,
           );
           break;
         }
