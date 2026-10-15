@@ -16,6 +16,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private view?: vscode.WebviewView;
   private updateListener: SessionUpdateListener;
   private _hasChatContent = false;
+  /** Prompts sent to the agent that have not returned yet. */
+  private inFlightPrompts = 0;
+  /** Prompts typed during a turn that wait for that turn to finish. */
+  private pendingPrompts: string[] = [];
 
   constructor(
     private readonly extensionUri: vscode.Uri,
@@ -169,6 +173,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // A prompt typed while the agent is still working either waits for the
+    // running turn or goes straight to the agent.
+    if (this.inFlightPrompts > 0) {
+      const midRunPrompt = vscode.workspace
+        .getConfiguration('acp')
+        .get<string>('chat.midRunPrompt', 'queue');
+      if (midRunPrompt !== 'send') {
+        this.pendingPrompts.push(text);
+        return;
+      }
+    }
+
     sendEvent('chat/messageSent', {
       agentName: this.sessionManager.getActiveAgentName() ?? '',
     }, {
@@ -180,25 +196,44 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     this.sessionManager.recordFirstPrompt(activeId, text);
 
     // Tell webview we're processing
-    this.postMessage({ type: 'promptStart' });
+    if (this.inFlightPrompts++ === 0) {
+      this.postMessage({ type: 'promptStart' });
+    }
 
     try {
       const response = await this.sessionManager.sendPrompt(activeId, text);
+      this.sessionManager.touchHistory(activeId);
       // Render the accumulated assistant text as markdown
       // The webview will have sent us the raw text via promptEnd handling
-      this.postMessage({
+      this.finishPrompt({
         type: 'promptEnd',
         stopReason: response.stopReason,
         usage: (response as any).usage,
       });
-      this.sessionManager.touchHistory(activeId);
     } catch (e: any) {
       logError('Prompt failed', e);
       this.postMessage({
         type: 'error',
         message: e.message || 'Prompt failed',
       });
-      this.postMessage({ type: 'promptEnd', stopReason: 'error' });
+      this.finishPrompt({ type: 'promptEnd', stopReason: 'error' });
+    }
+  }
+
+  /**
+   * End one prompt request. The webview leaves its processing state only once
+   * every in-flight prompt has returned, so the quick reply to a prompt sent
+   * mid-turn does not clear the spinner of the turn that is still running.
+   */
+  private finishPrompt(endMessage: Record<string, unknown>): void {
+    this.inFlightPrompts = Math.max(0, this.inFlightPrompts - 1);
+    if (this.inFlightPrompts > 0) {
+      return;
+    }
+    this.postMessage(endMessage);
+    const next = this.pendingPrompts.shift();
+    if (next !== undefined) {
+      void this.handleSendPrompt(next);
     }
   }
 
@@ -349,6 +384,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Called when starting a new conversation.
    */
   clearChat(): void {
+    this.pendingPrompts = [];
     this._hasChatContent = false;
     this.postMessage({ type: 'clearChat' });
   }
@@ -1437,17 +1473,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        if (isProcessing) {
-          handleCancel();
-        } else {
-          handleSend();
-        }
+        handleSend();
       }
     });
 
     function handleSend() {
       const text = promptInput.value.trim();
-      if (!text || isProcessing) return;
+      if (!text) return;
 
       addMessage('user', text);
       promptInput.value = '';
@@ -1483,7 +1515,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         sendStopBtn.className = 'send-stop-btn stop';
         sendStopBtn.textContent = '■ Stop';
         sendStopBtn.disabled = false;
-        promptInput.disabled = true;
         statusEl.innerHTML = '<span class="spinner"></span>';
       } else {
         sendStopBtn.className = 'send-stop-btn send';
