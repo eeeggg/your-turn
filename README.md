@@ -121,8 +121,9 @@ Press `F5` in VS Code to launch the Extension Development Host.
 ### Testing
 
 ```bash
-npm run pretest    # Compile tests + lint
-npm test           # Run tests
+npm run pretest    # Compile and type-check tests, build, lint
+npm test           # Vitest suites (tests/), then VS Code integration suites (src/test/)
+npx vitest run     # Vitest suites only; webview tests need a current `npm run compile`
 ```
 
 ### Packaging
