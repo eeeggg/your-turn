@@ -34,4 +34,34 @@ const extensionConfig = {
   },
 };
 
-module.exports = [extensionConfig];
+/** @type {import('webpack').Configuration} */
+const webviewConfig = {
+  target: 'web',
+  mode: 'none',
+  entry: './src/webview/chat.ts',
+  output: {
+    path: path.resolve(__dirname, 'dist', 'webview'),
+    filename: 'chat.js',
+  },
+  resolve: {
+    extensions: ['.ts', '.js'],
+  },
+  module: {
+    rules: [
+      {
+        test: /\.ts$/,
+        exclude: /node_modules/,
+        use: [{
+          loader: 'ts-loader',
+          options: { configFile: path.resolve(__dirname, 'src', 'webview', 'tsconfig.json') },
+        }],
+      },
+    ],
+  },
+  devtool: 'nosources-source-map',
+  infrastructureLogging: {
+    level: 'log',
+  },
+};
+
+module.exports = [extensionConfig, webviewConfig];
