@@ -4,7 +4,6 @@ import { SessionManager } from '../core/SessionManager';
 import { SessionUpdateHandler, SessionUpdateListener } from '../handlers/SessionUpdateHandler';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 import { logError } from '../utils/Logger';
-import { sendEvent } from '../utils/TelemetryManager';
 
 /**
  * WebviewViewProvider for the ACP chat sidebar.
@@ -184,12 +183,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
     }
-
-    sendEvent('chat/messageSent', {
-      agentName: this.sessionManager.getActiveAgentName() ?? '',
-    }, {
-      messageLength: text.length,
-    });
 
     // Record the first prompt for the history store (used as a label
     // fallback when no title is supplied by the agent).
