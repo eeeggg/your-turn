@@ -18,7 +18,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // --- Core services ---
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
-  const connectionManager = new ConnectionManager(sessionUpdateHandler);
+  const connectionManager = new ConnectionManager(
+    sessionUpdateHandler,
+    context.extension.packageJSON.version,
+  );
   const sessionManager = new SessionManager(
     agentManager,
     connectionManager,
@@ -62,18 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
     chatWebviewProvider.clearChat();
   });
 
-  // Forward mode/model changes to webview
+  // Forward mode changes to webview
   sessionManager.on('mode-changed', (_sessionId: string, _modeId: string) => {
     const session = sessionManager.getActiveSession();
     if (session?.modes) {
       chatWebviewProvider.notifyModesUpdate(session.modes);
-    }
-  });
-
-  sessionManager.on('model-changed', (_sessionId: string, _modelId: string) => {
-    const session = sessionManager.getActiveSession();
-    if (session?.models) {
-      chatWebviewProvider.notifyModelsUpdate(session.models);
     }
   });
 
@@ -84,7 +80,7 @@ export function activate(context: vscode.ExtensionContext): void {
   sessionManager.on('session-load-end', (_sessionId: string, _agentName: string, ok: boolean) => {
     chatWebviewProvider.notifyLoadSessionEnd(ok);
     if (ok) {
-      // The loadSession response carries modes/models/configOptions for the
+      // The loadSession response carries modes/configOptions for the
       // restored session. Re-send the state so the pickers pick them up
       // (the original `active-session-changed` was emitted before the RPC
       // resolved, when those fields were still null).

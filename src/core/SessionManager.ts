@@ -7,13 +7,12 @@ import type {
   InitializeResponse,
   ContentBlock,
   SessionModeState,
-  SessionModelState,
   AvailableCommand,
   SessionConfigOption,
   SessionInfo as ProtocolSessionInfo,
   AgentCapabilities,
 } from '@agentclientprotocol/sdk';
-import { RequestError } from '@agentclientprotocol/sdk';
+import { methods, RequestError } from '@agentclientprotocol/sdk';
 
 import { AgentManager } from './AgentManager';
 import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
@@ -31,10 +30,10 @@ export interface SessionInfo {
   createdAt: string;
   initResponse: InitializeResponse;
   modes: SessionModeState | null;
-  models: SessionModelState | null;
   /**
    * Generic session config options (ACP "Session Config Options" — supersedes
-   * `modes` / `models`). `null` means the agent did not provide this field.
+   * `modes`, and is the only source of model selection). `null` means the
+   * agent did not provide this field.
    * Per spec, when both `configOptions` and `modes` are present, clients
    * should use `configOptions` exclusively.
    */
@@ -280,7 +279,7 @@ export class SessionManager extends EventEmitter {
   ): Promise<SessionInfo> {
     let sessionResponse: NewSessionResponse;
     try {
-      sessionResponse = await connInfo.connection.newSession({
+      sessionResponse = await connInfo.connection.agent.request(methods.agent.session.new, {
         cwd,
         mcpServers: [],
       });
@@ -293,7 +292,7 @@ export class SessionManager extends EventEmitter {
       // Auth required — interactively authenticate, then retry.
       await this.runAuthFlow(agentName, agentId, connInfo);
       try {
-        sessionResponse = await connInfo.connection.newSession({
+        sessionResponse = await connInfo.connection.agent.request(methods.agent.session.new, {
           cwd,
           mcpServers: [],
         });
@@ -315,7 +314,6 @@ export class SessionManager extends EventEmitter {
       createdAt: new Date().toISOString(),
       initResponse: connInfo.initResponse,
       modes: sessionResponse.modes ?? null,
-      models: (sessionResponse as any).models ?? null,
       configOptions: (sessionResponse as any).configOptions ?? null,
       availableCommands: [],
     };
@@ -394,7 +392,7 @@ export class SessionManager extends EventEmitter {
 
     try {
       log(`Authenticating with method: ${selectedMethod.name} (${selectedMethod.id})`);
-      await connInfo.connection.authenticate({ methodId: selectedMethod.id });
+      await connInfo.connection.agent.request(methods.agent.authenticate, { methodId: selectedMethod.id });
       log('Authentication successful');
     } catch (authErr: any) {
       logError('Authentication failed', authErr);
@@ -460,7 +458,7 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    const response = await connInfo.connection.prompt({
+    const response = await connInfo.connection.agent.request(methods.agent.session.prompt, {
       sessionId,
       prompt,
     });
@@ -480,7 +478,7 @@ export class SessionManager extends EventEmitter {
     if (!connInfo) { return; }
 
     log(`Cancelling turn for session ${sessionId}`);
-    await connInfo.connection.cancel({ sessionId });
+    await connInfo.connection.agent.notify(methods.agent.session.cancel, { sessionId });
   }
 
   /**
@@ -508,7 +506,7 @@ export class SessionManager extends EventEmitter {
     const connInfo = this.connectionManager.getConnection(session.agentId);
     if (!connInfo) { return; }
 
-    await connInfo.connection.setSessionMode({ sessionId, modeId });
+    await connInfo.connection.agent.request(methods.agent.session.setMode, { sessionId, modeId });
 
     // Update local state
     if (session.modes) {
@@ -518,34 +516,18 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Set the session model (experimental).
-   *
-   * If the active session uses `configOptions`, this is transparently
-   * routed to `setConfigOption` against the first option whose category is
-   * `model`.
+   * Set the session model via the first config option whose category is
+   * `model`. Agents that expose no such option cannot have their model set.
    */
   async setModel(sessionId: string, modelId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
 
-    if (session.configOptions && session.configOptions.length > 0) {
-      const modelOpt = session.configOptions.find(o => o.category === 'model');
-      if (modelOpt) {
-        await this.setConfigOption(sessionId, modelOpt.id, modelId);
-        return;
-      }
+    const modelOpt = session.configOptions?.find(o => o.category === 'model');
+    if (!modelOpt) {
+      throw new Error(`${session.agentDisplayName} does not expose a model config option`);
     }
-
-    const connInfo = this.connectionManager.getConnection(session.agentId);
-    if (!connInfo) { return; }
-
-    await (connInfo.connection as any).unstable_setSessionModel({ sessionId, modelId });
-
-    // Update local state
-    if (session.models) {
-      session.models.currentModelId = modelId;
-    }
-    this.emit('model-changed', sessionId, modelId);
+    await this.setConfigOption(sessionId, modelOpt.id, modelId);
   }
 
   /**
@@ -561,7 +543,7 @@ export class SessionManager extends EventEmitter {
     const connInfo = this.connectionManager.getConnection(session.agentId);
     if (!connInfo) { return null; }
 
-    const response = await connInfo.connection.setSessionConfigOption({
+    const response = await connInfo.connection.agent.request(methods.agent.session.setConfigOption, {
       sessionId,
       configId,
       value,
@@ -725,14 +707,14 @@ export class SessionManager extends EventEmitter {
 
     let response: any;
     try {
-      response = await conn.connection.listSessions(params);
+      response = await conn.connection.agent.request(methods.agent.session.list, params);
     } catch (e: any) {
       if (this.isAuthRequiredError(e)) {
         // Auth then retry.
         const agentInfo = this.findAgentIdForConnection(conn);
         if (agentInfo) {
           await this.runAuthFlow(agentName, agentInfo, conn);
-          response = await conn.connection.listSessions(params);
+          response = await conn.connection.agent.request(methods.agent.session.list, params);
         } else {
           throw e;
         }
@@ -804,7 +786,6 @@ export class SessionManager extends EventEmitter {
       createdAt: new Date().toISOString(),
       initResponse: conn.initResponse,
       modes: null,
-      models: null,
       configOptions: null,
       availableCommands: [],
     };
@@ -824,14 +805,13 @@ export class SessionManager extends EventEmitter {
     this.emit('session-load-start', sessionId, agentName);
 
     try {
-      const response = await conn.connection.loadSession({
+      const response = await conn.connection.agent.request(methods.agent.session.load, {
         sessionId,
         cwd,
         mcpServers: [],
       });
-      // The response carries the latest mode/model/configOptions snapshot.
+      // The response carries the latest modes/configOptions snapshot.
       placeholder.modes = (response as any).modes ?? null;
-      placeholder.models = (response as any).models ?? null;
       placeholder.configOptions = (response as any).configOptions ?? null;
     } catch (e: any) {
       this.loadingSessionIds.delete(sessionId);
@@ -892,7 +872,7 @@ export class SessionManager extends EventEmitter {
 
     let response: any;
     try {
-      response = await conn.connection.resumeSession({
+      response = await conn.connection.agent.request(methods.agent.session.resume, {
         sessionId,
         cwd,
         mcpServers: [],
@@ -916,7 +896,6 @@ export class SessionManager extends EventEmitter {
       createdAt: new Date().toISOString(),
       initResponse: conn.initResponse,
       modes: response?.modes ?? null,
-      models: response?.models ?? null,
       configOptions: response?.configOptions ?? null,
       availableCommands: [],
     };

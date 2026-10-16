@@ -3,6 +3,18 @@ import * as vscode from 'vscode';
 let _outputChannel: vscode.OutputChannel | undefined;
 let _trafficChannel: vscode.OutputChannel | undefined;
 
+export type TrafficListener = (direction: 'send' | 'recv', data: unknown) => void;
+const _trafficListeners = new Set<TrafficListener>();
+
+/**
+ * Observe each message recorded by `logTraffic`. Output channel contents are
+ * not readable through the VS Code API, so this is how tests see the traffic.
+ */
+export function onTraffic(listener: TrafficListener): vscode.Disposable {
+  _trafficListeners.add(listener);
+  return new vscode.Disposable(() => _trafficListeners.delete(listener));
+}
+
 export function getOutputChannel(): vscode.OutputChannel {
   if (!_outputChannel) {
     _outputChannel = vscode.window.createOutputChannel('ACP Client');
@@ -58,6 +70,9 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
   getTrafficChannel().appendLine(
     `[${timestamp}] ${arrow}${label}\n${JSON.stringify(data, null, 2)}\n`
   );
+  for (const listener of _trafficListeners) {
+    listener(direction, data);
+  }
 }
 
 export function disposeChannels(): void {

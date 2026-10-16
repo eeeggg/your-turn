@@ -84,9 +84,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'setMode':
           await this.handleSetMode(message.modeId);
           break;
-        case 'setModel':
-          await this.handleSetModel(message.modelId);
-          break;
         case 'setConfigOption':
           await this.handleSetConfigOption(message.configId, message.value);
           break;
@@ -259,20 +256,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Handle model change from webview picker.
-   */
-  private async handleSetModel(modelId: string): Promise<void> {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId || !modelId) { return; }
-    try {
-      await this.sessionManager.setModel(activeId, modelId);
-    } catch (e: any) {
-      logError('Failed to set model', e);
-      this.postMessage({ type: 'error', message: `Failed to set model: ${e.message}` });
-    }
-  }
-
-  /**
    * Handle generic config-option change from webview picker
    * (ACP "Session Config Options"). The agent returns the full
    * configOptions state which we re-broadcast so any cascading
@@ -311,7 +294,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         title: session.title,
         cwd: session.cwd,
         modes: session.modes,
-        models: session.models,
         configOptions: session.configOptions,
         availableCommands: session.availableCommands,
       } : null,
@@ -337,13 +319,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   notifyModesUpdate(modes: any): void {
     this.postMessage({ type: 'modesUpdate', modes });
-  }
-
-  /**
-   * Notify webview of model state changes.
-   */
-  notifyModelsUpdate(models: any): void {
-    this.postMessage({ type: 'modelsUpdate', models });
   }
 
   /**
@@ -1215,7 +1190,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     <div class="input-toolbar">
       <!-- Dynamic config-options pickers (ACP "Session Config Options"). -->
       <div class="picker-row" id="configOptionsContainer"></div>
-      <!-- Legacy pickers — used only when the agent has not migrated to configOptions -->
+      <!-- Legacy mode picker — used only when the agent has not migrated to configOptions -->
       <div class="picker-wrap hidden" id="modePickerWrap">
         <button class="picker-btn" id="modePickerBtn" title="Select mode">
           <span class="picker-icon">⚡</span>
@@ -1223,14 +1198,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           <span class="picker-chevron">▾</span>
         </button>
         <div class="picker-dropdown" id="modeDropdown"></div>
-      </div>
-      <div class="picker-wrap hidden" id="modelPickerWrap">
-        <button class="picker-btn" id="modelPickerBtn" title="Select model">
-          <span class="picker-icon">🧠</span>
-          <span class="picker-label" id="modelPickerLabel">Model</span>
-          <span class="picker-chevron">▾</span>
-        </button>
-        <div class="picker-dropdown" id="modelDropdown"></div>
       </div>
       <span class="toolbar-spacer"></span>
     </div>
@@ -1274,20 +1241,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const modePickerBtn = document.getElementById('modePickerBtn');
     const modePickerLabel = document.getElementById('modePickerLabel');
     const modeDropdown = document.getElementById('modeDropdown');
-    const modelPickerWrap = document.getElementById('modelPickerWrap');
-    const modelPickerBtn = document.getElementById('modelPickerBtn');
-    const modelPickerLabel = document.getElementById('modelPickerLabel');
-    const modelDropdown = document.getElementById('modelDropdown');
     const configOptionsContainer = document.getElementById('configOptionsContainer');
 
     let hasActiveSession = false;
     let isProcessing = false;
 
-    // Modes / models state (legacy fallback path)
+    // Modes state (legacy fallback path)
     let availableModes = [];
     let currentModeId = null;
-    let availableModels = [];
-    let currentModelId = null;
 
     // ACP Session Config Options state (preferred path)
     let configOptions = [];        // SessionConfigOption[]
@@ -1674,47 +1635,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
-    function updateModelPicker(models) {
-      if (!models || !models.availableModels || models.availableModels.length === 0) {
-        modelPickerWrap.classList.add('hidden');
-        availableModels = [];
-        currentModelId = null;
-        return;
-      }
-      availableModels = models.availableModels;
-      currentModelId = models.currentModelId || null;
-      modelPickerWrap.classList.remove('hidden');
-      const current = availableModels.find(m => m.modelId === currentModelId);
-      modelPickerLabel.textContent = current ? current.name : 'Model';
-      modelPickerLabel.title = current && current.description ? current.description : '';
-      renderModelDropdown();
-    }
-
-    function renderModelDropdown() {
-      modelDropdown.innerHTML = '';
-      for (const model of availableModels) {
-        const item = document.createElement('div');
-        item.className = 'picker-dropdown-item' + (model.modelId === currentModelId ? ' selected' : '');
-        item.dataset.desc = model.description || '';
-        if (model.description) item.title = model.description;
-        item.innerHTML =
-          '<span class="check">' + (model.modelId === currentModelId ? '✓' : '') + '</span>' +
-          '<span class="item-label">' + escapeHtml(model.name) + '</span>';
-        item.addEventListener('click', (e) => {
-          e.stopPropagation();
-          closePickers();
-          if (model.modelId !== currentModelId) {
-            currentModelId = model.modelId;
-            const current = availableModels.find(m => m.modelId === currentModelId);
-            modelPickerLabel.textContent = current ? current.name : 'Model';
-            renderModelDropdown();
-            vscode.postMessage({ type: 'setModel', modelId: model.modelId });
-          }
-        });
-        modelDropdown.appendChild(item);
-      }
-    }
-
     // --- ACP Session Config Options ---
 
     function iconForCategory(cat) {
@@ -1875,9 +1795,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       useConfigOptions = configOptions.length > 0;
 
       if (useConfigOptions) {
-        // Hide legacy pickers — spec requires configOptions to be used exclusively
+        // Hide legacy mode picker — spec requires configOptions to be used exclusively
         modePickerWrap.classList.add('hidden');
-        modelPickerWrap.classList.add('hidden');
         renderConfigPickers(configOptions);
       } else {
         configOptionsContainer.innerHTML = '';
@@ -1892,16 +1811,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       if (!wasOpen) modeDropdown.classList.add('open');
     });
 
-    modelPickerBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const wasOpen = modelDropdown.classList.contains('open');
-      closePickers();
-      if (!wasOpen) modelDropdown.classList.add('open');
-    });
-
     function closePickers() {
       modeDropdown.classList.remove('open');
-      modelDropdown.classList.remove('open');
       // Close any dynamic config-option dropdowns
       const open = configOptionsContainer.querySelectorAll('.picker-dropdown.open');
       open.forEach(el => el.classList.remove('open'));
@@ -1982,7 +1893,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       dropdownEl.addEventListener('scroll', hidePickerTooltip);
     }
     attachScrollHide(modeDropdown);
-    attachScrollHide(modelDropdown);
     // Dynamic configOption dropdowns: rely on the same handler via event-delegation
     // (they exist inside #configOptionsContainer); attach once per dropdown when created.
     if (configOptionsContainer) {
@@ -2334,7 +2244,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       } else {
         setConfigOptionsState([]);
         if (session.modes) updateModePicker(session.modes);
-        if (session.models) updateModelPicker(session.models);
       }
       // Restore available commands
       if (session.availableCommands) {
@@ -2362,7 +2271,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       if (inputArea) inputArea.classList.add('disabled');
       // Hide pickers when disconnected
       modePickerWrap.classList.add('hidden');
-      modelPickerWrap.classList.add('hidden');
       setConfigOptionsState([]);
     }
 
@@ -2461,7 +2369,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           if (sessionBanner) sessionBanner.classList.remove('visible');
           if (inputArea) inputArea.classList.add('disabled');
           modePickerWrap.classList.add('hidden');
-          modelPickerWrap.classList.add('hidden');
           setConfigOptionsState([]);
           setProcessing(false);
           break;
@@ -2476,10 +2383,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
         case 'modesUpdate':
           updateModePicker(msg.modes);
-          break;
-
-        case 'modelsUpdate':
-          updateModelPicker(msg.models);
           break;
 
         case 'configOptionsUpdate':

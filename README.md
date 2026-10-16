@@ -140,7 +140,7 @@ The extension follows a modular architecture:
 - **Handlers**: `FileSystemHandler`, `TerminalHandler`, `PermissionHandler`, `SessionUpdateHandler`
 - **UI**: `SessionTreeProvider`, `ChatWebviewProvider`, `StatusBarManager`
 - **Config**: `AgentConfig`, `RegistryClient`
-- **Utils**: `Logger`, `StreamAdapter`
+- **Utils**: `Logger`
 
 Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio).
 

@@ -1,6 +1,5 @@
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { Agent, InitializeResponse } from '@agentclientprotocol/sdk';
-import type { Stream } from '@agentclientprotocol/sdk/dist/stream.js';
+import { client as createClientApp, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import type { ClientConnection, InitializeResponse, Stream } from '@agentclientprotocol/sdk';
 import { ChildProcess } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 
@@ -10,23 +9,23 @@ import { TerminalHandler } from '../handlers/TerminalHandler';
 import { PermissionHandler } from '../handlers/PermissionHandler';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { log, logError, logTraffic } from '../utils/Logger';
-import { version as extensionVersion } from '../../package.json';
 
 export interface ConnectionInfo {
-  connection: ClientSideConnection;
+  connection: ClientConnection;
   client: AcpClientImpl;
   initResponse: InitializeResponse;
 }
 
 /**
  * Manages ACP connections to agent processes.
- * Creates ClientSideConnection instances from spawned child processes.
+ * Creates client-side ACP connections from spawned child processes.
  */
 export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
 
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
+    private readonly clientVersion: string,
   ) {}
 
   /**
@@ -62,22 +61,27 @@ export class ConnectionManager {
       this.sessionUpdateHandler,
     );
 
-    // Create connection — toClient factory receives the Agent proxy
-    const connection = new ClientSideConnection(
-      (agent: Agent) => {
-        client.setAgent(agent);
-        return client;
-      },
-      tappedStream,
-    );
+    // The connection must stay open for the agent's lifetime, so use connect()
+    // rather than connectWith(), which closes when its callback returns.
+    const app = createClientApp({ name: 'vscode-acp-client' })
+      .onRequest(methods.client.session.requestPermission, ({ params }) => client.requestPermission(params))
+      .onNotification(methods.client.session.update, ({ params }) => client.sessionUpdate(params))
+      .onRequest(methods.client.fs.readTextFile, ({ params }) => client.readTextFile(params))
+      .onRequest(methods.client.fs.writeTextFile, ({ params }) => client.writeTextFile(params))
+      .onRequest(methods.client.terminal.create, ({ params }) => client.createTerminal(params))
+      .onRequest(methods.client.terminal.output, ({ params }) => client.terminalOutput(params))
+      .onRequest(methods.client.terminal.waitForExit, ({ params }) => client.waitForTerminalExit(params))
+      .onRequest(methods.client.terminal.kill, ({ params }) => client.killTerminal(params))
+      .onRequest(methods.client.terminal.release, ({ params }) => client.releaseTerminal(params));
+    const connection = app.connect(tappedStream);
 
     // Initialize the connection
     log(`ConnectionManager: initializing connection to agent ${agentId}`);
-    const initResponse = await connection.initialize({
+    const initResponse = await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       clientInfo: {
         name: 'vscode-acp-client',
-        version: extensionVersion,
+        version: this.clientVersion,
       },
       clientCapabilities: {
         fs: {

@@ -1,6 +1,5 @@
 import type {
   Client,
-  Agent,
   RequestPermissionRequest,
   RequestPermissionResponse,
   SessionNotification,
@@ -30,26 +29,16 @@ import { log } from '../utils/Logger';
  * ACP Client implementation for VS Code.
  * Delegates to individual handlers for each capability.
  *
- * Passed as a factory to ClientSideConnection:
- *   new ClientSideConnection((agent) => new AcpClientImpl(...), stream)
+ * ConnectionManager registers each method as an ACP handler on a
+ * `client()` app, e.g. `.onRequest(methods.client.fs.readTextFile, ...)`.
  */
 export class AcpClientImpl implements Client {
-  private agent: Agent | null = null;
-
   constructor(
     private readonly fsHandler: FileSystemHandler,
     private readonly terminalHandler: TerminalHandler,
     private readonly permissionHandler: PermissionHandler,
     private readonly sessionUpdateHandler: SessionUpdateHandler,
   ) {}
-
-  setAgent(agent: Agent): void {
-    this.agent = agent;
-  }
-
-  getAgent(): Agent | null {
-    return this.agent;
-  }
 
   // --- Required methods ---
 
