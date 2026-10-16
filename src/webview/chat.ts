@@ -1,4 +1,4 @@
-/* eslint-disable */
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 
 const vscode = acquireVsCodeApi();
@@ -64,7 +64,7 @@ function saveState() {
 
 function restoreState() {
   const saved = vscode.getState();
-  if (!saved) return;
+  if (!saved) { return; }
 
   chatHistory = saved.chatHistory || [];
   sessionState = saved.sessionState || null;
@@ -103,7 +103,7 @@ function restoreState() {
 }
 
 // Start with input disabled
-if (inputArea) inputArea.classList.add('disabled');
+if (inputArea) { inputArea.classList.add('disabled'); }
 let currentAssistantEl = null;
 let currentAssistantText = '';
 let currentTurnEl = null;       // .turn container for current response
@@ -211,7 +211,7 @@ promptInput.addEventListener('keydown', (e) => {
 
 function handleSend() {
   const text = promptInput.value.trim();
-  if (!text) return;
+  if (!text) { return; }
 
   addMessage('user', text);
   promptInput.value = '';
@@ -237,8 +237,8 @@ sendStopBtn.addEventListener('click', () => {
 
 const welcomeConnectAgent = document.getElementById('welcomeConnectAgent');
 const welcomeAddAgent = document.getElementById('welcomeAddAgent');
-if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => execCmd('acp.connectAgent'));
-if (welcomeAddAgent) welcomeAddAgent.addEventListener('click', () => execCmd('acp.addAgent'));
+if (welcomeConnectAgent) { welcomeConnectAgent.addEventListener('click', () => execCmd('acp.connectAgent')); }
+if (welcomeAddAgent) { welcomeAddAgent.addEventListener('click', () => execCmd('acp.addAgent')); }
 
 // --- Send/Stop toggle ---
 function setProcessing(processing) {
@@ -259,12 +259,8 @@ function setProcessing(processing) {
 
 // --- Session/load overlay ---
 const loadOverlay = document.getElementById('loadOverlay');
-// True while a session/load replay is in progress. Used to suppress
-// per-chunk markdown rendering until the replay finishes.
-let isLoadingSession = false;
 
 function handleLoadSessionStart() {
-  isLoadingSession = true;
   // Reset all chat state; behaves like clearChat but keeps the session
   // banner / input area structure intact.
   chatHistory = [];
@@ -286,17 +282,16 @@ function handleLoadSessionStart() {
     messagesEl.appendChild(emptyState);
     emptyState.style.display = 'none';
   }
-  if (loadOverlay) loadOverlay.classList.add('visible');
-  if (inputArea) inputArea.classList.add('disabled');
+  if (loadOverlay) { loadOverlay.classList.add('visible'); }
+  if (inputArea) { inputArea.classList.add('disabled'); }
   setProcessing(false);
 }
 
 function handleLoadSessionEnd(ok) {
-  isLoadingSession = false;
   // Commit any trailing assistant turn captured during the replay.
   finalizeCurrentAssistantTurn();
-  if (loadOverlay) loadOverlay.classList.remove('visible');
-  if (inputArea) inputArea.classList.remove('disabled');
+  if (loadOverlay) { loadOverlay.classList.remove('visible'); }
+  if (inputArea) { inputArea.classList.remove('disabled'); }
   // Batch-render markdown for every assistant message captured during
   // the replay (avoids per-chunk render storms).
   const items = [];
@@ -316,7 +311,7 @@ function handleLoadSessionEnd(ok) {
 }
 
 function handleSessionInfoUpdate(title) {
-  if (!sessionState) return;
+  if (!sessionState) { return; }
   if (typeof title === 'string') {
     sessionState.title = title;
   } else if (title === null) {
@@ -352,12 +347,12 @@ function renderSlashPopup(commands) {
 function highlightSlashItem(idx) {
   const items = slashPopup.querySelectorAll('.slash-popup-item');
   items.forEach((el, i) => el.classList.toggle('active', i === idx));
-  if (items[idx]) items[idx].scrollIntoView({ block: 'nearest' });
+  if (items[idx]) { items[idx].scrollIntoView({ block: 'nearest' }); }
 }
 
 function selectSlashCommand(cmd) {
   slashPopup.classList.remove('open');
-  if (!cmd) return;
+  if (!cmd) { return; }
 
   if (cmd.input) {
     // Command expects input — insert "/name " and set placeholder to hint
@@ -394,7 +389,7 @@ function renderModeDropdown() {
     const item = document.createElement('div');
     item.className = 'picker-dropdown-item' + (mode.id === currentModeId ? ' selected' : '');
     item.dataset.desc = mode.description || '';
-    if (mode.description) item.title = mode.description;
+    if (mode.description) { item.title = mode.description; }
     item.innerHTML =
       '<span class="check">' + (mode.id === currentModeId ? '✓' : '') + '</span>' +
       '<span class="item-label">' + escapeHtml(mode.name) + '</span>';
@@ -426,18 +421,18 @@ function iconForCategory(cat) {
 
 function isGroupedOptions(opt) {
   const arr = opt && opt.options;
-  if (!Array.isArray(arr) || arr.length === 0) return false;
+  if (!Array.isArray(arr) || arr.length === 0) { return false; }
   const first = arr[0];
   return !!(first && typeof first.group === 'string' && Array.isArray(first.options));
 }
 
 function findOptionValue(opt, value) {
-  if (!opt || !Array.isArray(opt.options)) return null;
+  if (!opt || !Array.isArray(opt.options)) { return null; }
   if (isGroupedOptions(opt)) {
     for (const group of opt.options) {
-      if (!group || !Array.isArray(group.options)) continue;
+      if (!group || !Array.isArray(group.options)) { continue; }
       const hit = group.options.find(v => v && v.value === value);
-      if (hit) return hit;
+      if (hit) { return hit; }
     }
     return null;
   }
@@ -456,12 +451,12 @@ function pickerTooltipFor(opt) {
 
 function renderConfigPickers(opts) {
   configOptionsContainer.innerHTML = '';
-  if (!Array.isArray(opts)) return;
+  if (!Array.isArray(opts)) { return; }
 
   for (const opt of opts) {
     // Spec: ignore unknown types and empty option lists
-    if (!opt || opt.type !== 'select') continue;
-    if (!Array.isArray(opt.options) || opt.options.length === 0) continue;
+    if (!opt || opt.type !== 'select') { continue; }
+    if (!Array.isArray(opt.options) || opt.options.length === 0) { continue; }
 
     const wrap = document.createElement('div');
     wrap.className = 'picker-wrap';
@@ -490,7 +485,7 @@ function renderConfigDropdown(dropdown, opt) {
   dropdown.innerHTML = '';
   if (isGroupedOptions(opt)) {
     for (const group of opt.options) {
-      if (!group || !Array.isArray(group.options)) continue;
+      if (!group || !Array.isArray(group.options)) { continue; }
       const header = document.createElement('div');
       header.className = 'picker-dropdown-group-header';
       header.textContent = group.name || group.group || '';
@@ -512,7 +507,7 @@ function buildConfigItem(opt, v) {
   item.className = 'picker-dropdown-item' + (selected ? ' selected' : '');
   item.dataset.value = v.value;
   item.dataset.desc = v.description || '';
-  if (v.description) item.title = v.description;
+  if (v.description) { item.title = v.description; }
   item.innerHTML =
     '<span class="check">' + (selected ? '✓' : '') + '</span>' +
     '<span class="item-label"></span>';
@@ -523,17 +518,17 @@ function buildConfigItem(opt, v) {
 // Event delegation: handle clicks on dynamically-rendered config pickers
 configOptionsContainer.addEventListener('click', (e) => {
   const target = e.target;
-  if (!(target instanceof Element)) return;
+  if (!(target instanceof Element)) { return; }
 
   const item = target.closest('.picker-dropdown-item');
   if (item) {
     e.stopPropagation();
     const wrap = item.closest('.picker-wrap');
     const dropdown = item.closest('.picker-dropdown');
-    if (!wrap || !dropdown) return;
+    if (!wrap || !dropdown) { return; }
     const configId = wrap.dataset.configId;
     const value = item.dataset.value;
-    if (!configId || value == null) return;
+    if (!configId || value === undefined) { return; }
 
     // Find option in current state
     const opt = configOptions.find(o => o && o.id === configId);
@@ -546,8 +541,8 @@ configOptionsContainer.addEventListener('click', (e) => {
     opt.currentValue = value;
     const labelEl = wrap.querySelector('.picker-btn .picker-label');
     const btn = wrap.querySelector('.picker-btn');
-    if (labelEl) labelEl.textContent = pickerLabelFor(opt);
-    if (btn) btn.title = pickerTooltipFor(opt);
+    if (labelEl) { labelEl.textContent = pickerLabelFor(opt); }
+    if (btn) { btn.title = pickerTooltipFor(opt); }
     renderConfigDropdown(dropdown, opt);
 
     dropdown.classList.remove('open');
@@ -559,12 +554,12 @@ configOptionsContainer.addEventListener('click', (e) => {
   if (btn) {
     e.stopPropagation();
     const wrap = btn.closest('.picker-wrap');
-    if (!wrap) return;
+    if (!wrap) { return; }
     const dropdown = wrap.querySelector('.picker-dropdown');
-    if (!dropdown) return;
+    if (!dropdown) { return; }
     const wasOpen = dropdown.classList.contains('open');
     closePickers();
-    if (!wasOpen) dropdown.classList.add('open');
+    if (!wasOpen) { dropdown.classList.add('open'); }
   }
 });
 
@@ -586,7 +581,7 @@ modePickerBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   const wasOpen = modeDropdown.classList.contains('open');
   closePickers();
-  if (!wasOpen) modeDropdown.classList.add('open');
+  if (!wasOpen) { modeDropdown.classList.add('open'); }
 });
 
 function closePickers() {
@@ -601,11 +596,11 @@ function closePickers() {
 const pickerTooltip = document.getElementById('pickerTooltip');
 
 function hidePickerTooltip() {
-  if (pickerTooltip) pickerTooltip.classList.remove('visible');
+  if (pickerTooltip) { pickerTooltip.classList.remove('visible'); }
 }
 
 function showPickerTooltip(itemEl) {
-  if (!pickerTooltip || !itemEl) return;
+  if (!pickerTooltip || !itemEl) { return; }
   const desc = itemEl.dataset && itemEl.dataset.desc;
   if (!desc) { hidePickerTooltip(); return; }
 
@@ -624,15 +619,15 @@ function showPickerTooltip(itemEl) {
 
   // Prefer left side; flip to right if not enough room.
   let left = dropRect.left - tipRect.width - gap;
-  if (left < 4) left = dropRect.right + gap;
+  if (left < 4) { left = dropRect.right + gap; }
   // Clamp horizontally inside the viewport.
   const maxLeft = window.innerWidth - tipRect.width - 4;
-  if (left > maxLeft) left = Math.max(4, maxLeft);
+  if (left > maxLeft) { left = Math.max(4, maxLeft); }
 
   // Vertically align with the hovered item, clamped inside the viewport.
   let top = itemRect.top;
   const maxTop = window.innerHeight - tipRect.height - 4;
-  if (top > maxTop) top = Math.max(4, maxTop);
+  if (top > maxTop) { top = Math.max(4, maxTop); }
 
   pickerTooltip.style.left = left + 'px';
   pickerTooltip.style.top = top + 'px';
@@ -641,32 +636,32 @@ function showPickerTooltip(itemEl) {
 // Delegated hover handling — one listener handles every picker dropdown.
 document.addEventListener('mouseover', (e) => {
   const target = e.target;
-  if (!(target instanceof Element)) return;
+  if (!(target instanceof Element)) { return; }
   const item = target.closest('.picker-dropdown-item');
-  if (!item) return;
+  if (!item) { return; }
   // Only consider items inside an open dropdown.
   const dropdown = item.closest('.picker-dropdown');
-  if (!dropdown || !dropdown.classList.contains('open')) return;
+  if (!dropdown || !dropdown.classList.contains('open')) { return; }
   showPickerTooltip(item);
 });
 
 document.addEventListener('mouseout', (e) => {
   const target = e.target;
   const related = e.relatedTarget;
-  if (!(target instanceof Element)) return;
+  if (!(target instanceof Element)) { return; }
   const item = target.closest('.picker-dropdown-item');
-  if (!item) return;
+  if (!item) { return; }
   // Stay visible if the mouse moved to another item inside the same dropdown.
   if (related instanceof Element) {
     const nextItem = related.closest('.picker-dropdown-item');
-    if (nextItem && nextItem !== item) return;
+    if (nextItem && nextItem !== item) { return; }
   }
   hidePickerTooltip();
 });
 
 // Hide the tooltip when the user scrolls a dropdown so it doesn't drift.
 function attachScrollHide(dropdownEl) {
-  if (!dropdownEl || dropdownEl._tooltipScrollAttached) return;
+  if (!dropdownEl || dropdownEl._tooltipScrollAttached) { return; }
   dropdownEl._tooltipScrollAttached = true;
   dropdownEl.addEventListener('scroll', hidePickerTooltip);
 }
@@ -701,7 +696,7 @@ function addMessageDOM(role, text) {
 }
 
 function hideEmpty() {
-  if (emptyState) emptyState.style.display = 'none';
+  if (emptyState) { emptyState.style.display = 'none'; }
 }
 
 function scrollToBottom() {
@@ -758,11 +753,11 @@ function toolStatusClass(status) {
 }
 
 function extractToolCallBlocks(content) {
-  if (!Array.isArray(content)) return [];
+  if (!Array.isArray(content)) { return []; }
   const blocks = [];
   for (let i = 0; i < content.length; i++) {
     const block = content[i];
-    if (!block || typeof block !== 'object') continue;
+    if (!block || typeof block !== 'object') { continue; }
     const inner = block.content;
     if (block.type === 'content' && inner && typeof inner === 'object'
       && inner.type === 'text' && typeof inner.text === 'string') {
@@ -777,7 +772,7 @@ function extractToolCallBlocks(content) {
 function setToolCallContent(el, blocks) {
   const body = el.querySelector('.tc-body');
   const contentEl = el.querySelector('.tc-body-content');
-  if (!body || !contentEl) return;
+  if (!body || !contentEl) { return; }
 
   const texts = Array.isArray(blocks)
     ? blocks.filter(function (t) { return typeof t === 'string' && t.length > 0; })
@@ -882,15 +877,15 @@ function updateToolCall(toolCallId, status, title, content) {
   for (let i = chatHistory.length - 1; i >= 0; i--) {
     if (chatHistory[i].kind === 'toolCall' && chatHistory[i].toolCallId === toolCallId) {
       chatHistory[i].status = status;
-      if (title) chatHistory[i].title = title;
-      if (hasContent) chatHistory[i].content = blocks;
+      if (title) { chatHistory[i].title = title; }
+      if (hasContent) { chatHistory[i].content = blocks; }
       break;
     }
   }
   saveState();
 
   const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
-  if (!el) return;
+  if (!el) { return; }
 
   const iconEl = el.querySelector('.tc-icon');
   if (iconEl) {
@@ -946,8 +941,8 @@ function escapeHtml(text) {
 }
 
 function finalizeThought() {
-  if (!currentThoughtEl) return;
-  if (thoughtEndTime) return; // already finalized
+  if (!currentThoughtEl) { return; }
+  if (thoughtEndTime) { return; } // already finalized
   thoughtEndTime = Date.now();
   currentThoughtEl.classList.remove('streaming');
   const elapsed = thoughtStartTime ? Math.round((thoughtEndTime - thoughtStartTime) / 1000) : 0;
@@ -1021,7 +1016,7 @@ function showSessionConnected(session) {
     setConfigOptionsState(cfg);
   } else {
     setConfigOptionsState([]);
-    if (session.modes) updateModePicker(session.modes);
+    if (session.modes) { updateModePicker(session.modes); }
   }
   // Restore available commands
   if (session.availableCommands) {
@@ -1033,10 +1028,10 @@ function showSessionConnected(session) {
 function showSessionConnectedFromState(ss) {
   hasActiveSession = true;
   hideEmpty();
-  if (bannerAgent) bannerAgent.textContent = ss.title || ss.agentName || 'Agent';
-  if (bannerCwd) bannerCwd.textContent = ss.cwd || '';
-  if (sessionBanner) sessionBanner.classList.add('visible');
-  if (inputArea) inputArea.classList.remove('disabled');
+  if (bannerAgent) { bannerAgent.textContent = ss.title || ss.agentName || 'Agent'; }
+  if (bannerCwd) { bannerCwd.textContent = ss.cwd || ''; }
+  if (sessionBanner) { sessionBanner.classList.add('visible'); }
+  if (inputArea) { inputArea.classList.remove('disabled'); }
   promptInput.disabled = false;
 }
 
@@ -1044,9 +1039,9 @@ function showNoSession() {
   hasActiveSession = false;
   sessionState = null;
   saveState();
-  if (sessionBanner) sessionBanner.classList.remove('visible');
-  if (emptyState) emptyState.style.display = '';
-  if (inputArea) inputArea.classList.add('disabled');
+  if (sessionBanner) { sessionBanner.classList.remove('visible'); }
+  if (emptyState) { emptyState.style.display = ''; }
+  if (inputArea) { inputArea.classList.add('disabled'); }
   // Hide pickers when disconnected
   modePickerWrap.classList.add('hidden');
   setConfigOptionsState([]);
@@ -1143,9 +1138,9 @@ window.addEventListener('message', (event) => {
       slashPopup.classList.remove('open');
       messagesEl.innerHTML = '';
       messagesEl.appendChild(emptyState);
-      if (emptyState) emptyState.style.display = '';
-      if (sessionBanner) sessionBanner.classList.remove('visible');
-      if (inputArea) inputArea.classList.add('disabled');
+      if (emptyState) { emptyState.style.display = ''; }
+      if (sessionBanner) { sessionBanner.classList.remove('visible'); }
+      if (inputArea) { inputArea.classList.add('disabled'); }
       modePickerWrap.classList.add('hidden');
       setConfigOptionsState([]);
       setProcessing(false);
@@ -1186,15 +1181,15 @@ window.addEventListener('message', (event) => {
         // Find the DOM element for this history item
         // For the just-completed streaming message, update the last assistant el
         const historyItem = chatHistory[item.index];
-        if (!historyItem || historyItem.role !== 'assistant') continue;
+        if (!historyItem || historyItem.role !== 'assistant') { continue; }
 
         // Find the element — walk all .message.assistant elements
         const allAssistant = messagesEl.querySelectorAll('.message.assistant');
         // The item.index tracks position in chatHistory; count only assistant messages up to this index
         let assistantIdx = 0;
         for (let i = 0; i < chatHistory.length; i++) {
-          if (i === item.index) break;
-          if (chatHistory[i].kind === 'message' && chatHistory[i].role === 'assistant') assistantIdx++;
+          if (i === item.index) { break; }
+          if (chatHistory[i].kind === 'message' && chatHistory[i].role === 'assistant') { assistantIdx++; }
         }
         const el = allAssistant[assistantIdx];
         if (el) {
@@ -1209,7 +1204,7 @@ window.addEventListener('message', (event) => {
 });
 
 function handleUpdate(update) {
-  if (!update) return;
+  if (!update) { return; }
   const type = update.sessionUpdate;
 
   switch (type) {
@@ -1258,7 +1253,7 @@ function handleUpdate(update) {
           last.text += content.text;
           const allUser = messagesEl.querySelectorAll('.message.user');
           const el = allUser[allUser.length - 1];
-          if (el) el.textContent = last.text;
+          if (el) { el.textContent = last.text; }
         } else {
           addMessage('user', content.text);
         }
