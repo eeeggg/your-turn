@@ -13,5 +13,9 @@ webpack.config.js
 eslint.config.mjs
 .vscode-test.mjs
 vsc-extension-quickstart.md
+.github/**
+plans/**
+Makefile
+.nvmrc
 CHANGELOG.md
 resources/icon-ext.svg
