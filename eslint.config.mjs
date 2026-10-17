@@ -3,7 +3,7 @@ import typescriptEslint from "typescript-eslint";
 
 export default defineConfig(
   {
-    ignores: ["dist/**", "out/**"],
+    ignores: ["dist/**"],
   },
   {
     files: ["**/*.ts"],
@@ -22,6 +22,26 @@ export default defineConfig(
       eqeqeq: "warn",
       "no-throw-literal": "warn",
       semi: "warn",
+    },
+  },
+  {
+    // Logic that stays free of the VS Code API, so the unit suite can import it.
+    files: [
+      "src/webview/**/*.ts",
+      "src/ui/ChatHtml.ts",
+      "src/core/AcpClientImpl.ts",
+      "src/core/AgentManager.ts",
+      "src/core/ConnectionManager.ts",
+      "src/handlers/SessionUpdateHandler.ts",
+      "src/config/RegistryClient.ts",
+    ],
+    rules: {
+      "no-restricted-imports": ["error", {
+        paths: [{
+          name: "vscode",
+          message: "This module must stay unit-testable; keep VS Code API calls in an adapter that imports it.",
+        }],
+      }],
     },
   },
 );

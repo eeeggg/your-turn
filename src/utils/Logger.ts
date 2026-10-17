@@ -55,15 +55,12 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
   const timestamp = new Date().toISOString();
 
   // Classify message type
-  const msg = data as Record<string, unknown> | null;
   let label = '';
-  if (msg && typeof msg === 'object') {
-    if ('method' in msg && 'id' in msg) {
-      label = ` [REQUEST] ${msg.method}`;
-    } else if ('method' in msg && !('id' in msg)) {
-      label = ` [NOTIFICATION] ${msg.method}`;
-    } else if ('result' in msg || 'error' in msg) {
-      label = ` [RESPONSE] id=${msg.id}`;
+  if (typeof data === 'object' && data !== null) {
+    if ('method' in data) {
+      label = 'id' in data ? ` [REQUEST] ${data.method}` : ` [NOTIFICATION] ${data.method}`;
+    } else if ('result' in data || 'error' in data) {
+      label = ` [RESPONSE] id=${'id' in data ? data.id : undefined}`;
     }
   }
 

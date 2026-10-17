@@ -1,7 +1,7 @@
 .vscode/**
 .vscode-test/**
 src/**
-out/**
+coverage/**
 node_modules/**
 .gitignore
 .gitattributes
@@ -9,7 +9,7 @@ node_modules/**
 *.ts
 !dist/**
 tsconfig.json
-webpack.config.js
+esbuild.mjs
 eslint.config.mjs
 .vscode-test.mjs
 tests/**

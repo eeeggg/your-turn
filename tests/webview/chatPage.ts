@@ -60,7 +60,8 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   if (!html.includes(scriptTag)) {
     throw new Error('renderChatHtml no longer emits the expected script tag');
   }
-  const inlined = html.replace(scriptTag, () => `<script nonce="${nonce}">\n${readBundle()}\n</script>`);
+  // A replacer function inserts the bundle verbatim; a replacement string would expand `$&`-style patterns in it.
+  const inlined = html.replace(scriptTag, () => `<script nonce="${nonce}">${readBundle()}</script>`);
 
   // VS Code serializes everything crossing the webview boundary; cloning keeps
   // the page and the test from sharing objects.

@@ -112,11 +112,10 @@ npm install
 ### Build & Run
 
 ```bash
-npm run compile    # One-time build
-npm run watch      # Watch mode for development
+npm run compile          # Development build: tsc for the extension, esbuild for the webview
 ```
 
-Press `F5` in VS Code to launch the Extension Development Host.
+Press `F5` in VS Code to compile and launch the Extension Development Host. Only `npm run package` bundles the extension.
 
 ### Testing
 
@@ -124,6 +123,7 @@ Press `F5` in VS Code to launch the Extension Development Host.
 npm run pretest    # Compile and type-check tests, build, lint
 npm test           # Vitest suites (tests/), then VS Code integration suites (src/test/)
 npx vitest run     # Vitest suites only; webview tests need a current `npm run compile`
+npm run coverage   # Unit suite under coverage; HTML report in coverage/
 ```
 
 ### Packaging
