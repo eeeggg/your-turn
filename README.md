@@ -19,7 +19,7 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Permission Management**: Configurable auto-approve policies for agent actions
 - **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
 - **Agent Registry**: Browse and discover available ACP agents
-- **Chat Persistence**: Conversations are preserved when switching panels
+- **Chat Persistence**: Transcripts are preserved when switching panels
 
 ## Quick Start
 
@@ -72,7 +72,7 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 | Command | Description |
 |---------|-------------|
 | `ACP: Connect to Agent` | Connect to an agent |
-| `ACP: New Conversation` | Start a new conversation with the connected agent |
+| `ACP: New Session` | Start a new session with the connected agent |
 | `ACP: Send Prompt` | Send a message to the agent |
 | `ACP: Cancel Current Turn` | Cancel the current agent turn |
 | `ACP: Disconnect Agent` | Disconnect from the current agent |
@@ -112,16 +112,17 @@ npm install
 ### Build & Run
 
 ```bash
-npm run compile          # Development build: tsc for the extension, esbuild for the webview
+npm run compile          # Development build: tsc type-checks, esbuild bundles the extension, webview, and integration suite
 ```
 
-Press `F5` in VS Code to compile and launch the Extension Development Host. Only `npm run package` bundles the extension.
+Press `F5` in VS Code to compile and launch the Extension Development Host. Development bundles carry source maps; `npm run package` minifies and leaves out the integration suite.
 
 ### Testing
 
 ```bash
 npm run pretest    # Compile and type-check tests, build, lint
 npm test           # Vitest suites (tests/), then VS Code integration suites (src/test/)
+xvfb-run -a npm test   # Same, on Linux without a display (what `make test` runs)
 npx vitest run     # Vitest suites only; webview tests need a current `npm run compile`
 npm run coverage   # Unit suite under coverage; HTML report in coverage/
 ```

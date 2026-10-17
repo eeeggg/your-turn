@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { log, logError } from '../utils/Logger';
+import { log, logError } from '@/core/Log';
+import type { FileAccess } from '@/core/AcpClientImpl';
 
 import type {
   ReadTextFileRequest,
@@ -12,7 +13,7 @@ import type {
  * Handles ACP file system requests using VS Code's workspace filesystem API.
  * This gives us access to unsaved editor buffers automatically.
  */
-export class FileSystemHandler {
+export class FileSystemHandler implements FileAccess {
 
   /**
    * Read a text file. Uses VS Code API to include unsaved editor content.

@@ -122,7 +122,7 @@ describe('tool calls', () => {
     update(page, 'agent_message_chunk', textChunk('done'));
 
     const turn = page.document.querySelector('.turn');
-    expect([...(turn?.children ?? [])].map((el) => el.className)).toEqual(['message assistant', 'turn-tools']);
+    expect([...(turn?.children ?? [])].map((el) => el.className)).toEqual(['message agent', 'turn-tools']);
   });
 
   it('collapses more than three tool calls when the turn ends, and toggles on click', () => {

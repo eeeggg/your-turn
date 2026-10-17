@@ -33,13 +33,21 @@ const webview = {
 	outfile: 'dist/webview/chat.js',
 };
 
-// Only production bundles the extension host; development runs tsc's per-file
-// output from dist/, so production starts from an empty dist/ to keep it out of the VSIX.
-if (production) {
-	rmSync('dist', { recursive: true, force: true });
-}
+/** @type {import('esbuild').BuildOptions} */
+const integrationTests = {
+	...common,
+	entryPoints: ['src/test/**/*.test.ts', 'src/test/fixtures/*.ts'],
+	outbase: 'src/test',
+	outdir: 'dist/test',
+	format: 'cjs',
+	platform: 'node',
+	external: ['vscode'],
+};
+
+rmSync('dist', { recursive: true, force: true });
 try {
-	await Promise.all((production ? [extension, webview] : [webview]).map((options) => esbuild.build(options)));
+	const builds = production ? [extension, webview] : [extension, webview, integrationTests];
+	await Promise.all(builds.map((options) => esbuild.build(options)));
 } catch {
 	// esbuild has already printed the errors.
 	process.exit(1);

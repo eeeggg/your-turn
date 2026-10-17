@@ -55,18 +55,18 @@ function updatePlaceholder() {
 }
 
 // --- State persistence ---
-let chatHistory = [];
+let transcript = [];
 let sessionState = null;
 
 function saveState() {
-  vscode.setState({ chatHistory, sessionState, hasActiveSession });
+  vscode.setState({ transcript, sessionState, hasActiveSession });
 }
 
 function restoreState() {
   const saved = vscode.getState();
   if (!saved) { return; }
 
-  chatHistory = saved.chatHistory || [];
+  transcript = saved.transcript || [];
   sessionState = saved.sessionState || null;
   hasActiveSession = saved.hasActiveSession || false;
 
@@ -74,14 +74,14 @@ function restoreState() {
     showSessionConnectedFromState(sessionState);
   }
 
-  const assistantItems = [];
-  for (let i = 0; i < chatHistory.length; i++) {
-    const item = chatHistory[i];
+  const agentMessageItems = [];
+  for (let i = 0; i < transcript.length; i++) {
+    const item = transcript[i];
     switch (item.kind) {
       case 'message':
         addMessageDOM(item.role, item.text);
-        if (item.role === 'assistant') {
-          assistantItems.push({ index: i, text: item.text });
+        if (item.role === 'agent') {
+          agentMessageItems.push({ index: i, text: item.text });
         }
         break;
       case 'thought':
@@ -96,16 +96,16 @@ function restoreState() {
     }
   }
 
-  // Request markdown rendering for all restored assistant messages
-  if (assistantItems.length > 0) {
-    vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
+  // Request markdown rendering for all restored agent messages
+  if (agentMessageItems.length > 0) {
+    vscode.postMessage({ type: 'renderMarkdown', items: agentMessageItems });
   }
 }
 
 // Start with input disabled
 if (inputArea) { inputArea.classList.add('disabled'); }
-let currentAssistantEl = null;
-let currentAssistantText = '';
+let currentAgentMessageEl = null;
+let currentAgentMessageText = '';
 let currentTurnEl = null;       // .turn container for current response
 let currentToolsListEl = null;  // .turn-tools-list inside current turn
 let currentToolsCountEl = null; // .turn-tools-summary counter
@@ -263,10 +263,10 @@ const loadOverlay = document.getElementById('loadOverlay');
 function handleLoadSessionStart() {
   // Reset all chat state; behaves like clearChat but keeps the session
   // banner / input area structure intact.
-  chatHistory = [];
+  transcript = [];
   saveState();
-  currentAssistantEl = null;
-  currentAssistantText = '';
+  currentAgentMessageEl = null;
+  currentAgentMessageText = '';
   toolCalls = {};
   currentTurnEl = null;
   currentToolsListEl = null;
@@ -288,16 +288,16 @@ function handleLoadSessionStart() {
 }
 
 function handleLoadSessionEnd(ok) {
-  // Commit any trailing assistant turn captured during the replay.
-  finalizeCurrentAssistantTurn();
+  // Commit any trailing turn captured during the replay.
+  finalizeCurrentTurn();
   if (loadOverlay) { loadOverlay.classList.remove('visible'); }
   if (inputArea) { inputArea.classList.remove('disabled'); }
-  // Batch-render markdown for every assistant message captured during
+  // Batch-render markdown for every agent message captured during
   // the replay (avoids per-chunk render storms).
   const items = [];
-  for (let i = 0; i < chatHistory.length; i++) {
-    const item = chatHistory[i];
-    if (item.kind === 'message' && item.role === 'assistant') {
+  for (let i = 0; i < transcript.length; i++) {
+    const item = transcript[i];
+    if (item.kind === 'message' && item.role === 'agent') {
       items.push({ index: i, text: item.text });
     }
   }
@@ -680,7 +680,7 @@ document.addEventListener('click', () => closePickers());
 
 // --- Messages ---
 function addMessage(role, text) {
-  chatHistory.push({ kind: 'message', role, text });
+  transcript.push({ kind: 'message', role, text });
   saveState();
   return addMessageDOM(role, text);
 }
@@ -842,7 +842,7 @@ function createToolCallElement(toolCallId, title, status, blocks) {
 
 function addToolCall(toolCallId, title, status, content) {
   const blocks = extractToolCallBlocks(content);
-  chatHistory.push({ kind: 'toolCall', toolCallId, title, status, content: blocks });
+  transcript.push({ kind: 'toolCall', toolCallId, title, status, content: blocks });
   saveState();
   addToolCallInline(toolCallId, title, status, blocks);
 }
@@ -874,11 +874,11 @@ function updateToolCall(toolCallId, status, title, content) {
   const hasContent = content !== undefined && content !== null;
   const blocks = hasContent ? extractToolCallBlocks(content) : null;
 
-  for (let i = chatHistory.length - 1; i >= 0; i--) {
-    if (chatHistory[i].kind === 'toolCall' && chatHistory[i].toolCallId === toolCallId) {
-      chatHistory[i].status = status;
-      if (title) { chatHistory[i].title = title; }
-      if (hasContent) { chatHistory[i].content = blocks; }
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    if (transcript[i].kind === 'toolCall' && transcript[i].toolCallId === toolCallId) {
+      transcript[i].status = status;
+      if (title) { transcript[i].title = title; }
+      if (hasContent) { transcript[i].content = blocks; }
       break;
     }
   }
@@ -909,7 +909,7 @@ function updateToolCall(toolCallId, status, title, content) {
 }
 
 function addPlan(plan) {
-  chatHistory.push({ kind: 'plan', plan: plan });
+  transcript.push({ kind: 'plan', plan: plan });
   saveState();
   addPlanDOM(plan);
 }
@@ -955,27 +955,27 @@ function finalizeThought() {
 }
 
 /**
- * Commit the in-progress assistant turn to chatHistory (without firing
+ * Commit the in-progress turn to the transcript (without firing
  * the live promptEnd markdown-render request — replay does that
  * batched at loadSessionEnd). Resets all per-turn DOM/state pointers so
  * the next turn starts fresh.
  */
-function finalizeCurrentAssistantTurn() {
+function finalizeCurrentTurn() {
   if (currentThoughtText) {
     finalizeThought();
     const tEnd = thoughtEndTime || Date.now();
-    chatHistory.push({
+    transcript.push({
       kind: 'thought',
       text: currentThoughtText,
       durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
     });
   }
-  if (currentAssistantText) {
-    chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
+  if (currentAgentMessageText) {
+    transcript.push({ kind: 'message', role: 'agent', text: currentAgentMessageText });
     saveState();
   }
-  currentAssistantEl = null;
-  currentAssistantText = '';
+  currentAgentMessageEl = null;
+  currentAgentMessageText = '';
   currentTurnEl = null;
   currentToolsListEl = null;
   currentToolsCountEl = null;
@@ -1061,8 +1061,8 @@ window.addEventListener('message', (event) => {
 
     case 'promptStart':
       setProcessing(true);
-      currentAssistantEl = null;
-      currentAssistantText = '';
+      currentAgentMessageEl = null;
+      currentAgentMessageText = '';
       currentTurnEl = null;
       currentToolsListEl = null;
       currentToolsCountEl = null;
@@ -1079,26 +1079,26 @@ window.addEventListener('message', (event) => {
       if (currentThoughtText) {
         finalizeThought();
         const tEnd = thoughtEndTime || Date.now();
-        chatHistory.push({
+        transcript.push({
           kind: 'thought',
           text: currentThoughtText,
           durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
         });
       }
-      if (currentAssistantText) {
-        chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
+      if (currentAgentMessageText) {
+        transcript.push({ kind: 'message', role: 'agent', text: currentAgentMessageText });
         saveState();
         // Request markdown rendering from extension host
-        if (currentAssistantEl) {
+        if (currentAgentMessageEl) {
           vscode.postMessage({
             type: 'renderMarkdown',
-            items: [{ index: chatHistory.length - 1, text: currentAssistantText }]
+            items: [{ index: transcript.length - 1, text: currentAgentMessageText }]
           });
         }
       }
       setProcessing(false);
-      currentAssistantEl = null;
-      currentAssistantText = '';
+      currentAgentMessageEl = null;
+      currentAgentMessageText = '';
       // Auto-collapse tool calls in completed turns
       if (currentToolsListEl && currentToolCount > 3) {
         currentToolsListEl.classList.add('collapsed');
@@ -1119,11 +1119,11 @@ window.addEventListener('message', (event) => {
       break;
 
     case 'clearChat':
-      chatHistory = [];
+      transcript = [];
       sessionState = null;
       saveState();
-      currentAssistantEl = null;
-      currentAssistantText = '';
+      currentAgentMessageEl = null;
+      currentAgentMessageText = '';
       toolCalls = {};
       currentTurnEl = null;
       currentToolsListEl = null;
@@ -1179,19 +1179,19 @@ window.addEventListener('message', (event) => {
       const rendered = msg.items || [];
       for (const item of rendered) {
         // Find the DOM element for this history item
-        // For the just-completed streaming message, update the last assistant el
-        const historyItem = chatHistory[item.index];
-        if (!historyItem || historyItem.role !== 'assistant') { continue; }
+        // For the just-completed streaming message, update the last agent message element
+        const transcriptItem = transcript[item.index];
+        if (!transcriptItem || transcriptItem.role !== 'agent') { continue; }
 
-        // Find the element — walk all .message.assistant elements
-        const allAssistant = messagesEl.querySelectorAll('.message.assistant');
-        // The item.index tracks position in chatHistory; count only assistant messages up to this index
-        let assistantIdx = 0;
-        for (let i = 0; i < chatHistory.length; i++) {
+        // Find the element — walk all .message.agent elements
+        const agentMessageEls = messagesEl.querySelectorAll('.message.agent');
+        // The item.index tracks position in transcript; count only agent messages up to this index
+        let agentMessageIdx = 0;
+        for (let i = 0; i < transcript.length; i++) {
           if (i === item.index) { break; }
-          if (chatHistory[i].kind === 'message' && chatHistory[i].role === 'assistant') { assistantIdx++; }
+          if (transcript[i].kind === 'message' && transcript[i].role === 'agent') { agentMessageIdx++; }
         }
-        const el = allAssistant[assistantIdx];
+        const el = agentMessageEls[agentMessageIdx];
         if (el) {
           el.classList.add('md-rendered');
           el.innerHTML = item.html;
@@ -1211,29 +1211,29 @@ function handleUpdate(update) {
     case 'agent_message_chunk': {
       const content = update.content;
       if (content && content.type === 'text' && content.text) {
-        currentAssistantText += content.text;
+        currentAgentMessageText += content.text;
         // Don't create visible element until there's non-whitespace content
-        if (!currentAssistantEl && !currentAssistantText.trim()) {
+        if (!currentAgentMessageEl && !currentAgentMessageText.trim()) {
           break;
         }
-        // Auto-collapse thought when assistant text starts
+        // Auto-collapse thought when the agent message starts
         if (currentThoughtEl && currentThoughtEl.open) {
           finalizeThought();
           currentThoughtEl.open = false;
         }
-        if (!currentAssistantEl) {
-          // Create a turn container, assistant text goes inside it
+        if (!currentAgentMessageEl) {
+          // Create a turn container; the agent message goes inside it
           if (!currentTurnEl) {
             currentTurnEl = document.createElement('div');
             currentTurnEl.className = 'turn';
             messagesEl.appendChild(currentTurnEl);
             hideEmpty();
           }
-          currentAssistantEl = document.createElement('div');
-          currentAssistantEl.className = 'message assistant';
-          currentTurnEl.insertBefore(currentAssistantEl, currentTurnEl.querySelector('.turn-tools'));
+          currentAgentMessageEl = document.createElement('div');
+          currentAgentMessageEl.className = 'message agent';
+          currentTurnEl.insertBefore(currentAgentMessageEl, currentTurnEl.querySelector('.turn-tools'));
         }
-        currentAssistantEl.textContent = currentAssistantText;
+        currentAgentMessageEl.textContent = currentAgentMessageText;
         scrollToBottom();
       }
       break;
@@ -1242,13 +1242,13 @@ function handleUpdate(update) {
     case 'user_message_chunk': {
       // Only the session/load replay path emits this; live prompts
       // never echo the user's message. Use it to break apart historical
-      // turns: finalize any pending assistant turn first, then append
+      // turns: finalize any pending turn first, then append
       // the historical user message.
       const content = update.content;
       if (content && content.type === 'text' && typeof content.text === 'string') {
-        finalizeCurrentAssistantTurn();
+        finalizeCurrentTurn();
         // Coalesce consecutive user chunks into one message.
-        const last = chatHistory[chatHistory.length - 1];
+        const last = transcript[transcript.length - 1];
         if (last && last.kind === 'message' && last.role === 'user') {
           last.text += content.text;
           const allUser = messagesEl.querySelectorAll('.message.user');

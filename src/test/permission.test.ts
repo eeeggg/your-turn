@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { PermissionHandler } from '../handlers/PermissionHandler';
+import { PermissionHandler } from '@/adapters/PermissionHandler';
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk';
 
 suite('PermissionHandler Test Suite', () => {

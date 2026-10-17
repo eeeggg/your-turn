@@ -83,7 +83,7 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
   <!-- Overlay shown during session/load history replay -->
   <div class="load-overlay" id="loadOverlay" role="status" aria-live="polite">
     <div class="spinner"></div>
-    <div class="label">Loading conversation history…</div>
+    <div class="label">Loading transcript…</div>
   </div>
 
   <script nonce="${nonce}" src="${scriptUri}"></script>

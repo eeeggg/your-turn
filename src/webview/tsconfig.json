@@ -1,14 +1,18 @@
 {
   "compilerOptions": {
-    "module": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
     "target": "es2022",
     "lib": ["es2022", "dom"],
     "types": [],
     "strict": true,
+    "isolatedModules": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "sourceMap": true,
-    "moduleResolution": "node"
+    "noEmit": true,
+    "paths": {
+      "@/*": ["../*"]
+    }
   },
   "include": ["./**/*.ts"]
 }

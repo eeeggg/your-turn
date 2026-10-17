@@ -20,4 +20,5 @@ plans/**
 Makefile
 .nvmrc
 CHANGELOG.md
+CONTEXT.md
 resources/icon-ext.svg

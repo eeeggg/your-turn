@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.2.1-dev.6",
+  "version": "0.2.1-dev.7",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -72,8 +72,8 @@
         "icon": "$(plug)"
       },
       {
-        "command": "acp.newConversation",
-        "title": "ACP: New Conversation",
+        "command": "acp.newSession",
+        "title": "ACP: New Session",
         "icon": "$(add)"
       },
       {
@@ -194,7 +194,7 @@
           "when": "view == acp-sessions"
         },
         {
-          "command": "acp.newConversation",
+          "command": "acp.newSession",
           "when": "view == acp-chat",
           "group": "navigation@1"
         },
@@ -370,7 +370,7 @@
             }
           }
         },
-        "acp.chat.midRunPrompt": {
+        "acp.chat.midTurnPrompt": {
           "type": "string",
           "enum": [
             "queue",
@@ -412,8 +412,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "tsc -p . && tsc -p src/webview --noEmit && node esbuild.mjs",
-    "check-types": "tsc -p . --noEmit && tsc -p src/webview --noEmit",
+    "compile": "npm run check-types && node esbuild.mjs",
+    "check-types": "tsc -p . && tsc -p src/webview",
     "package": "npm run check-types && node esbuild.mjs --production",
     "compile-tests": "tsc -p tests",
     "lint": "eslint src tests --max-warnings 0",

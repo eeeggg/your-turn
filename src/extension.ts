@@ -1,18 +1,25 @@
 import * as vscode from 'vscode';
 
-import { AgentManager } from './core/AgentManager';
-import { ConnectionManager } from './core/ConnectionManager';
-import { SessionManager } from './core/SessionManager';
-import { SessionHistoryStore } from './core/SessionHistoryStore';
-import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
-import { SessionTreeProvider } from './ui/SessionTreeProvider';
-import { StatusBarManager } from './ui/StatusBarManager';
-import { ChatWebviewProvider } from './ui/ChatWebviewProvider';
-import { getAgentNames } from './config/AgentConfig';
-import { fetchRegistry } from './config/RegistryClient';
-import { log, logError, disposeChannels, getOutputChannel, getTrafficChannel } from './utils/Logger';
+import { AgentManager } from '@/core/AgentManager';
+import { ConnectionManager } from '@/core/ConnectionManager';
+import { SessionManager } from '@/core/SessionManager';
+import { SessionHistoryStore } from '@/core/SessionHistoryStore';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { fetchRegistry } from '@/core/RegistryClient';
+import { log, logError, setLogSink } from '@/core/Log';
+import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
+import { StatusBarManager } from '@/adapters/StatusBarManager';
+import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
+import { FileSystemHandler } from '@/adapters/FileSystemHandler';
+import { TerminalHandler } from '@/adapters/TerminalHandler';
+import { PermissionHandler } from '@/adapters/PermissionHandler';
+import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { authMethodPicker } from '@/adapters/AuthMethodPicker';
+import { getAgentNames } from '@/adapters/AgentConfig';
+import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
 
 export function activate(context: vscode.ExtensionContext): void {
+  setLogSink(outputChannelSink);
   log('ACP Client extension activating...');
 
   // --- Core services ---
@@ -21,11 +28,18 @@ export function activate(context: vscode.ExtensionContext): void {
   const connectionManager = new ConnectionManager(
     sessionUpdateHandler,
     context.extension.packageJSON.version,
+    () => ({
+      files: new FileSystemHandler(),
+      terminals: new TerminalHandler(),
+      permissions: new PermissionHandler(),
+    }),
   );
   const sessionManager = new SessionManager(
     agentManager,
     connectionManager,
     sessionUpdateHandler,
+    workspaceEnvironment,
+    authMethodPicker,
   );
 
   // Persistent client-side session-history cache (used as the tier-2 tree
@@ -60,7 +74,7 @@ export function activate(context: vscode.ExtensionContext): void {
     chatWebviewProvider.notifyActiveSessionChanged();
   });
 
-  // Clear chat when new conversation is started
+  // Clear chat when a new session is started
   sessionManager.on('clear-chat', () => {
     chatWebviewProvider.clearChat();
   });
@@ -125,7 +139,7 @@ export function activate(context: vscode.ExtensionContext): void {
     const currentAgent = sessionManager.getActiveAgentName();
     if (currentAgent && currentAgent !== agentName && chatWebviewProvider.hasChatContent) {
       const choice = await vscode.window.showWarningMessage(
-        `Switch to ${agentName}? This will disconnect ${currentAgent} and clear the chat history.`,
+        `Switch to ${agentName}? This will disconnect ${currentAgent} and clear the transcript.`,
         'Switch Agent',
         'Cancel',
       );
@@ -150,8 +164,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
-  // New Conversation (disconnect + clear chat + reconnect same agent)
-  const newConversationCmd = vscode.commands.registerCommand('acp.newConversation', async () => {
+  // New Session (disconnect + clear chat + reconnect same agent)
+  const newSessionCmd = vscode.commands.registerCommand('acp.newSession', async () => {
     const activeSession = sessionManager.getActiveSession();
     if (!activeSession) {
       // No active agent — fall back to connect
@@ -162,27 +176,27 @@ export function activate(context: vscode.ExtensionContext): void {
     // Confirm if there's existing chat content
     if (chatWebviewProvider.hasChatContent) {
       const choice = await vscode.window.showWarningMessage(
-        'Start a new conversation? This will clear the current chat history.',
-        'New Conversation',
+        'Start a new session? This will clear the current transcript.',
+        'New Session',
         'Cancel',
       );
-      if (choice !== 'New Conversation') { return; }
+      if (choice !== 'New Session') { return; }
     }
 
     try {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: `Starting new conversation with ${activeSession.agentDisplayName}...`,
+          title: `Starting new session with ${activeSession.agentDisplayName}...`,
           cancellable: false,
         },
         async () => {
-          await sessionManager.newConversation();
+          await sessionManager.newSession();
         },
       );
     } catch (e: any) {
-      logError('Failed to start new conversation', e);
-      vscode.window.showErrorMessage(`Failed to start new conversation: ${e.message}`);
+      logError('Failed to start new session', e);
+      vscode.window.showErrorMessage(`Failed to start new session: ${e.message}`);
     }
   });
 
@@ -323,7 +337,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // Confirm if there's existing chat content with a different active session.
     if (chatWebviewProvider.hasChatContent) {
       const choice = await vscode.window.showWarningMessage(
-        'Open a different session? This will replace the current chat history.',
+        'Open a different session? This will replace the current transcript.',
         'Open Session',
         'Cancel',
       );
@@ -485,7 +499,7 @@ export function activate(context: vscode.ExtensionContext): void {
     chatViewRegistration,
     statusBarManager,
     connectAgentCmd,
-    newConversationCmd,
+    newSessionCmd,
     disconnectAgentCmd,
     openChatCmd,
     sendPromptCmd,

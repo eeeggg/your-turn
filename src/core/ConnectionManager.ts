@@ -3,12 +3,9 @@ import type { ClientConnection, InitializeResponse, Stream } from '@agentclientp
 import { ChildProcess } from 'node:child_process';
 import { Readable, Writable } from 'node:stream';
 
-import { AcpClientImpl } from './AcpClientImpl';
-import { FileSystemHandler } from '../handlers/FileSystemHandler';
-import { TerminalHandler } from '../handlers/TerminalHandler';
-import { PermissionHandler } from '../handlers/PermissionHandler';
-import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
-import { log, logError, logTraffic } from '../utils/Logger';
+import { AcpClientImpl, type ClientHandlers } from './AcpClientImpl';
+import { SessionUpdateHandler } from './SessionUpdateHandler';
+import { log, logError, logTraffic } from './Log';
 
 export interface ConnectionInfo {
   connection: ClientConnection;
@@ -26,6 +23,7 @@ export class ConnectionManager {
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly clientVersion: string,
+    private readonly createHandlers: () => ClientHandlers,
   ) {}
 
   /**
@@ -48,18 +46,8 @@ export class ConnectionManager {
     // Wrap the stream to intercept and log all ACP traffic
     const tappedStream = this.tapStream(stream);
 
-    // Create handlers
-    const fsHandler = new FileSystemHandler();
-    const terminalHandler = new TerminalHandler();
-    const permissionHandler = new PermissionHandler();
-
-    // Create client implementation
-    const client = new AcpClientImpl(
-      fsHandler,
-      terminalHandler,
-      permissionHandler,
-      this.sessionUpdateHandler,
-    );
+    const { files, terminals, permissions } = this.createHandlers();
+    const client = new AcpClientImpl(files, terminals, permissions, this.sessionUpdateHandler);
 
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.

@@ -1,4 +1,4 @@
-import { log } from '../utils/Logger';
+import { log } from './Log';
 
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 

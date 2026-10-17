@@ -1,4 +1,3 @@
-import * as vscode from 'vscode';
 import { EventEmitter } from 'node:events';
 
 import type {
@@ -11,15 +10,30 @@ import type {
   SessionConfigOption,
   SessionInfo as ProtocolSessionInfo,
   AgentCapabilities,
+  AuthMethod,
+  ResourceLink,
 } from '@agentclientprotocol/sdk';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 
-import { AgentManager } from './AgentManager';
+import { AgentManager, type AgentConfigEntry } from './AgentManager';
 import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
-import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
+import { SessionUpdateHandler } from './SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
-import { getAgentConfigs } from '../config/AgentConfig';
-import { log, logError } from '../utils/Logger';
+import { log, logError } from './Log';
+
+/** What sessions need from the workspace the extension runs in. */
+export interface SessionEnvironment {
+  /** Working directory for agents and their sessions. */
+  workspaceCwd(): string;
+  agentConfigs(): Record<string, AgentConfigEntry>;
+  /** The file to link at the start of each prompt, or undefined when none applies. */
+  activeFileLink(): ResourceLink | undefined;
+}
+
+export interface AuthPrompt {
+  /** Resolves to undefined when the user cancels. */
+  chooseAuthMethod(agentName: string, methods: AuthMethod[]): Promise<AuthMethod | undefined>;
+}
 
 export interface SessionInfo {
   sessionId: string;
@@ -61,11 +75,10 @@ export type AgentConnectionError =
   | { kind: 'connect-failed'; message: string };
 
 /**
- * Manages the lifecycle of ACP agent connections.
+ * Manages agents, their connections, and their sessions.
  *
- * The "session" concept is hidden from the user — they just see agents.
- * Internally we still use ACP sessions for protocol compliance, but the
- * user-facing model is: pick an agent → chat.
+ * One session is active at a time; connecting to, loading, or resuming with
+ * another agent disconnects the agent that owned the previous one.
  */
 export class SessionManager extends EventEmitter {
   private sessions: Map<string, SessionInfo> = new Map();
@@ -100,6 +113,8 @@ export class SessionManager extends EventEmitter {
     private readonly agentManager: AgentManager,
     private readonly connectionManager: ConnectionManager,
     private readonly sessionUpdateHandler: SessionUpdateHandler,
+    private readonly environment: SessionEnvironment,
+    private readonly authPrompt: AuthPrompt,
   ) {
     super();
   }
@@ -121,11 +136,6 @@ export class SessionManager extends EventEmitter {
    */
   getCachedCapabilities(agentName: string): AgentCapabilitySummary | undefined {
     return this.capabilities.get(agentName);
-  }
-
-  private getWorkspaceCwd(): string {
-    const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    return cwd || process.cwd();
   }
 
   private summarizeCapabilities(caps: AgentCapabilities | undefined | null): AgentCapabilitySummary {
@@ -158,7 +168,7 @@ export class SessionManager extends EventEmitter {
       await this.disconnectAgent(currentAgent);
     }
 
-    const configs = getAgentConfigs();
+    const configs = this.environment.agentConfigs();
     const config = configs[agentName];
     if (!config) {
       throw new Error(`Unknown agent: ${agentName}. Available: ${Object.keys(configs).join(', ')}`);
@@ -166,7 +176,7 @@ export class SessionManager extends EventEmitter {
 
     log(`SessionManager: connecting to agent "${agentName}"`);
 
-    const workspaceCwd = this.getWorkspaceCwd();
+    const workspaceCwd = this.environment.workspaceCwd();
 
     // Spawn the agent process in workspace cwd
     const agentInstance = this.agentManager.spawnAgent(agentName, config, workspaceCwd);
@@ -228,10 +238,10 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Start a new conversation with the currently connected agent.
+   * Start a new session with the currently connected agent.
    * Disconnects current session, reconnects, and signals chat to clear.
    */
-  async newConversation(): Promise<SessionInfo | null> {
+  async newSession(): Promise<SessionInfo | null> {
     const activeSession = this.getActiveSession();
     if (!activeSession) {
       return null;
@@ -359,35 +369,10 @@ export class SessionManager extends EventEmitter {
 
     log(`Agent requires authentication. Methods: ${authMethods.map(m => m.name).join(', ')}`);
 
-    let selectedMethod = authMethods[0];
-    if (authMethods.length > 1) {
-      const picked = await vscode.window.showQuickPick(
-        authMethods.map(m => ({
-          label: m.name,
-          description: m.description || '',
-          detail: `ID: ${m.id}`,
-          method: m,
-        })),
-        {
-          placeHolder: 'Select an authentication method',
-          title: `${agentName} requires authentication`,
-        },
-      );
-      if (!picked) {
-        this.agentManager.killAgent(agentId);
-        throw new Error('Authentication cancelled by user.');
-      }
-      selectedMethod = picked.method;
-    } else {
-      const confirm = await vscode.window.showInformationMessage(
-        `${agentName} requires authentication via "${selectedMethod.name}".`,
-        { modal: true, detail: selectedMethod.description || undefined },
-        'Authenticate',
-      );
-      if (confirm !== 'Authenticate') {
-        this.agentManager.killAgent(agentId);
-        throw new Error('Authentication cancelled by user.');
-      }
+    const selectedMethod = await this.authPrompt.chooseAuthMethod(agentName, authMethods);
+    if (!selectedMethod) {
+      this.agentManager.killAgent(agentId);
+      throw new Error('Authentication cancelled by user.');
     }
 
     try {
@@ -443,19 +428,10 @@ export class SessionManager extends EventEmitter {
       { type: 'text', text },
     ];
 
-    // Attach the active file when acp.includeActiveFile is enabled.
-    const cfg = vscode.workspace.getConfiguration('acp');
-    if (cfg.get<boolean>('includeActiveFile', true)) {
-      const editor = vscode.window.activeTextEditor ?? vscode.window.visibleTextEditors[0];
-      if (editor && editor.document && editor.document.uri.scheme !== 'output') {
-        log(`sendPrompt: attaching active file context: ${editor.document.uri.fsPath}`);
-        prompt.unshift({
-          type: 'resource_link',
-          uri: editor.document.uri.toString(),
-          name: editor.document.uri.fsPath,
-          mimeType: editor.document.uri.scheme === 'untitled' ? 'text/plain' : undefined,
-        });
-      }
+    const fileLink = this.environment.activeFileLink();
+    if (fileLink) {
+      log(`sendPrompt: attaching active file context: ${fileLink.name}`);
+      prompt.unshift({ type: 'resource_link', ...fileLink });
     }
 
     const response = await connInfo.connection.agent.request(methods.agent.session.prompt, {
@@ -663,13 +639,13 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    const configs = getAgentConfigs();
+    const configs = this.environment.agentConfigs();
     const config = configs[agentName];
     if (!config) {
       throw new Error(`Unknown agent: ${agentName}.`);
     }
 
-    const workspaceCwd = this.getWorkspaceCwd();
+    const workspaceCwd = this.environment.workspaceCwd();
     const agentInstance = this.agentManager.spawnAgent(agentName, config, workspaceCwd);
     const agentId = agentInstance.id;
 
@@ -736,7 +712,7 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Load an existing session, replaying the entire conversation history via
+   * Load an existing session, replaying its entire transcript via
    * `session/update` notifications. Heavyweight. Active session is switched
    * to the loaded session on success.
    */
@@ -766,7 +742,7 @@ export class SessionManager extends EventEmitter {
       this.activeSessionId = null;
     }
 
-    const cwd = this.getWorkspaceCwd();
+    const cwd = this.environment.workspaceCwd();
     const agentId = this.findAgentIdForConnection(conn);
     if (!agentId) {
       throw new Error(`Unable to locate agent process for "${agentName}".`);
@@ -864,7 +840,7 @@ export class SessionManager extends EventEmitter {
       this.activeSessionId = null;
     }
 
-    const cwd = this.getWorkspaceCwd();
+    const cwd = this.environment.workspaceCwd();
     const agentId = this.findAgentIdForConnection(conn);
     if (!agentId) {
       throw new Error(`Unable to locate agent process for "${agentName}".`);

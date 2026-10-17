@@ -66,22 +66,22 @@ body {
   background: var(--vscode-button-background);
   color: var(--vscode-button-foreground);
 }
-.message.assistant {
+.message.agent {
   align-self: flex-start;
   background: var(--vscode-editor-background);
   border: 1px solid var(--vscode-panel-border);
 }
-/* Markdown body inside assistant messages */
-.message.assistant.md-rendered {
+/* Markdown body inside agent messages */
+.message.agent.md-rendered {
   white-space: normal;
 }
-.message.assistant.md-rendered p {
+.message.agent.md-rendered p {
   margin: 0 0 0.5em;
 }
-.message.assistant.md-rendered p:last-child {
+.message.agent.md-rendered p:last-child {
   margin-bottom: 0;
 }
-.message.assistant.md-rendered pre {
+.message.agent.md-rendered pre {
   background: var(--vscode-textCodeBlock-background);
   border: 1px solid var(--vscode-panel-border);
   border-radius: 4px;
@@ -92,64 +92,64 @@ body {
   font-size: 0.9em;
   line-height: 1.4;
 }
-.message.assistant.md-rendered code {
+.message.agent.md-rendered code {
   font-family: var(--vscode-editor-font-family);
   font-size: 0.9em;
   background: var(--vscode-textCodeBlock-background);
   padding: 1px 4px;
   border-radius: 3px;
 }
-.message.assistant.md-rendered pre code {
+.message.agent.md-rendered pre code {
   background: none;
   padding: 0;
   border-radius: 0;
 }
-.message.assistant.md-rendered ul,
-.message.assistant.md-rendered ol {
+.message.agent.md-rendered ul,
+.message.agent.md-rendered ol {
   margin: 0.4em 0;
   padding-left: 1.5em;
 }
-.message.assistant.md-rendered li {
+.message.agent.md-rendered li {
   margin: 0.15em 0;
 }
-.message.assistant.md-rendered h1,
-.message.assistant.md-rendered h2,
-.message.assistant.md-rendered h3,
-.message.assistant.md-rendered h4 {
+.message.agent.md-rendered h1,
+.message.agent.md-rendered h2,
+.message.agent.md-rendered h3,
+.message.agent.md-rendered h4 {
   margin: 0.6em 0 0.3em;
   font-weight: 600;
 }
-.message.assistant.md-rendered h1 { font-size: 1.3em; }
-.message.assistant.md-rendered h2 { font-size: 1.15em; }
-.message.assistant.md-rendered h3 { font-size: 1.05em; }
-.message.assistant.md-rendered blockquote {
+.message.agent.md-rendered h1 { font-size: 1.3em; }
+.message.agent.md-rendered h2 { font-size: 1.15em; }
+.message.agent.md-rendered h3 { font-size: 1.05em; }
+.message.agent.md-rendered blockquote {
   border-left: 3px solid var(--vscode-focusBorder);
   margin: 0.4em 0;
   padding: 0.2em 0 0.2em 0.8em;
   opacity: 0.85;
 }
-.message.assistant.md-rendered a {
+.message.agent.md-rendered a {
   color: var(--vscode-textLink-foreground);
   text-decoration: none;
 }
-.message.assistant.md-rendered a:hover {
+.message.agent.md-rendered a:hover {
   text-decoration: underline;
 }
-.message.assistant.md-rendered table {
+.message.agent.md-rendered table {
   border-collapse: collapse;
   margin: 0.4em 0;
   font-size: 0.9em;
 }
-.message.assistant.md-rendered th,
-.message.assistant.md-rendered td {
+.message.agent.md-rendered th,
+.message.agent.md-rendered td {
   border: 1px solid var(--vscode-panel-border);
   padding: 4px 8px;
 }
-.message.assistant.md-rendered th {
+.message.agent.md-rendered th {
   background: var(--vscode-editorWidget-background);
   font-weight: 600;
 }
-.message.assistant.md-rendered hr {
+.message.agent.md-rendered hr {
   border: none;
   border-top: 1px solid var(--vscode-panel-border);
   margin: 0.6em 0;
@@ -217,7 +217,7 @@ body {
   border: 1px solid var(--vscode-inputValidation-errorBorder);
 }
 
-/* Turn container — groups assistant text + tool calls */
+/* Turn container — groups the agent message + tool calls */
 .turn {
   display: flex;
   flex-direction: column;

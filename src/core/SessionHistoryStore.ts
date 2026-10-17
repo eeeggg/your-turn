@@ -1,4 +1,10 @@
-import * as vscode from 'vscode';
+import { EventEmitter } from 'node:events';
+
+/** Persistent key-value storage; VS Code's `workspaceState` satisfies it. */
+export interface KeyValueStore {
+  get<T>(key: string): T | undefined;
+  update(key: string, value: unknown): PromiseLike<void>;
+}
 
 /**
  * Persistent client-side cache of past sessions per agent. Used to render the
@@ -39,21 +45,21 @@ const MAX_PROMPT_LEN = 120;
 const DEFAULT_CAP_PER_AGENT = 50;
 
 /**
- * Wraps `workspaceState` storage of {@link PersistedSessionEntry}. Entries are
+ * Wraps workspace-scoped storage of {@link PersistedSessionEntry}. Entries are
  * scoped to the current workspace because we filter `session/list` (and our
  * own cache) by the workspace `cwd` — sessions from other workspaces aren't
  * relevant in this view.
+ *
+ * Emits `'changed'` whenever the cache mutates; the tree view subscribes for refresh.
  */
-export class SessionHistoryStore {
+export class SessionHistoryStore extends EventEmitter {
   private entries: PersistedSessionEntry[] = [];
-  private readonly _onDidChange = new vscode.EventEmitter<void>();
-  /** Fires whenever the cache mutates. Tree view subscribes for refresh. */
-  readonly onDidChange = this._onDidChange.event;
 
   constructor(
-    private readonly workspaceState: vscode.Memento,
+    private readonly workspaceState: KeyValueStore,
     private readonly capPerAgent: number = DEFAULT_CAP_PER_AGENT,
   ) {
+    super();
     const raw = this.workspaceState.get<PersistedShape>(STATE_KEY);
     if (raw && raw.version === 1 && Array.isArray(raw.entries)) {
       this.entries = raw.entries;
@@ -179,10 +185,10 @@ export class SessionHistoryStore {
   private persist(): void {
     const payload: PersistedShape = { version: 1, entries: this.entries };
     void this.workspaceState.update(STATE_KEY, payload);
-    this._onDidChange.fire();
+    this.emit('changed');
   }
 
   dispose(): void {
-    this._onDidChange.dispose();
+    this.removeAllListeners();
   }
 }

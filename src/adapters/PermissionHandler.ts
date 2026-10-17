@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { log } from '../utils/Logger';
+import { log } from '@/core/Log';
+import type { PermissionPrompt } from '@/core/AcpClientImpl';
 
 import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 
@@ -8,7 +9,7 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
  * Shows VS Code QuickPick for user to select from agent-provided options.
  * Requests are queued so concurrent permission prompts don't clobber each other.
  */
-export class PermissionHandler {
+export class PermissionHandler implements PermissionPrompt {
   private queue: Promise<void> = Promise.resolve();
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {

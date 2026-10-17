@@ -4,9 +4,12 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'node:child_process';
 import { methods } from '@agentclientprotocol/sdk';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
-import { ConnectionManager, ConnectionInfo } from '../core/ConnectionManager';
-import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
-import { onTraffic } from '../utils/Logger';
+import { ConnectionManager, ConnectionInfo } from '@/core/ConnectionManager';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { setLogSink, type TrafficDirection } from '@/core/Log';
+import { FileSystemHandler } from '@/adapters/FileSystemHandler';
+import { TerminalHandler } from '@/adapters/TerminalHandler';
+import { PermissionHandler } from '@/adapters/PermissionHandler';
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -25,16 +28,19 @@ suite('ConnectionManager Test Suite', () => {
   let child: ChildProcess;
   let manager: ConnectionManager;
   let info: ConnectionInfo;
-  let trafficSubscription: vscode.Disposable;
   const texts: string[] = [];
-  const traffic: { direction: 'send' | 'recv'; data: any }[] = [];
+  const traffic: { direction: TrafficDirection; data: any }[] = [];
 
   suiteSetup(async () => {
     const config = vscode.workspace.getConfiguration('acp');
     originalAutoApprove = config.get<string>('autoApprovePermissions');
     await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
 
-    trafficSubscription = onTraffic((direction, data) => traffic.push({ direction, data }));
+    setLogSink({
+      log() {},
+      error() {},
+      traffic: (direction, data) => traffic.push({ direction, data }),
+    });
 
     const updates = new SessionUpdateHandler();
     updates.addListener((n: SessionNotification) => {
@@ -42,7 +48,11 @@ suite('ConnectionManager Test Suite', () => {
         texts.push(n.update.content.text);
       }
     });
-    manager = new ConnectionManager(updates, CLIENT_VERSION);
+    manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({
+      files: new FileSystemHandler(),
+      terminals: new TerminalHandler(),
+      permissions: new PermissionHandler(),
+    }));
 
     // Inside the test host, process.execPath is the Electron binary.
     child = spawn(process.execPath, [path.join(__dirname, 'fixtures', 'fakeAgent.js')], {
@@ -54,7 +64,7 @@ suite('ConnectionManager Test Suite', () => {
 
   suiteTeardown(async () => {
     child?.kill();
-    trafficSubscription?.dispose();
+    setLogSink(undefined);
     manager?.dispose();
     const config = vscode.workspace.getConfiguration('acp');
     await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);

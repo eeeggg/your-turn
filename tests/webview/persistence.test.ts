@@ -37,19 +37,19 @@ function runTurn(page: ChatPage): void {
 }
 
 describe('state persistence', () => {
-  it('saves the session and chat history', () => {
+  it('saves the session and transcript', () => {
     const page = open();
     runTurn(page);
 
     expect(page.savedState()).toEqual({
       hasActiveSession: true,
       sessionState: { agentName: 'OpenCode', cwd: '/work/project', title: 'Session title' },
-      chatHistory: [
+      transcript: [
         { kind: 'message', role: 'user', text: 'question' },
         { kind: 'toolCall', toolCallId: 't1', title: 'Read file', status: 'pending', content: ['file body'] },
         { kind: 'plan', plan: { sessionUpdate: 'plan', entries: [{ content: 'step', status: 'pending', priority: 'low' }] } },
         { kind: 'thought', text: 'thinking', durationSec: 2 },
-        { kind: 'message', role: 'assistant', text: 'answer' },
+        { kind: 'message', role: 'agent', text: 'answer' },
       ],
     });
   });
@@ -66,7 +66,7 @@ describe('state persistence', () => {
     const restored = [...page.byId('messages').children]
       .filter((el) => el.id !== 'emptyState')
       .map((el) => el.className);
-    expect(restored).toEqual(['message user', 'tool-call-inline', 'plan', 'thought-block', 'message assistant']);
+    expect(restored).toEqual(['message user', 'tool-call-inline', 'plan', 'thought-block', 'message agent']);
     expect(page.document.querySelector('.thought-block summary')?.textContent).toBe('Thought for 2s');
     expect(page.byId('tc-t1').querySelector('.tc-body-block')?.textContent).toBe('file body');
     expect(page.takePosted()).toEqual([

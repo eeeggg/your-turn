@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { log, logError } from '../utils/Logger';
+import { log, logError } from '@/core/Log';
+import type { Terminals } from '@/core/AcpClientImpl';
 
 import type {
   CreateTerminalRequest,
@@ -33,7 +34,7 @@ interface ManagedTerminal {
  * Manages terminals that ACP agents request (terminal/create, terminal/output, etc.).
  * Uses real child processes for capturing output, with VS Code terminals for display.
  */
-export class TerminalHandler {
+export class TerminalHandler implements Terminals {
   private terminals: Map<string, ManagedTerminal> = new Map();
   private nextId = 1;
 

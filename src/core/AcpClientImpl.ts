@@ -19,14 +19,35 @@ import type {
   ReleaseTerminalResponse,
 } from '@agentclientprotocol/sdk';
 
-import { FileSystemHandler } from '../handlers/FileSystemHandler';
-import { TerminalHandler } from '../handlers/TerminalHandler';
-import { PermissionHandler } from '../handlers/PermissionHandler';
-import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
-import { log } from '../utils/Logger';
+import { SessionUpdateHandler } from './SessionUpdateHandler';
+import { log } from './Log';
+
+export interface FileAccess {
+  readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>;
+  writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
+}
+
+export interface Terminals {
+  createTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse>;
+  terminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse>;
+  waitForTerminalExit(params: WaitForTerminalExitRequest): Promise<WaitForTerminalExitResponse>;
+  killTerminal(params: KillTerminalRequest): Promise<KillTerminalResponse>;
+  releaseTerminal(params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse>;
+}
+
+export interface PermissionPrompt {
+  requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse>;
+}
+
+/** What one connection's client delegates to; each connection gets its own. */
+export interface ClientHandlers {
+  files: FileAccess;
+  terminals: Terminals;
+  permissions: PermissionPrompt;
+}
 
 /**
- * ACP Client implementation for VS Code.
+ * ACP Client implementation.
  * Delegates to individual handlers for each capability.
  *
  * ConnectionManager registers each method as an ACP handler on a
@@ -34,9 +55,9 @@ import { log } from '../utils/Logger';
  */
 export class AcpClientImpl implements Client {
   constructor(
-    private readonly fsHandler: FileSystemHandler,
-    private readonly terminalHandler: TerminalHandler,
-    private readonly permissionHandler: PermissionHandler,
+    private readonly fsHandler: FileAccess,
+    private readonly terminalHandler: Terminals,
+    private readonly permissionHandler: PermissionPrompt,
     private readonly sessionUpdateHandler: SessionUpdateHandler,
   ) {}
 

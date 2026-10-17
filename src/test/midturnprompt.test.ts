@@ -1,22 +1,22 @@
 import * as assert from 'assert';
 import * as vscode from 'vscode';
 
-suite('MidRunPrompt Setting Test Suite', () => {
+suite('MidTurnPrompt Setting Test Suite', () => {
   let originalSetting: string | undefined;
 
   suiteSetup(async () => {
     const config = vscode.workspace.getConfiguration('acp');
-    originalSetting = config.get<string>('chat.midRunPrompt');
+    originalSetting = config.get<string>('chat.midTurnPrompt');
   });
 
   suiteTeardown(async () => {
     const config = vscode.workspace.getConfiguration('acp');
-    await config.update('chat.midRunPrompt', originalSetting, vscode.ConfigurationTarget.Global);
+    await config.update('chat.midTurnPrompt', originalSetting, vscode.ConfigurationTarget.Global);
   });
 
-  test('Setting acp.chat.midRunPrompt defaults to "queue" in schema', () => {
+  test('Setting acp.chat.midTurnPrompt defaults to "queue" in schema', () => {
     const config = vscode.workspace.getConfiguration('acp');
-    const inspected = config.inspect<string>('chat.midRunPrompt');
+    const inspected = config.inspect<string>('chat.midTurnPrompt');
     assert.strictEqual(inspected?.defaultValue, 'queue');
   });
 

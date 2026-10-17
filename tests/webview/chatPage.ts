@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
-import { renderChatHtml } from '../../src/ui/ChatHtml';
+import { renderChatHtml } from '@/adapters/ChatHtml';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');

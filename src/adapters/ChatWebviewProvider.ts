@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import { marked } from 'marked';
-import { SessionManager } from '../core/SessionManager';
-import { SessionUpdateHandler, SessionUpdateListener } from '../handlers/SessionUpdateHandler';
+import { SessionManager } from '@/core/SessionManager';
+import { SessionUpdateHandler, SessionUpdateListener } from '@/core/SessionUpdateHandler';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
-import { logError } from '../utils/Logger';
+import { logError } from '@/core/Log';
 import { renderChatHtml } from './ChatHtml';
 
 /**
@@ -173,10 +173,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // A prompt typed while the agent is still working either waits for the
     // running turn or goes straight to the agent.
     if (this.inFlightPrompts > 0) {
-      const midRunPrompt = vscode.workspace
+      const midTurnPrompt = vscode.workspace
         .getConfiguration('acp')
-        .get<string>('chat.midRunPrompt', 'queue');
-      if (midRunPrompt !== 'send') {
+        .get<string>('chat.midTurnPrompt', 'queue');
+      if (midTurnPrompt !== 'send') {
         this.pendingPrompts.push(text);
         return;
       }
@@ -194,7 +194,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     try {
       const response = await this.sessionManager.sendPrompt(activeId, text);
       this.sessionManager.touchHistory(activeId);
-      // Render the accumulated assistant text as markdown
+      // Render the accumulated agent message as markdown
       // The webview will have sent us the raw text via promptEnd handling
       this.finishPrompt({
         type: 'promptEnd',
@@ -349,8 +349,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Clear the chat history and reset to welcome state.
-   * Called when starting a new conversation.
+   * Clear the transcript and reset to welcome state.
+   * Called when starting a new session.
    */
   clearChat(): void {
     this.pendingPrompts = [];

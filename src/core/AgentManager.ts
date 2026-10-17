@@ -1,8 +1,21 @@
 import { spawn, ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
-import { log, logError } from '../utils/Logger';
-import type { AgentConfigEntry } from '../config/AgentConfig';
+import { log, logError } from './Log';
+
+/**
+ * Configuration for a single ACP agent.
+ */
+export interface AgentConfigEntry {
+  /** NPX package to run (e.g., "@anthropic-ai/claude-code@latest") */
+  command: string;
+  /** Command-line arguments */
+  args?: string[];
+  /** Environment variables */
+  env?: Record<string, string>;
+  /** Display name */
+  displayName?: string;
+}
 
 /**
  * Escape a single argument for safe inclusion in a shell command string.

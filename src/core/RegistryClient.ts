@@ -1,4 +1,4 @@
-import { log, logError } from '../utils/Logger';
+import { log, logError } from './Log';
 
 interface RegistryAgent {
   name: string;

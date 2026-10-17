@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
-import { SessionUpdateHandler } from '../../../src/handlers/SessionUpdateHandler';
-
-vi.mock('../../../src/utils/Logger', () => ({ log: vi.fn() }));
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
 function chunk(sessionId: string, text: string): SessionNotification {
   return { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } };

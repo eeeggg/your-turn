@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import type { SessionInfo as ProtocolSessionInfo } from '@agentclientprotocol/sdk';
-import { SessionManager, AgentCapabilitySummary } from '../core/SessionManager';
-import { SessionHistoryStore, PersistedSessionEntry } from '../core/SessionHistoryStore';
-import { getAgentNames } from '../config/AgentConfig';
-import { log, logError } from '../utils/Logger';
+import { SessionManager, AgentCapabilitySummary } from '@/core/SessionManager';
+import { SessionHistoryStore, PersistedSessionEntry } from '@/core/SessionHistoryStore';
+import { getAgentNames } from './AgentConfig';
+import { log, logError } from '@/core/Log';
 
 /**
  * Tier-1 — a configured agent. Collapsible only when we believe the agent
@@ -159,7 +159,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     this.sessionManager.on('active-session-changed', () => this.refresh());
     this.sessionManager.on('session-info-changed', () => this.refresh());
     if (this.historyStore) {
-      this.historyStore.onDidChange(() => this.refresh());
+      this.historyStore.on('changed', () => this.refresh());
     }
   }
 

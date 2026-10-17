@@ -17,10 +17,10 @@ function messages(): string[] {
   return [...page.document.querySelectorAll('.message')].map((el) => `${el.className}: ${el.textContent}`);
 }
 
-function replay(turns: Array<[user: string, assistant: string]>): void {
-  for (const [user, assistant] of turns) {
+function replay(turns: Array<[user: string, agent: string]>): void {
+  for (const [user, agent] of turns) {
     update(page, 'user_message_chunk', textChunk(user));
-    update(page, 'agent_message_chunk', textChunk(assistant));
+    update(page, 'agent_message_chunk', textChunk(agent));
   }
 }
 
@@ -47,9 +47,9 @@ describe('loading a session', () => {
 
     expect(messages()).toEqual([
       'message user: q1',
-      'message assistant: a1',
+      'message agent: a1',
       'message user: q2',
-      'message assistant: a2',
+      'message agent: a2',
     ]);
     expect(page.document.querySelectorAll('.turn')).toHaveLength(2);
   });
@@ -85,7 +85,7 @@ describe('loading a session', () => {
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
 
     page.send({ type: 'markdownRendered', items: [{ index: 3, html: '<p>A2</p>' }] });
-    const answers = [...page.document.querySelectorAll('.message.assistant')].map((el) => el.innerHTML);
+    const answers = [...page.document.querySelectorAll('.message.agent')].map((el) => el.innerHTML);
     expect(answers).toEqual(['a1', '<p>A2</p>']);
   });
 

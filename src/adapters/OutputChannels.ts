@@ -1,19 +1,8 @@
 import * as vscode from 'vscode';
+import type { LogSink, TrafficDirection } from '@/core/Log';
 
 let _outputChannel: vscode.OutputChannel | undefined;
 let _trafficChannel: vscode.OutputChannel | undefined;
-
-export type TrafficListener = (direction: 'send' | 'recv', data: unknown) => void;
-const _trafficListeners = new Set<TrafficListener>();
-
-/**
- * Observe each message recorded by `logTraffic`. Output channel contents are
- * not readable through the VS Code API, so this is how tests see the traffic.
- */
-export function onTraffic(listener: TrafficListener): vscode.Disposable {
-  _trafficListeners.add(listener);
-  return new vscode.Disposable(() => _trafficListeners.delete(listener));
-}
 
 export function getOutputChannel(): vscode.OutputChannel {
   if (!_outputChannel) {
@@ -29,7 +18,7 @@ export function getTrafficChannel(): vscode.OutputChannel {
   return _trafficChannel;
 }
 
-export function log(message: string, ...args: unknown[]): void {
+function appendLog(message: string, ...args: unknown[]): void {
   const timestamp = new Date().toISOString();
   const formatted = args.length > 0
     ? `[${timestamp}] ${message} ${args.map(a => JSON.stringify(a)).join(' ')}`
@@ -37,7 +26,7 @@ export function log(message: string, ...args: unknown[]): void {
   getOutputChannel().appendLine(formatted);
 }
 
-export function logError(message: string, error?: unknown): void {
+function appendError(message: string, error?: unknown): void {
   const timestamp = new Date().toISOString();
   const errMsg = error instanceof Error ? error.message : String(error ?? '');
   getOutputChannel().appendLine(`[${timestamp}] ERROR: ${message} ${errMsg}`);
@@ -46,7 +35,7 @@ export function logError(message: string, error?: unknown): void {
   }
 }
 
-export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
+function appendTraffic(direction: TrafficDirection, data: unknown): void {
   const config = vscode.workspace.getConfiguration('acp');
   if (!config.get<boolean>('logTraffic', true)) {
     return;
@@ -67,10 +56,13 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
   getTrafficChannel().appendLine(
     `[${timestamp}] ${arrow}${label}\n${JSON.stringify(data, null, 2)}\n`
   );
-  for (const listener of _trafficListeners) {
-    listener(direction, data);
-  }
 }
+
+export const outputChannelSink: LogSink = {
+  log: appendLog,
+  error: appendError,
+  traffic: appendTraffic,
+};
 
 export function disposeChannels(): void {
   _outputChannel?.dispose();

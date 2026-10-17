@@ -14,8 +14,8 @@ afterEach(() => {
   page.close();
 });
 
-function assistantMessages(): string[] {
-  return [...page.document.querySelectorAll('.message.assistant')].map((el) => el.textContent ?? '');
+function agentMessages(): string[] {
+  return [...page.document.querySelectorAll('.message.agent')].map((el) => el.textContent ?? '');
 }
 
 describe('streaming a turn', () => {
@@ -33,30 +33,30 @@ describe('streaming a turn', () => {
     expect(page.byId('status').textContent).toBe('');
   });
 
-  it('accumulates message chunks into one assistant message inside a turn', () => {
+  it('accumulates message chunks into one agent message inside a turn', () => {
     page.send({ type: 'promptStart' });
     update(page, 'agent_message_chunk', textChunk('hello '));
     update(page, 'agent_message_chunk', textChunk('world'));
 
-    expect(assistantMessages()).toEqual(['hello world']);
-    expect(page.document.querySelector('.turn > .message.assistant')).not.toBeNull();
+    expect(agentMessages()).toEqual(['hello world']);
+    expect(page.document.querySelector('.turn > .message.agent')).not.toBeNull();
   });
 
-  it('waits for non-whitespace text before showing the assistant message', () => {
+  it('waits for non-whitespace text before showing the agent message', () => {
     page.send({ type: 'promptStart' });
     update(page, 'agent_message_chunk', textChunk('\n  '));
-    expect(assistantMessages()).toEqual([]);
+    expect(agentMessages()).toEqual([]);
 
     update(page, 'agent_message_chunk', textChunk('hi'));
-    expect(assistantMessages()).toEqual(['\n  hi']);
+    expect(agentMessages()).toEqual(['\n  hi']);
   });
 
   it('shows streamed text as plain text until markdown is rendered', () => {
     page.send({ type: 'promptStart' });
     update(page, 'agent_message_chunk', textChunk('<img src="x">'));
 
-    expect(page.document.querySelector('.message.assistant img')).toBeNull();
-    expect(assistantMessages()).toEqual(['<img src="x">']);
+    expect(page.document.querySelector('.message.agent img')).toBeNull();
+    expect(agentMessages()).toEqual(['<img src="x">']);
   });
 
   it('requests markdown rendering at promptEnd and applies the rendered HTML', () => {
@@ -70,19 +70,19 @@ describe('streaming a turn', () => {
     expect(page.takePosted()).toEqual([{ type: 'renderMarkdown', items: [{ index: 1, text: '**bold**' }] }]);
 
     page.send({ type: 'markdownRendered', items: [{ index: 1, html: '<p><strong>bold</strong></p>' }] });
-    const el = page.document.querySelector('.message.assistant');
+    const el = page.document.querySelector('.message.agent');
     expect(el?.classList.contains('md-rendered')).toBe(true);
     expect(el?.innerHTML).toBe('<p><strong>bold</strong></p>');
   });
 
-  it('starts a separate assistant message for each turn', () => {
+  it('starts a separate agent message for each turn', () => {
     for (const text of ['first', 'second']) {
       page.send({ type: 'promptStart' });
       update(page, 'agent_message_chunk', textChunk(text));
       page.send({ type: 'promptEnd', stopReason: 'end_turn' });
     }
 
-    expect(assistantMessages()).toEqual(['first', 'second']);
+    expect(agentMessages()).toEqual(['first', 'second']);
     expect(page.document.querySelectorAll('.turn')).toHaveLength(2);
   });
 });
