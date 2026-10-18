@@ -1,7 +1,8 @@
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-nocheck
 
-const vscode = acquireVsCodeApi();
+import { postMessage } from '@/webview/VsCodeApi';
+
 const messagesEl = document.getElementById('messages');
 const emptyState = document.getElementById('emptyState');
 const promptInput = document.getElementById('promptInput');
@@ -14,22 +15,7 @@ const inputArea = document.getElementById('inputArea');
 const resizeHandle = document.getElementById('resizeHandle');
 const slashPopup = document.getElementById('slashPopup');
 
-// Picker elements
-const modePickerWrap = document.getElementById('modePickerWrap');
-const modePickerBtn = document.getElementById('modePickerBtn');
-const modePickerLabel = document.getElementById('modePickerLabel');
-const modeDropdown = document.getElementById('modeDropdown');
-const configOptionsContainer = document.getElementById('configOptionsContainer');
-
 let isProcessing = false;
-
-// Modes state (legacy fallback path)
-let availableModes = [];
-let currentModeId = null;
-
-// ACP Session Config Options state (preferred path)
-let configOptions = [];        // SessionConfigOption[]
-let useConfigOptions = false;  // true when the agent provided configOptions
 
 // Thinking state
 let currentThoughtEl = null;
@@ -175,15 +161,15 @@ function handleSend() {
 
   addMessage('user', text);
   promptInput.value = '';
-  vscode.postMessage({ type: 'sendPrompt', text });
+  postMessage({ type: 'sendPrompt', text });
 }
 
 function handleCancel() {
-  vscode.postMessage({ type: 'cancelTurn' });
+  postMessage({ type: 'cancelTurn' });
 }
 
 function execCmd(command) {
-  vscode.postMessage({ type: 'executeCommand', command });
+  postMessage({ type: 'executeCommand', command });
 }
 
 // Wire up buttons
@@ -263,7 +249,7 @@ function handleLoadSessionEnd(ok) {
     }
   }
   if (items.length > 0) {
-    vscode.postMessage({ type: 'renderMarkdown', items });
+    postMessage({ type: 'renderMarkdown', items });
   }
   scrollToBottom();
   if (!ok) {
@@ -282,8 +268,6 @@ function handleSessionInfoUpdate(title) {
     bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent';
   }
 }
-
-// --- Mode / Model pickers ---
 
 // --- Slash command helpers ---
 function renderSlashPopup(commands) {
@@ -325,318 +309,6 @@ function selectSlashCommand(cmd) {
     handleSend();
   }
 }
-
-// --- Mode / Model pickers (cont.) ---
-function updateModePicker(modes) {
-  if (!modes || !modes.availableModes || modes.availableModes.length === 0) {
-    modePickerWrap.classList.add('hidden');
-    availableModes = [];
-    currentModeId = null;
-    return;
-  }
-  availableModes = modes.availableModes;
-  currentModeId = modes.currentModeId || null;
-  modePickerWrap.classList.remove('hidden');
-  const current = availableModes.find(m => m.id === currentModeId);
-  modePickerLabel.textContent = current ? current.name : 'Mode';
-  modePickerLabel.title = current && current.description ? current.description : '';
-  renderModeDropdown();
-}
-
-function renderModeDropdown() {
-  modeDropdown.innerHTML = '';
-  for (const mode of availableModes) {
-    const item = document.createElement('div');
-    item.className = 'picker-dropdown-item' + (mode.id === currentModeId ? ' selected' : '');
-    item.dataset.desc = mode.description || '';
-    if (mode.description) { item.title = mode.description; }
-    item.innerHTML =
-      '<span class="check">' + (mode.id === currentModeId ? '✓' : '') + '</span>' +
-      '<span class="item-label">' + escapeHtml(mode.name) + '</span>';
-    item.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closePickers();
-      if (mode.id !== currentModeId) {
-        currentModeId = mode.id;
-        const current = availableModes.find(m => m.id === currentModeId);
-        modePickerLabel.textContent = current ? current.name : 'Mode';
-        renderModeDropdown();
-        vscode.postMessage({ type: 'setMode', modeId: mode.id });
-      }
-    });
-    modeDropdown.appendChild(item);
-  }
-}
-
-// --- ACP Session Config Options ---
-
-function iconForCategory(cat) {
-  switch (cat) {
-    case 'mode': return '⚡';
-    case 'model': return '🧠';
-    case 'thought_level': return '💭';
-    default: return '⚙';
-  }
-}
-
-function isGroupedOptions(opt) {
-  const arr = opt && opt.options;
-  if (!Array.isArray(arr) || arr.length === 0) { return false; }
-  const first = arr[0];
-  return !!(first && typeof first.group === 'string' && Array.isArray(first.options));
-}
-
-function findOptionValue(opt, value) {
-  if (!opt || !Array.isArray(opt.options)) { return null; }
-  if (isGroupedOptions(opt)) {
-    for (const group of opt.options) {
-      if (!group || !Array.isArray(group.options)) { continue; }
-      const hit = group.options.find(v => v && v.value === value);
-      if (hit) { return hit; }
-    }
-    return null;
-  }
-  return opt.options.find(v => v && v.value === value) || null;
-}
-
-function pickerLabelFor(opt) {
-  const v = findOptionValue(opt, opt.currentValue);
-  return v && v.name ? v.name : (opt.name || 'Option');
-}
-
-function pickerTooltipFor(opt) {
-  const v = findOptionValue(opt, opt.currentValue);
-  return (v && v.description) || opt.description || opt.name || '';
-}
-
-function renderConfigPickers(opts) {
-  configOptionsContainer.innerHTML = '';
-  if (!Array.isArray(opts)) { return; }
-
-  for (const opt of opts) {
-    // Spec: ignore unknown types and empty option lists
-    if (!opt || opt.type !== 'select') { continue; }
-    if (!Array.isArray(opt.options) || opt.options.length === 0) { continue; }
-
-    const wrap = document.createElement('div');
-    wrap.className = 'picker-wrap';
-    wrap.dataset.configId = opt.id;
-
-    const btn = document.createElement('button');
-    btn.className = 'picker-btn';
-    btn.title = pickerTooltipFor(opt);
-    btn.innerHTML =
-      '<span class="picker-icon">' + iconForCategory(opt.category) + '</span>' +
-      '<span class="picker-label"></span>' +
-      '<span class="picker-chevron">▾</span>';
-    btn.querySelector('.picker-label').textContent = pickerLabelFor(opt);
-    wrap.appendChild(btn);
-
-    const dropdown = document.createElement('div');
-    dropdown.className = 'picker-dropdown';
-    renderConfigDropdown(dropdown, opt);
-    wrap.appendChild(dropdown);
-
-    configOptionsContainer.appendChild(wrap);
-  }
-}
-
-function renderConfigDropdown(dropdown, opt) {
-  dropdown.innerHTML = '';
-  if (isGroupedOptions(opt)) {
-    for (const group of opt.options) {
-      if (!group || !Array.isArray(group.options)) { continue; }
-      const header = document.createElement('div');
-      header.className = 'picker-dropdown-group-header';
-      header.textContent = group.name || group.group || '';
-      dropdown.appendChild(header);
-      for (const v of group.options) {
-        dropdown.appendChild(buildConfigItem(opt, v));
-      }
-    }
-  } else {
-    for (const v of opt.options) {
-      dropdown.appendChild(buildConfigItem(opt, v));
-    }
-  }
-}
-
-function buildConfigItem(opt, v) {
-  const selected = v.value === opt.currentValue;
-  const item = document.createElement('div');
-  item.className = 'picker-dropdown-item' + (selected ? ' selected' : '');
-  item.dataset.value = v.value;
-  item.dataset.desc = v.description || '';
-  if (v.description) { item.title = v.description; }
-  item.innerHTML =
-    '<span class="check">' + (selected ? '✓' : '') + '</span>' +
-    '<span class="item-label"></span>';
-  item.querySelector('.item-label').textContent = v.name || v.value;
-  return item;
-}
-
-// Event delegation: handle clicks on dynamically-rendered config pickers
-configOptionsContainer.addEventListener('click', (e) => {
-  const target = e.target;
-  if (!(target instanceof Element)) { return; }
-
-  const item = target.closest('.picker-dropdown-item');
-  if (item) {
-    e.stopPropagation();
-    const wrap = item.closest('.picker-wrap');
-    const dropdown = item.closest('.picker-dropdown');
-    if (!wrap || !dropdown) { return; }
-    const configId = wrap.dataset.configId;
-    const value = item.dataset.value;
-    if (!configId || value === undefined) { return; }
-
-    // Find option in current state
-    const opt = configOptions.find(o => o && o.id === configId);
-    if (!opt || value === opt.currentValue) {
-      dropdown.classList.remove('open');
-      return;
-    }
-
-    // Optimistic update — agent's response will replace with authoritative state
-    opt.currentValue = value;
-    const labelEl = wrap.querySelector('.picker-btn .picker-label');
-    const btn = wrap.querySelector('.picker-btn');
-    if (labelEl) { labelEl.textContent = pickerLabelFor(opt); }
-    if (btn) { btn.title = pickerTooltipFor(opt); }
-    renderConfigDropdown(dropdown, opt);
-
-    dropdown.classList.remove('open');
-    vscode.postMessage({ type: 'setConfigOption', configId, value });
-    return;
-  }
-
-  const btn = target.closest('.picker-btn');
-  if (btn) {
-    e.stopPropagation();
-    const wrap = btn.closest('.picker-wrap');
-    if (!wrap) { return; }
-    const dropdown = wrap.querySelector('.picker-dropdown');
-    if (!dropdown) { return; }
-    const wasOpen = dropdown.classList.contains('open');
-    closePickers();
-    if (!wasOpen) { dropdown.classList.add('open'); }
-  }
-});
-
-function setConfigOptionsState(opts) {
-  configOptions = Array.isArray(opts) ? opts : [];
-  useConfigOptions = configOptions.length > 0;
-
-  if (useConfigOptions) {
-    // Hide legacy mode picker — spec requires configOptions to be used exclusively
-    modePickerWrap.classList.add('hidden');
-    renderConfigPickers(configOptions);
-  } else {
-    configOptionsContainer.innerHTML = '';
-  }
-}
-
-// Toggle picker dropdowns
-modePickerBtn.addEventListener('click', (e) => {
-  e.stopPropagation();
-  const wasOpen = modeDropdown.classList.contains('open');
-  closePickers();
-  if (!wasOpen) { modeDropdown.classList.add('open'); }
-});
-
-function closePickers() {
-  modeDropdown.classList.remove('open');
-  // Close any dynamic config-option dropdowns
-  const open = configOptionsContainer.querySelectorAll('.picker-dropdown.open');
-  open.forEach(el => el.classList.remove('open'));
-  hidePickerTooltip();
-}
-
-// --- Picker hover tooltip (shared by all picker dropdowns) ---
-const pickerTooltip = document.getElementById('pickerTooltip');
-
-function hidePickerTooltip() {
-  if (pickerTooltip) { pickerTooltip.classList.remove('visible'); }
-}
-
-function showPickerTooltip(itemEl) {
-  if (!pickerTooltip || !itemEl) { return; }
-  const desc = itemEl.dataset && itemEl.dataset.desc;
-  if (!desc) { hidePickerTooltip(); return; }
-
-  pickerTooltip.textContent = desc;
-  // Make it measurable while invisible to the user.
-  pickerTooltip.style.left = '-9999px';
-  pickerTooltip.style.top = '-9999px';
-  pickerTooltip.classList.add('visible');
-
-  const dropdown = itemEl.closest('.picker-dropdown');
-  if (!dropdown) { hidePickerTooltip(); return; }
-  const dropRect = dropdown.getBoundingClientRect();
-  const itemRect = itemEl.getBoundingClientRect();
-  const tipRect = pickerTooltip.getBoundingClientRect();
-  const gap = 6;
-
-  // Prefer left side; flip to right if not enough room.
-  let left = dropRect.left - tipRect.width - gap;
-  if (left < 4) { left = dropRect.right + gap; }
-  // Clamp horizontally inside the viewport.
-  const maxLeft = window.innerWidth - tipRect.width - 4;
-  if (left > maxLeft) { left = Math.max(4, maxLeft); }
-
-  // Vertically align with the hovered item, clamped inside the viewport.
-  let top = itemRect.top;
-  const maxTop = window.innerHeight - tipRect.height - 4;
-  if (top > maxTop) { top = Math.max(4, maxTop); }
-
-  pickerTooltip.style.left = left + 'px';
-  pickerTooltip.style.top = top + 'px';
-}
-
-// Delegated hover handling — one listener handles every picker dropdown.
-document.addEventListener('mouseover', (e) => {
-  const target = e.target;
-  if (!(target instanceof Element)) { return; }
-  const item = target.closest('.picker-dropdown-item');
-  if (!item) { return; }
-  // Only consider items inside an open dropdown.
-  const dropdown = item.closest('.picker-dropdown');
-  if (!dropdown || !dropdown.classList.contains('open')) { return; }
-  showPickerTooltip(item);
-});
-
-document.addEventListener('mouseout', (e) => {
-  const target = e.target;
-  const related = e.relatedTarget;
-  if (!(target instanceof Element)) { return; }
-  const item = target.closest('.picker-dropdown-item');
-  if (!item) { return; }
-  // Stay visible if the mouse moved to another item inside the same dropdown.
-  if (related instanceof Element) {
-    const nextItem = related.closest('.picker-dropdown-item');
-    if (nextItem && nextItem !== item) { return; }
-  }
-  hidePickerTooltip();
-});
-
-// Hide the tooltip when the user scrolls a dropdown so it doesn't drift.
-function attachScrollHide(dropdownEl) {
-  if (!dropdownEl || dropdownEl._tooltipScrollAttached) { return; }
-  dropdownEl._tooltipScrollAttached = true;
-  dropdownEl.addEventListener('scroll', hidePickerTooltip);
-}
-attachScrollHide(modeDropdown);
-// Dynamic configOption dropdowns: rely on the same handler via event-delegation
-// (they exist inside #configOptionsContainer); attach once per dropdown when created.
-if (configOptionsContainer) {
-  const mo = new MutationObserver(() => {
-    configOptionsContainer.querySelectorAll('.picker-dropdown').forEach(attachScrollHide);
-  });
-  mo.observe(configOptionsContainer, { childList: true, subtree: true });
-}
-
-// Close pickers when clicking outside
-document.addEventListener('click', () => closePickers());
 
 // --- Messages ---
 function addMessage(role, text) {
@@ -947,16 +619,6 @@ function showSession(session) {
   if (inputArea) { inputArea.classList.remove('disabled'); }
   promptInput.disabled = false;
 
-  // Prefer ACP "Session Config Options" when provided. Spec: clients
-  // that support configOptions MUST use them exclusively and ignore
-  // the legacy modes field.
-  const cfg = session.configOptions;
-  if (Array.isArray(cfg) && cfg.length > 0) {
-    setConfigOptionsState(cfg);
-  } else {
-    setConfigOptionsState([]);
-    if (session.modes) { updateModePicker(session.modes); }
-  }
   // Restore available commands
   if (session.availableCommands) {
     availableCommands = session.availableCommands;
@@ -969,8 +631,6 @@ function showNoSession() {
   if (sessionBanner) { sessionBanner.classList.remove('visible'); }
   if (emptyState) { emptyState.style.display = ''; }
   if (inputArea) { inputArea.classList.add('disabled'); }
-  modePickerWrap.classList.add('hidden');
-  setConfigOptionsState([]);
 }
 
 // Handle messages from the extension
@@ -1020,7 +680,7 @@ window.addEventListener('message', (event) => {
         transcript.push({ kind: 'message', role: 'agent', text: currentAgentMessageText });
         // Request markdown rendering from extension host
         if (currentAgentMessageEl) {
-          vscode.postMessage({
+          postMessage({
             type: 'renderMarkdown',
             items: [{ index: transcript.length - 1, text: currentAgentMessageText }]
           });
@@ -1057,8 +717,6 @@ window.addEventListener('message', (event) => {
       if (emptyState) { emptyState.style.display = ''; }
       if (sessionBanner) { sessionBanner.classList.remove('visible'); }
       if (inputArea) { inputArea.classList.add('disabled'); }
-      modePickerWrap.classList.add('hidden');
-      setConfigOptionsState([]);
       setProcessing(false);
       break;
 
@@ -1068,14 +726,6 @@ window.addEventListener('message', (event) => {
 
     case 'sessionUpdate':
       handleUpdate(msg.update);
-      break;
-
-    case 'modesUpdate':
-      updateModePicker(msg.modes);
-      break;
-
-    case 'configOptionsUpdate':
-      setConfigOptionsState(msg.configOptions || []);
       break;
 
     case 'loadSessionStart':
@@ -1232,29 +882,9 @@ function handleUpdate(update) {
       break;
     }
 
-    case 'current_mode_update': {
-      // Server pushed a mode change
-      currentModeId = update.currentModeId || update.modeId || null;
-      const current = availableModes.find(m => m.id === currentModeId);
-      if (current) {
-        modePickerLabel.textContent = current.name;
-        renderModeDropdown();
-      }
-      break;
-    }
-
-    case 'config_option_update': {
-      // Server pushed a full configOptions replacement
-      setConfigOptionsState(update.configOptions || []);
-      break;
-    }
-
     case 'available_commands_update':
       availableCommands = update.availableCommands || [];
       updatePlaceholder();
       break;
   }
 }
-
-// Tell extension we're ready
-vscode.postMessage({ type: 'ready' });

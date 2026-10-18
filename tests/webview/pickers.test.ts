@@ -213,4 +213,36 @@ describe('legacy mode picker', () => {
 
     expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
   });
+
+  it("is hidden when the next session's agent has no modes", () => {
+    page = loadChatPage();
+    connect(page, { modes: legacyModes });
+
+    connect(page, { sessionId: 's2', agentName: 'Other Agent' });
+
+    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
+  });
+
+  it('stays hidden when modesUpdate arrives for an agent with config options', () => {
+    page = loadChatPage();
+    connect(page, { configOptions: [modelOption] });
+
+    page.send({ type: 'modesUpdate', modes: legacyModes });
+
+    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
+    expect(pickers().map((el) => el.dataset['configId'])).toEqual(['model']);
+  });
+});
+
+describe('without a session', () => {
+  it('shows no pickers once the session ends or the chat is cleared', () => {
+    page = loadChatPage();
+    connect(page, { configOptions: [modelOption] });
+    page.send({ type: 'state', activeSessionId: null, session: null });
+    expect(pickers()).toEqual([]);
+
+    connect(page, { modes: legacyModes });
+    page.send({ type: 'clearChat' });
+    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
+  });
 });

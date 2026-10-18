@@ -16,7 +16,7 @@ const scriptUri = 'chat.js';
 export interface ChatPage {
   readonly window: DOMWindow;
   readonly document: Document;
-  /** Errors raised by the page's script, including uncaught exceptions in event handlers. */
+  /** Errors raised by the page's script, including uncaught exceptions in event handlers, and what it logs as errors or warnings. */
   readonly errors: string[];
   /** Messages posted to the extension since the last call. */
   takePosted(): WebviewToExtensionMessage[];
@@ -81,6 +81,10 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   const errors: string[] = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => errors.push(error.stack ?? error.message));
+  // React's development build reports misuse, such as a list without keys, on the console.
+  for (const level of ['error', 'warn'] as const) {
+    virtualConsole.on(level, (...args: unknown[]) => errors.push(`console.${level}: ${args.map(String).join(' ')}`));
+  }
 
   const dom = new JSDOM(inlined, {
     runScripts: 'dangerously',

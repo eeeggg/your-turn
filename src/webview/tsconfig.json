@@ -2,7 +2,8 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["es2022", "dom"],
-    "types": ["vscode-webview"]
+    "types": ["vscode-webview"],
+    "jsx": "react-jsx"
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "./**/*.tsx"]
 }

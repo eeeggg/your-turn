@@ -9,8 +9,9 @@ export default defineConfig({
       {
         test: {
           name: 'unit',
+          // View tests opt into jsdom with a @vitest-environment comment.
           environment: 'node',
-          include: ['tests/unit/**/*.test.ts'],
+          include: ['tests/unit/**/*.test.{ts,tsx}'],
         },
       },
       {
@@ -24,9 +25,9 @@ export default defineConfig({
     ],
     coverage: {
       provider: 'v8',
-      include: ['src/**/*.ts'],
-      // chat.ts only runs as the bundle in the webview suite, which is not measured.
-      exclude: ['src/webview/chat.ts'],
+      include: ['src/**/*.{ts,tsx}'],
+      // These only run as the bundle in the webview suite, which is not measured.
+      exclude: ['src/webview/chat.ts', 'src/webview/Main.tsx', 'src/webview/VsCodeApi.ts'],
       reporter: ['text', 'html'],
       reportsDirectory: 'coverage',
     },

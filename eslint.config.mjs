@@ -1,9 +1,29 @@
 import { defineConfig } from "eslint/config";
+import reactHooks from "eslint-plugin-react-hooks";
 import typescriptEslint from "typescript-eslint";
 
 const vscodeApi = {
   name: "vscode",
   message: "Only adapters, extension.ts, and the integration suite may use the VS Code API.",
+};
+
+const webviewApi = {
+  name: "@/webview/VsCodeApi",
+  message: "Only Main.tsx and chat.ts post to the extension; views dispatch events to the store, which posts its outgoing messages.",
+};
+
+const webviewLayers = {
+  group: ["@/core/*", "@/adapters/*"],
+  message: "The webview reaches the extension only by webview messages; share their types through @/shared.",
+};
+
+const react = {
+  group: ["react", "react/*", "react-dom", "react-dom/*"],
+  message: "Webview .ts modules are the data layer and stay free of React; views live in .tsx.",
+};
+
+const webviewState = {
+  message: "The extension owns session state and replays it on `ready`; webview state lives in the store.",
 };
 
 // Flat config replaces a rule's options rather than merging them, so every
@@ -29,7 +49,7 @@ export default defineConfig(
     ignores: ["dist/**"],
   },
   {
-    files: ["**/*.ts"],
+    files: ["**/*.{ts,tsx}"],
     extends: typescriptEslint.configs.recommended,
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
@@ -68,13 +88,44 @@ export default defineConfig(
     }),
   },
   {
-    files: ["src/webview/**/*.ts"],
-    rules: restrictImports({
-      paths: [vscodeApi],
-      patterns: [{
-        group: ["@/core/*", "@/adapters/*"],
-        message: "The webview reaches the extension only by webview messages; share their types through @/shared.",
+    files: ["src/webview/**/*.{ts,tsx}"],
+    rules: {
+      ...restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers] }),
+      "no-restricted-globals": ["error", {
+        name: "acquireVsCodeApi",
+        message: "VS Code allows one call per page; import from @/webview/VsCodeApi instead.",
       }],
-    }),
+      "no-restricted-properties": ["error",
+        { property: "getState", ...webviewState },
+        { property: "setState", ...webviewState },
+        { property: "postMessage", message: webviewApi.message },
+      ],
+    },
+  },
+  {
+    files: ["src/webview/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, react] }),
+  },
+  {
+    files: ["src/webview/Main.tsx"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers] }),
+  },
+  {
+    files: ["src/webview/chat.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers, react] }),
+  },
+  {
+    files: ["src/webview/VsCodeApi.ts"],
+    rules: {
+      "no-restricted-globals": "off",
+      "no-restricted-properties": ["error",
+        { property: "getState", ...webviewState },
+        { property: "setState", ...webviewState },
+      ],
+    },
+  },
+  {
+    files: ["src/webview/**/*.tsx", "tests/**/*.tsx"],
+    extends: [reactHooks.configs.flat.recommended],
   },
 );

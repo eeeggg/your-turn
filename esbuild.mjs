@@ -26,10 +26,13 @@ const extension = {
 /** @type {import('esbuild').BuildOptions} */
 const webview = {
 	...common,
-	entryPoints: ['src/webview/chat.ts'],
+	entryPoints: ['src/webview/Main.tsx'],
 	format: 'iife',
 	platform: 'browser',
 	outfile: 'dist/webview/chat.js',
+	jsx: 'automatic',
+	// React picks its development or production build from this.
+	define: { 'process.env.NODE_ENV': JSON.stringify(production ? 'production' : 'development') },
 };
 
 /** @type {import('esbuild').BuildOptions} */

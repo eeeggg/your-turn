@@ -51,20 +51,7 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
       <div class="slash-popup-header">Commands</div>
     </div>
     <div class="input-resize-handle" id="resizeHandle"></div>
-    <div class="input-toolbar">
-      <!-- Dynamic config-options pickers (ACP "Session Config Options"). -->
-      <div class="picker-row" id="configOptionsContainer"></div>
-      <!-- Legacy mode picker — used only when the agent has not migrated to configOptions -->
-      <div class="picker-wrap hidden" id="modePickerWrap">
-        <button class="picker-btn" id="modePickerBtn" title="Select mode">
-          <span class="picker-icon">⚡</span>
-          <span class="picker-label" id="modePickerLabel">Mode</span>
-          <span class="picker-chevron">▾</span>
-        </button>
-        <div class="picker-dropdown" id="modeDropdown"></div>
-      </div>
-      <span class="toolbar-spacer"></span>
-    </div>
+    <div class="input-toolbar" id="inputToolbar"></div>
     <div class="input-editor-wrap">
       <textarea
         id="promptInput"
@@ -76,9 +63,6 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
       <button class="send-stop-btn send" id="sendStopBtn">Send</button>
     </div>
   </div>
-
-  <!-- Shared hover tooltip for picker dropdown items -->
-  <div class="picker-tooltip" id="pickerTooltip" role="tooltip"></div>
 
   <!-- Overlay shown during session/load history replay -->
   <div class="load-overlay" id="loadOverlay" role="status" aria-live="polite">
