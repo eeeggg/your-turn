@@ -1,6 +1,6 @@
 import { log, logError } from './Log';
 
-interface RegistryAgent {
+export interface RegistryAgent {
   name: string;
   description?: string;
   command: string;
@@ -20,7 +20,8 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Fetches the ACP agent registry from the CDN.
- * Results are cached for 5 minutes.
+ * Results are cached for 5 minutes. When the fetch fails, returns the last
+ * copy fetched, if any.
  */
 export async function fetchRegistry(): Promise<RegistryAgent[]> {
   const now = Date.now();
@@ -40,8 +41,11 @@ export async function fetchRegistry(): Promise<RegistryAgent[]> {
     log(`Registry fetched: ${data.agents?.length || 0} agents`);
     return data.agents || [];
   } catch (e) {
-    logError('Failed to fetch registry', e);
-    return cachedRegistry?.agents || [];
+    if (!cachedRegistry) {
+      throw e;
+    }
+    logError('Failed to fetch registry; using the last copy', e);
+    return cachedRegistry.agents || [];
   }
 }
 

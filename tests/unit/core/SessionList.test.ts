@@ -7,7 +7,7 @@ import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistorySt
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionManager, type AuthPrompt } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, type AgentScript } from './inProcessAgents';
+import { fakeAgent, InProcessAgents, type AgentScript } from './InProcessAgents';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
 

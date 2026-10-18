@@ -160,8 +160,8 @@ function childrenOf(agentName: string, sessions: AgentSessions): (SessionTreeIte
       return [new InfoTreeItem('loading', agentName, 'Loading sessions…')];
     case 'auth-required':
       return [new InfoTreeItem('auth-required', agentName, 'Authentication required', 'Click to retry authentication.', {
-        command: 'acp.connectAgent',
-        title: 'Retry connect',
+        command: 'acp.refreshSessions',
+        title: 'Retry authentication',
         arguments: [agentName],
       })];
     case 'failed':

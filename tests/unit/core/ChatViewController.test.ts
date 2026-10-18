@@ -288,6 +288,22 @@ describe('ChatViewController', () => {
 
       expect(environment.take()).toContainEqual({ type: 'error', message: 'Prompt failed' });
     });
+
+    it('tells the editor a turn is in progress until it ends, also when it fails', async () => {
+      const { sessions, environment, controller } = setup();
+      const inProgress = (value: boolean) => ['setContext', 'acp.turnInProgress', value];
+
+      const turn = sendPrompt(controller, 'hello');
+      expect(environment.executeCommand.mock.calls).toEqual([inProgress(true)]);
+      sessions.answer();
+      await turn;
+      expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false)]);
+
+      const failing = sendPrompt(controller, 'again');
+      sessions.fail(new Error('agent crashed'));
+      await failing;
+      expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false), inProgress(true), inProgress(false)]);
+    });
   });
 
   describe('mid-turn prompts', () => {
@@ -351,6 +367,24 @@ describe('ChatViewController', () => {
       sessions.answer({ stopReason: 'end_turn' });
       await settle();
       expect(environment.take()).toEqual([{ type: 'promptEnd', stopReason: 'end_turn' }]);
+    });
+
+    it('keeps the turn in progress until every prompt sent mid-turn has returned', async () => {
+      const { sessions, environment, controller } = setup();
+      environment.midTurn = 'send';
+      void sendPrompt(controller, 'first');
+      void sendPrompt(controller, 'second');
+
+      sessions.answer();
+      await settle();
+      expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'acp.turnInProgress', true]]);
+
+      sessions.answer();
+      await settle();
+      expect(environment.executeCommand.mock.calls).toEqual([
+        ['setContext', 'acp.turnInProgress', true],
+        ['setContext', 'acp.turnInProgress', false],
+      ]);
     });
 
     it('drops queued prompts when the chat is cleared', async () => {

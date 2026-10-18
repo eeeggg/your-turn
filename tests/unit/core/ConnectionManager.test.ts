@@ -4,7 +4,7 @@ import type { AgentContext, SessionNotification } from '@agentclientprotocol/sdk
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents } from './inProcessAgents';
+import { fakeAgent, InProcessAgents } from './InProcessAgents';
 
 function handlers() {
   return {

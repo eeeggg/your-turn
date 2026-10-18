@@ -3,6 +3,7 @@ import type { SessionModeState, SessionNotification } from '@agentclientprotocol
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { SessionManager } from './SessionManager';
 import { logError } from './Log';
+import type { Commands } from './VsCodeApi';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<
@@ -24,11 +25,10 @@ export type ChatSessions = Pick<
 export type MidTurnPrompt = 'queue' | 'send';
 
 /** What the chat view needs from the editor it runs in. */
-export interface ChatViewEnvironment {
+export interface ChatViewEnvironment extends Commands {
   /** Deliver a webview message; dropped while the chat view is not open. */
   post(message: ExtensionToWebviewMessage): void;
   midTurnPrompt(): MidTurnPrompt;
-  executeCommand(command: string): Promise<void>;
 }
 
 /**
@@ -158,6 +158,7 @@ export class ChatViewController {
 
     if (this.inFlightPrompts++ === 0) {
       this.post({ type: 'promptStart' });
+      this.setTurnInProgress(true);
     }
 
     try {
@@ -186,6 +187,7 @@ export class ChatViewController {
       return;
     }
     this.post(endMessage);
+    this.setTurnInProgress(false);
     const next = this.pendingPrompts.shift();
     if (next !== undefined) {
       void this.sendPrompt(next);
@@ -256,6 +258,11 @@ export class ChatViewController {
         availableCommands: session.availableCommands,
       } : null,
     });
+  }
+
+  /** Shows the Cancel button in the chat view's title bar (the `acp.turnInProgress` `when` clause in package.json). */
+  private setTurnInProgress(inProgress: boolean): void {
+    void this.environment.executeCommand('setContext', 'acp.turnInProgress', inProgress);
   }
 
   private renderMarkdown(text: string): string {

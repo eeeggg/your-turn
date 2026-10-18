@@ -7,7 +7,7 @@ import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, type AgentScript } from './inProcessAgents';
+import { fakeAgent, InProcessAgents, type AgentScript } from './InProcessAgents';
 
 /** Let pending callbacks, including agent exits, run. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));

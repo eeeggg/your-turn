@@ -45,8 +45,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
     return setting === 'send' ? 'send' : 'queue';
   }
 
-  async executeCommand(command: string): Promise<void> {
-    await vscode.commands.executeCommand(command);
+  executeCommand(command: string, ...rest: unknown[]): Thenable<unknown> {
+    return vscode.commands.executeCommand(command, ...rest);
   }
 
   /** Attach a file to the next prompt and reveal the chat view. */
