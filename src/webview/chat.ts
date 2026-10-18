@@ -708,7 +708,7 @@ window.addEventListener('message', (event) => {
       thoughtEndTime = null;
       break;
 
-    case 'clearChat':
+    case 'clearTranscript':
       clearTranscript();
       transcriptSessionId = null;
       sessionState = null;

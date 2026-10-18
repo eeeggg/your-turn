@@ -34,7 +34,7 @@ export interface RenderedMarkdown {
 
 export type ExtensionToWebviewMessage =
   | { type: 'state'; activeSessionId: string | null; session: SessionSnapshot | null }
-  | { type: 'clearChat' }
+  | { type: 'clearTranscript' }
   | { type: 'promptStart' }
   | { type: 'promptEnd'; stopReason: StopReason | 'error'; usage?: Usage | null }
   | { type: 'error'; message: string }

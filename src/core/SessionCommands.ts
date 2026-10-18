@@ -3,14 +3,14 @@ import { logError } from './Log';
 import type { SessionManager } from './SessionManager';
 import { ProgressLocation, type Commands, type Window } from './VsCodeApi';
 
-/** What commands need from the chat view. */
-export type ChatTranscript = Pick<ChatViewController, 'hasChatContent' | 'clearChat'>;
+/** What commands need from the chat view's transcript. */
+export type Transcript = Pick<ChatViewController, 'hasTranscript' | 'clearTranscript'>;
 
 /** The commands that start, switch, open, and control sessions. */
 export class SessionCommands {
   constructor(
     private readonly sessions: SessionManager,
-    private readonly chat: ChatTranscript,
+    private readonly transcript: Transcript,
     private readonly window: Window,
     private readonly commands: Commands,
     private readonly agentNames: () => string[],
@@ -22,14 +22,14 @@ export class SessionCommands {
     if (!name) { return; }
 
     const currentAgent = this.sessions.getActiveAgentName();
-    if (currentAgent && currentAgent !== name && this.chat.hasChatContent) {
+    if (currentAgent && currentAgent !== name && this.transcript.hasTranscript) {
       const choice = await this.window.showWarningMessage(
         `Switch to ${name}? This will disconnect ${currentAgent} and clear the transcript.`,
         'Switch Agent',
         'Cancel',
       );
       if (choice !== 'Switch Agent') { return; }
-      this.chat.clearChat();
+      this.transcript.clearTranscript();
     }
 
     try {
@@ -47,7 +47,7 @@ export class SessionCommands {
       return;
     }
 
-    if (this.chat.hasChatContent) {
+    if (this.transcript.hasTranscript) {
       const choice = await this.window.showWarningMessage(
         'Start a new session? This will clear the current transcript.',
         'New Session',
@@ -140,11 +140,11 @@ export class SessionCommands {
     }
 
     if (this.sessions.getActiveSessionId() === sessionId) {
-      await this.focusChat();
+      await this.focusChatView();
       return;
     }
 
-    if (this.chat.hasChatContent) {
+    if (this.transcript.hasTranscript) {
       const choice = await this.window.showWarningMessage(
         'Open a different session? This will replace the current transcript.',
         'Open Session',
@@ -154,7 +154,7 @@ export class SessionCommands {
     }
 
     try {
-      await this.focusChat();
+      await this.focusChatView();
       // Load replays the transcript, so it is preferred over resume.
       const capabilities = await this.sessions.ensureConnected(agentName);
       if (capabilities.load) {
@@ -182,7 +182,7 @@ export class SessionCommands {
     });
   }
 
-  private async focusChat(): Promise<void> {
+  private async focusChatView(): Promise<void> {
     await this.commands.executeCommand('acp-chat.focus');
   }
 

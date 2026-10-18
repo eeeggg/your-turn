@@ -1,7 +1,7 @@
 import type { SessionConfigOption, SessionModeState } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { initialChatState, update, type ChatEvent } from '@/webview/ChatState';
+import { initialState, update, type Action } from '@/webview/RootState';
 import {
   categoryIcon,
   configPickers,
@@ -62,12 +62,12 @@ function snapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
   };
 }
 
-function chat() {
+function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
-  const store = createStore(initialChatState, update, (message: WebviewToExtensionMessage) => posted.push(message));
+  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message));
   return {
     pickers: (): PickersState => store.getSnapshot().pickers,
-    send: (...events: ChatEvent[]) => events.forEach((event) => store.dispatch(event)),
+    send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
     connect: (session: Partial<SessionSnapshot>) =>
       store.dispatch({ type: 'state', activeSessionId: 's1', session: snapshot(session) }),
     takePosted: () => posted.splice(0),
@@ -76,7 +76,7 @@ function chat() {
 
 describe('which pickers are shown', () => {
   it('shows a picker for each select option with values, and none for other types', () => {
-    const view = chat();
+    const view = chatView();
 
     view.connect({
       configOptions: [
@@ -90,7 +90,7 @@ describe('which pickers are shown', () => {
   });
 
   it('shows the mode picker only for an agent with modes and no config options', () => {
-    const view = chat();
+    const view = chatView();
 
     view.connect({ modes });
     expect(showsModePicker(view.pickers())).toBe(true);
@@ -103,7 +103,7 @@ describe('which pickers are shown', () => {
   });
 
   it("drops the previous session's modes when the next session has none", () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes });
 
     view.connect({ sessionId: 's2' });
@@ -112,7 +112,7 @@ describe('which pickers are shown', () => {
   });
 
   it('keeps the mode picker hidden when modesUpdate arrives for an agent with config options', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
 
     view.send({ type: 'modesUpdate', modes });
@@ -121,7 +121,7 @@ describe('which pickers are shown', () => {
   });
 
   it('shows the mode picker once the agent replaces its config options with none', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes, configOptions: [modelOption] });
 
     view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'config_option_update', configOptions: [] } });
@@ -129,21 +129,21 @@ describe('which pickers are shown', () => {
     expect(showsModePicker(view.pickers())).toBe(true);
   });
 
-  it('shows no pickers without a session or after the chat is cleared', () => {
-    const view = chat();
+  it('shows no pickers without a session or after the transcript is cleared', () => {
+    const view = chatView();
     view.connect({ modes, configOptions: [modelOption] });
     view.send({ type: 'state', activeSessionId: null, session: null });
     expect(view.pickers()).toEqual({ modes: null, configOptions: [], open: null, hovered: null });
 
     view.connect({ modes, configOptions: [modelOption] });
-    view.send({ type: 'clearChat' });
+    view.send({ type: 'clearTranscript' });
     expect(view.pickers()).toEqual({ modes: null, configOptions: [], open: null, hovered: null });
   });
 });
 
 describe('updates from the agent', () => {
   it('replaces the config options on configOptionsUpdate, treating null as none', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
 
     view.send({ type: 'configOptionsUpdate', configOptions: [effortOption] });
@@ -154,7 +154,7 @@ describe('updates from the agent', () => {
   });
 
   it('follows current_mode_update, and ignores it without modes', () => {
-    const view = chat();
+    const view = chatView();
     view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } });
     expect(view.pickers().modes).toBeNull();
 
@@ -163,8 +163,8 @@ describe('updates from the agent', () => {
     expect(view.pickers().modes?.currentModeId).toBe('code');
   });
 
-  it('leaves the pickers alone for messages about other parts of the chat', () => {
-    const view = chat();
+  it('leaves the pickers alone for messages about other parts of the chat view', () => {
+    const view = chatView();
     view.connect({ modes, configOptions: [modelOption] });
     const before = view.pickers();
 
@@ -174,7 +174,7 @@ describe('updates from the agent', () => {
   });
 
   it('leaves the pickers alone for other session updates', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes, configOptions: [modelOption] });
     const before = view.pickers();
 
@@ -190,7 +190,7 @@ describe('updates from the agent', () => {
 
 describe('opening and closing a dropdown', () => {
   it('opens a picker, closes it when toggled again, and keeps one open at a time', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption, effortOption] });
     const effort: PickerId = { kind: 'config', configId: 'effort' };
 
@@ -206,7 +206,7 @@ describe('opening and closing a dropdown', () => {
   });
 
   it('closes on pickersClosed, and changes nothing when none is open', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes });
     const closed = view.pickers();
     view.send({ type: 'pickersClosed' });
@@ -218,7 +218,7 @@ describe('opening and closing a dropdown', () => {
   });
 
   it("closes the dropdown when its picker goes away, so it does not reopen when the picker returns", () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
     view.send({ type: 'pickerToggled', picker: model });
 
@@ -229,7 +229,7 @@ describe('opening and closing a dropdown', () => {
   });
 
   it('keeps the dropdown open when the agent updates the options it shows', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
     view.send({ type: 'pickerToggled', picker: model });
 
@@ -241,7 +241,7 @@ describe('opening and closing a dropdown', () => {
 
 describe('choosing a value', () => {
   it('posts setMode for a different mode, shows it as current, and closes the dropdown', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes });
     view.send({ type: 'pickerToggled', picker: mode });
 
@@ -253,18 +253,18 @@ describe('choosing a value', () => {
   });
 
   it('posts nothing for the current mode, or without modes, and still closes the dropdown', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes });
     view.send({ type: 'pickerToggled', picker: mode }, { type: 'modeChosen', modeId: 'ask' });
     expect(view.pickers().open).toBeNull();
 
-    view.send({ type: 'clearChat' }, { type: 'modeChosen', modeId: 'code' });
+    view.send({ type: 'clearTranscript' }, { type: 'modeChosen', modeId: 'code' });
 
     expect(view.takePosted()).toEqual([]);
   });
 
   it('posts setConfigOption for a different value and shows it until the agent answers', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption, effortOption] });
     view.send({ type: 'pickerToggled', picker: model });
 
@@ -279,7 +279,7 @@ describe('choosing a value', () => {
   });
 
   it('posts nothing for the current value, an unknown option, or an option that is not a select', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption, { id: 'flag', name: 'Flag', type: 'boolean', currentValue: true }] });
 
     view.send(
@@ -294,7 +294,7 @@ describe('choosing a value', () => {
 
 describe('the tooltip', () => {
   it("shows the description of a hovered item in the open dropdown", () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
     view.send({ type: 'pickerToggled', picker: model });
 
@@ -304,7 +304,7 @@ describe('the tooltip', () => {
   });
 
   it('shows mode and grouped value descriptions', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ modes });
     view.send({ type: 'pickerToggled', picker: mode }, { type: 'pickerItemHovered', hovered: { picker: mode, item: 'ask' } });
     expect(tooltipText(view.pickers())).toBe('Questions only');
@@ -316,7 +316,7 @@ describe('the tooltip', () => {
   });
 
   it('shows nothing for an item without a description, or one that is gone', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
     view.send({ type: 'pickerToggled', picker: model }, { type: 'pickerItemHovered', hovered: { picker: model, item: 'b' } });
     expect(tooltipText(view.pickers())).toBeNull();
@@ -327,7 +327,7 @@ describe('the tooltip', () => {
   });
 
   it('ignores hovering a closed dropdown, and repeated hovers of the same item', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption] });
     view.send({ type: 'pickerItemHovered', hovered: { picker: model, item: 'a' } });
     expect(view.pickers().hovered).toBeNull();
@@ -339,7 +339,7 @@ describe('the tooltip', () => {
   });
 
   it('hides when the pointer leaves, a dropdown is toggled or closed, or a value is chosen', () => {
-    const view = chat();
+    const view = chatView();
     view.connect({ configOptions: [modelOption, effortOption] });
     const hover = { type: 'pickerItemHovered', hovered: { picker: model, item: 'a' } } as const;
     const open = { type: 'pickerToggled', picker: model } as const;

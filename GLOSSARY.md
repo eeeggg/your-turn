@@ -1,6 +1,6 @@
 # ACP Client for VS Code
 
-A VS Code extension that lets a user work with any ACP agent from inside the editor: it launches the agent, speaks ACP to it, and shows each session's transcript in a chat view.
+A VS Code extension that lets a user work with any ACP agent from inside the editor: it launches the agent, speaks ACP to it, and shows each session's transcript in its chat view.
 
 ## Language
 
@@ -18,13 +18,21 @@ _Avoid_: backend, extension side, host
 The part of the extension that connects core to the VS Code API: views, commands, settings, storage, terminals, and the file system.
 _Avoid_: host, glue, integration
 
+**Chat view**:
+The VS Code view, named Chat, in which the webview shows the active session. "Chat" on its own is never a term: say the chat view, the session, or the transcript.
+_Avoid_: chat panel, chat (unqualified)
+
 **Webview**:
-The chat page, running in VS Code's sandboxed browser frame and reachable from the extension only by messages.
+The page inside the chat view, running in VS Code's sandboxed browser frame and reachable from the extension only by messages.
 _Avoid_: frontend, UI, client
 
 **Webview message**:
 One message crossing between the extension and the webview, in either direction.
 _Avoid_: event, IPC, protocol message
+
+**User action**:
+Something the user does in the webview, such as choosing a mode, dispatched to the webview's store together with webview messages.
+_Avoid_: event, UI event
 
 **Saved state**:
 What a webview can ask VS Code to keep across a rebuild of its page. The chat view keeps none: a rebuilt page starts empty and redraws only what the extension sends.
@@ -84,7 +92,7 @@ _Avoid_: event, message
 
 **Transcript**:
 Everything the chat view shows for a session: prompts, agent messages, thoughts, tool calls, and plans.
-_Avoid_: chat history, conversation history, messages
+_Avoid_: chat, chat history, conversation history, messages
 
 ### Turns
 

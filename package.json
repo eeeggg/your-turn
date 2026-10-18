@@ -94,7 +94,7 @@
       },
       {
         "command": "acp.openChat",
-        "title": "ACP: Open Chat Panel"
+        "title": "ACP: Open Chat View"
       },
       {
         "command": "acp.addAgent",

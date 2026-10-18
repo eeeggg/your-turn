@@ -33,7 +33,7 @@ const EVENTS = [
   'session-added',
   'session-removed',
   'active-session-changed',
-  'clear-chat',
+  'clear-transcript',
   'mode-changed',
   'session-load-start',
   'session-load-end',
@@ -233,7 +233,7 @@ describe('SessionManager', () => {
       expect(manager.getActiveSessionId()).toBeNull();
     });
 
-    it('starts a new session on the same agent and clears the chat', async () => {
+    it('starts a new session on the same agent and clears the transcript', async () => {
       let next = 0;
       const script: AgentScript = () => fakeAgent()
         .onRequest(methods.agent.session.new, () => ({ sessionId: `s${++next}` }));
@@ -246,7 +246,7 @@ describe('SessionManager', () => {
       expect(session?.sessionId).toBe('s2');
       expect(manager.getActiveSessionId()).toBe('s2');
       expect(takeEvents().map(([name]) => name)).toEqual([
-        'session-removed', 'active-session-changed', 'clear-chat', 'session-added', 'active-session-changed',
+        'session-removed', 'active-session-changed', 'clear-transcript', 'session-added', 'active-session-changed',
       ]);
     });
   });

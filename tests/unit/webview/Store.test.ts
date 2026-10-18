@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createStore, type Transition } from '@/webview/Store';
 
-type Event = { type: 'add'; amount: number } | { type: 'report' };
+type Action = { type: 'add'; amount: number } | { type: 'report' };
 
-function update(state: number, event: Event): Transition<number, string> {
-  return event.type === 'add'
-    ? { state: state + event.amount, outgoing: [] }
+function update(state: number, action: Action): Transition<number, string> {
+  return action.type === 'add'
+    ? { state: state + action.amount, outgoing: [] }
     : { state, outgoing: [`at ${state}`] };
 }
 
@@ -18,7 +18,7 @@ function counter() {
 }
 
 describe('Store', () => {
-  it('applies each event to the state', () => {
+  it('applies each action to the state', () => {
     const { store } = counter();
 
     store.dispatch({ type: 'add', amount: 2 });
@@ -27,7 +27,7 @@ describe('Store', () => {
     expect(store.getSnapshot()).toBe(5);
   });
 
-  it('notifies subscribers only of events that change the state', () => {
+  it('notifies subscribers only of actions that change the state', () => {
     const { store, notifications } = counter();
 
     store.dispatch({ type: 'add', amount: 0 });

@@ -3,7 +3,7 @@ import type { SessionConfigOption, SessionModeState } from '@agentclientprotocol
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { initialChatState, update, type ChatEvent } from '@/webview/ChatState';
+import { initialState, update, type Action } from '@/webview/RootState';
 import { InputToolbar } from '@/webview/InputToolbar';
 import { createStore } from '@/webview/Store';
 import { StoreContext } from '@/webview/StoreContext';
@@ -36,8 +36,8 @@ const modelOption = {
 
 function renderToolbar(session: Partial<SessionSnapshot>) {
   const posted: WebviewToExtensionMessage[] = [];
-  const store = createStore(initialChatState, update, (message: WebviewToExtensionMessage) => posted.push(message));
-  const send = (event: ChatEvent) => act(() => store.dispatch(event));
+  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message));
+  const send = (action: Action) => act(() => store.dispatch(action));
   const { container } = render(
     <StoreContext value={store}>
       <InputToolbar />
@@ -76,7 +76,7 @@ function rect(box: { left: number; top: number; width: number; height: number })
 it('refuses to render outside a StoreContext', () => {
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-  expect(() => render(<InputToolbar />)).toThrow('Chat views must render inside a StoreContext.');
+  expect(() => render(<InputToolbar />)).toThrow('Chat view components must render inside a StoreContext.');
 });
 
 describe('config option pickers', () => {

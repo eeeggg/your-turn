@@ -1,26 +1,26 @@
-/** What an update makes of one event: the next state, and the messages to post to the extension. */
+/** What an update makes of one action: the next state, and the messages to post to the extension. */
 export interface Transition<S, O> {
   state: S;
   outgoing: readonly O[];
 }
 
 /**
- * The webview's state, changed only by dispatching events through a pure
+ * The webview's state, changed only by dispatching actions through a pure
  * `update`. `subscribe` and `getSnapshot` are the contract React's
  * `useSyncExternalStore` takes.
  */
-export interface Store<S, E> {
+export interface Store<S, A> {
   subscribe(onStoreChange: () => void): () => void;
   getSnapshot(): S;
-  dispatch(event: E): void;
+  dispatch(action: A): void;
 }
 
-/** Listeners hear only of events that change the state; `update` returns the same object for the rest. */
-export function createStore<S, E, O>(
+/** Listeners hear only of actions that change the state; `update` returns the same object for the rest. */
+export function createStore<S, A, O>(
   initial: S,
-  update: (state: S, event: E) => Transition<S, O>,
+  update: (state: S, action: A) => Transition<S, O>,
   post: (message: O) => void,
-): Store<S, E> {
+): Store<S, A> {
   let state = initial;
   const listeners = new Set<() => void>();
   return {
@@ -31,8 +31,8 @@ export function createStore<S, E, O>(
       };
     },
     getSnapshot: () => state,
-    dispatch(event) {
-      const next = update(state, event);
+    dispatch(action) {
+      const next = update(state, action);
       const changed = next.state !== state;
       state = next.state;
       next.outgoing.forEach((message) => post(message));

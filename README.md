@@ -77,7 +77,7 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 | `ACP: Cancel Current Turn` | Cancel the current agent turn |
 | `ACP: Disconnect Agent` | Disconnect from the current agent |
 | `ACP: Restart Agent` | Restart the current agent process |
-| `ACP: Open Chat Panel` | Focus the chat webview |
+| `ACP: Open Chat View` | Focus the chat view |
 | `ACP: Add Agent Configuration` | Add a new agent to settings |
 | `ACP: Remove Agent` | Remove an agent configuration |
 | `ACP: Set Agent Mode` | Change the agent's operating mode |
@@ -91,7 +91,7 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+Shift+A` (`Cmd+Shift+A` on Mac) | Open Chat Panel |
+| `Ctrl+Shift+A` (`Cmd+Shift+A` on Mac) | Open Chat View |
 | `Escape` (when turn in progress) | Cancel Current Turn |
 
 ## Development

@@ -80,14 +80,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
-  // Notify chat webview when active session changes
+  // Notify the webview when the active session changes
   sessionManager.on('active-session-changed', () => {
     chatViewController.notifyActiveSessionChanged();
   });
 
-  // Clear chat when a new session is started
-  sessionManager.on('clear-chat', () => {
-    chatViewController.clearChat();
+  // Clear the transcript when a new session is started
+  sessionManager.on('clear-transcript', () => {
+    chatViewController.clearTranscript();
   });
 
   // Forward mode changes to webview
@@ -121,7 +121,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window,
     fetchRegistry,
   );
-  const focusChat = () => vscode.commands.executeCommand('acp-chat.focus');
+  const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
 
   context.subscriptions.push(
     treeView,
@@ -137,9 +137,9 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('acp.setMode', (modeId?: string) => sessionCommands.setMode(modeId)),
     vscode.commands.registerCommand('acp.setModel', (modelId?: string) => sessionCommands.setModel(modelId)),
     vscode.commands.registerCommand('acp.openSession', (arg?: SessionArgument) => sessionCommands.open(arg?.agentName, arg?.sessionId)),
-    vscode.commands.registerCommand('acp.openChat', focusChat),
+    vscode.commands.registerCommand('acp.openChat', focusChatView),
     // Bound to a key: there is no prompt to send outside the chat view.
-    vscode.commands.registerCommand('acp.sendPrompt', focusChat),
+    vscode.commands.registerCommand('acp.sendPrompt', focusChatView),
     vscode.commands.registerCommand('acp.showLog', () => getOutputChannel().show()),
     vscode.commands.registerCommand('acp.showTraffic', () => getTrafficChannel().show()),
     vscode.commands.registerCommand('acp.refreshAgents', () => sessionTreeProvider.refresh()),
@@ -166,7 +166,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
         openLabel: 'Attach',
-        title: 'Attach File to Chat',
+        title: 'Attach File to Prompt',
       }) ?? [];
       if (uri) {
         chatWebviewProvider.attachFile(uri);

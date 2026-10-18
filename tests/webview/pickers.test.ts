@@ -235,14 +235,14 @@ describe('legacy mode picker', () => {
 });
 
 describe('without a session', () => {
-  it('shows no pickers once the session ends or the chat is cleared', () => {
+  it('shows no pickers once the session ends or the transcript is cleared', () => {
     page = loadChatPage();
     connect(page, { configOptions: [modelOption] });
     page.send({ type: 'state', activeSessionId: null, session: null });
     expect(pickers()).toEqual([]);
 
     connect(page, { modes: legacyModes });
-    page.send({ type: 'clearChat' });
+    page.send({ type: 'clearTranscript' });
     expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
   });
 });

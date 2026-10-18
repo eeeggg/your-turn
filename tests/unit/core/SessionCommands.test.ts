@@ -20,7 +20,7 @@ const unusedHandlers: ClientHandlers = {
 };
 
 const progress = (title: string): Call => ({ call: 'withProgress', options: { location: ProgressLocation.Notification, title, cancellable: false } });
-const focusChat: Call = { call: 'executeCommand', command: 'acp-chat.focus' };
+const focusChatView: Call = { call: 'executeCommand', command: 'acp-chat.focus' };
 
 /**
  * An agent that numbers the sessions it creates across all its launches
@@ -61,13 +61,13 @@ function setup(scripts: Record<string, AgentScript>) {
     },
     { chooseAuthMethod: async () => undefined },
   );
-  const chat = {
-    hasChatContent: false,
-    clearChat: vi.fn(() => { chat.hasChatContent = false; }),
+  const transcript = {
+    hasTranscript: false,
+    clearTranscript: vi.fn(() => { transcript.hasTranscript = false; }),
   };
   const user = new ScriptedUser();
-  const commands = new SessionCommands(manager, chat, user, user, () => Object.keys(scripts));
-  return { agents, manager, chat, user, commands };
+  const commands = new SessionCommands(manager, transcript, user, user, () => Object.keys(scripts));
+  return { agents, manager, transcript, user, commands };
 }
 
 describe('SessionCommands', () => {
@@ -114,17 +114,17 @@ describe('SessionCommands', () => {
       ]);
     });
 
-    it('asks before switching agents while the chat shows a transcript, and clears it', async () => {
-      const { manager, chat, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    it('asks before switching agents while there is a transcript, and clears it', async () => {
+      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
       await manager.connectToAgent('one');
-      chat.hasChatContent = true;
+      transcript.hasTranscript = true;
       user.answer('Switch Agent');
 
       await commands.connect('two');
 
       expect(manager.getActiveSessionId()).toBe('two-1');
       expect(manager.hasSession('one')).toBe(false);
-      expect(chat.clearChat).toHaveBeenCalledOnce();
+      expect(transcript.clearTranscript).toHaveBeenCalledOnce();
       expect(user.take()).toEqual([
         {
           call: 'showWarningMessage',
@@ -136,21 +136,21 @@ describe('SessionCommands', () => {
     });
 
     it('keeps the session and the transcript when the user declines to switch', async () => {
-      const { manager, chat, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
       await manager.connectToAgent('one');
-      chat.hasChatContent = true;
+      transcript.hasTranscript = true;
       user.answer('Cancel');
 
       await commands.connect('two');
 
       expect(manager.getActiveSessionId()).toBe('one-1');
-      expect(chat.clearChat).not.toHaveBeenCalled();
+      expect(transcript.clearTranscript).not.toHaveBeenCalled();
     });
 
     it('does not ask when connecting the agent that already has the active session', async () => {
-      const { manager, chat, user, commands } = setup({ one: sessionAgent('one').script });
+      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script });
       await manager.connectToAgent('one');
-      chat.hasChatContent = true;
+      transcript.hasTranscript = true;
 
       await commands.connect('one');
 
@@ -185,10 +185,10 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([progress('Starting new session with Fake Agent...')]);
     });
 
-    it('asks first while the chat shows a transcript', async () => {
-      const { agents, manager, chat, user, commands } = setup({ one: sessionAgent('one').script });
+    it('asks first while there is a transcript', async () => {
+      const { agents, manager, transcript, user, commands } = setup({ one: sessionAgent('one').script });
       await manager.connectToAgent('one');
-      chat.hasChatContent = true;
+      transcript.hasTranscript = true;
       user.answer('Cancel');
 
       await commands.newSession();
@@ -394,7 +394,7 @@ describe('SessionCommands', () => {
 
       expect(manager.getActiveSessionId()).toBe('old');
       expect(one.requests).toEqual([{ method: 'session/load', params: { sessionId: 'old', cwd: '/work', mcpServers: [] } }]);
-      expect(user.take()).toEqual([focusChat, progress('Loading session…')]);
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
     });
 
     it('resumes the session when the agent can only resume', async () => {
@@ -405,7 +405,7 @@ describe('SessionCommands', () => {
 
       expect(manager.getActiveSessionId()).toBe('old');
       expect(one.requests.map((r) => r.method)).toEqual(['session/resume']);
-      expect(user.take()).toEqual([focusChat, { call: 'showInformationMessage', message: 'Resumed session (history not replayed).' }]);
+      expect(user.take()).toEqual([focusChatView, { call: 'showInformationMessage', message: 'Resumed session (history not replayed).' }]);
     });
 
     it('reports an agent that can neither load nor resume', async () => {
@@ -414,28 +414,28 @@ describe('SessionCommands', () => {
       await commands.open('one', 'old');
 
       expect(user.take()).toEqual([
-        focusChat,
+        focusChatView,
         { call: 'showErrorMessage', message: 'Agent "one" does not support loading or resuming sessions.' },
       ]);
     });
 
-    it('only shows the chat when the session is already active', async () => {
+    it('only shows the chat view when the session is already active', async () => {
       const one = sessionAgent('one', loads);
-      const { manager, chat, user, commands } = setup({ one: one.script });
+      const { manager, transcript, user, commands } = setup({ one: one.script });
       await manager.loadSession('one', 'old');
-      chat.hasChatContent = true;
+      transcript.hasTranscript = true;
 
       await commands.open('one', 'old');
 
       expect(one.requests).toHaveLength(1);
-      expect(user.take()).toEqual([focusChat]);
+      expect(user.take()).toEqual([focusChatView]);
     });
 
-    it('asks first while the chat shows a transcript, and stays when declined', async () => {
+    it('asks first while there is a transcript, and stays when declined', async () => {
       const one = sessionAgent('one', loads);
-      const { manager, chat, user, commands } = setup({ one: one.script });
+      const { manager, transcript, user, commands } = setup({ one: one.script });
       await manager.connectToAgent('one');
-      chat.hasChatContent = true;
+      transcript.hasTranscript = true;
       user.answer('Cancel');
 
       await commands.open('one', 'old');
@@ -457,7 +457,7 @@ describe('SessionCommands', () => {
       await commands.open('one', 'gone');
 
       expect(user.take()).toEqual([
-        focusChat,
+        focusChatView,
         progress('Loading session…'),
         { call: 'showErrorMessage', message: 'Failed to open session: Invalid params: Session not found' },
       ]);

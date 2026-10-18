@@ -17,7 +17,7 @@ export class AgentTreeItem extends vscode.TreeItem {
         new vscode.ThemeColor('testing.iconPassed'),
       );
       this.description = 'in session';
-      this.command = { command: 'acp.openChat', title: 'Open Chat' };
+      this.command = { command: 'acp.openChat', title: 'Open Chat View' };
     } else {
       this.contextValue = 'agent-without-session';
       this.iconPath = new vscode.ThemeIcon('circle-outline');
@@ -25,7 +25,7 @@ export class AgentTreeItem extends vscode.TreeItem {
     }
 
     this.tooltip = hasSession
-      ? `${agentName} — in session\nClick to open chat`
+      ? `${agentName} — in session\nClick to open the chat view`
       : `${agentName} — no session\nUse the plug icon to connect`;
   }
 }
@@ -176,7 +176,7 @@ function childrenOf(agentName: string, sessions: AgentSessions): (SessionTreeIte
         agentName,
         'Session list not supported',
         'This agent does not advertise session/list, session/load, or session/resume.\n'
-          + 'You can still start a new chat from the agent row.',
+          + 'You can still start a new session from the agent row.',
       )];
     case 'listed':
       break;

@@ -36,7 +36,7 @@ export interface ChatViewEnvironment extends Commands {
  * against the active session, and tells the webview what to show.
  */
 export class ChatViewController {
-  private _hasChatContent = false;
+  private _hasTranscript = false;
   /** Prompts sent to the agent that have not returned yet. */
   private inFlightPrompts = 0;
   /** Prompts typed during a turn that wait for that turn to finish. */
@@ -52,15 +52,15 @@ export class ChatViewController {
     });
   }
 
-  /** Whether the chat has any messages. */
-  get hasChatContent(): boolean {
-    return this._hasChatContent;
+  /** Whether a prompt has been sent since the transcript was last cleared. */
+  get hasTranscript(): boolean {
+    return this._hasTranscript;
   }
 
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     switch (message.type) {
       case 'sendPrompt':
-        this._hasChatContent = true;
+        this._hasTranscript = true;
         await this.sendPrompt(message.text);
         break;
       case 'cancelTurn':
@@ -135,10 +135,10 @@ export class ChatViewController {
   }
 
   /** Clear the transcript and drop queued prompts, as when a new session starts. */
-  clearChat(): void {
+  clearTranscript(): void {
     this.pendingPrompts = [];
-    this._hasChatContent = false;
-    this.post({ type: 'clearChat' });
+    this._hasTranscript = false;
+    this.post({ type: 'clearTranscript' });
   }
 
   private async sendPrompt(text: string): Promise<void> {

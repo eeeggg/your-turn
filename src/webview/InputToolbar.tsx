@@ -12,7 +12,7 @@ import {
   type PickerItemId,
   type SelectConfigOption,
 } from '@/webview/Pickers';
-import { useChatState, useDispatch } from '@/webview/StoreContext';
+import { useDispatch, useSelector } from '@/webview/StoreContext';
 
 /** The hovered item's element, which the tooltip is placed beside. */
 type Anchor = RefObject<HTMLElement | null>;
@@ -21,7 +21,7 @@ const modePicker: PickerId = { kind: 'mode' };
 
 /** The row above the prompt box: the session's pickers and their shared tooltip. */
 export function InputToolbar() {
-  const pickers = useChatState((state) => state.pickers);
+  const pickers = useSelector((state) => state.pickers);
   const anchorRef = useRef<HTMLElement>(null);
 
   return (

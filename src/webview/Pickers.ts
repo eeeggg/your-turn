@@ -109,38 +109,38 @@ export function categoryIcon(category: SessionConfigOptionCategory | null | unde
 
 export function updatePickers(
   state: PickersState,
-  event: ExtensionToWebviewMessage | PickerAction,
+  action: ExtensionToWebviewMessage | PickerAction,
 ): Transition<PickersState, WebviewToExtensionMessage> {
-  switch (event.type) {
+  switch (action.type) {
     case 'state':
       return settled(
-        event.session
-          ? { ...state, modes: event.session.modes, configOptions: event.session.configOptions ?? [] }
+        action.session
+          ? { ...state, modes: action.session.modes, configOptions: action.session.configOptions ?? [] }
           : initialPickers,
       );
-    case 'clearChat':
+    case 'clearTranscript':
       return settled(initialPickers);
     case 'modesUpdate':
-      return settled({ ...state, modes: event.modes });
+      return settled({ ...state, modes: action.modes });
     case 'configOptionsUpdate':
-      return settled({ ...state, configOptions: event.configOptions ?? [] });
+      return settled({ ...state, configOptions: action.configOptions ?? [] });
     case 'sessionUpdate':
-      switch (event.update.sessionUpdate) {
+      switch (action.update.sessionUpdate) {
         case 'current_mode_update':
           return state.modes
-            ? settled({ ...state, modes: { ...state.modes, currentModeId: event.update.currentModeId } })
+            ? settled({ ...state, modes: { ...state.modes, currentModeId: action.update.currentModeId } })
             : stateOnly(state);
         case 'config_option_update':
-          return settled({ ...state, configOptions: event.update.configOptions });
+          return settled({ ...state, configOptions: action.update.configOptions });
         default:
           return stateOnly(state);
       }
     case 'pickerToggled':
-      return stateOnly({ ...state, open: isOpen(state, event.picker) ? null : event.picker, hovered: null });
+      return stateOnly({ ...state, open: isOpen(state, action.picker) ? null : action.picker, hovered: null });
     case 'pickersClosed':
       return stateOnly(closed(state));
     case 'pickerItemHovered': {
-      const { hovered } = event;
+      const { hovered } = action;
       const same = state.hovered && samePicker(state.hovered.picker, hovered.picker) && state.hovered.item === hovered.item;
       return stateOnly(same || !isOpen(state, hovered.picker) ? state : { ...state, hovered });
     }
@@ -148,16 +148,16 @@ export function updatePickers(
       return stateOnly(state.hovered === null ? state : { ...state, hovered: null });
     case 'modeChosen': {
       const { modes } = state;
-      if (!modes || event.modeId === modes.currentModeId) {
+      if (!modes || action.modeId === modes.currentModeId) {
         return stateOnly(closed(state));
       }
       return {
-        state: { ...closed(state), modes: { ...modes, currentModeId: event.modeId } },
-        outgoing: [{ type: 'setMode', modeId: event.modeId }],
+        state: { ...closed(state), modes: { ...modes, currentModeId: action.modeId } },
+        outgoing: [{ type: 'setMode', modeId: action.modeId }],
       };
     }
     case 'configValueChosen': {
-      const { configId, value } = event;
+      const { configId, value } = action;
       const option = state.configOptions.find((candidate) => candidate.id === configId);
       if (!option || option.type !== 'select' || option.currentValue === value) {
         return stateOnly(closed(state));

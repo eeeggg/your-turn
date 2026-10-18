@@ -210,7 +210,7 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Start a new session with the agent that owns the active session, on a
-   * fresh agent process, and clear the chat view.
+   * fresh agent process, and clear the transcript.
    */
   async newSession(): Promise<SessionInfo | null> {
     const activeSession = this.getActiveSession();
@@ -220,7 +220,7 @@ export class SessionManager extends EventEmitter {
 
     const agentName = activeSession.agentName;
     await this.disconnectAgent(agentName);
-    this.emit('clear-chat');
+    this.emit('clear-transcript');
     return this.connectToAgent(agentName);
   }
 

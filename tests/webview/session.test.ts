@@ -64,12 +64,12 @@ describe('session state', () => {
     expect(page.byId('emptyState').style.display).toBe('');
   });
 
-  it('clearChat removes messages and returns to the disconnected view', () => {
+  it('clearTranscript removes messages and returns to the disconnected view', () => {
     page = loadChatPage();
     connect(page);
     page.typePrompt('hello');
     page.pressKey('Enter');
-    page.send({ type: 'clearChat' });
+    page.send({ type: 'clearTranscript' });
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
     expect(page.byId('messages').contains(page.byId('emptyState'))).toBe(true);

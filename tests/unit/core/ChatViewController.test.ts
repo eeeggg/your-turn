@@ -245,7 +245,7 @@ describe('ChatViewController', () => {
       expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(sessions.recordFirstPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(environment.take()).toEqual([{ type: 'promptStart' }]);
-      expect(controller.hasChatContent).toBe(true);
+      expect(controller.hasTranscript).toBe(true);
 
       sessions.answer({ stopReason: 'end_turn', usage });
       await turn;
@@ -387,18 +387,18 @@ describe('ChatViewController', () => {
       ]);
     });
 
-    it('drops queued prompts when the chat is cleared', async () => {
+    it('drops queued prompts when the transcript is cleared', async () => {
       const { sessions, environment, controller } = setup();
       const first = sendPrompt(controller, 'first');
       await sendPrompt(controller, 'second');
 
-      controller.clearChat();
-      expect(controller.hasChatContent).toBe(false);
+      controller.clearTranscript();
+      expect(controller.hasTranscript).toBe(false);
       sessions.answer();
       await first;
 
       expect(sessions.sendPrompt).toHaveBeenCalledTimes(1);
-      expect(environment.take()).toContainEqual({ type: 'clearChat' });
+      expect(environment.take()).toContainEqual({ type: 'clearTranscript' });
     });
   });
 
