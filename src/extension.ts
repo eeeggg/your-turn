@@ -4,6 +4,7 @@ import { AgentManager } from '@/core/AgentManager';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionHistoryStore } from '@/core/SessionHistoryStore';
+import { SessionList } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ChatViewController } from '@/core/ChatViewController';
 import { fetchRegistry } from '@/core/RegistryClient';
@@ -53,7 +54,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // --- UI ---
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const sessionTreeProvider = new SessionTreeProvider(sessionManager, historyStore, workspaceCwd);
+  const sessionList = new SessionList(sessionManager, historyStore, getAgentNames, workspaceCwd);
+  const sessionTreeProvider = new SessionTreeProvider(sessionList);
   const treeView = vscode.window.createTreeView('acp-sessions', {
     treeDataProvider: sessionTreeProvider,
   });
@@ -313,7 +315,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // session-list state so the next expansion re-runs `session/list`.
   const refreshSessionsCmd = vscode.commands.registerCommand('acp.refreshSessions', (arg?: any) => {
     const agentName = typeof arg === 'string' ? arg : arg?.agentName;
-    sessionTreeProvider.invalidate(agentName);
+    sessionList.invalidate(agentName);
   });
 
   // Open (load or resume) a previously-existing session.
@@ -374,7 +376,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Pagination cursor: append the next page to the agent-sourced list.
   const loadMoreSessionsCmd = vscode.commands.registerCommand('acp.loadMoreSessions', async (agentName?: string) => {
     if (!agentName) { return; }
-    await sessionTreeProvider.loadMore(agentName);
+    await sessionList.loadMore(agentName);
   });
 
   // Copy session ID to clipboard (right-click on a session tree item).
@@ -521,6 +523,7 @@ export function activate(context: vscode.ExtensionContext): void {
         sessionUpdateHandler.dispose();
         chatWebviewProvider.dispose();
         sessionTreeProvider.dispose();
+        sessionList.dispose();
         disposeChannels();
       },
     },

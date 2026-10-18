@@ -91,6 +91,14 @@ function summarizeCapabilities(caps: AgentCapabilities | undefined): AgentCapabi
   };
 }
 
+/** The user dismissed the choice of authentication method; the agent has been stopped. */
+export class AuthenticationCancelled extends Error {
+  constructor() {
+    super('Authentication cancelled by user.');
+    this.name = 'AuthenticationCancelled';
+  }
+}
+
 /** True if a thrown error denotes ACP "auth required" (-32000). */
 function isAuthRequiredError(e: any): boolean {
   return (e instanceof RequestError && e.code === -32000)
@@ -231,14 +239,15 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Launch and initialize an agent without creating a session, so the tree
-   * can read its capabilities or list its sessions. Reuses the agent's
-   * process if it is already running.
+   * Launch and initialize an agent without creating a session, so its
+   * capabilities are known and its sessions can be listed; returns the
+   * capabilities. Reuses the agent's process if it is already running.
    *
    * This never disconnects the agent that owns the active session.
    */
-  async ensureConnected(agentName: string): Promise<void> {
-    await this.ensureAgent(agentName);
+  async ensureConnected(agentName: string): Promise<AgentCapabilitySummary> {
+    const agent = await this.ensureAgent(agentName);
+    return summarizeCapabilities(agent.initResponse.agentCapabilities);
   }
 
   private ensureAgent(agentName: string): Promise<RunningAgent> {
@@ -379,7 +388,7 @@ export class SessionManager extends EventEmitter {
     const selectedMethod = await this.authPrompt.chooseAuthMethod(agent.name, authMethods);
     if (!selectedMethod) {
       this.stopAgent(agent);
-      throw new Error('Authentication cancelled by user.');
+      throw new AuthenticationCancelled();
     }
 
     try {
@@ -644,9 +653,8 @@ export class SessionManager extends EventEmitter {
     }
     this.listedTitles.set(agentName, titles);
 
-    // Reconcile the history store — drop any locally-cached entries that
-    // the agent no longer knows about.
-    if (this.historyStore && !opts.cursor) {
+    // Only a complete list shows which session history entries the agent no longer knows.
+    if (this.historyStore && !opts.cursor && !response.nextCursor) {
       this.historyStore.reconcileFromAgent(
         agentName,
         new Set(sessions.map(s => s.sessionId)),

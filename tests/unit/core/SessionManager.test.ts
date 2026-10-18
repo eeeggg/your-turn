@@ -5,7 +5,7 @@ import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
-import { SessionManager, type AuthPrompt, type SessionEnvironment } from '@/core/SessionManager';
+import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { fakeAgent, InProcessAgents, type AgentScript } from './inProcessAgents';
 
@@ -161,6 +161,13 @@ describe('SessionManager', () => {
       expect(manager.hasSession('fake')).toBe(true);
     });
 
+    it('reports the capabilities of an agent launched without a session', async () => {
+      const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } });
+      const { manager } = setup({ fake: script });
+
+      expect(await manager.ensureConnected('fake')).toEqual({ list: false, load: true, resume: false });
+    });
+
     it('disconnects an agent launched only to list its sessions', async () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent().script });
       await manager.ensureConnected('fake');
@@ -278,7 +285,7 @@ describe('SessionManager', () => {
     it('stops the agent when the user cancels', async () => {
       const { agents, manager } = setup({ fake: authAgent().script });
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow('Authentication cancelled by user.');
+      await expect(manager.connectToAgent('fake')).rejects.toThrow(AuthenticationCancelled);
       expect(agents.launched[0]?.killed).toBe(true);
     });
 
@@ -494,18 +501,27 @@ describe('SessionManager', () => {
       expect(result).not.toHaveProperty('nextCursor');
     });
 
-    it('forgets session history entries the agent no longer lists, on the first page only', async () => {
-      const fake = listingAgent({ '': { ids: ['a'], nextCursor: 'page2' }, page2: { ids: [] } });
+    it('forgets session history entries the agent no longer lists, once it lists them all', async () => {
+      const fake = listingAgent({ '': { ids: ['a'] } });
       const { manager, sessionHistory } = setup({ fake: fake.script });
       sessionHistory.upsertNew('fake', '/work', 'a');
       sessionHistory.upsertNew('fake', '/work', 'gone');
 
-      await manager.listSessions('fake', { cursor: 'page2' });
-      expect(sessionHistory.get('fake', 'gone')).toBeDefined();
-
       await manager.listSessions('fake');
+
       expect(sessionHistory.get('fake', 'a')).toBeDefined();
       expect(sessionHistory.get('fake', 'gone')).toBeUndefined();
+    });
+
+    it('keeps session history entries while the agent has more pages to list', async () => {
+      const fake = listingAgent({ '': { ids: ['a'], nextCursor: 'page2' }, page2: { ids: ['later'] } });
+      const { manager, sessionHistory } = setup({ fake: fake.script });
+      sessionHistory.upsertNew('fake', '/work', 'later');
+
+      await manager.listSessions('fake');
+      await manager.listSessions('fake', { cursor: 'page2' });
+
+      expect(sessionHistory.get('fake', 'later')).toBeDefined();
     });
 
     it('refuses to list when the agent does not support it', async () => {

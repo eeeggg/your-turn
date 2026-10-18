@@ -70,6 +70,10 @@ _Avoid_: current conversation
 The extension's own list of past sessions per agent, used when the agent cannot list them itself.
 _Avoid_: history (unqualified), recent sessions
 
+**Session list**:
+The past sessions shown under an agent in the Agents view, listed by the agent when it can, otherwise taken from session history.
+_Avoid_: tier 2, session tree
+
 **Load**:
 Reopening a past session, during which the agent replays its transcript.
 _Avoid_: restore, resume (a separate ACP operation), reopen
