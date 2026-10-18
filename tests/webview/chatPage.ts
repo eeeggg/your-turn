@@ -1,8 +1,11 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
+import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
+import type { ExtensionToWebviewMessage, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
@@ -10,19 +13,19 @@ const sourceDir = join(repoRoot, 'src', 'webview');
 const nonce = 'test-nonce';
 const scriptUri = 'chat.js';
 
-export type PostedMessage = { type: string } & Record<string, unknown>;
-
 export interface ChatPage {
   readonly window: DOMWindow;
   readonly document: Document;
   /** Errors raised by the page's script, including uncaught exceptions in event handlers. */
   readonly errors: string[];
-  /** Messages posted to the extension host since the last call. */
-  takePosted(): PostedMessage[];
+  /** Messages posted to the extension since the last call. */
+  takePosted(): WebviewToExtensionMessage[];
   /** The value most recently passed to `setState`. */
   savedState(): unknown;
-  /** Deliver a message from the extension host. */
-  send(message: object): void;
+  /** Deliver a message from the extension. */
+  send(message: ExtensionToWebviewMessage): void;
+  /** Deliver a message that breaks the SDK's types but passes its runtime validation, so it can still reach the webview. */
+  sendUnchecked(message: unknown): void;
   byId<T extends HTMLElement = HTMLElement>(id: string): T;
   typePrompt(text: string): void;
   pressKey(key: string, init?: KeyboardEventInit): void;
@@ -65,8 +68,16 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
 
   // VS Code serializes everything crossing the webview boundary; cloning keeps
   // the page and the test from sharing objects.
-  let posted: PostedMessage[] = [];
+  let posted: WebviewToExtensionMessage[] = [];
   let state = structuredClone(options.savedState);
+  const api: WebviewApi<unknown> = {
+    postMessage: (message) => posted.push(structuredClone(message as WebviewToExtensionMessage)),
+    getState: () => structuredClone(state),
+    setState: (next) => {
+      state = structuredClone(next);
+      return next;
+    },
+  };
   const errors: string[] = [];
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', (error) => errors.push(error.stack ?? error.message));
@@ -77,19 +88,15 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     beforeParse(window) {
       // jsdom does not implement scrolling.
       window.Element.prototype.scrollIntoView = () => undefined;
-      Object.assign(window, {
-        acquireVsCodeApi: () => ({
-          postMessage: (message: PostedMessage) => posted.push(structuredClone(message)),
-          getState: () => structuredClone(state),
-          setState: (next: unknown) => {
-            state = structuredClone(next);
-          },
-        }),
-      });
+      Object.assign(window, { acquireVsCodeApi: () => api });
     },
   });
   const { window } = dom;
   const { document } = window;
+
+  const deliver = (message: unknown): void => {
+    window.dispatchEvent(new window.MessageEvent('message', { data: structuredClone(message) }));
+  };
 
   const byId = <T extends HTMLElement = HTMLElement>(id: string): T => {
     const el = document.getElementById(id);
@@ -109,9 +116,8 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
       return taken;
     },
     savedState: () => state,
-    send(message) {
-      window.dispatchEvent(new window.MessageEvent('message', { data: structuredClone(message) }));
-    },
+    send: deliver,
+    sendUnchecked: deliver,
     byId,
     typePrompt(text) {
       const input = byId<HTMLTextAreaElement>('promptInput');
@@ -127,25 +133,33 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   };
 }
 
-export interface SessionFixture {
-  sessionId?: string;
-  agentName?: string;
-  title?: string | null;
-  cwd?: string;
-  configOptions?: unknown[];
-  modes?: unknown;
-  availableCommands?: unknown[];
+export function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
+  return {
+    sessionId: 's1',
+    agentName: 'Fake Agent',
+    cwd: '/work/project',
+    modes: null,
+    configOptions: null,
+    availableCommands: [],
+    ...session,
+  };
 }
 
-/** Send a `state` message describing a connected session, as the host does on connect. */
-export function connect(page: ChatPage, session: SessionFixture = {}): void {
-  const full = { sessionId: 's1', agentName: 'Fake Agent', cwd: '/work/project', ...session };
+/** Send a `state` message describing a connected session, as the extension does on connect. */
+export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}): void {
+  const full = sessionSnapshot(session);
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
 }
 
+type SessionUpdateKind = SessionUpdate['sessionUpdate'];
+
 /** Send a `sessionUpdate` notification for the active session. */
-export function update(page: ChatPage, sessionUpdate: string, fields: object = {}): void {
-  page.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate, ...fields } });
+export function update<K extends SessionUpdateKind>(
+  page: ChatPage,
+  sessionUpdate: K,
+  fields: Omit<Extract<SessionUpdate, { sessionUpdate: K }>, 'sessionUpdate'>,
+): void {
+  page.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate, ...fields } as SessionUpdate });
 }
 
 export function textChunk(text: string): { content: { type: 'text'; text: string } } {

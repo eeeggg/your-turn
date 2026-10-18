@@ -128,12 +128,11 @@ describe('session state', () => {
     ]);
   });
 
-  it('shows host errors as error messages', () => {
+  it('shows extension errors as error messages', () => {
     page = loadChatPage();
     page.send({ type: 'error', message: 'boom' });
-    page.send({ type: 'error' });
 
     const errors = [...page.document.querySelectorAll('.message.error')].map((el) => el.textContent);
-    expect(errors).toEqual(['boom', 'An error occurred']);
+    expect(errors).toEqual(['boom']);
   });
 });

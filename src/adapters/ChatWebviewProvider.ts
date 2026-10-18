@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import { marked } from 'marked';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler, SessionUpdateListener } from '@/core/SessionUpdateHandler';
-import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { SessionModeState, SessionNotification } from '@agentclientprotocol/sdk';
 import { logError } from '@/core/Log';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { renderChatHtml } from './ChatHtml';
 
 /**
@@ -73,7 +74,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     webviewView.webview.html = this.getHtmlContent(webviewView.webview);
 
     // Handle messages from the webview
-    webviewView.webview.onDidReceiveMessage(async (message) => {
+    webviewView.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
       switch (message.type) {
         case 'sendPrompt':
           this._hasChatContent = true;
@@ -99,8 +100,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'renderMarkdown': {
           // Webview requests markdown rendering for history items
-          const items: Array<{index: number; text: string}> = message.items || [];
-          const rendered = items.map((item: {index: number; text: string}) => ({
+          const rendered = message.items.map((item) => ({
             index: item.index,
             html: this.renderMarkdown(item.text),
           }));
@@ -199,7 +199,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.finishPrompt({
         type: 'promptEnd',
         stopReason: response.stopReason,
-        usage: (response as any).usage,
+        ...(response.usage !== undefined ? { usage: response.usage } : {}),
       });
     } catch (e: any) {
       logError('Prompt failed', e);
@@ -216,7 +216,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * every in-flight prompt has returned, so the quick reply to a prompt sent
    * mid-turn does not clear the spinner of the turn that is still running.
    */
-  private finishPrompt(endMessage: Record<string, unknown>): void {
+  private finishPrompt(endMessage: Extract<ExtensionToWebviewMessage, { type: 'promptEnd' }>): void {
     this.inFlightPrompts = Math.max(0, this.inFlightPrompts - 1);
     if (this.inFlightPrompts > 0) {
       return;
@@ -292,7 +292,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       session: session ? {
         sessionId: session.sessionId,
         agentName: session.agentDisplayName,
-        title: session.title,
+        ...(session.title !== undefined ? { title: session.title } : {}),
         cwd: session.cwd,
         modes: session.modes,
         configOptions: session.configOptions,
@@ -304,7 +304,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Post a message to the webview if it exists.
    */
-  private postMessage(message: any): void {
+  private postMessage(message: ExtensionToWebviewMessage): void {
     this.view?.webview.postMessage(message);
   }
 
@@ -318,15 +318,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Notify webview of mode state changes.
    */
-  notifyModesUpdate(modes: any): void {
+  notifyModesUpdate(modes: SessionModeState | null): void {
     this.postMessage({ type: 'modesUpdate', modes });
-  }
-
-  /**
-   * Notify webview of session config-option state changes.
-   */
-  notifyConfigOptionsUpdate(configOptions: any): void {
-    this.postMessage({ type: 'configOptionsUpdate', configOptions });
   }
 
   /**
@@ -382,7 +375,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   attachFile(uri: vscode.Uri): void {
     if (this.view) {
-      this.view.webview.postMessage({
+      this.postMessage({
         type: 'file-attached',
         path: uri.fsPath,
         name: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,

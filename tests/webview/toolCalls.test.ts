@@ -34,10 +34,9 @@ describe('tool calls', () => {
     expect(page.document.querySelector('.turn-tools-summary')?.textContent).toBe('▾ 1 tool call');
   });
 
-  it('uses defaults when the agent omits the title and status', () => {
-    update(page, 'tool_call', { toolCallId: 't1' });
+  it('shows a tool call as pending when the agent omits the status', () => {
+    update(page, 'tool_call', { toolCallId: 't1', title: 'Run' });
 
-    expect(toolCall('t1').querySelector('.tc-title')?.textContent).toBe('Tool Call');
     expect(toolCall('t1').querySelector('.tc-icon')?.className).toBe('tc-icon pending');
   });
 
@@ -73,14 +72,19 @@ describe('tool calls', () => {
 
   it('shows text content and does not render diff content', () => {
     update(page, 'tool_call', { toolCallId: 't1', title: 'Edit foo.ts', kind: 'edit', status: 'pending' });
-    update(page, 'tool_call_update', {
-      toolCallId: 't1',
-      status: 'completed',
-      content: [
-        { type: 'content', content: { type: 'text', text: 'wrapped text' } },
-        { type: 'text', text: 'bare text' },
-        { type: 'diff', path: '/work/project/foo.ts', oldText: 'a', newText: 'b' },
-      ],
+    page.sendUnchecked({
+      type: 'sessionUpdate',
+      sessionId: 's1',
+      update: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        status: 'completed',
+        content: [
+          { type: 'content', content: { type: 'text', text: 'wrapped text' } },
+          { type: 'text', text: 'bare text' },
+          { type: 'diff', path: '/work/project/foo.ts', oldText: 'a', newText: 'b' },
+        ],
+      },
     });
 
     expect(blocks('t1')).toEqual(['wrapped text', 'bare text']);
@@ -110,7 +114,10 @@ describe('tool calls', () => {
     update(page, 'tool_call_update', {
       toolCallId: 't1',
       status: 'completed',
-      content: [{ type: 'text', text: 'a'.repeat(15_000) }, { type: 'text', text: 'b'.repeat(10_000) }],
+      content: [
+        { type: 'content', content: { type: 'text', text: 'a'.repeat(15_000) } },
+        { type: 'content', content: { type: 'text', text: 'b'.repeat(10_000) } },
+      ],
     });
 
     expect(blocks('t1').join('')).toHaveLength(20_000);

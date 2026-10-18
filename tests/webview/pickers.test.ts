@@ -1,5 +1,6 @@
+import type { SessionConfigOption, SessionModeState } from '@agentclientprotocol/sdk';
 import { afterEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, sessionSnapshot, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -18,7 +19,7 @@ const modelOption = {
     { value: 'a', name: 'Model A', description: 'Fast' },
     { value: 'b', name: 'Model B' },
   ],
-};
+} satisfies SessionConfigOption;
 
 const legacyModes = {
   availableModes: [
@@ -26,7 +27,7 @@ const legacyModes = {
     { id: 'code', name: 'Code' },
   ],
   currentModeId: 'ask',
-};
+} satisfies SessionModeState;
 
 function pickers(): HTMLElement[] {
   return [...page.byId('configOptionsContainer').querySelectorAll<HTMLElement>('.picker-wrap')];
@@ -57,12 +58,17 @@ function item(dropdown: Element, value: string): HTMLElement {
 describe('session config option pickers', () => {
   it('renders a picker for each select option and skips the rest', () => {
     page = loadChatPage();
-    connect(page, {
-      configOptions: [
-        modelOption,
-        { id: 'flag', name: 'Flag', type: 'boolean', currentValue: true },
-        { id: 'empty', name: 'Empty', type: 'select', currentValue: null, options: [] },
-      ],
+    page.sendUnchecked({
+      type: 'state',
+      activeSessionId: 's1',
+      session: {
+        ...sessionSnapshot(),
+        configOptions: [
+          modelOption,
+          { id: 'flag', name: 'Flag', type: 'boolean', currentValue: true },
+          { id: 'empty', name: 'Empty', type: 'select', currentValue: null, options: [] },
+        ],
+      },
     });
 
     expect(pickers().map((el) => el.dataset['configId'])).toEqual(['model']);
