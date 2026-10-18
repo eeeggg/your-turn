@@ -934,7 +934,7 @@ function finalizeCurrentTurn() {
   thoughtEndTime = null;
 }
 
-function showSessionConnected(session) {
+function showSession(session) {
   sessionState = {
     agentName: session.agentName,
     cwd: session.cwd,
@@ -969,7 +969,6 @@ function showNoSession() {
   if (sessionBanner) { sessionBanner.classList.remove('visible'); }
   if (emptyState) { emptyState.style.display = ''; }
   if (inputArea) { inputArea.classList.add('disabled'); }
-  // Hide pickers when disconnected
   modePickerWrap.classList.add('hidden');
   setConfigOptionsState([]);
 }
@@ -985,7 +984,7 @@ window.addEventListener('message', (event) => {
           setProcessing(false);
           transcriptSessionId = msg.session.sessionId;
         }
-        showSessionConnected(msg.session);
+        showSession(msg.session);
       } else {
         showNoSession();
       }

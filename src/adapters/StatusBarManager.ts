@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionManager } from '@/core/SessionManager';
 
 /**
- * Manages the status bar item showing ACP connection status.
+ * Manages the status bar item showing which agent has a session, if any.
  */
 export class StatusBarManager {
   private statusBarItem: vscode.StatusBarItem;
@@ -15,9 +15,8 @@ export class StatusBarManager {
     this.statusBarItem.command = 'acp.connectAgent';
     this.updateStatus();
 
-    // Update on agent changes
-    this.sessionManager.on('agent-connected', () => this.updateStatus());
-    this.sessionManager.on('agent-disconnected', () => this.updateStatus());
+    this.sessionManager.on('session-added', () => this.updateStatus());
+    this.sessionManager.on('session-removed', () => this.updateStatus());
     this.sessionManager.on('active-session-changed', () => this.updateStatus());
     this.sessionManager.on('agent-error', () => this.showError());
     this.sessionManager.on('agent-closed', () => this.updateStatus());
@@ -25,16 +24,16 @@ export class StatusBarManager {
 
   private updateStatus(): void {
     const activeSession = this.sessionManager.getActiveSession();
-    const connectedAgents = this.sessionManager.getConnectedAgentNames();
+    const agentsWithSessions = this.sessionManager.getAgentNamesWithSessions();
 
-    if (connectedAgents.length === 0) {
-      this.statusBarItem.text = '$(hubot) ACP: Disconnected';
+    if (agentsWithSessions.length === 0) {
+      this.statusBarItem.text = '$(hubot) ACP: No session';
       this.statusBarItem.tooltip = 'Click to connect to an agent';
       this.statusBarItem.backgroundColor = undefined;
     } else {
-      const agentName = activeSession?.agentDisplayName || connectedAgents[0];
+      const agentName = activeSession?.agentDisplayName || agentsWithSessions[0];
       this.statusBarItem.text = `$(hubot) ACP: ${agentName}`;
-      this.statusBarItem.tooltip = `Connected to ${agentName}\n${connectedAgents.length} agent(s) connected`;
+      this.statusBarItem.tooltip = `In session with ${agentName}`;
       this.statusBarItem.backgroundColor = undefined;
     }
 

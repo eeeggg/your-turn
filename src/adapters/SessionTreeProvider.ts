@@ -13,28 +13,28 @@ import { log, logError } from '@/core/Log';
 export class AgentTreeItem extends vscode.TreeItem {
   constructor(
     public readonly agentName: string,
-    public readonly connected: boolean,
+    public readonly hasSession: boolean,
     collapsibleState: vscode.TreeItemCollapsibleState,
   ) {
     super(agentName, collapsibleState);
 
-    if (connected) {
-      this.contextValue = 'agent-connected';
+    if (hasSession) {
+      this.contextValue = 'agent-with-session';
       this.iconPath = new vscode.ThemeIcon(
         'circle-filled',
         new vscode.ThemeColor('testing.iconPassed'),
       );
-      this.description = 'connected';
+      this.description = 'in session';
       this.command = { command: 'acp.openChat', title: 'Open Chat' };
     } else {
-      this.contextValue = 'agent-disconnected';
+      this.contextValue = 'agent-without-session';
       this.iconPath = new vscode.ThemeIcon('circle-outline');
       this.description = '';
     }
 
-    this.tooltip = connected
-      ? `${agentName} — connected\nClick to open chat`
-      : `${agentName} — not connected\nUse the plug icon to connect`;
+    this.tooltip = hasSession
+      ? `${agentName} — in session\nClick to open chat`
+      : `${agentName} — no session\nUse the plug icon to connect`;
   }
 }
 
@@ -158,8 +158,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     private readonly historyStore: SessionHistoryStore | null,
     private readonly workspaceCwd: () => string | undefined,
   ) {
-    this.sessionManager.on('agent-connected', () => this.refresh());
-    this.sessionManager.on('agent-disconnected', () => this.refresh());
+    this.sessionManager.on('session-added', () => this.refresh());
+    this.sessionManager.on('session-removed', () => this.refresh());
     this.sessionManager.on('active-session-changed', () => this.refresh());
     this.sessionManager.on('session-info-changed', () => this.refresh());
     if (this.historyStore) {
@@ -207,7 +207,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
       const collapsibleState = this.computeCollapsibleState(caps, localCount);
       return new AgentTreeItem(
         name,
-        this.sessionManager.isAgentConnected(name),
+        this.sessionManager.hasSession(name),
         collapsibleState,
       );
     });

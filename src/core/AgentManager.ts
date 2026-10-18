@@ -1,6 +1,6 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { EventEmitter } from 'node:events';
+import { Readable, Writable } from 'node:stream';
 import { log, logError } from './Log';
 
 /**
@@ -15,6 +15,28 @@ export interface AgentConfigEntry {
   env?: Record<string, string>;
   /** Display name */
   displayName?: string;
+}
+
+/** A running agent's stdin and stdout, which carry newline-delimited ACP messages. */
+export interface AgentStreams {
+  readonly input: WritableStream<Uint8Array>;
+  readonly output: ReadableStream<Uint8Array>;
+}
+
+export interface AgentProcess extends AgentStreams {
+  readonly id: string;
+  /** Ask the agent to stop; its `exit` event follows. */
+  kill(): void;
+}
+
+/** What happens to one launched agent. */
+export interface AgentProcessEvents {
+  error(error: Error): void;
+  exit(code: number | null): void;
+}
+
+export interface AgentLauncher {
+  launch(name: string, config: AgentConfigEntry, cwd: string, events: AgentProcessEvents): AgentProcess;
 }
 
 /**
@@ -70,131 +92,71 @@ function resolveUnixShell(): { shell: string; useLoginFlag: boolean } {
   return { shell: '/bin/sh', useLoginFlag: false };
 }
 
-export interface AgentInstance {
-  id: string;
-  name: string;
-  process: ChildProcess;
-  config: AgentConfigEntry;
+function spawnAgent(config: AgentConfigEntry, cwd: string) {
+  const env = { ...process.env, ...(config.env || {}) };
+  if (process.platform === 'win32') {
+    // On Windows, commands like npx are batch scripts (.cmd) that require
+    // shell resolution via cmd.exe.
+    return spawn(config.command, config.args || [], { stdio: ['pipe', 'pipe', 'pipe'], env, cwd, shell: true });
+  }
+
+  // On macOS/Linux, use the user's login shell so that PATH includes
+  // nvm, Homebrew, and other user-installed tool directories.
+  const { shell, useLoginFlag } = resolveUnixShell();
+  const commandStr = [config.command, ...(config.args || [])].map(shellEscape).join(' ');
+  const shellArgs = useLoginFlag ? ['-l', '-c', commandStr] : ['-c', commandStr];
+
+  log(`Using shell: ${shell} ${shellArgs.join(' ')}`);
+  return spawn(shell, shellArgs, { stdio: ['pipe', 'pipe', 'pipe'], env, cwd });
 }
 
-/**
- * Manages spawning and killing ACP agent child processes.
- */
-export class AgentManager extends EventEmitter {
-  private agents: Map<string, AgentInstance> = new Map();
+function stop(name: string, child: ChildProcess): void {
+  log(`Killing agent "${name}"`);
+  try {
+    child.kill('SIGTERM');
+    // Force kill after 5s if still running
+    setTimeout(() => {
+      if (child.exitCode === null) {
+        child.kill('SIGKILL');
+      }
+    }, 5000);
+  } catch (e) {
+    logError(`Failed to kill agent "${name}"`, e);
+  }
+}
+
+/** Launches agents as child processes, talking to them over stdio. */
+export class AgentManager implements AgentLauncher {
   private nextId = 1;
 
-  /**
-   * Spawn an agent as a child process with stdin/stdout piped.
-   */
-  spawnAgent(name: string, config: AgentConfigEntry, cwd?: string): AgentInstance {
+  launch(name: string, config: AgentConfigEntry, cwd: string, events: AgentProcessEvents): AgentProcess {
     const id = `agent_${this.nextId++}`;
     log(`Spawning agent "${name}" (${id}): ${config.command} ${(config.args || []).join(' ')}`);
 
-    const child = (() => {
-      if (process.platform === 'win32') {
-        // On Windows, commands like npx are batch scripts (.cmd) that require
-        // shell resolution via cmd.exe.
-        return spawn(config.command, config.args || [], {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, ...(config.env || {}) },
-          cwd: cwd || undefined,
-          shell: true,
-        });
-      }
+    const child = spawnAgent(config, cwd);
 
-      // On macOS/Linux, use the user's login shell so that PATH includes
-      // nvm, Homebrew, and other user-installed tool directories.
-      const { shell, useLoginFlag } = resolveUnixShell();
-      const commandStr = [config.command, ...(config.args || [])].map(shellEscape).join(' ');
-      const shellArgs = useLoginFlag ? ['-l', '-c', commandStr] : ['-c', commandStr];
-
-      log(`Using shell: ${shell} ${shellArgs.join(' ')}`);
-      return spawn(shell, shellArgs, {
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...(config.env || {}) },
-        cwd: cwd || undefined,
-      });
-    })();
-
-    const instance: AgentInstance = { id, name, process: child, config };
-    this.agents.set(id, instance);
-
-    // Forward stderr for debugging
-    child.stderr?.on('data', (data: Buffer) => {
+    child.stderr.on('data', (data: Buffer) => {
       const line = data.toString().trim();
       if (line) {
         log(`[${name} stderr] ${line}`);
-        this.emit('agent-stderr', { agentId: id, line });
       }
     });
 
     child.on('error', (err) => {
       logError(`Agent "${name}" process error`, err);
-      this.emit('agent-error', { agentId: id, error: err });
+      events.error(err);
     });
 
     child.on('close', (code, signal) => {
       log(`Agent "${name}" exited (code=${code}, signal=${signal})`);
-      this.agents.delete(id);
-      this.emit('agent-closed', { agentId: id, code, signal });
+      events.exit(code);
     });
 
-    return instance;
-  }
-
-  /**
-   * Kill an agent process.
-   */
-  killAgent(agentId: string): boolean {
-    const instance = this.agents.get(agentId);
-    if (!instance) {
-      return false;
-    }
-
-    log(`Killing agent "${instance.name}" (${agentId})`);
-
-    try {
-      instance.process.kill('SIGTERM');
-      // Force kill after 5s if still running
-      setTimeout(() => {
-        if (instance.process.exitCode === null) {
-          instance.process.kill('SIGKILL');
-        }
-      }, 5000);
-    } catch (e) {
-      logError(`Failed to kill agent ${agentId}`, e);
-    }
-
-    this.agents.delete(agentId);
-    return true;
-  }
-
-  /**
-   * Get a running agent by ID.
-   */
-  getAgent(agentId: string): AgentInstance | undefined {
-    return this.agents.get(agentId);
-  }
-
-  /**
-   * Get all running agents.
-   */
-  getRunningAgents(): AgentInstance[] {
-    return Array.from(this.agents.values());
-  }
-
-  /**
-   * Kill all running agents. Called on extension deactivate.
-   */
-  killAll(): void {
-    for (const [id] of this.agents) {
-      this.killAgent(id);
-    }
-  }
-
-  dispose(): void {
-    this.killAll();
-    this.removeAllListeners();
+    return {
+      id,
+      input: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
+      output: Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
+      kill: () => stop(name, child),
+    };
   }
 }

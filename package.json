@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.2.1-dev.14",
+  "version": "0.2.1-dev.15",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -231,12 +231,12 @@
       "view/item/context": [
         {
           "command": "acp.connectAgent",
-          "when": "view == acp-sessions && viewItem == agent-disconnected",
+          "when": "view == acp-sessions && viewItem == agent-without-session",
           "group": "inline"
         },
         {
           "command": "acp.disconnectAgent",
-          "when": "view == acp-sessions && viewItem == agent-connected",
+          "when": "view == acp-sessions && viewItem == agent-with-session",
           "group": "inline"
         },
         {
@@ -245,7 +245,7 @@
         },
         {
           "command": "acp.restartAgent",
-          "when": "view == acp-sessions && viewItem == agent-connected"
+          "when": "view == acp-sessions && viewItem == agent-with-session"
         },
         {
           "command": "acp.refreshSessions",

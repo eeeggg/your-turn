@@ -145,7 +145,7 @@ export function sessionSnapshot(session: Partial<SessionSnapshot> = {}): Session
   };
 }
 
-/** Send a `state` message describing a connected session, as the extension does on connect. */
+/** Send a `state` message describing the active session, as the extension does on connect. */
 export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}): void {
   const full = sessionSnapshot(session);
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });

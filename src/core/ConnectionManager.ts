@@ -1,47 +1,31 @@
 import { client as createClientApp, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { ClientConnection, InitializeResponse, Stream } from '@agentclientprotocol/sdk';
-import { ChildProcess } from 'node:child_process';
-import { Readable, Writable } from 'node:stream';
 
 import { AcpClientImpl, type ClientHandlers } from './AcpClientImpl';
+import type { AgentStreams } from './AgentManager';
 import { SessionUpdateHandler } from './SessionUpdateHandler';
 import { log, logError, logTraffic } from './Log';
 
 export interface ConnectionInfo {
   connection: ClientConnection;
-  client: AcpClientImpl;
   initResponse: InitializeResponse;
 }
 
 /**
- * Manages ACP connections to agent processes.
- * Creates client-side ACP connections from spawned child processes.
+ * Opens client-side ACP connections to agents and performs the initialize handshake.
  */
 export class ConnectionManager {
-  private connections: Map<string, ConnectionInfo> = new Map();
-
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly clientVersion: string,
     private readonly createHandlers: () => ClientHandlers,
   ) {}
 
-  /**
-   * Create an ACP connection from a child process.
-   * Sets up streams, creates connection, and performs initialization handshake.
-   */
-  async connect(agentId: string, process: ChildProcess): Promise<ConnectionInfo> {
-    if (!process.stdout || !process.stdin) {
-      throw new Error('Agent process missing stdio streams');
-    }
+  /** Connect to an agent over its streams and initialize the connection. */
+  async connect(agentName: string, streams: AgentStreams): Promise<ConnectionInfo> {
+    log(`ConnectionManager: connecting to agent ${agentName}`);
 
-    log(`ConnectionManager: connecting to agent ${agentId}`);
-
-    // Create Web Streams from Node.js streams
-    const readable = Readable.toWeb(process.stdout) as ReadableStream<Uint8Array>;
-    const writable = Writable.toWeb(process.stdin) as WritableStream<Uint8Array>;
-
-    const stream = ndJsonStream(writable, readable);
+    const stream = ndJsonStream(streams.input, streams.output);
 
     // Wrap the stream to intercept and log all ACP traffic
     const tappedStream = this.tapStream(stream);
@@ -64,7 +48,7 @@ export class ConnectionManager {
     const connection = app.connect(tappedStream);
 
     // Initialize the connection
-    log(`ConnectionManager: initializing connection to agent ${agentId}`);
+    log(`ConnectionManager: initializing connection to agent ${agentName}`);
     const initResponse = await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       clientInfo: {
@@ -82,22 +66,7 @@ export class ConnectionManager {
 
     log(`ConnectionManager: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);
 
-    const info: ConnectionInfo = { connection, client, initResponse };
-    this.connections.set(agentId, info);
-
-    return info;
-  }
-
-  getConnection(agentId: string): ConnectionInfo | undefined {
-    return this.connections.get(agentId);
-  }
-
-  removeConnection(agentId: string): void {
-    this.connections.delete(agentId);
-  }
-
-  dispose(): void {
-    this.connections.clear();
+    return { connection, initResponse };
   }
 
   /**

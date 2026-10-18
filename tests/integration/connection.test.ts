@@ -2,9 +2,9 @@ import * as assert from 'assert';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { spawn, ChildProcess } from 'node:child_process';
 import { methods } from '@agentclientprotocol/sdk';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
+import { AgentManager, type AgentProcess } from '@/core/AgentManager';
 import { ConnectionManager, ConnectionInfo } from '@/core/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { setLogSink, type TrafficDirection } from '@/core/Log';
@@ -26,9 +26,10 @@ const CLIENT_VERSION = '0.0.0-test';
 
 suite('ConnectionManager Test Suite', () => {
   let originalAutoApprove: string | undefined;
-  let child: ChildProcess;
+  let agent: AgentProcess;
   let manager: ConnectionManager;
   let info: ConnectionInfo;
+  const exits: (number | null)[] = [];
   const texts: string[] = [];
   const traffic: { direction: TrafficDirection; data: any }[] = [];
 
@@ -56,24 +57,26 @@ suite('ConnectionManager Test Suite', () => {
     }));
 
     // Inside the test host, process.execPath is the Electron binary.
-    child = spawn(process.execPath, [path.join(__dirname, 'fixtures', 'fakeAgent.js')], {
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
-      stdio: ['pipe', 'pipe', 'inherit'],
+    agent = new AgentManager().launch('fake-agent', {
+      command: process.execPath,
+      args: [path.join(__dirname, 'fixtures', 'fakeAgent.js')],
+      env: { ELECTRON_RUN_AS_NODE: '1' },
+    }, __dirname, {
+      error: () => {},
+      exit: (code) => exits.push(code),
     });
-    info = await manager.connect('fake-agent', child);
+    info = await manager.connect('fake-agent', agent);
   });
 
   suiteTeardown(async () => {
-    child?.kill();
+    agent?.kill();
     setLogSink(undefined);
-    manager?.dispose();
     const config = vscode.workspace.getConfiguration('acp');
     await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);
   });
 
-  test('Initializes and registers the connection', () => {
+  test('Initializes the connection', () => {
     assert.strictEqual(info.initResponse.agentInfo?.name, 'FakeAgent');
-    assert.strictEqual(manager.getConnection('fake-agent'), info);
   });
 
   test('Sends the client version in initialize', () => {
@@ -114,5 +117,11 @@ suite('ConnectionManager Test Suite', () => {
     const receivedMethods = traffic.filter(t => t.direction === 'recv').map(t => t.data?.method);
     assert.ok(sentMethods.includes('initialize'), `sent: ${JSON.stringify(sentMethods)}`);
     assert.ok(receivedMethods.includes('session/update'), `received: ${JSON.stringify(receivedMethods)}`);
+  });
+
+  test('Reports the agent exiting after it is killed', async () => {
+    agent.kill();
+    await waitFor(() => exits.length > 0);
+    assert.strictEqual(exits.length, 1);
   });
 });

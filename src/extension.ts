@@ -199,7 +199,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const disconnectAgentCmd = vscode.commands.registerCommand('acp.disconnectAgent', async (item?: any) => {
     const agentName = item?.agentName || sessionManager.getActiveAgentName();
     if (!agentName) {
-      vscode.window.showInformationMessage('No agent connected.');
+      vscode.window.showInformationMessage('No active session.');
       return;
     }
     await sessionManager.disconnectAgent(agentName);
@@ -443,10 +443,7 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     if (confirm !== 'Remove') { return; }
 
-    // Disconnect if connected
-    if (sessionManager.isAgentConnected(name)) {
-      await sessionManager.disconnectAgent(name);
-    }
+    await sessionManager.disconnectAgent(name);
 
     delete agents[name];
     await config.update('agents', agents, vscode.ConfigurationTarget.Global);
