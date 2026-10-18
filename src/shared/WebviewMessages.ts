@@ -41,6 +41,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'sessionUpdate'; sessionId: string; update: SessionUpdate }
   | { type: 'modesUpdate'; modes: SessionModeState | null }
   | { type: 'configOptionsUpdate'; configOptions: SessionConfigOption[] | null }
+  /** The active session's title, null when it has none. */
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }
   | { type: 'loadSessionEnd'; ok: boolean }

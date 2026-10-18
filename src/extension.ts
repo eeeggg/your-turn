@@ -5,6 +5,7 @@ import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionHistoryStore } from '@/core/SessionHistoryStore';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { ChatViewController } from '@/core/ChatViewController';
 import { fetchRegistry } from '@/core/RegistryClient';
 import { log, logError, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
@@ -55,11 +56,12 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: sessionTreeProvider,
   });
 
-  const chatWebviewProvider = new ChatWebviewProvider(
-    context.extensionUri,
-    sessionManager,
-    sessionUpdateHandler,
-  );
+  const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri);
+  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider);
+  const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
+    void chatViewController.handleMessage(message);
+  });
+  sessionUpdateHandler.addListener((update) => chatViewController.handleSessionUpdate(update));
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
     ChatWebviewProvider.viewType,
     chatWebviewProvider,
@@ -70,41 +72,35 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // Notify chat webview when active session changes
   sessionManager.on('active-session-changed', () => {
-    chatWebviewProvider.notifyActiveSessionChanged();
+    chatViewController.notifyActiveSessionChanged();
   });
 
   // Clear chat when a new session is started
   sessionManager.on('clear-chat', () => {
-    chatWebviewProvider.clearChat();
+    chatViewController.clearChat();
   });
 
   // Forward mode changes to webview
   sessionManager.on('mode-changed', (_sessionId: string, _modeId: string) => {
     const session = sessionManager.getActiveSession();
     if (session?.modes) {
-      chatWebviewProvider.notifyModesUpdate(session.modes);
+      chatViewController.notifyModesUpdate(session.modes);
     }
   });
 
   // Session-load replay state — drive the webview overlay.
   sessionManager.on('session-load-start', () => {
-    chatWebviewProvider.notifyLoadSessionStart();
+    chatViewController.notifyLoadSessionStart();
   });
   sessionManager.on('session-load-end', (_sessionId: string, _agentName: string, ok: boolean) => {
-    chatWebviewProvider.notifyLoadSessionEnd(ok);
+    chatViewController.notifyLoadSessionEnd(ok);
     if (ok) {
       // The loadSession response carries modes/configOptions for the
       // restored session. Re-send the state so the pickers pick them up
       // (the original `active-session-changed` was emitted before the RPC
       // resolved, when those fields were still null).
-      chatWebviewProvider.notifyActiveSessionChanged();
+      chatViewController.notifyActiveSessionChanged();
     }
-  });
-
-  // Session metadata (title) update — forward to chat banner.
-  sessionManager.on('session-info-changed', (sessionId: string, update: any) => {
-    if (sessionId !== sessionManager.getActiveSessionId()) { return; }
-    chatWebviewProvider.notifySessionInfoUpdate(update?.title);
   });
 
   // --- Commands ---
@@ -136,14 +132,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     // If switching agents and there's chat content, confirm
     const currentAgent = sessionManager.getActiveAgentName();
-    if (currentAgent && currentAgent !== agentName && chatWebviewProvider.hasChatContent) {
+    if (currentAgent && currentAgent !== agentName && chatViewController.hasChatContent) {
       const choice = await vscode.window.showWarningMessage(
         `Switch to ${agentName}? This will disconnect ${currentAgent} and clear the transcript.`,
         'Switch Agent',
         'Cancel',
       );
       if (choice !== 'Switch Agent') { return; }
-      chatWebviewProvider.clearChat();
+      chatViewController.clearChat();
     }
 
     try {
@@ -173,7 +169,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     // Confirm if there's existing chat content
-    if (chatWebviewProvider.hasChatContent) {
+    if (chatViewController.hasChatContent) {
       const choice = await vscode.window.showWarningMessage(
         'Start a new session? This will clear the current transcript.',
         'New Session',
@@ -334,7 +330,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     // Confirm if there's existing chat content with a different active session.
-    if (chatWebviewProvider.hasChatContent) {
+    if (chatViewController.hasChatContent) {
       const choice = await vscode.window.showWarningMessage(
         'Open a different session? This will replace the current transcript.',
         'Open Session',
@@ -497,6 +493,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     treeView,
     chatViewRegistration,
+    chatMessageSubscription,
     statusBarManager,
     connectAgentCmd,
     newSessionCmd,

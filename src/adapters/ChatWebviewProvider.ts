@@ -1,63 +1,17 @@
 import * as vscode from 'vscode';
-import { marked } from 'marked';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionUpdateHandler, SessionUpdateListener } from '@/core/SessionUpdateHandler';
-import type { SessionModeState, SessionNotification } from '@agentclientprotocol/sdk';
-import { logError } from '@/core/Log';
+import type { ChatViewEnvironment, MidTurnPrompt } from '@/core/ChatViewController';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { renderChatHtml } from './ChatHtml';
 
-/**
- * WebviewViewProvider for the ACP chat sidebar.
- * Renders chat messages, tool calls, plans, and handles user input.
- */
-export class ChatWebviewProvider implements vscode.WebviewViewProvider {
+/** The chat view's webview in the ACP sidebar; `ChatViewController` decides what it shows. */
+export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatViewEnvironment, vscode.Disposable {
   public static readonly viewType = 'acp-chat';
 
   private view: vscode.WebviewView | undefined;
-  private updateListener: SessionUpdateListener;
-  private _hasChatContent = false;
-  /** Prompts sent to the agent that have not returned yet. */
-  private inFlightPrompts = 0;
-  /** Prompts typed during a turn that wait for that turn to finish. */
-  private pendingPrompts: string[] = [];
+  private readonly received = new vscode.EventEmitter<WebviewToExtensionMessage>();
+  readonly onDidReceiveMessage = this.received.event;
 
-  constructor(
-    private readonly extensionUri: vscode.Uri,
-    private readonly sessionManager: SessionManager,
-    private readonly sessionUpdateHandler: SessionUpdateHandler,
-  ) {
-    // Configure marked for safe rendering
-    marked.setOptions({
-      breaks: true,
-      gfm: true,
-    });
-
-    // Register as a session update listener
-    this.updateListener = (update: SessionNotification) => {
-      this.handleSessionUpdate(update);
-    };
-    this.sessionUpdateHandler.addListener(this.updateListener);
-  }
-
-  /**
-   * Render markdown text to HTML using marked.
-   */
-  private renderMarkdown(text: string): string {
-    try {
-      return marked.parse(text) as string;
-    } catch {
-      return this.escapeHtml(text);
-    }
-  }
-
-  private escapeHtml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
+  constructor(private readonly extensionUri: vscode.Uri) {}
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -73,41 +27,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtmlContent(webviewView.webview);
 
-    // Handle messages from the webview
-    webviewView.webview.onDidReceiveMessage(async (message: WebviewToExtensionMessage) => {
-      switch (message.type) {
-        case 'sendPrompt':
-          this._hasChatContent = true;
-          await this.handleSendPrompt(message.text);
-          break;
-        case 'cancelTurn':
-          await this.handleCancelTurn();
-          break;
-        case 'setMode':
-          await this.handleSetMode(message.modeId);
-          break;
-        case 'setConfigOption':
-          await this.handleSetConfigOption(message.configId, message.value);
-          break;
-        case 'executeCommand':
-          if (message.command) {
-            await vscode.commands.executeCommand(message.command);
-          }
-          break;
-        case 'ready':
-          // Webview loaded — send current session state
-          this.sendCurrentState();
-          break;
-        case 'renderMarkdown': {
-          // Webview requests markdown rendering for history items
-          const rendered = message.items.map((item) => ({
-            index: item.index,
-            html: this.renderMarkdown(item.text),
-          }));
-          this.postMessage({ type: 'markdownRendered', items: rendered });
-          break;
-        }
-      }
+    webviewView.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
+      this.received.fire(message);
     });
 
     webviewView.onDidDispose(() => {
@@ -115,267 +36,23 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * Forward session update to webview.
-   */
-  private handleSessionUpdate(update: SessionNotification): void {
-    const updateData = update.update as any;
-
-    // Persist session state BEFORE the active-session check. During session
-    // creation the agent can dispatch notifications (e.g.
-    // `available_commands_update`) before connectToAgent finishes setting
-    // `activeSessionId`. Without this, those updates would be dropped and
-    // the slash-command popup would never have commands to show.
-    if (updateData?.sessionUpdate === 'available_commands_update') {
-      this.sessionManager.applyAvailableCommands(
-        update.sessionId,
-        updateData.availableCommands || [],
-      );
-    }
-    if (updateData?.sessionUpdate === 'config_option_update') {
-      this.sessionManager.applyConfigOptions(
-        update.sessionId,
-        updateData.configOptions || [],
-      );
-    }
-    if (updateData?.sessionUpdate === 'session_info_update') {
-      this.sessionManager.applySessionInfoUpdate(update.sessionId, {
-        title: updateData.title,
-        updatedAt: updateData.updatedAt,
-      });
-    }
-
-    // Only forward to the webview if this is the active session — the
-    // webview only ever shows one session at a time.
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (update.sessionId !== activeId) { return; }
-
-    this.postMessage({
-      type: 'sessionUpdate',
-      update: update.update,
-      sessionId: update.sessionId,
-    });
-  }
-
-  /**
-   * Handle a prompt sent from the webview.
-   */
-  private async handleSendPrompt(text: string): Promise<void> {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId) {
-      this.postMessage({
-        type: 'error',
-        message: 'No active session. Create a session first.',
-      });
-      return;
-    }
-
-    // A prompt typed while the agent is still working either waits for the
-    // running turn or goes straight to the agent.
-    if (this.inFlightPrompts > 0) {
-      const midTurnPrompt = vscode.workspace
-        .getConfiguration('acp')
-        .get<string>('chat.midTurnPrompt', 'queue');
-      if (midTurnPrompt !== 'send') {
-        this.pendingPrompts.push(text);
-        return;
-      }
-    }
-
-    // Record the first prompt for the history store (used as a label
-    // fallback when no title is supplied by the agent).
-    this.sessionManager.recordFirstPrompt(activeId, text);
-
-    // Tell webview we're processing
-    if (this.inFlightPrompts++ === 0) {
-      this.postMessage({ type: 'promptStart' });
-    }
-
-    try {
-      const response = await this.sessionManager.sendPrompt(activeId, text);
-      this.sessionManager.touchHistory(activeId);
-      // Render the accumulated agent message as markdown
-      // The webview will have sent us the raw text via promptEnd handling
-      this.finishPrompt({
-        type: 'promptEnd',
-        stopReason: response.stopReason,
-        ...(response.usage !== undefined ? { usage: response.usage } : {}),
-      });
-    } catch (e: any) {
-      logError('Prompt failed', e);
-      this.postMessage({
-        type: 'error',
-        message: e.message || 'Prompt failed',
-      });
-      this.finishPrompt({ type: 'promptEnd', stopReason: 'error' });
-    }
-  }
-
-  /**
-   * End one prompt request. The webview leaves its processing state only once
-   * every in-flight prompt has returned, so the quick reply to a prompt sent
-   * mid-turn does not clear the spinner of the turn that is still running.
-   */
-  private finishPrompt(endMessage: Extract<ExtensionToWebviewMessage, { type: 'promptEnd' }>): void {
-    this.inFlightPrompts = Math.max(0, this.inFlightPrompts - 1);
-    if (this.inFlightPrompts > 0) {
-      return;
-    }
-    this.postMessage(endMessage);
-    const next = this.pendingPrompts.shift();
-    if (next !== undefined) {
-      void this.handleSendPrompt(next);
-    }
-  }
-
-  /**
-   * Handle cancel request from webview.
-   */
-  private async handleCancelTurn(): Promise<void> {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (activeId) {
-      try {
-        await this.sessionManager.cancelTurn(activeId);
-      } catch (e) {
-        logError('Cancel failed', e);
-      }
-    }
-  }
-
-  /**
-   * Handle mode change from webview picker.
-   */
-  private async handleSetMode(modeId: string): Promise<void> {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId || !modeId) { return; }
-    try {
-      await this.sessionManager.setMode(activeId, modeId);
-    } catch (e: any) {
-      logError('Failed to set mode', e);
-      this.postMessage({ type: 'error', message: `Failed to set mode: ${e.message}` });
-    }
-  }
-
-  /**
-   * Handle generic config-option change from webview picker
-   * (ACP "Session Config Options"). The agent returns the full
-   * configOptions state which we re-broadcast so any cascading
-   * changes are reflected in the UI.
-   */
-  private async handleSetConfigOption(configId: string, value: string): Promise<void> {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId || !configId) { return; }
-    try {
-      const options = await this.sessionManager.setConfigOption(activeId, configId, value);
-      this.postMessage({ type: 'configOptionsUpdate', configOptions: options });
-    } catch (e: any) {
-      logError('Failed to set config option', e);
-      this.postMessage({ type: 'error', message: `Failed to set ${configId}: ${e.message}` });
-      // Roll back optimistic update on the webview by replaying current state
-      const session = this.sessionManager.getSession(activeId);
-      this.postMessage({
-        type: 'configOptionsUpdate',
-        configOptions: session?.configOptions ?? null,
-      });
-    }
-  }
-
-  /**
-   * Send current session state to the webview on load.
-   */
-  private sendCurrentState(): void {
-    const activeId = this.sessionManager.getActiveSessionId();
-    const session = activeId ? this.sessionManager.getSession(activeId) : null;
-    this.postMessage({
-      type: 'state',
-      activeSessionId: activeId,
-      session: session ? {
-        sessionId: session.sessionId,
-        agentName: session.agentDisplayName,
-        ...(session.title !== undefined ? { title: session.title } : {}),
-        cwd: session.cwd,
-        modes: session.modes,
-        configOptions: session.configOptions,
-        availableCommands: session.availableCommands,
-      } : null,
-    });
-  }
-
-  /**
-   * Post a message to the webview if it exists.
-   */
-  private postMessage(message: ExtensionToWebviewMessage): void {
+  post(message: ExtensionToWebviewMessage): void {
     this.view?.webview.postMessage(message);
   }
 
-  /**
-   * Notify webview of a new active session.
-   */
-  notifyActiveSessionChanged(): void {
-    this.sendCurrentState();
+  midTurnPrompt(): MidTurnPrompt {
+    const setting = vscode.workspace.getConfiguration('acp').get<string>('chat.midTurnPrompt', 'queue');
+    return setting === 'send' ? 'send' : 'queue';
   }
 
-  /**
-   * Notify webview of mode state changes.
-   */
-  notifyModesUpdate(modes: SessionModeState | null): void {
-    this.postMessage({ type: 'modesUpdate', modes });
+  async executeCommand(command: string): Promise<void> {
+    await vscode.commands.executeCommand(command);
   }
 
-  /**
-   * Notify webview that a `session/load` replay is starting. The webview
-   * wipes any previously-displayed history, disables input, and shows a
-   * loading overlay until {@link notifyLoadSessionEnd} fires.
-   */
-  notifyLoadSessionStart(): void {
-    this.postMessage({ type: 'loadSessionStart' });
-  }
-
-  /** Notify webview that the active replay finished (success or failure). */
-  notifyLoadSessionEnd(ok: boolean): void {
-    this.postMessage({ type: 'loadSessionEnd', ok });
-  }
-
-  /** Notify webview that session title / metadata changed. */
-  notifySessionInfoUpdate(title: string | undefined | null): void {
-    this.postMessage({ type: 'sessionInfoUpdate', title: title ?? null });
-  }
-
-  /**
-   * Clear the transcript and reset to welcome state.
-   * Called when starting a new session.
-   */
-  clearChat(): void {
-    this.pendingPrompts = [];
-    this._hasChatContent = false;
-    this.postMessage({ type: 'clearChat' });
-  }
-
-  /**
-   * Whether the chat has any messages.
-   */
-  get hasChatContent(): boolean {
-    return this._hasChatContent;
-  }
-
-  /**
-   * Generate the HTML content for the webview.
-   */
-  private getHtmlContent(webview: vscode.Webview): string {
-    return renderChatHtml({
-      cspSource: webview.cspSource,
-      nonce: getNonce(),
-      styleUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css')).toString(),
-      scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'chat.js')).toString(),
-    });
-  }
-
-  /**
-   * Attach a file URI — notify the webview to include it in the next prompt.
-   */
+  /** Attach a file to the next prompt and reveal the chat view. */
   attachFile(uri: vscode.Uri): void {
     if (this.view) {
-      this.postMessage({
+      this.post({
         type: 'file-attached',
         path: uri.fsPath,
         name: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,
@@ -385,7 +62,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   dispose(): void {
-    this.sessionUpdateHandler.removeListener(this.updateListener);
+    this.received.dispose();
+  }
+
+  private getHtmlContent(webview: vscode.Webview): string {
+    return renderChatHtml({
+      cspSource: webview.cspSource,
+      nonce: getNonce(),
+      styleUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css')).toString(),
+      scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'chat.js')).toString(),
+    });
   }
 }
 
