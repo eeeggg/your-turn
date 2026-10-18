@@ -1,7 +1,7 @@
 import { client as createClientApp, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { ClientConnection, InitializeResponse, Stream } from '@agentclientprotocol/sdk';
 
-import { AcpClientImpl, type ClientHandlers } from './AcpClientImpl';
+import type { ClientHandlers } from './ClientHandlers';
 import type { AgentStreams } from './AgentManager';
 import { SessionUpdateHandler } from './SessionUpdateHandler';
 import { log, logError, logTraffic } from './Log';
@@ -31,21 +31,21 @@ export class ConnectionManager {
     const tappedStream = this.tapStream(stream);
 
     const { files, terminals, permissions } = this.createHandlers();
-    const client = new AcpClientImpl(files, terminals, permissions, this.sessionUpdateHandler);
 
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = createClientApp({ name: 'vscode-acp-client' })
-      .onRequest(methods.client.session.requestPermission, ({ params }) => client.requestPermission(params))
-      .onNotification(methods.client.session.update, ({ params }) => client.sessionUpdate(params))
-      .onRequest(methods.client.fs.readTextFile, ({ params }) => client.readTextFile(params))
-      .onRequest(methods.client.fs.writeTextFile, ({ params }) => client.writeTextFile(params))
-      .onRequest(methods.client.terminal.create, ({ params }) => client.createTerminal(params))
-      .onRequest(methods.client.terminal.output, ({ params }) => client.terminalOutput(params))
-      .onRequest(methods.client.terminal.waitForExit, ({ params }) => client.waitForTerminalExit(params))
-      .onRequest(methods.client.terminal.kill, ({ params }) => client.killTerminal(params))
-      .onRequest(methods.client.terminal.release, ({ params }) => client.releaseTerminal(params));
+      .onRequest(methods.client.session.requestPermission, ({ params }) => permissions.requestPermission(params))
+      .onNotification(methods.client.session.update, ({ params }) => this.sessionUpdateHandler.handleUpdate(params))
+      .onRequest(methods.client.fs.readTextFile, ({ params }) => files.readTextFile(params))
+      .onRequest(methods.client.fs.writeTextFile, ({ params }) => files.writeTextFile(params))
+      .onRequest(methods.client.terminal.create, ({ params }) => terminals.createTerminal(params))
+      .onRequest(methods.client.terminal.output, ({ params }) => terminals.terminalOutput(params))
+      .onRequest(methods.client.terminal.waitForExit, ({ params }) => terminals.waitForTerminalExit(params))
+      .onRequest(methods.client.terminal.kill, ({ params }) => terminals.killTerminal(params))
+      .onRequest(methods.client.terminal.release, ({ params }) => terminals.releaseTerminal(params));
     const connection = app.connect(tappedStream);
+    connection.signal.addEventListener('abort', () => terminals.dispose(), { once: true });
 
     // Initialize the connection
     log(`ConnectionManager: initializing connection to agent ${agentName}`);

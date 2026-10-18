@@ -116,6 +116,8 @@ export class SessionManager extends EventEmitter {
   private agents: Map<string, RunningAgent> = new Map();
   /** Launches in progress by agent name, so concurrent callers share one process. */
   private launching: Map<string, Promise<RunningAgent>> = new Map();
+  /** Session titles from each agent's `session/list` pages, by agent name then session ID. */
+  private listedTitles: Map<string, Map<string, string>> = new Map();
 
   private sessions: Map<string, SessionInfo> = new Map();
   private activeSessionId: string | null = null;
@@ -339,6 +341,8 @@ export class SessionManager extends EventEmitter {
    * applied to it instead of dropped.
    */
   private registerSession(agent: RunningAgent, sessionId: string, cwd: string, state: SessionState = {}): SessionInfo {
+    // Known for a session reopened from the tree; updates drained below override it.
+    const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? this.historyStore?.get(agent.name, sessionId)?.title;
     const sessionInfo: SessionInfo = {
       sessionId,
       agentId: agent.process.id,
@@ -350,6 +354,7 @@ export class SessionManager extends EventEmitter {
       modes: state.modes ?? null,
       configOptions: state.configOptions ?? null,
       availableCommands: [],
+      ...(title ? { title } : {}),
     };
     this.sessions.set(sessionId, sessionInfo);
     this.drainPending(sessionInfo);
@@ -629,6 +634,16 @@ export class SessionManager extends EventEmitter {
     }
 
     const sessions = response.sessions;
+    const titles = this.listedTitles.get(agentName) ?? new Map<string, string>();
+    for (const listed of sessions) {
+      if (listed.title) {
+        titles.set(listed.sessionId, listed.title);
+      } else {
+        titles.delete(listed.sessionId);
+      }
+    }
+    this.listedTitles.set(agentName, titles);
+
     // Reconcile the history store — drop any locally-cached entries that
     // the agent no longer knows about.
     if (this.historyStore && !opts.cursor) {

@@ -1,6 +1,5 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { Readable, Writable } from 'node:stream';
+import { execa } from 'execa';
 import { log, logError } from './Log';
 
 /**
@@ -40,92 +39,12 @@ export interface AgentLauncher {
 }
 
 /**
- * Escape a single argument for safe inclusion in a shell command string.
- * Wraps in single quotes, escaping any embedded single quotes.
- */
-function shellEscape(arg: string): string {
-  // Replace ' with '\'' (end quote, escaped quote, start quote)
-  return `'${arg.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * Determine the appropriate shell and whether it supports the -l (login) flag
- * on macOS/Linux. A login shell sources the user's profile (~/.zshrc,
- * ~/.bash_profile, etc.) so that PATH includes nvm, Homebrew, and other
- * user-installed tool directories.
+ * Launches agents as child processes, talking to them over stdio.
  *
- * Shell support:
- *   zsh, bash, ksh  →  -l supported
- *   fish, sh, dash  →  use as-is without -l (fish auto-loads config;
- *                      sh/dash don't support -l reliably)
- *   csh, tcsh, etc. →  not POSIX-compatible; fall back to bash or /bin/sh
+ * The command runs directly, without a shell. Its `PATH` is the extension
+ * host's, which VS Code resolves from the user's login shell, so tools installed
+ * through nvm or Homebrew are found.
  */
-function resolveUnixShell(): { shell: string; useLoginFlag: boolean } {
-  const userShell = process.env['SHELL'];
-
-  if (userShell) {
-    const base = userShell.split('/').pop() || '';
-
-    // POSIX-compatible shells that support -l (login) flag
-    if (['zsh', 'bash', 'ksh'].includes(base)) {
-      return { shell: userShell, useLoginFlag: true };
-    }
-
-    // fish auto-loads config without -l; sh/dash are POSIX-compatible but
-    // don't support -l reliably
-    if (['fish', 'sh', 'dash'].includes(base)) {
-      return { shell: userShell, useLoginFlag: false };
-    }
-
-    // Non-POSIX shells (csh, tcsh, etc.) — fall back to a known POSIX shell
-    log(`User shell "${userShell}" is not POSIX-compatible, falling back to bash/sh`);
-  }
-
-  // $SHELL not set or not POSIX-compatible — probe for common shells
-  if (existsSync('/bin/bash')) {
-    return { shell: '/bin/bash', useLoginFlag: true };
-  }
-  if (existsSync('/usr/bin/bash')) {
-    return { shell: '/usr/bin/bash', useLoginFlag: true };
-  }
-  // Ultimate fallback
-  return { shell: '/bin/sh', useLoginFlag: false };
-}
-
-function spawnAgent(config: AgentConfigEntry, cwd: string) {
-  const env = { ...process.env, ...(config.env || {}) };
-  if (process.platform === 'win32') {
-    // On Windows, commands like npx are batch scripts (.cmd) that require
-    // shell resolution via cmd.exe.
-    return spawn(config.command, config.args || [], { stdio: ['pipe', 'pipe', 'pipe'], env, cwd, shell: true });
-  }
-
-  // On macOS/Linux, use the user's login shell so that PATH includes
-  // nvm, Homebrew, and other user-installed tool directories.
-  const { shell, useLoginFlag } = resolveUnixShell();
-  const commandStr = [config.command, ...(config.args || [])].map(shellEscape).join(' ');
-  const shellArgs = useLoginFlag ? ['-l', '-c', commandStr] : ['-c', commandStr];
-
-  log(`Using shell: ${shell} ${shellArgs.join(' ')}`);
-  return spawn(shell, shellArgs, { stdio: ['pipe', 'pipe', 'pipe'], env, cwd });
-}
-
-function stop(name: string, child: ChildProcess): void {
-  log(`Killing agent "${name}"`);
-  try {
-    child.kill('SIGTERM');
-    // Force kill after 5s if still running
-    setTimeout(() => {
-      if (child.exitCode === null) {
-        child.kill('SIGKILL');
-      }
-    }, 5000);
-  } catch (e) {
-    logError(`Failed to kill agent "${name}"`, e);
-  }
-}
-
-/** Launches agents as child processes, talking to them over stdio. */
 export class AgentManager implements AgentLauncher {
   private nextId = 1;
 
@@ -133,30 +52,40 @@ export class AgentManager implements AgentLauncher {
     const id = `agent_${this.nextId++}`;
     log(`Spawning agent "${name}" (${id}): ${config.command} ${(config.args || []).join(' ')}`);
 
-    const child = spawnAgent(config, cwd);
+    const subprocess = execa(config.command, config.args ?? [], {
+      cwd,
+      env: config.env ?? {},
+      // An agent runs for as long as its session; its stdout is the connection, not a result.
+      buffer: false,
+      reject: false,
+      killDescendants: true,
+    });
 
-    child.stderr.on('data', (data: Buffer) => {
+    subprocess.stderr.on('data', (data: Buffer) => {
       const line = data.toString().trim();
       if (line) {
         log(`[${name} stderr] ${line}`);
       }
     });
 
-    child.on('error', (err) => {
-      logError(`Agent "${name}" process error`, err);
-      events.error(err);
-    });
-
-    child.on('close', (code, signal) => {
-      log(`Agent "${name}" exited (code=${code}, signal=${signal})`);
-      events.exit(code);
+    void subprocess.then((result) => {
+      if (result.exitCode === undefined && result.signal === undefined) {
+        const error = new Error(result.shortMessage);
+        logError(`Agent "${name}" failed to start`, error);
+        events.error(error);
+      }
+      log(`Agent "${name}" exited (code=${result.exitCode}, signal=${result.signal})`);
+      events.exit(result.exitCode ?? null);
     });
 
     return {
       id,
-      input: Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-      output: Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
-      kill: () => stop(name, child),
+      input: Writable.toWeb(subprocess.stdin) as WritableStream<Uint8Array>,
+      output: Readable.toWeb(subprocess.stdout) as ReadableStream<Uint8Array>,
+      kill: () => {
+        log(`Killing agent "${name}"`);
+        subprocess.kill();
+      },
     };
   }
 }

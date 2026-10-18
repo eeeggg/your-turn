@@ -116,6 +116,10 @@ _Avoid_: todo list, tasks
 The agent asking the user to approve an action by choosing one of the options it offers.
 _Avoid_: approval, confirmation, prompt
 
+**Terminal**:
+A command the agent asks the extension to run for it, whose output the agent reads and the user watches in a VS Code terminal.
+_Avoid_: shell, process (when the agent's terminal is meant)
+
 ### Session controls
 
 **Config option**:

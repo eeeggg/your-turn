@@ -5,7 +5,11 @@ import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents 
 /** Builds the agent a launch talks to; called once per launch. */
 export type AgentScript = () => AgentApp;
 
-/** An SDK agent that answers `initialize`; add the requests a test needs. */
+/**
+ * An SDK agent that answers `initialize`; add the requests a test needs. The
+ * SDK keeps the first handler registered for a method, so a test that answers
+ * `initialize` itself starts from the SDK's `agent()` instead.
+ */
 export function fakeAgent(init: Partial<InitializeResponse> = {}): AgentApp {
   return agent({ name: 'fake-agent' }).onRequest(methods.agent.initialize, () => ({
     protocolVersion: PROTOCOL_VERSION,
@@ -39,13 +43,19 @@ export class InProcessAgents implements AgentLauncher {
     if (!script) {
       throw new Error(`no script for agent ${name}`);
     }
-    const toAgent = new TransformStream<Uint8Array, Uint8Array>();
-    const toClient = new TransformStream<Uint8Array, Uint8Array>();
+    const closers: (() => void)[] = [];
+    const pipe = () => new TransformStream<Uint8Array, Uint8Array>({
+      start: (controller) => { closers.push(() => controller.terminate()); },
+    });
+    const toAgent = pipe();
+    const toClient = pipe();
     script().connect(ndJsonStream(toClient.writable, toAgent.readable));
 
+    // Like a process's stdio, both streams close when the agent exits.
     const exit = (code: number | null) => {
       if (launched.exited) { return; }
       launched.exited = true;
+      for (const close of closers) { close(); }
       setImmediate(() => events.exit(code));
     };
     const process: AgentProcess = {

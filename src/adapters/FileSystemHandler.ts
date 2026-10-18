@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { log, logError } from '@/core/Log';
-import type { FileAccess } from '@/core/AcpClientImpl';
+import type { FileAccess } from '@/core/ClientHandlers';
+import { selectLines } from '@/core/TextFileRange';
 
 import type {
   ReadTextFileRequest,
@@ -29,26 +30,11 @@ export class FileSystemHandler implements FileAccess {
         doc => doc.uri.fsPath === uri.fsPath
       );
 
-      let content: string;
-      if (openDoc) {
-        content = openDoc.getText();
-      } else {
-        const raw = await vscode.workspace.fs.readFile(uri);
-        content = Buffer.from(raw).toString('utf-8');
-      }
+      const content = openDoc
+        ? openDoc.getText()
+        : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
 
-      // Handle line/limit parameters
-      if (params.line !== undefined && params.line !== null
-        || params.limit !== undefined && params.limit !== null) {
-        const lines = content.split('\n');
-        const startLine = (params.line ?? 1) - 1; // 1-based → 0-based
-        const endLine = params.limit
-          ? startLine + params.limit
-          : lines.length;
-        content = lines.slice(startLine, endLine).join('\n');
-      }
-
-      return { content };
+      return { content: selectLines(content, params.line, params.limit) };
     } catch (e) {
       logError(`readTextFile failed: ${params.path}`, e);
       throw e;

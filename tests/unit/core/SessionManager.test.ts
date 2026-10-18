@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod, ResourceLink, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
-import type { ClientHandlers } from '@/core/AcpClientImpl';
+import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
@@ -17,7 +17,7 @@ const unused = (): never => {
 };
 const unusedHandlers: ClientHandlers = {
   files: { readTextFile: unused, writeTextFile: unused },
-  terminals: { createTerminal: unused, terminalOutput: unused, waitForTerminalExit: unused, killTerminal: unused, releaseTerminal: unused },
+  terminals: { createTerminal: unused, terminalOutput: unused, waitForTerminalExit: unused, killTerminal: unused, releaseTerminal: unused, dispose() {} },
   permissions: { requestPermission: unused },
 };
 
@@ -624,6 +624,94 @@ describe('SessionManager', () => {
       await expect(manager.resumeSession('fake', 'gone')).rejects.toThrow('Session not found');
 
       expect(sessionHistory.get('fake', 'gone')).toBeUndefined();
+    });
+  });
+
+  describe('titles of reopened sessions', () => {
+    /** An agent that lists `old` with the titles given in turn, and loads it, replaying `replayedTitle` if set. */
+    function listingAgent(listedTitles: (string | undefined)[], replayedTitle?: string) {
+      let page = 0;
+      return () => fakeAgent({ agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } } })
+        .onRequest(methods.agent.session.list, () => {
+          const title = listedTitles[page++];
+          return { sessions: [{ sessionId: 'old', cwd: '/work', ...(title !== undefined ? { title } : {}) }] };
+        })
+        .onRequest(methods.agent.session.load, async ({ params, client }) => {
+          if (replayedTitle !== undefined) {
+            await client.notify(methods.client.session.update, {
+              sessionId: params.sessionId,
+              update: { sessionUpdate: 'session_info_update', title: replayedTitle },
+            });
+          }
+          return {};
+        });
+    }
+
+    it('titles a loaded session with the title its agent listed', async () => {
+      const { manager } = setup({ fake: listingAgent(['Listed title']) });
+      await manager.listSessions('fake');
+
+      const session = await manager.loadSession('fake', 'old');
+
+      expect(session.title).toBe('Listed title');
+    });
+
+    it('lets a title the agent replays during the load replace the listed one', async () => {
+      const { manager } = setup({ fake: listingAgent(['Listed title'], 'Replayed title') });
+      await manager.listSessions('fake');
+
+      const session = await manager.loadSession('fake', 'old');
+      await settle();
+
+      expect(session.title).toBe('Replayed title');
+    });
+
+    it('forgets a listed title once the agent lists the session without one', async () => {
+      const { manager } = setup({ fake: listingAgent(['Listed title', undefined]) });
+      await manager.listSessions('fake');
+      await manager.listSessions('fake');
+
+      const session = await manager.loadSession('fake', 'old');
+
+      expect(session).not.toHaveProperty('title');
+    });
+
+    it('titles a resumed session from the session history when the agent does not list sessions', async () => {
+      const script: AgentScript = () => fakeAgent({ agentCapabilities: { sessionCapabilities: { resume: {} } } })
+        .onRequest(methods.agent.session.resume, () => ({}));
+      const { manager, sessionHistory } = setup({ fake: script });
+      sessionHistory.upsertNew('fake', '/work', 'old');
+      sessionHistory.setTitle('fake', 'old', 'Remembered title');
+
+      const session = await manager.resumeSession('fake', 'old');
+
+      expect(session.title).toBe('Remembered title');
+    });
+
+    it('lets a title the agent sends while resuming replace the remembered one', async () => {
+      const script: AgentScript = () => fakeAgent({ agentCapabilities: { sessionCapabilities: { resume: {} } } })
+        .onRequest(methods.agent.session.resume, async ({ params, client }) => {
+          await client.notify(methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'session_info_update', title: 'Current title' },
+          });
+          return {};
+        });
+      const { manager, sessionHistory } = setup({ fake: script });
+      sessionHistory.upsertNew('fake', '/work', 'old');
+      sessionHistory.setTitle('fake', 'old', 'Remembered title');
+
+      const session = await manager.resumeSession('fake', 'old');
+
+      expect(session.title).toBe('Current title');
+    });
+
+    it('starts a new session untitled', async () => {
+      const { manager } = setup({ fake: sessionAgent().script });
+
+      const session = await manager.connectToAgent('fake');
+
+      expect(session).not.toHaveProperty('title');
     });
   });
 

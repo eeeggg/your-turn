@@ -11,9 +11,11 @@ import { log, logError, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
+import { PermissionRequests } from '@/core/PermissionRequests';
+import { ProcessTerminals } from '@/core/ProcessTerminals';
 import { FileSystemHandler } from '@/adapters/FileSystemHandler';
-import { TerminalHandler } from '@/adapters/TerminalHandler';
-import { PermissionHandler } from '@/adapters/PermissionHandler';
+import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
+import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
@@ -31,8 +33,8 @@ export function activate(context: vscode.ExtensionContext): void {
     context.extension.packageJSON.version,
     () => ({
       files: new FileSystemHandler(),
-      terminals: new TerminalHandler(),
-      permissions: new PermissionHandler(),
+      terminals: new ProcessTerminals(pseudoterminalDisplays),
+      permissions: new PermissionRequests(permissionQuickPick),
     }),
   );
   const sessionManager = new SessionManager(
