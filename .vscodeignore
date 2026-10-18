@@ -8,7 +8,8 @@ node_modules/**
 *.map
 *.ts
 !dist/**
-tsconfig.json
+tsconfig*.json
+*.tsbuildinfo
 esbuild.mjs
 eslint.config.mjs
 .vscode-test.mjs

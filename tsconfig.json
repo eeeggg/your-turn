@@ -1,20 +1,10 @@
 {
-  "compilerOptions": {
-    "module": "esnext",
-    "moduleResolution": "bundler",
-    "target": "es2022",
-    "lib": ["es2022", "dom"],
-    "strict": true,
-    "esModuleInterop": true,
-    "isolatedModules": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "noEmit": true,
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "src/webview"]
+  "files": [],
+  "references": [
+    { "path": "./tsconfig.tooling.json" },
+    { "path": "./src" },
+    { "path": "./src/webview" },
+    { "path": "./tests" },
+    { "path": "./tests/integration" }
+  ]
 }

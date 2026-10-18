@@ -17,7 +17,6 @@ import { methods, RequestError } from '@agentclientprotocol/sdk';
 
 import { AgentManager, type AgentConfigEntry } from './AgentManager';
 import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
-import { SessionUpdateHandler } from './SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
 import { log, logError } from './Log';
 
@@ -112,7 +111,6 @@ export class SessionManager extends EventEmitter {
   constructor(
     private readonly agentManager: AgentManager,
     private readonly connectionManager: ConnectionManager,
-    private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly environment: SessionEnvironment,
     private readonly authPrompt: AuthPrompt,
   ) {
@@ -670,7 +668,7 @@ export class SessionManager extends EventEmitter {
    * List sessions known to an agent (ACP `session/list`).
    * Throws if the agent doesn't advertise the capability.
    */
-  async listSessions(agentName: string, opts: { cwd?: string; cursor?: string } = {}): Promise<{ sessions: ProtocolSessionInfo[]; nextCursor?: string }> {
+  async listSessions(agentName: string, opts: { cwd?: string | undefined; cursor?: string | undefined } = {}): Promise<{ sessions: ProtocolSessionInfo[]; nextCursor?: string }> {
     const conn = await this.ensureConnected(agentName);
     const caps = this.capabilities.get(agentName);
     if (!caps?.list) {

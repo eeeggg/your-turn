@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 
 suite('MidTurnPrompt Setting Test Suite', () => {

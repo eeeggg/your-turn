@@ -39,7 +39,7 @@ function shellEscape(arg: string): string {
  *   csh, tcsh, etc. →  not POSIX-compatible; fall back to bash or /bin/sh
  */
 function resolveUnixShell(): { shell: string; useLoginFlag: boolean } {
-  const userShell = process.env.SHELL;
+  const userShell = process.env['SHELL'];
 
   if (userShell) {
     const base = userShell.split('/').pop() || '';

@@ -8,6 +8,10 @@ const vscodeApi = {
 
 // Flat config replaces a rule's options rather than merging them, so every
 // layer's rule repeats the parent-import ban.
+/**
+ * @param {{ paths?: { name: string, message: string }[], patterns?: { group: string[], message: string }[] }} [restrictions]
+ * @returns {Pick<import("eslint/rules").ESLintRules, "no-restricted-imports">}
+ */
 function restrictImports({ paths = [], patterns = [] } = {}) {
   return {
     "no-restricted-imports": ["error", {

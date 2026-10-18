@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'node:child_process';

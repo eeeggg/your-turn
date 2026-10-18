@@ -22,7 +22,7 @@ export const workspaceEnvironment: SessionEnvironment = {
     return {
       uri: editor.document.uri.toString(),
       name: editor.document.uri.fsPath,
-      mimeType: editor.document.uri.scheme === 'untitled' ? 'text/plain' : undefined,
+      ...(editor.document.uri.scheme === 'untitled' ? { mimeType: 'text/plain' } : {}),
     };
   },
 };

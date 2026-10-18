@@ -21,7 +21,6 @@ const modePickerLabel = document.getElementById('modePickerLabel');
 const modeDropdown = document.getElementById('modeDropdown');
 const configOptionsContainer = document.getElementById('configOptionsContainer');
 
-let hasActiveSession = false;
 let isProcessing = false;
 
 // Modes state (legacy fallback path)
@@ -54,53 +53,14 @@ function updatePlaceholder() {
   }
 }
 
-// --- State persistence ---
+// The page draws only what the extension tells it and saves nothing: a
+// rebuilt page starts empty, and a transcript comes back only by loading
+// the session from the agent.
 let transcript = [];
 let sessionState = null;
-
-function saveState() {
-  vscode.setState({ transcript, sessionState, hasActiveSession });
-}
-
-function restoreState() {
-  const saved = vscode.getState();
-  if (!saved) { return; }
-
-  transcript = saved.transcript || [];
-  sessionState = saved.sessionState || null;
-  hasActiveSession = saved.hasActiveSession || false;
-
-  if (hasActiveSession && sessionState) {
-    showSessionConnectedFromState(sessionState);
-  }
-
-  const agentMessageItems = [];
-  for (let i = 0; i < transcript.length; i++) {
-    const item = transcript[i];
-    switch (item.kind) {
-      case 'message':
-        addMessageDOM(item.role, item.text);
-        if (item.role === 'agent') {
-          agentMessageItems.push({ index: i, text: item.text });
-        }
-        break;
-      case 'thought':
-        addThoughtDOM(item.text, item.durationSec || 0);
-        break;
-      case 'toolCall':
-        addToolCallDOM(item.toolCallId, item.title, item.status, item.content);
-        break;
-      case 'plan':
-        addPlanDOM(item.plan);
-        break;
-    }
-  }
-
-  // Request markdown rendering for all restored agent messages
-  if (agentMessageItems.length > 0) {
-    vscode.postMessage({ type: 'renderMarkdown', items: agentMessageItems });
-  }
-}
+// The session the transcript on screen belongs to; it survives a disconnect
+// so the transcript stays readable until a different session arrives.
+let transcriptSessionId = null;
 
 // Start with input disabled
 if (inputArea) { inputArea.classList.add('disabled'); }
@@ -260,11 +220,9 @@ function setProcessing(processing) {
 // --- Session/load overlay ---
 const loadOverlay = document.getElementById('loadOverlay');
 
-function handleLoadSessionStart() {
-  // Reset all chat state; behaves like clearChat but keeps the session
-  // banner / input area structure intact.
+/** Remove the transcript and every in-progress turn pointer, leaving only the empty state. */
+function clearTranscript() {
   transcript = [];
-  saveState();
   currentAgentMessageEl = null;
   currentAgentMessageText = '';
   toolCalls = {};
@@ -278,10 +236,13 @@ function handleLoadSessionStart() {
   thoughtStartTime = null;
   thoughtEndTime = null;
   messagesEl.innerHTML = '';
-  if (emptyState) {
-    messagesEl.appendChild(emptyState);
-    emptyState.style.display = 'none';
-  }
+  if (emptyState) { messagesEl.appendChild(emptyState); }
+}
+
+function handleLoadSessionStart() {
+  // Keeps the session banner / input area structure intact.
+  clearTranscript();
+  if (emptyState) { emptyState.style.display = 'none'; }
   if (loadOverlay) { loadOverlay.classList.add('visible'); }
   if (inputArea) { inputArea.classList.add('disabled'); }
   setProcessing(false);
@@ -306,7 +267,7 @@ function handleLoadSessionEnd(ok) {
   }
   scrollToBottom();
   if (!ok) {
-    addMessage('error', 'Failed to load session history.');
+    addMessage('error', 'Failed to load session.');
   }
 }
 
@@ -317,7 +278,6 @@ function handleSessionInfoUpdate(title) {
   } else if (title === null) {
     delete sessionState.title;
   }
-  saveState();
   if (bannerAgent) {
     bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent';
   }
@@ -681,7 +641,6 @@ document.addEventListener('click', () => closePickers());
 // --- Messages ---
 function addMessage(role, text) {
   transcript.push({ kind: 'message', role, text });
-  saveState();
   return addMessageDOM(role, text);
 }
 
@@ -843,7 +802,6 @@ function createToolCallElement(toolCallId, title, status, blocks) {
 function addToolCall(toolCallId, title, status, content) {
   const blocks = extractToolCallBlocks(content);
   transcript.push({ kind: 'toolCall', toolCallId, title, status, content: blocks });
-  saveState();
   addToolCallInline(toolCallId, title, status, blocks);
 }
 
@@ -862,14 +820,6 @@ function addToolCallInline(toolCallId, title, status, blocks) {
   scrollToBottom();
 }
 
-function addToolCallDOM(toolCallId, title, status, blocks) {
-  hideEmpty();
-  const el = createToolCallElement(toolCallId, title, status, blocks);
-  messagesEl.appendChild(el);
-  toolCalls[toolCallId] = el;
-  scrollToBottom();
-}
-
 function updateToolCall(toolCallId, status, title, content) {
   const hasContent = content !== undefined && content !== null;
   const blocks = hasContent ? extractToolCallBlocks(content) : null;
@@ -882,7 +832,6 @@ function updateToolCall(toolCallId, status, title, content) {
       break;
     }
   }
-  saveState();
 
   const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
   if (!el) { return; }
@@ -910,7 +859,6 @@ function updateToolCall(toolCallId, status, title, content) {
 
 function addPlan(plan) {
   transcript.push({ kind: 'plan', plan: plan });
-  saveState();
   addPlanDOM(plan);
 }
 
@@ -972,7 +920,6 @@ function finalizeCurrentTurn() {
   }
   if (currentAgentMessageText) {
     transcript.push({ kind: 'message', role: 'agent', text: currentAgentMessageText });
-    saveState();
   }
   currentAgentMessageEl = null;
   currentAgentMessageText = '';
@@ -987,26 +934,18 @@ function finalizeCurrentTurn() {
   thoughtEndTime = null;
 }
 
-function addThoughtDOM(text, durationSec) {
-  hideEmpty();
-  const el = document.createElement('details');
-  el.className = 'thought-block';
-  el.innerHTML =
-    '<summary>' + (durationSec > 0 ? 'Thought for ' + durationSec + 's' : 'Thought') + '</summary>' +
-    '<div class="thought-content">' + escapeHtml(text) + '</div>';
-  messagesEl.appendChild(el);
-  scrollToBottom();
-}
-
 function showSessionConnected(session) {
-  hasActiveSession = true;
   sessionState = {
     agentName: session.agentName,
     cwd: session.cwd,
     title: session.title || undefined,
   };
-  saveState();
-  showSessionConnectedFromState(sessionState);
+  hideEmpty();
+  if (bannerAgent) { bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent'; }
+  if (bannerCwd) { bannerCwd.textContent = sessionState.cwd || ''; }
+  if (sessionBanner) { sessionBanner.classList.add('visible'); }
+  if (inputArea) { inputArea.classList.remove('disabled'); }
+  promptInput.disabled = false;
 
   // Prefer ACP "Session Config Options" when provided. Spec: clients
   // that support configOptions MUST use them exclusively and ignore
@@ -1025,20 +964,8 @@ function showSessionConnected(session) {
   updatePlaceholder();
 }
 
-function showSessionConnectedFromState(ss) {
-  hasActiveSession = true;
-  hideEmpty();
-  if (bannerAgent) { bannerAgent.textContent = ss.title || ss.agentName || 'Agent'; }
-  if (bannerCwd) { bannerCwd.textContent = ss.cwd || ''; }
-  if (sessionBanner) { sessionBanner.classList.add('visible'); }
-  if (inputArea) { inputArea.classList.remove('disabled'); }
-  promptInput.disabled = false;
-}
-
 function showNoSession() {
-  hasActiveSession = false;
   sessionState = null;
-  saveState();
   if (sessionBanner) { sessionBanner.classList.remove('visible'); }
   if (emptyState) { emptyState.style.display = ''; }
   if (inputArea) { inputArea.classList.add('disabled'); }
@@ -1053,6 +980,11 @@ window.addEventListener('message', (event) => {
   switch (msg.type) {
     case 'state':
       if (msg.session) {
+        if (msg.session.sessionId !== transcriptSessionId) {
+          clearTranscript();
+          setProcessing(false);
+          transcriptSessionId = msg.session.sessionId;
+        }
         showSessionConnected(msg.session);
       } else {
         showNoSession();
@@ -1087,7 +1019,6 @@ window.addEventListener('message', (event) => {
       }
       if (currentAgentMessageText) {
         transcript.push({ kind: 'message', role: 'agent', text: currentAgentMessageText });
-        saveState();
         // Request markdown rendering from extension host
         if (currentAgentMessageEl) {
           vscode.postMessage({
@@ -1119,25 +1050,11 @@ window.addEventListener('message', (event) => {
       break;
 
     case 'clearChat':
-      transcript = [];
+      clearTranscript();
+      transcriptSessionId = null;
       sessionState = null;
-      saveState();
-      currentAgentMessageEl = null;
-      currentAgentMessageText = '';
-      toolCalls = {};
-      currentTurnEl = null;
-      currentToolsListEl = null;
-      currentToolsCountEl = null;
-      currentToolCount = 0;
-      currentThoughtEl = null;
-      currentThoughtTextEl = null;
-      currentThoughtText = '';
-      thoughtStartTime = null;
-      thoughtEndTime = null;
       availableCommands = [];
       slashPopup.classList.remove('open');
-      messagesEl.innerHTML = '';
-      messagesEl.appendChild(emptyState);
       if (emptyState) { emptyState.style.display = ''; }
       if (sessionBanner) { sessionBanner.classList.remove('visible'); }
       if (inputArea) { inputArea.classList.add('disabled'); }
@@ -1339,9 +1256,6 @@ function handleUpdate(update) {
       break;
   }
 }
-
-// Restore previous state before telling extension we're ready
-restoreState();
 
 // Tell extension we're ready
 vscode.postMessage({ type: 'ready' });

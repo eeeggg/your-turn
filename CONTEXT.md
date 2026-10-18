@@ -27,7 +27,7 @@ One message crossing between the extension and the webview, in either direction.
 _Avoid_: event, IPC, protocol message
 
 **Saved state**:
-What the webview asks VS Code to keep so it can redraw itself after being hidden or reloaded.
+What a webview can ask VS Code to keep across a rebuild of its page. The chat view keeps none: a rebuilt page starts empty and redraws only what the extension sends.
 _Avoid_: cache, webview state
 
 **Extension host**:

@@ -1,4 +1,3 @@
-//@ts-check
 import { rmSync } from 'node:fs';
 import * as esbuild from 'esbuild';
 
@@ -36,12 +35,13 @@ const webview = {
 /** @type {import('esbuild').BuildOptions} */
 const integrationTests = {
 	...common,
-	entryPoints: ['src/test/**/*.test.ts', 'src/test/fixtures/*.ts'],
-	outbase: 'src/test',
+	entryPoints: ['tests/integration/**/*.test.ts', 'tests/integration/fixtures/*.ts'],
+	outbase: 'tests/integration',
 	outdir: 'dist/test',
 	format: 'cjs',
 	platform: 'node',
-	external: ['vscode'],
+	// Mocha's suite and test only work from the copy the test runner loaded.
+	external: ['vscode', 'mocha'],
 };
 
 rmSync('dist', { recursive: true, force: true });

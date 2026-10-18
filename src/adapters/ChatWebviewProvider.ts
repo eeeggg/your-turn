@@ -13,7 +13,7 @@ import { renderChatHtml } from './ChatHtml';
 export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'acp-chat';
 
-  private view?: vscode.WebviewView;
+  private view: vscode.WebviewView | undefined;
   private updateListener: SessionUpdateListener;
   private _hasChatContent = false;
   /** Prompts sent to the agent that have not returned yet. */

@@ -26,7 +26,7 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       // chat.ts only runs as the bundle in the webview suite, which is not measured.
-      exclude: ['src/test/**', 'src/webview/chat.ts'],
+      exclude: ['src/webview/chat.ts'],
       reporter: ['text', 'html'],
       reportsDirectory: 'coverage',
     },

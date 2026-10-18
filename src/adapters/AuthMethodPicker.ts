@@ -7,7 +7,7 @@ export const authMethodPicker: AuthPrompt = {
     if (methods.length === 1 && only) {
       const confirm = await vscode.window.showInformationMessage(
         `${agentName} requires authentication via "${only.name}".`,
-        { modal: true, detail: only.description || undefined },
+        { modal: true, ...(only.description ? { detail: only.description } : {}) },
         'Authenticate',
       );
       return confirm === 'Authenticate' ? only : undefined;

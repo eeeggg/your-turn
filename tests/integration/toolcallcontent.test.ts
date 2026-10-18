@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { suite, test } from 'mocha';
 
 // Test extraction logic matching ChatWebviewProvider
 function extractToolCallBlocks(content: any[] | undefined | null): string[] {

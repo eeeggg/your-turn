@@ -128,6 +128,7 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
 }
 
 export interface SessionFixture {
+  sessionId?: string;
   agentName?: string;
   title?: string | null;
   cwd?: string;
@@ -138,11 +139,8 @@ export interface SessionFixture {
 
 /** Send a `state` message describing a connected session, as the host does on connect. */
 export function connect(page: ChatPage, session: SessionFixture = {}): void {
-  page.send({
-    type: 'state',
-    activeSessionId: 's1',
-    session: { sessionId: 's1', agentName: 'Fake Agent', cwd: '/work/project', ...session },
-  });
+  const full = { sessionId: 's1', agentName: 'Fake Agent', cwd: '/work/project', ...session };
+  page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
 }
 
 /** Send a `sessionUpdate` notification for the active session. */

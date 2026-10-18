@@ -93,7 +93,7 @@ describe('loading a session', () => {
     page.send({ type: 'loadSessionStart' });
     page.send({ type: 'loadSessionEnd', ok: false });
 
-    expect(messages()).toEqual(['message error: Failed to load session history.']);
+    expect(messages()).toEqual(['message error: Failed to load session.']);
     expect(page.byId('loadOverlay').classList.contains('visible')).toBe(false);
   });
 });

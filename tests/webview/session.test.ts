@@ -78,6 +78,43 @@ describe('session state', () => {
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(true);
   });
 
+  it('clears the transcript when the host reports a different session', () => {
+    page = loadChatPage();
+    connect(page, { sessionId: 's1' });
+    page.typePrompt('hello');
+    page.pressKey('Enter');
+
+    connect(page, { sessionId: 's2', agentName: 'OpenCode' });
+
+    expect(page.document.querySelectorAll('.message')).toHaveLength(0);
+    expect(page.byId('bannerAgent').textContent).toBe('OpenCode');
+    expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
+  });
+
+  it('keeps the transcript when the host reports the same session again', () => {
+    page = loadChatPage();
+    connect(page, { sessionId: 's1' });
+    page.typePrompt('hello');
+    page.pressKey('Enter');
+
+    connect(page, { sessionId: 's1' });
+
+    expect([...page.document.querySelectorAll('.message.user')].map((el) => el.textContent)).toEqual(['hello']);
+  });
+
+  it('keeps the transcript on disconnect and clears it when a new session follows', () => {
+    page = loadChatPage();
+    connect(page, { sessionId: 's1' });
+    page.typePrompt('hello');
+    page.pressKey('Enter');
+
+    page.send({ type: 'state', activeSessionId: null, session: null });
+    expect(page.document.querySelectorAll('.message.user')).toHaveLength(1);
+
+    connect(page, { sessionId: 's2' });
+    expect(page.document.querySelectorAll('.message')).toHaveLength(0);
+  });
+
   it('welcome buttons run the connect and add-agent commands', () => {
     page = loadChatPage();
     page.takePosted();

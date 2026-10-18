@@ -72,7 +72,7 @@ export class TerminalHandler implements Terminals {
         let cutPoint = 0;
         let bytes = 0;
         for (let i = 0; i < output.length; i++) {
-          bytes += Buffer.byteLength(output[i], 'utf-8');
+          bytes += Buffer.byteLength(output.charAt(i), 'utf-8');
           if (bytes >= excess) {
             cutPoint = i + 1;
             break;

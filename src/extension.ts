@@ -37,7 +37,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const sessionManager = new SessionManager(
     agentManager,
     connectionManager,
-    sessionUpdateHandler,
     workspaceEnvironment,
     authMethodPicker,
   );
@@ -466,8 +465,9 @@ export function activate(context: vscode.ExtensionContext): void {
       openLabel: 'Attach',
       title: 'Attach File to Chat',
     });
-    if (uris && uris.length > 0) {
-      chatWebviewProvider.attachFile(uris[0]);
+    const uri = uris?.[0];
+    if (uri) {
+      chatWebviewProvider.attachFile(uri);
     }
   });
 

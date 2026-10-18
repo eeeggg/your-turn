@@ -54,7 +54,9 @@ export class SessionTreeItem extends vscode.TreeItem {
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.contextValue = source === 'local' ? 'session-local' : 'session';
-    this.description = description;
+    if (description !== undefined) {
+      this.description = description;
+    }
     this.tooltip = tooltip;
     if (isActive) {
       this.iconPath = new vscode.ThemeIcon(
@@ -91,7 +93,9 @@ export class InfoTreeItem extends vscode.TreeItem {
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
     this.tooltip = tooltip;
-    this.command = command;
+    if (command) {
+      this.command = command;
+    }
     switch (kind) {
       case 'loading':
         this.iconPath = new vscode.ThemeIcon('loading~spin');
@@ -127,8 +131,8 @@ type ChildNode = SessionTreeItem | InfoTreeItem;
 interface AgentListState {
   state: 'idle' | 'loading' | 'ready' | 'error' | 'unsupported' | 'auth-required';
   /** Agent-provided sessions (only when caps.list is true). */
-  agentSessions?: ProtocolSessionInfo[];
-  nextCursor?: string;
+  agentSessions?: ProtocolSessionInfo[] | undefined;
+  nextCursor?: string | undefined;
   error?: string;
 }
 
@@ -200,7 +204,7 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     return getAgentNames().map(name => {
       const caps = this.sessionManager.getCachedCapabilities(name);
       const localCount = this.historyStore?.list(name, this.workspaceCwd()).length ?? 0;
-      const collapsibleState = this.computeCollapsibleState(name, caps, localCount);
+      const collapsibleState = this.computeCollapsibleState(caps, localCount);
       return new AgentTreeItem(
         name,
         this.sessionManager.isAgentConnected(name),
@@ -210,7 +214,6 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
   }
 
   private computeCollapsibleState(
-    agentName: string,
     caps: AgentCapabilitySummary | undefined,
     localCount: number,
   ): vscode.TreeItemCollapsibleState {
