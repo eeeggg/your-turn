@@ -230,9 +230,8 @@ describe('ChatViewController', () => {
       expect(environment.take()).toEqual([{ type: 'error', message: 'No active session. Create a session first.' }]);
     });
 
-    it('runs a turn and reports its stop reason and usage', async () => {
+    it('runs a turn and reports its stop reason', async () => {
       const { sessions, environment, controller } = setup();
-      const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
 
       const turn = sendPrompt(controller, 'hello');
       expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
@@ -240,21 +239,11 @@ describe('ChatViewController', () => {
       expect(environment.take()).toEqual([{ type: 'promptStart' }]);
       expect(controller.hasTranscript).toBe(true);
 
-      sessions.answer({ stopReason: 'end_turn', usage });
+      sessions.answer({ stopReason: 'end_turn' });
       await turn;
 
       expect(sessions.touchHistory).toHaveBeenCalledExactlyOnceWith('s1');
-      expect(environment.take()).toEqual([{ type: 'promptEnd', stopReason: 'end_turn', usage }]);
-    });
-
-    it('leaves usage out when the agent reports none', async () => {
-      const { sessions, environment, controller } = setup();
-
-      const turn = sendPrompt(controller, 'hello');
-      sessions.answer({ stopReason: 'cancelled' });
-      await turn;
-
-      expect(environment.take().at(-1)).toStrictEqual({ type: 'promptEnd', stopReason: 'cancelled' });
+      expect(environment.take()).toStrictEqual([{ type: 'promptEnd', stopReason: 'end_turn' }]);
     });
 
     it('reports a failed prompt as an error that ends the turn', async () => {

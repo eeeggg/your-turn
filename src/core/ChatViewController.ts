@@ -172,11 +172,7 @@ export class ChatViewController {
     try {
       const response = await this.sessions.sendPrompt(activeId, text);
       this.sessions.touchHistory(activeId);
-      this.endTurn(activeId, {
-        type: 'promptEnd',
-        stopReason: response.stopReason,
-        ...(response.usage !== undefined ? { usage: response.usage } : {}),
-      });
+      this.endTurn(activeId, { type: 'promptEnd', stopReason: response.stopReason });
     } catch (e) {
       logError('Prompt failed', e);
       if (activeId === this.sessions.getActiveSessionId()) {
