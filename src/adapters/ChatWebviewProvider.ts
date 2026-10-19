@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { ChatViewEnvironment, MidTurnPrompt } from '@/core/ChatViewController';
+import type { ChatViewEnvironment } from '@/core/ChatViewController';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { renderChatHtml } from './ChatHtml';
 
@@ -38,11 +38,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
 
   post(message: ExtensionToWebviewMessage): void {
     this.view?.webview.postMessage(message);
-  }
-
-  midTurnPrompt(): MidTurnPrompt {
-    const setting = vscode.workspace.getConfiguration('acp').get<string>('chat.midTurnPrompt', 'queue');
-    return setting === 'send' ? 'send' : 'queue';
   }
 
   executeCommand(command: string, ...rest: unknown[]): Thenable<unknown> {

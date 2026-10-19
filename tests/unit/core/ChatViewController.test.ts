@@ -1,11 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PromptResponse, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
-import {
-  ChatViewController,
-  type ChatSessions,
-  type ChatViewEnvironment,
-  type MidTurnPrompt,
-} from '@/core/ChatViewController';
+import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
 import type { SessionInfo } from '@/core/SessionManager';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
@@ -24,9 +19,6 @@ function deferred<T>(): Deferred<T> {
   });
   return { promise, resolve, reject };
 }
-
-/** Let pending promise callbacks run. */
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const modelOption: SessionConfigOption = {
   id: 'model',
@@ -102,13 +94,9 @@ class FakeSessions implements ChatSessions {
 
 class FakeEnvironment implements ChatViewEnvironment {
   posted: ExtensionToWebviewMessage[] = [];
-  midTurn: MidTurnPrompt = 'queue';
 
   post(message: ExtensionToWebviewMessage): void {
     this.posted.push(message);
-  }
-  midTurnPrompt(): MidTurnPrompt {
-    return this.midTurn;
   }
   executeCommand = vi.fn<ChatViewEnvironment['executeCommand']>(async () => {});
 
@@ -309,100 +297,90 @@ describe('ChatViewController', () => {
       await failing;
       expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false), inProgress(true), inProgress(false)]);
     });
-  });
 
-  describe('mid-turn prompts', () => {
-    it('queues a mid-turn prompt until the running turn ends', async () => {
+    it('tells a chat view that opens during a turn that the turn is running, so it holds the next prompt', async () => {
       const { sessions, environment, controller } = setup();
-
-      const first = sendPrompt(controller, 'first');
-      await sendPrompt(controller, 'second');
-      expect(sessions.sendPrompt.mock.calls.map(([, text]) => text)).toEqual(['first']);
-
-      sessions.answer();
-      await first;
-      expect(sessions.sendPrompt.mock.calls.map(([, text]) => text)).toEqual(['first', 'second']);
-
-      sessions.answer();
-      await settle();
-      expect(environment.take()).toEqual([
-        { type: 'promptStart' },
-        { type: 'promptEnd', stopReason: 'end_turn' },
-        { type: 'promptStart' },
-        { type: 'promptEnd', stopReason: 'end_turn' },
-      ]);
-    });
-
-    it('sends queued prompts in the order they were typed', async () => {
-      const { sessions, controller } = setup();
-
-      void sendPrompt(controller, 'first');
-      await sendPrompt(controller, 'second');
-      await sendPrompt(controller, 'third');
-      sessions.answer();
-      await settle();
-      sessions.answer();
-      await settle();
-
-      expect(sessions.sendPrompt.mock.calls.map(([, text]) => text)).toEqual(['first', 'second', 'third']);
-    });
-
-    it('sends a mid-turn prompt straight to the agent when set to send', async () => {
-      const { sessions, environment, controller } = setup();
-      environment.midTurn = 'send';
-
-      void sendPrompt(controller, 'first');
-      void sendPrompt(controller, 'second');
-
-      expect(sessions.sendPrompt.mock.calls.map(([, text]) => text)).toEqual(['first', 'second']);
-      expect(environment.take()).toEqual([{ type: 'promptStart' }]);
-    });
-
-    it('ends the turn only once every prompt sent mid-turn has returned', async () => {
-      const { sessions, environment, controller } = setup();
-      environment.midTurn = 'send';
-      void sendPrompt(controller, 'first');
-      void sendPrompt(controller, 'second');
+      const turn = sendPrompt(controller, 'hello');
       environment.take();
 
-      sessions.answer({ stopReason: 'cancelled' });
-      await settle();
-      expect(environment.take()).toEqual([]);
-
-      sessions.answer({ stopReason: 'end_turn' });
-      await settle();
-      expect(environment.take()).toEqual([{ type: 'promptEnd', stopReason: 'end_turn' }]);
-    });
-
-    it('keeps the turn in progress until every prompt sent mid-turn has returned', async () => {
-      const { sessions, environment, controller } = setup();
-      environment.midTurn = 'send';
-      void sendPrompt(controller, 'first');
-      void sendPrompt(controller, 'second');
+      await controller.handleMessage({ type: 'ready' });
+      expect(environment.take().map((message) => message.type)).toEqual(['state', 'promptStart']);
 
       sessions.answer();
-      await settle();
-      expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'acp.turnInProgress', true]]);
-
-      sessions.answer();
-      await settle();
-      expect(environment.executeCommand.mock.calls).toEqual([
-        ['setContext', 'acp.turnInProgress', true],
-        ['setContext', 'acp.turnInProgress', false],
-      ]);
+      await turn;
+      environment.take();
+      await controller.handleMessage({ type: 'ready' });
+      expect(environment.take().map((message) => message.type)).toEqual(['state']);
     });
 
-    it('drops queued prompts when the transcript is cleared', async () => {
-      const { sessions, environment, controller } = setup();
-      const first = sendPrompt(controller, 'first');
-      await sendPrompt(controller, 'second');
+    describe('in a session the chat view no longer shows', () => {
+      function switchTo(sessions: FakeSessions, controller: ChatViewController, sessionId: string): void {
+        sessions.activeId = sessionId;
+        controller.notifyActiveSessionChanged();
+      }
+
+      it('does not tell the chat view when the turn ends or fails, so it cannot end a turn of the session shown now', async () => {
+        const outcomes: [string, (sessions: FakeSessions) => void][] = [
+          ['ends', (sessions) => sessions.answer()],
+          ['fails', (sessions) => sessions.fail(new Error('agent crashed'))],
+        ];
+        for (const [name, outcome] of outcomes) {
+          const { sessions, environment, controller } = setup();
+          const turn = sendPrompt(controller, 'hello');
+          switchTo(sessions, controller, 's2');
+          environment.take();
+
+          outcome(sessions);
+          await turn;
+
+          expect(environment.take(), name).toEqual([]);
+        }
+      });
+
+      it('takes the Cancel button off the title bar while another session is shown, and puts it back on return', async () => {
+        const { sessions, environment, controller } = setup();
+        void sendPrompt(controller, 'hello');
+        environment.executeCommand.mockClear();
+
+        switchTo(sessions, controller, 's2');
+        switchTo(sessions, controller, 's1');
+
+        expect(environment.executeCommand.mock.calls).toEqual([
+          ['setContext', 'acp.turnInProgress', false],
+          ['setContext', 'acp.turnInProgress', true],
+        ]);
+      });
+
+      it('tells the chat view the turn is still running when it shows that session again', () => {
+        const { sessions, environment, controller } = setup();
+        void sendPrompt(controller, 'hello');
+        switchTo(sessions, controller, 's2');
+        expect(environment.take().map((message) => message.type)).toEqual(['promptStart', 'state']);
+
+        switchTo(sessions, controller, 's1');
+
+        expect(environment.take().map((message) => message.type)).toEqual(['state', 'promptStart']);
+      });
+    });
+
+    it('does not tell the chat view again that a turn is running when the same session is reported again', async () => {
+      const { environment, controller } = setup();
+      await controller.handleMessage({ type: 'ready' });
+      void sendPrompt(controller, 'hello');
+      environment.take();
+
+      controller.notifyActiveSessionChanged();
+
+      expect(environment.take().map((message) => message.type)).toEqual(['state']);
+    });
+
+    it('forgets that a prompt was sent when the transcript is cleared', () => {
+      const { environment, controller } = setup();
+      void sendPrompt(controller, 'hello');
 
       controller.clearTranscript();
-      expect(controller.hasTranscript).toBe(false);
-      sessions.answer();
-      await first;
 
-      expect(sessions.sendPrompt).toHaveBeenCalledTimes(1);
+      expect(controller.hasTranscript).toBe(false);
       expect(environment.take()).toContainEqual({ type: 'clearTranscript' });
     });
   });

@@ -13,7 +13,7 @@ export interface Prompt {
   readonly text: string;
 }
 
-/** The agent's side of a turn. Its prompt is an entry of its own, since a mid-turn prompt lands below the turn it joins. */
+/** The agent's side of a turn, an entry of its own after the prompt that started it. */
 export interface Turn {
   readonly kind: 'turn';
   readonly id: EntryId;
@@ -82,6 +82,8 @@ export interface TranscriptState {
   readonly nextId: EntryId;
   /** The turn the agent's work goes into, until the turn ends. */
   readonly currentTurn: EntryId | null;
+  /** Prompts the user sent while a turn ran, oldest first; each goes to the agent when the turn before it ends. */
+  readonly queued: readonly string[];
   /** Rises each time the view must follow the stream again: for each prompt the user sends, and on each clear. */
   readonly followRequests: number;
 }
@@ -92,6 +94,7 @@ export type TranscriptAction =
   | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }
   | { type: 'toolCallToggled'; turnId: EntryId; toolCallId: string; open: boolean }
   | { type: 'toolCallsToggled'; turnId: EntryId; part: PartIndex }
+  | { type: 'sendNowChosen' }
   | { type: 'welcomeCommandChosen'; command: WelcomeCommand };
 
 export const initialTranscript: TranscriptState = {
@@ -99,6 +102,7 @@ export const initialTranscript: TranscriptState = {
   entries: [],
   nextId: 1,
   currentTurn: null,
+  queued: [],
   followRequests: 0,
 };
 
@@ -194,7 +198,7 @@ export function updateTranscript(
     case 'promptStart':
       return stateOnly(withCurrent(transcript, null));
     case 'promptEnd':
-      return stateOnly(endTurn(transcript, now));
+      return withQueueHeadSent(endTurn(transcript, now));
     case 'loadSessionEnd': {
       const ended = endTurn(transcript, now);
       return stateOnly(action.ok ? ended : appended(ended, (id) => ({ kind: 'error', id, text: 'Failed to load session.' })));
@@ -221,6 +225,11 @@ export function updateTranscript(
           withPart(turn, action.part, (part) => (part.kind === 'toolCalls' ? { ...part, collapsed: !part.collapsed } : part)),
         ),
       );
+    case 'sendNowChosen':
+      // Cancelling ends the turn, which sends the top of the queue; the queue itself stays as it is until then.
+      return transcript.queued.length === 0
+        ? stateOnly(transcript)
+        : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'cancelTurn' }] };
     case 'welcomeCommandChosen':
       return { state: transcript, outgoing: [{ type: 'executeCommand', command: action.command }] };
     default:
@@ -228,18 +237,45 @@ export function updateTranscript(
   }
 }
 
-/** Adds each prompt the prompt box sent, so the transcript shows exactly what went to the agent, and follows it. */
+/**
+ * Routes each prompt the prompt box sent: to the agent and into the transcript, or into the queue while a turn runs,
+ * as only one prompt may be in flight. The view follows either way.
+ */
 export function withSentPrompts(
   transcript: TranscriptState,
   outgoing: readonly WebviewToExtensionMessage[],
-): TranscriptState {
-  return outgoing.reduce((current, message) => {
+  turnRunning: boolean,
+): Transition<TranscriptState, WebviewToExtensionMessage> {
+  let state = transcript;
+  let busy = turnRunning;
+  const posted: WebviewToExtensionMessage[] = [];
+  for (const message of outgoing) {
     if (message.type !== 'sendPrompt') {
-      return current;
+      posted.push(message);
+      continue;
     }
-    const added = appended(current, (id) => ({ kind: 'prompt', id, text: message.text }));
-    return { ...added, followRequests: added.followRequests + 1 };
-  }, transcript);
+    const followed = { ...state, followRequests: state.followRequests + 1 };
+    if (busy) {
+      state = { ...followed, queued: [...followed.queued, message.text] };
+    } else {
+      state = withPrompt(followed, message.text);
+      posted.push(message);
+      busy = true;
+    }
+  }
+  return { state, outgoing: posted };
+}
+
+function withQueueHeadSent(transcript: TranscriptState): Transition<TranscriptState, WebviewToExtensionMessage> {
+  const [head, ...rest] = transcript.queued;
+  if (head === undefined) {
+    return stateOnly(transcript);
+  }
+  return { state: { ...withPrompt(transcript, head), queued: rest }, outgoing: [{ type: 'sendPrompt', text: head }] };
+}
+
+function withPrompt(transcript: TranscriptState, text: string): TranscriptState {
+  return appended(transcript, (id) => ({ kind: 'prompt', id, text }));
 }
 
 /** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
@@ -393,10 +429,10 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 }
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
-  const empty = transcript.entries.length === 0 && transcript.currentTurn === null;
+  const empty = transcript.entries.length === 0 && transcript.currentTurn === null && transcript.queued.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
-    : { ...transcript, sessionId, entries: [], currentTurn: null, followRequests: transcript.followRequests + 1 };
+    : { ...transcript, sessionId, entries: [], currentTurn: null, queued: [], followRequests: transcript.followRequests + 1 };
 }
 
 function withCurrent(transcript: TranscriptState, currentTurn: EntryId | null): TranscriptState {

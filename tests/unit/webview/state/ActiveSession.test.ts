@@ -124,6 +124,15 @@ describe('whether a turn is running', () => {
     expect(view.session()?.turnRunning).toBe(false);
   });
 
+  it('starts as soon as the user sends a prompt, before the extension reports it', () => {
+    const view = chatView();
+    view.connect();
+
+    view.send({ type: 'promptEdited', text: 'hello' }, { type: 'promptSent' });
+
+    expect(view.session()?.turnRunning).toBe(true);
+  });
+
   it('stops when a load starts', () => {
     const view = chatView();
     view.connect();

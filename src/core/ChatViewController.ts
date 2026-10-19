@@ -28,26 +28,26 @@ type TextChunk = Extract<SessionUpdate, { sessionUpdate: 'agent_message_chunk' |
   content: Extract<ContentBlock, { type: 'text' }>;
 };
 
-/** What a mid-turn prompt does: wait for the running turn, or go straight to the agent. */
-export type MidTurnPrompt = 'queue' | 'send';
-
 /** What the chat view needs from the editor it runs in. */
 export interface ChatViewEnvironment extends Commands {
   /** Deliver a webview message; dropped while the chat view is not open. */
   post(message: ExtensionToWebviewMessage): void;
-  midTurnPrompt(): MidTurnPrompt;
 }
 
 /**
  * The extension's side of the chat view: answers webview messages, runs turns
  * against the active session, and tells the webview what to show.
+ * The webview sends one prompt at a time and queues the rest.
  */
 export class ChatViewController {
   private _hasTranscript = false;
-  /** Prompts sent to the agent that have not returned yet. */
-  private inFlightPrompts = 0;
-  /** Prompts typed during a turn that wait for that turn to finish. */
-  private pendingPrompts: string[] = [];
+  /**
+   * Sessions with a prompt in flight. The chat view hears of a turn only while its session is shown, and is told
+   * it is running when it opens or shows that session again, so it holds its next prompt.
+   */
+  private readonly runningTurns = new Set<string>();
+  /** The session the chat view was last told about; reporting the same one again would split its running turn. */
+  private shownSessionId: string | null = null;
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
   private pendingText: { sessionId: string; update: TextChunk; timer: ReturnType<typeof setTimeout> } | null = null;
 
@@ -83,6 +83,7 @@ export class ChatViewController {
         break;
       case 'ready':
         this.sendCurrentState();
+        this.sendRunningTurn();
         break;
     }
   }
@@ -123,7 +124,12 @@ export class ChatViewController {
 
   /** Tell the webview the active session changed. */
   notifyActiveSessionChanged(): void {
+    const changed = this.sessions.getActiveSessionId() !== this.shownSessionId;
     this.sendCurrentState();
+    if (changed) {
+      this.sendRunningTurn();
+      this.setTurnInProgress(this.isRunning(this.shownSessionId));
+    }
   }
 
   notifyModesUpdate(modes: SessionModeState | null): void {
@@ -143,9 +149,8 @@ export class ChatViewController {
     this.post({ type: 'loadSessionEnd', ok });
   }
 
-  /** Clear the transcript and drop queued prompts, as when a new session starts. */
+  /** Clear the transcript, as when a new session starts. */
   clearTranscript(): void {
-    this.pendingPrompts = [];
     this._hasTranscript = false;
     this.post({ type: 'clearTranscript' });
   }
@@ -157,49 +162,44 @@ export class ChatViewController {
       return;
     }
 
-    if (this.inFlightPrompts > 0 && this.environment.midTurnPrompt() === 'queue') {
-      this.pendingPrompts.push(text);
-      return;
-    }
-
     // The history store uses the first prompt as a label until the agent supplies a title.
     this.sessions.recordFirstPrompt(activeId, text);
 
-    if (this.inFlightPrompts++ === 0) {
-      this.post({ type: 'promptStart' });
-      this.setTurnInProgress(true);
-    }
+    this.runningTurns.add(activeId);
+    this.post({ type: 'promptStart' });
+    this.setTurnInProgress(true);
 
     try {
       const response = await this.sessions.sendPrompt(activeId, text);
       this.sessions.touchHistory(activeId);
-      this.finishPrompt({
+      this.endTurn(activeId, {
         type: 'promptEnd',
         stopReason: response.stopReason,
         ...(response.usage !== undefined ? { usage: response.usage } : {}),
       });
     } catch (e) {
       logError('Prompt failed', e);
-      this.post({ type: 'error', message: messageOf(e) || 'Prompt failed' });
-      this.finishPrompt({ type: 'promptEnd', stopReason: 'error' });
+      if (activeId === this.sessions.getActiveSessionId()) {
+        this.post({ type: 'error', message: messageOf(e) || 'Prompt failed' });
+      }
+      this.endTurn(activeId, { type: 'promptEnd', stopReason: 'error' });
     }
   }
 
-  /**
-   * End one prompt request. The webview leaves its processing state only once
-   * every in-flight prompt has returned, so the quick reply to a prompt sent
-   * mid-turn does not clear the spinner of the turn that is still running.
-   */
-  private finishPrompt(endMessage: Extract<ExtensionToWebviewMessage, { type: 'promptEnd' }>): void {
-    this.inFlightPrompts = Math.max(0, this.inFlightPrompts - 1);
-    if (this.inFlightPrompts > 0) {
-      return;
-    }
+  private endTurn(sessionId: string, endMessage: Extract<ExtensionToWebviewMessage, { type: 'promptEnd' }>): void {
+    this.runningTurns.delete(sessionId);
+    if (sessionId !== this.sessions.getActiveSessionId()) { return; }
     this.post(endMessage);
     this.setTurnInProgress(false);
-    const next = this.pendingPrompts.shift();
-    if (next !== undefined) {
-      void this.sendPrompt(next);
+  }
+
+  private isRunning(sessionId: string | null): boolean {
+    return sessionId !== null && this.runningTurns.has(sessionId);
+  }
+
+  private sendRunningTurn(): void {
+    if (this.isRunning(this.shownSessionId)) {
+      this.post({ type: 'promptStart' });
     }
   }
 
@@ -254,6 +254,7 @@ export class ChatViewController {
   private sendCurrentState(): void {
     const activeId = this.sessions.getActiveSessionId();
     const session = activeId ? this.sessions.getSession(activeId) : undefined;
+    this.shownSessionId = activeId;
     this.post({
       type: 'state',
       activeSessionId: activeId,

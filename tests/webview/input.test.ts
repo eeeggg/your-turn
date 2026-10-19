@@ -90,7 +90,7 @@ describe('sending prompts', () => {
     expect(promptInput().value).toBe('にほん');
   });
 
-  it('cancels from the Stop button while a prompt runs, and still sends on Enter', () => {
+  it('cancels from the Stop button while a prompt runs, and on Enter holds the prompt until the turn ends', () => {
     page = loadChatPage();
     connect(page);
     page.send({ type: 'promptStart' });
@@ -101,6 +101,10 @@ describe('sending prompts', () => {
     expect(page.takePosted()).toEqual([{ type: 'cancelTurn' }]);
 
     page.pressKey('Enter');
+    expect(page.takePosted()).toEqual([]);
+    expect(promptInput().value).toBe('');
+
+    page.send({ type: 'promptEnd', stopReason: 'cancelled' });
     expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }]);
     expect(userMessages()).toEqual(['follow-up']);
   });
