@@ -78,6 +78,18 @@ describe('sending prompts', () => {
     expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
   });
 
+  it('does not send on Enter while an input method is composing', () => {
+    page = loadChatPage();
+    connect(page);
+    page.takePosted();
+
+    page.typePrompt('にほん');
+    page.pressKey('Enter', { isComposing: true });
+
+    expect(page.takePosted()).toEqual([]);
+    expect(promptInput().value).toBe('にほん');
+  });
+
   it('cancels from the Stop button while a prompt runs, and still sends on Enter', () => {
     page = loadChatPage();
     connect(page);
@@ -91,6 +103,43 @@ describe('sending prompts', () => {
     page.pressKey('Enter');
     expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }]);
     expect(userMessages()).toEqual(['follow-up']);
+  });
+});
+
+describe('when the prompt box can be used', () => {
+  function usable(): boolean[] {
+    return [promptInput().disabled, page.byId<HTMLButtonElement>('sendStopBtn').disabled].map((disabled) => !disabled);
+  }
+
+  it('disables the prompt box and Send without a session, and sends nothing', () => {
+    page = loadChatPage();
+    page.takePosted();
+    expect(usable()).toEqual([false, false]);
+
+    page.typePrompt('hello');
+    page.pressKey('Enter');
+    expect(page.takePosted()).toEqual([]);
+    expect(userMessages()).toEqual([]);
+
+    connect(page);
+    expect(usable()).toEqual([true, true]);
+  });
+
+  it('disables them while a session loads, and sends nothing until it has loaded', () => {
+    page = loadChatPage();
+    connect(page);
+    page.send({ type: 'loadSessionStart' });
+    page.takePosted();
+    expect(usable()).toEqual([false, false]);
+
+    page.typePrompt('hello');
+    page.pressKey('Enter');
+    expect(page.takePosted()).toEqual([]);
+
+    page.send({ type: 'loadSessionEnd', ok: true });
+    expect(usable()).toEqual([true, true]);
+    page.pressKey('Enter');
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
   });
 });
 
@@ -158,7 +207,7 @@ describe('slash commands', () => {
     expect(popupOpen()).toBe(false);
   });
 
-  it('inserts a command that takes input and shows its hint', () => {
+  it('inserts a command that takes input, leaving the prompt box focused for it', () => {
     page = loadChatPage();
     connect(page, { availableCommands: commands });
     page.takePosted();
@@ -168,7 +217,20 @@ describe('slash commands', () => {
 
     expect(page.takePosted()).toEqual([]);
     expect(promptInput().value).toBe('/review ');
-    expect(promptInput().placeholder).toBe('What to review');
+    expect(popupOpen()).toBe(false);
+    expect(page.document.activeElement).toBe(promptInput());
+  });
+
+  it("shows a command's input hint beside its name, since the placeholder is hidden once the name is inserted", () => {
+    page = loadChatPage();
+    connect(page, { availableCommands: commands });
+
+    page.typePrompt('/');
+    expect(popupItems().map((el) => el.querySelector('.cmd-hint')?.textContent ?? null)).toEqual([null, 'What to review']);
+
+    page.pressKey('ArrowDown');
+    page.pressKey('Tab');
+    expect(promptInput().placeholder).toBe('Type a message or / for commands...');
   });
 
   it('selects a command by clicking it', () => {

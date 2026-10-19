@@ -1,6 +1,7 @@
+import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot } from '@/shared/WebviewMessages';
-import { sessionName, type ActiveSession } from '@/webview/ActiveSession';
+import { canPrompt, sessionName, type ActiveSession } from '@/webview/ActiveSession';
 import { initialState, update, type Action } from '@/webview/RootState';
 import { createStore } from '@/webview/Store';
 
@@ -30,23 +31,26 @@ function chatView() {
 }
 
 const disconnect: Action = { type: 'state', activeSessionId: null, session: null };
+const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
 
 describe('the active session', () => {
   it('is none until the extension reports one', () => {
     expect(chatView().session()).toBeNull();
   });
 
-  it('takes the agent, title and working directory from the state message', () => {
+  it('takes the agent, title, working directory and slash commands from the state message', () => {
     const view = chatView();
 
-    view.connect({ agentName: 'OpenCode', title: 'Fix the build', cwd: '/work/project' });
+    view.connect({ agentName: 'OpenCode', title: 'Fix the build', cwd: '/work/project', availableCommands: [init] });
 
     expect(view.session()).toEqual({
       sessionId: 's1',
       agentName: 'OpenCode',
       title: 'Fix the build',
       cwd: '/work/project',
+      availableCommands: [init],
       turnRunning: false,
+      loading: false,
     });
   });
 
@@ -92,7 +96,15 @@ describe('the title', () => {
   });
 
   it('names the session by its title, else by its agent', () => {
-    const session: ActiveSession = { sessionId: 's1', agentName: 'OpenCode', title: 'Fix the build', cwd: '/w', turnRunning: false };
+    const session: ActiveSession = {
+      sessionId: 's1',
+      agentName: 'OpenCode',
+      title: 'Fix the build',
+      cwd: '/w',
+      availableCommands: [],
+      turnRunning: false,
+      loading: false,
+    };
 
     expect(sessionName(session)).toBe('Fix the build');
     expect(sessionName({ ...session, title: null })).toBe('OpenCode');
@@ -148,6 +160,61 @@ describe('whether a turn is running', () => {
     view.send({ type: 'promptStart' });
 
     expect(view.session()).toBeNull();
+  });
+});
+
+describe('slash commands', () => {
+  it('are replaced by available_commands_update', () => {
+    const view = chatView();
+    view.connect({ availableCommands: [init] });
+    const review: AvailableCommand = { name: 'review', description: 'Review changes' };
+
+    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'available_commands_update', availableCommands: [review] } });
+
+    expect(view.session()?.availableCommands).toEqual([review]);
+  });
+
+  it('are left alone by other session updates, and ignored without a session', () => {
+    const view = chatView();
+    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'available_commands_update', availableCommands: [init] } });
+    expect(view.session()).toBeNull();
+
+    view.connect({ availableCommands: [init] });
+    const before = view.session();
+    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } });
+    expect(view.session()).toBe(before);
+  });
+});
+
+describe('loading', () => {
+  it('runs from loadSessionStart to loadSessionEnd, and prompting waits for it', () => {
+    const view = chatView();
+    view.connect();
+    expect(canPrompt(view.session())).toBe(true);
+
+    view.send({ type: 'loadSessionStart' });
+    expect(view.session()?.loading).toBe(true);
+    expect(canPrompt(view.session())).toBe(false);
+
+    view.send({ type: 'loadSessionEnd', ok: true });
+    expect(view.session()?.loading).toBe(false);
+    expect(canPrompt(view.session())).toBe(true);
+  });
+
+  it('continues when the same session is reported again, but not into a different one', () => {
+    const view = chatView();
+    view.connect({ sessionId: 's1' });
+    view.send({ type: 'loadSessionStart' });
+
+    view.connect({ sessionId: 's1' });
+    expect(view.session()?.loading).toBe(true);
+
+    view.connect({ sessionId: 's2' });
+    expect(view.session()?.loading).toBe(false);
+  });
+
+  it('cannot prompt without a session', () => {
+    expect(canPrompt(null)).toBe(false);
   });
 });
 

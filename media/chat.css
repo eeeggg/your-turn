@@ -717,6 +717,12 @@ body {
   white-space: nowrap;
   font-family: var(--vscode-editor-font-family);
 }
+.slash-popup-item .cmd-hint {
+  font-family: var(--vscode-editor-font-family);
+  font-style: italic;
+  opacity: 0.6;
+  white-space: nowrap;
+}
 .slash-popup-item .cmd-desc {
   font-size: 0.9em;
   opacity: 0.7;

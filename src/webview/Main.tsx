@@ -1,16 +1,25 @@
-import '@/webview/chat';
+import { showSentPrompt } from '@/webview/chat';
 import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { InputToolbar } from '@/webview/InputToolbar';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import { InputArea } from '@/webview/InputArea';
 import { initialState, update, type Action, type RootState } from '@/webview/RootState';
 import { SessionBanner } from '@/webview/SessionBanner';
 import { createStore, type Store } from '@/webview/Store';
 import { StoreContext } from '@/webview/StoreContext';
 import { postMessage } from '@/webview/VsCodeApi';
 
-const posting = createStore(initialState, update, postMessage);
+// Until the transcript moves to the store and handles promptSent itself,
+// chat.ts shows each prompt as it is sent.
+function post(message: WebviewToExtensionMessage): void {
+  if (message.type === 'sendPrompt') {
+    showSentPrompt(message.text);
+  }
+  postMessage(message);
+}
+
+const posting = createStore(initialState, update, post);
 // chat.ts and the webview suite read the DOM as soon as a webview message or
 // user action is handled, so each dispatch renders before it returns.
 const store: Store<RootState, Action> = {
@@ -31,6 +40,6 @@ function mount(containerId: string, view: ReactNode): void {
 }
 
 mount('sessionBannerRoot', <SessionBanner />);
-mount('inputToolbar', <InputToolbar />);
+mount('inputAreaRoot', <InputArea />);
 
 postMessage({ type: 'ready' });

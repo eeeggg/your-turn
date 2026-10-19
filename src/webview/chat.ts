@@ -5,13 +5,6 @@ import { postMessage } from '@/webview/VsCodeApi';
 
 const messagesEl = document.getElementById('messages');
 const emptyState = document.getElementById('emptyState');
-const promptInput = document.getElementById('promptInput');
-const sendStopBtn = document.getElementById('sendStopBtn');
-const inputArea = document.getElementById('inputArea');
-const resizeHandle = document.getElementById('resizeHandle');
-const slashPopup = document.getElementById('slashPopup');
-
-let isProcessing = false;
 
 // Thinking state
 let currentThoughtEl = null;
@@ -20,21 +13,6 @@ let currentThoughtText = '';
 let thoughtStartTime = null;
 let thoughtEndTime = null;
 
-// Slash commands state
-let availableCommands = [];
-let slashPopupSelectedIdx = -1;
-let slashFilteredCommands = [];
-let savedPlaceholder = 'Type a message...';
-
-function updatePlaceholder() {
-  savedPlaceholder = availableCommands.length > 0
-    ? 'Type a message or / for commands...'
-    : 'Type a message...';
-  if (!promptInput.value.startsWith('/')) {
-    promptInput.placeholder = savedPlaceholder;
-  }
-}
-
 // The page draws only what the extension tells it and saves nothing: a
 // rebuilt page starts empty, and a transcript comes back only by loading
 // the session from the agent.
@@ -42,8 +20,6 @@ let transcript = [];
 // The session the transcript on screen belongs to.
 let transcriptSessionId = null;
 
-// Start with input disabled
-if (inputArea) { inputArea.classList.add('disabled'); }
 let currentAgentMessageEl = null;
 let currentAgentMessageText = '';
 let currentTurnEl = null;       // .turn container for current response
@@ -53,147 +29,19 @@ let currentToolCount = 0;
 let toolCalls = {};
 const TOOL_CALL_CONTENT_LIMIT = 20000;
 
-// --- Resize handle ---
-let inputAreaHeight = 140;
-const MIN_INPUT_HEIGHT = 90;
-const MAX_INPUT_HEIGHT = 400;
-
-function applyInputHeight(h) {
-  inputAreaHeight = Math.max(MIN_INPUT_HEIGHT, Math.min(MAX_INPUT_HEIGHT, h));
-  inputArea.style.height = inputAreaHeight + 'px';
-}
-
-resizeHandle.addEventListener('mousedown', (e) => {
-  e.preventDefault();
-  const startY = e.clientY;
-  const startHeight = inputArea.offsetHeight;
-  function onMove(ev) {
-    const delta = startY - ev.clientY;
-    applyInputHeight(startHeight + delta);
-  }
-  function onUp() {
-    document.removeEventListener('mousemove', onMove);
-    document.removeEventListener('mouseup', onUp);
-  }
-  document.addEventListener('mousemove', onMove);
-  document.addEventListener('mouseup', onUp);
-});
-
-// --- Auto-resize textarea (within the input area constraints) ---
-promptInput.addEventListener('input', () => {
-  // Slash command autocomplete
-  const text = promptInput.value;
-  if (text.startsWith('/') && availableCommands.length > 0) {
-    const firstSpace = text.indexOf(' ');
-    const query = (firstSpace > 0 ? text.slice(1, firstSpace) : text.slice(1)).toLowerCase();
-    if (firstSpace < 0) {
-      // Still typing command name — show filtered popup
-      slashFilteredCommands = availableCommands.filter(c =>
-        c.name.toLowerCase().startsWith(query)
-      );
-      if (slashFilteredCommands.length > 0) {
-        renderSlashPopup(slashFilteredCommands);
-        slashPopup.classList.add('open');
-        slashPopupSelectedIdx = 0;
-        highlightSlashItem(0);
-      } else {
-        slashPopup.classList.remove('open');
-      }
-    } else {
-      slashPopup.classList.remove('open');
-    }
-  } else {
-    slashPopup.classList.remove('open');
-    if (!text.startsWith('/')) {
-      promptInput.placeholder = savedPlaceholder;
-    }
-  }
-});
-
-// Send on Enter (Shift+Enter for newline)
-promptInput.addEventListener('keydown', (e) => {
-  // Slash popup navigation
-  if (slashPopup.classList.contains('open')) {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      slashPopupSelectedIdx = Math.min(slashPopupSelectedIdx + 1, slashFilteredCommands.length - 1);
-      highlightSlashItem(slashPopupSelectedIdx);
-      return;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      slashPopupSelectedIdx = Math.max(slashPopupSelectedIdx - 1, 0);
-      highlightSlashItem(slashPopupSelectedIdx);
-      return;
-    }
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      selectSlashCommand(slashFilteredCommands[slashPopupSelectedIdx]);
-      return;
-    }
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      selectSlashCommand(slashFilteredCommands[slashPopupSelectedIdx]);
-      return;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      slashPopup.classList.remove('open');
-      return;
-    }
-  }
-
-  if (e.key === 'Enter' && !e.shiftKey) {
-    e.preventDefault();
-    handleSend();
-  }
-});
-
-function handleSend() {
-  const text = promptInput.value.trim();
-  if (!text) { return; }
-
+/** Show a prompt the input area has just sent, until the transcript moves to the store. */
+export function showSentPrompt(text) {
   addMessage('user', text);
-  promptInput.value = '';
-  postMessage({ type: 'sendPrompt', text });
-}
-
-function handleCancel() {
-  postMessage({ type: 'cancelTurn' });
 }
 
 function execCmd(command) {
   postMessage({ type: 'executeCommand', command });
 }
 
-// Wire up buttons
-sendStopBtn.addEventListener('click', () => {
-  if (isProcessing) {
-    handleCancel();
-  } else {
-    handleSend();
-  }
-});
-
 const welcomeConnectAgent = document.getElementById('welcomeConnectAgent');
 const welcomeAddAgent = document.getElementById('welcomeAddAgent');
 if (welcomeConnectAgent) { welcomeConnectAgent.addEventListener('click', () => execCmd('acp.connectAgent')); }
 if (welcomeAddAgent) { welcomeAddAgent.addEventListener('click', () => execCmd('acp.addAgent')); }
-
-// --- Send/Stop toggle ---
-function setProcessing(processing) {
-  isProcessing = processing;
-  if (processing) {
-    sendStopBtn.className = 'send-stop-btn stop';
-    sendStopBtn.textContent = '■ Stop';
-    sendStopBtn.disabled = false;
-  } else {
-    sendStopBtn.className = 'send-stop-btn send';
-    sendStopBtn.textContent = 'Send';
-    sendStopBtn.disabled = false;
-    promptInput.disabled = false;
-  }
-}
 
 // --- Session/load overlay ---
 const loadOverlay = document.getElementById('loadOverlay');
@@ -218,19 +66,15 @@ function clearTranscript() {
 }
 
 function handleLoadSessionStart() {
-  // Keeps the session banner / input area structure intact.
   clearTranscript();
   if (emptyState) { emptyState.style.display = 'none'; }
   if (loadOverlay) { loadOverlay.classList.add('visible'); }
-  if (inputArea) { inputArea.classList.add('disabled'); }
-  setProcessing(false);
 }
 
 function handleLoadSessionEnd(ok) {
   // Commit any trailing turn captured during the replay.
   finalizeCurrentTurn();
   if (loadOverlay) { loadOverlay.classList.remove('visible'); }
-  if (inputArea) { inputArea.classList.remove('disabled'); }
   // Batch-render markdown for every agent message captured during
   // the replay (avoids per-chunk render storms).
   const items = [];
@@ -246,47 +90,6 @@ function handleLoadSessionEnd(ok) {
   scrollToBottom();
   if (!ok) {
     addMessage('error', 'Failed to load session.');
-  }
-}
-
-// --- Slash command helpers ---
-function renderSlashPopup(commands) {
-  slashPopup.innerHTML = '<div class="slash-popup-header">Commands</div>';
-  commands.forEach((cmd, i) => {
-    const item = document.createElement('div');
-    item.className = 'slash-popup-item' + (i === 0 ? ' active' : '');
-    item.dataset.index = String(i);
-    item.innerHTML =
-      '<span class="cmd-name">/' + escapeHtml(cmd.name) + '</span>' +
-      '<span class="cmd-desc">' + escapeHtml(cmd.description) + '</span>';
-    item.addEventListener('click', () => selectSlashCommand(cmd));
-    item.addEventListener('mouseenter', () => {
-      slashPopupSelectedIdx = i;
-      highlightSlashItem(i);
-    });
-    slashPopup.appendChild(item);
-  });
-}
-
-function highlightSlashItem(idx) {
-  const items = slashPopup.querySelectorAll('.slash-popup-item');
-  items.forEach((el, i) => el.classList.toggle('active', i === idx));
-  if (items[idx]) { items[idx].scrollIntoView({ block: 'nearest' }); }
-}
-
-function selectSlashCommand(cmd) {
-  slashPopup.classList.remove('open');
-  if (!cmd) { return; }
-
-  if (cmd.input) {
-    // Command expects input — insert "/name " and set placeholder to hint
-    promptInput.value = '/' + cmd.name + ' ';
-    promptInput.placeholder = cmd.input.hint || 'Type input...';
-    promptInput.focus();
-  } else {
-    // No input required — send immediately
-    promptInput.value = '/' + cmd.name;
-    handleSend();
   }
 }
 
@@ -586,27 +389,11 @@ function finalizeCurrentTurn() {
   thoughtEndTime = null;
 }
 
-function showSession(session) {
-  hideEmpty();
-  if (inputArea) { inputArea.classList.remove('disabled'); }
-  promptInput.disabled = false;
-
-  // Restore available commands
-  if (session.availableCommands) {
-    availableCommands = session.availableCommands;
-  }
-  updatePlaceholder();
-}
-
 /** Without a session nothing on screen can be used, so only the welcome card is left. */
 function showNoSession() {
   clearTranscript();
   transcriptSessionId = null;
-  availableCommands = [];
-  slashPopup.classList.remove('open');
   if (emptyState) { emptyState.style.display = ''; }
-  if (inputArea) { inputArea.classList.add('disabled'); }
-  setProcessing(false);
 }
 
 // Handle messages from the extension
@@ -617,17 +404,15 @@ window.addEventListener('message', (event) => {
       if (msg.session) {
         if (msg.session.sessionId !== transcriptSessionId) {
           clearTranscript();
-          setProcessing(false);
           transcriptSessionId = msg.session.sessionId;
         }
-        showSession(msg.session);
+        hideEmpty();
       } else {
         showNoSession();
       }
       break;
 
     case 'promptStart':
-      setProcessing(true);
       currentAgentMessageEl = null;
       currentAgentMessageText = '';
       currentTurnEl = null;
@@ -662,7 +447,6 @@ window.addEventListener('message', (event) => {
           });
         }
       }
-      setProcessing(false);
       currentAgentMessageEl = null;
       currentAgentMessageText = '';
       // Auto-collapse tool calls in completed turns
@@ -845,10 +629,5 @@ function handleUpdate(update) {
       addPlan(update);
       break;
     }
-
-    case 'available_commands_update':
-      availableCommands = update.availableCommands || [];
-      updatePlaceholder();
-      break;
   }
 }

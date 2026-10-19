@@ -39,23 +39,7 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
     </div>
   </div>
 
-  <div class="input-area" id="inputArea">
-    <div class="slash-popup" id="slashPopup">
-      <div class="slash-popup-header">Commands</div>
-    </div>
-    <div class="input-resize-handle" id="resizeHandle"></div>
-    <div class="input-toolbar" id="inputToolbar"></div>
-    <div class="input-editor-wrap">
-      <textarea
-        id="promptInput"
-        placeholder="Type a message..."
-        rows="2"
-      ></textarea>
-    </div>
-    <div class="input-send-row">
-      <button class="send-stop-btn send" id="sendStopBtn">Send</button>
-    </div>
-  </div>
+  <div id="inputAreaRoot"></div>
 
   <!-- Overlay shown during session/load history replay -->
   <div class="load-overlay" id="loadOverlay" role="status" aria-live="polite">

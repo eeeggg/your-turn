@@ -125,7 +125,9 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     byId,
     typePrompt(text) {
       const input = byId<HTMLTextAreaElement>('promptInput');
-      input.value = text;
+      // Typing changes the value without the element's own `value` setter, which React
+      // intercepts to tell its own updates from the user's; setting it there would hide the edit.
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set?.call(input, text);
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     },
     pressKey(key, init = {}) {
