@@ -7,7 +7,6 @@ import type {
   SessionModeState,
   SessionUpdate,
   StopReason,
-  Usage,
 } from '@agentclientprotocol/sdk';
 
 /** The active session as the chat view shows it. */
@@ -25,7 +24,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'state'; activeSessionId: string | null; session: SessionSnapshot | null }
   | { type: 'clearTranscript' }
   | { type: 'promptStart' }
-  | { type: 'promptEnd'; stopReason: StopReason | 'error'; usage?: Usage | null }
+  | { type: 'promptEnd'; stopReason: StopReason | 'error' }
   | { type: 'error'; message: string }
   | { type: 'sessionUpdate'; sessionId: string; update: SessionUpdate }
   | { type: 'modesUpdate'; modes: SessionModeState | null }
