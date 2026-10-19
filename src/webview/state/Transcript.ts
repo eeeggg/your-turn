@@ -17,13 +17,27 @@ export interface Prompt {
 export interface Turn {
   readonly kind: 'turn';
   readonly id: EntryId;
-  readonly thought: Thought | null;
-  readonly message: AgentMessage;
-  readonly toolCalls: readonly ToolCall[];
-  readonly toolCallsCollapsed: boolean;
+  /** What the agent sent, in the order it arrived. */
+  readonly parts: readonly TurnPart[];
+}
+
+export type TurnPart = AgentMessage | Thought | ToolCallGroup | Plan;
+
+/** A part's place in its turn, which never changes: parts are only ever added at the end. */
+export type PartIndex = number;
+
+export interface AgentMessage {
+  readonly kind: 'message';
+  /** The agent's ID for the message, when it sends one; text with another ID is another message. */
+  readonly messageId: string | null;
+  /** Everything streamed so far, as markdown; shown once it has more than whitespace. */
+  readonly text: string;
 }
 
 export interface Thought {
+  readonly kind: 'thought';
+  /** As for an agent message. */
+  readonly messageId: string | null;
   readonly text: string;
   readonly startedAt: number;
   /** Null while the agent is still thinking. */
@@ -31,9 +45,11 @@ export interface Thought {
   readonly open: boolean;
 }
 
-export interface AgentMessage {
-  /** Everything streamed so far, as markdown; shown once it has more than whitespace. */
-  readonly text: string;
+/** Tool calls reported one after another, with nothing between them. */
+export interface ToolCallGroup {
+  readonly kind: 'toolCalls';
+  readonly toolCalls: readonly ToolCall[];
+  readonly collapsed: boolean;
 }
 
 export interface ToolCall {
@@ -45,10 +61,9 @@ export interface ToolCall {
   readonly open: boolean;
 }
 
-/** The agent's latest plan in a turn, which replaces the earlier ones of that turn. */
+/** The agent's latest plan in a turn, which replaces the earlier ones of that turn where the first one was. */
 export interface Plan {
   readonly kind: 'plan';
-  readonly id: EntryId;
   readonly entries: readonly PlanEntry[];
 }
 
@@ -58,24 +73,23 @@ export interface TranscriptError {
   readonly text: string;
 }
 
-export type TranscriptEntry = Prompt | Turn | Plan | TranscriptError;
+export type TranscriptEntry = Prompt | Turn | TranscriptError;
 
 export interface TranscriptState {
   /** The session the entries belong to; a `state` for any other session clears them. */
   readonly sessionId: string | null;
   readonly entries: readonly TranscriptEntry[];
   readonly nextId: EntryId;
-  /** The turn the agent's work goes into, and that turn's plan, until the turn ends. */
+  /** The turn the agent's work goes into, until the turn ends. */
   readonly currentTurn: EntryId | null;
-  readonly currentPlan: EntryId | null;
 }
 
 export type WelcomeCommand = 'acp.connectAgent' | 'acp.addAgent';
 
 export type TranscriptAction =
-  | { type: 'thoughtToggled'; turnId: EntryId; open: boolean }
+  | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }
   | { type: 'toolCallToggled'; turnId: EntryId; toolCallId: string; open: boolean }
-  | { type: 'toolCallsToggled'; turnId: EntryId }
+  | { type: 'toolCallsToggled'; turnId: EntryId; part: PartIndex }
   | { type: 'welcomeCommandChosen'; command: WelcomeCommand };
 
 export const initialTranscript: TranscriptState = {
@@ -83,12 +97,11 @@ export const initialTranscript: TranscriptState = {
   entries: [],
   nextId: 1,
   currentTurn: null,
-  currentPlan: null,
 };
 
 export const TOOL_CALL_CONTENT_LIMIT = 20_000;
 
-/** A turn's tool calls are collapsed when it ends with more than this many. */
+/** A group of tool calls is collapsed when its turn ends with more than this many in it. */
 const TOOL_CALLS_SHOWN_EXPANDED = 3;
 
 /** Without a session, an empty transcript leaves room for the welcome card. */
@@ -96,16 +109,16 @@ export function showsWelcome(transcript: TranscriptState, session: ActiveSession
   return session === null && transcript.entries.length === 0;
 }
 
-export function messageShown(message: AgentMessage): boolean {
-  return message.text.trim() !== '';
+/** A part is drawn only once it has something to show, so whitespace before the answer leaves no trace. */
+export function partShown(part: TurnPart): boolean {
+  return part.kind !== 'message' || part.text.trim() !== '';
 }
 
-/** A turn is drawn only once it has something to show, so whitespace before the answer leaves no trace. */
 export function turnShown(turn: Turn): boolean {
-  return turn.thought !== null || messageShown(turn.message) || turn.toolCalls.length > 0;
+  return turn.parts.some(partShown);
 }
 
-export function thoughtSummary(thought: Thought): string {
+export function thoughtSummary(thought: Pick<Thought, 'startedAt' | 'endedAt'>): string {
   const seconds = thought.endedAt === null ? 0 : Math.round((thought.endedAt - thought.startedAt) / 1000);
   return seconds > 0 ? `Thought for ${seconds}s` : 'Thought';
 }
@@ -176,7 +189,7 @@ export function updateTranscript(
     case 'loadSessionStart':
       return stateOnly(cleared(transcript, transcript.sessionId));
     case 'promptStart':
-      return stateOnly(withCurrent(transcript, null, null));
+      return stateOnly(withCurrent(transcript, null));
     case 'promptEnd':
       return stateOnly(endTurn(transcript, now));
     case 'loadSessionEnd': {
@@ -190,7 +203,7 @@ export function updateTranscript(
     case 'thoughtToggled':
       return stateOnly(
         withTurn(transcript, action.turnId, (turn) =>
-          turn.thought && turn.thought.open !== action.open ? { ...turn, thought: { ...turn.thought, open: action.open } } : turn,
+          withPart(turn, action.part, (part) => (part.kind === 'thought' && part.open !== action.open ? { ...part, open: action.open } : part)),
         ),
       );
     case 'toolCallToggled':
@@ -200,7 +213,11 @@ export function updateTranscript(
         ),
       );
     case 'toolCallsToggled':
-      return stateOnly(withTurn(transcript, action.turnId, (turn) => ({ ...turn, toolCallsCollapsed: !turn.toolCallsCollapsed })));
+      return stateOnly(
+        withTurn(transcript, action.turnId, (turn) =>
+          withPart(turn, action.part, (part) => (part.kind === 'toolCalls' ? { ...part, collapsed: !part.collapsed } : part)),
+        ),
+      );
     case 'welcomeCommandChosen':
       return { state: transcript, outgoing: [{ type: 'executeCommand', command: action.command }] };
     default:
@@ -236,14 +253,12 @@ function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, 
       if (!text) {
         return transcript;
       }
+      const messageId = update.messageId ?? null;
       return inCurrentTurn(transcript, (turn) => {
-        const message = { ...turn.message, text: turn.message.text + text };
-        const answerStarts = !messageShown(turn.message) && messageShown(message);
-        return {
-          ...turn,
-          message,
-          thought: answerStarts && turn.thought ? { ...finished(turn.thought, now), open: false } : turn.thought,
-        };
+        const last = turn.parts.at(-1);
+        return last?.kind === 'message' && sameMessage(last.messageId, messageId)
+          ? withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now)
+          : withLastPart(turn, { kind: 'message', messageId, text }, 'adding', now);
       });
     }
     case 'agent_thought_chunk': {
@@ -251,9 +266,12 @@ function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, 
       if (text === null) {
         return transcript;
       }
+      const messageId = update.messageId ?? null;
       return inCurrentTurn(transcript, (turn) => {
-        const thought = turn.thought ?? { text: '', startedAt: now, endedAt: null, open: true };
-        return { ...turn, thought: { ...thought, text: thought.text + text } };
+        const last = turn.parts.at(-1);
+        return last?.kind === 'thought' && sameMessage(last.messageId, messageId)
+          ? withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now)
+          : withLastPart(turn, { kind: 'thought', messageId, text, startedAt: now, endedAt: null, open: true }, 'adding', now);
       });
     }
     case 'user_message_chunk': {
@@ -279,13 +297,13 @@ function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, 
         return withTurn(transcript, holder.id, (turn) => withToolCall(turn, update.toolCallId, (call) => revised(call, reported)));
       }
       const status = reported.status ?? 'pending';
-      return inCurrentTurn(transcript, (turn) => ({
-        ...turn,
-        toolCalls: [
-          ...turn.toolCalls,
-          { toolCallId: update.toolCallId, title: update.title, status, texts: reported.texts ?? [], open: status === 'failed' },
-        ],
-      }));
+      const call = { toolCallId: update.toolCallId, title: update.title, status, texts: reported.texts ?? [], open: status === 'failed' };
+      return inCurrentTurn(transcript, (turn) => {
+        const last = turn.parts.at(-1);
+        return last?.kind === 'toolCalls'
+          ? withLastPart(turn, { ...last, toolCalls: [...last.toolCalls, call] }, 'replacing', now)
+          : withLastPart(turn, { kind: 'toolCalls', toolCalls: [call], collapsed: false }, 'adding', now);
+      });
     }
     case 'tool_call_update': {
       const holder = turnWithToolCall(transcript, update.toolCallId);
@@ -300,13 +318,11 @@ function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, 
       return withTurn(transcript, holder.id, (turn) => withToolCall(turn, update.toolCallId, (call) => revised(call, reported)));
     }
     case 'plan': {
-      const { entries } = update;
-      const current = transcript.currentPlan === null ? undefined : findEntry(transcript, transcript.currentPlan);
-      if (current?.kind === 'plan') {
-        return replaced(transcript, { ...current, entries });
-      }
-      const added = appended(transcript, (id) => ({ kind: 'plan', id, entries }));
-      return { ...added, currentPlan: added.nextId - 1 };
+      const plan: Plan = { kind: 'plan', entries: update.entries };
+      return inCurrentTurn(transcript, (turn) => {
+        const index = turn.parts.findIndex((part) => part.kind === 'plan');
+        return index === -1 ? withLastPart(turn, plan, 'adding', now) : withPart(turn, index, () => plan);
+      });
     }
     default:
       return transcript;
@@ -332,35 +348,52 @@ function revised(call: ToolCall, reported: ReportedToolCall): ToolCall {
   };
 }
 
+function sameMessage(a: string | null, b: string | null): boolean {
+  return a === null || b === null || a === b;
+}
+
 function finished(thought: Thought, now: number): Thought {
   return thought.endedAt === null ? { ...thought, endedAt: now } : thought;
 }
 
-/** Finishes the current turn's thought and collapses a long list of tool calls; the next work starts a new turn. */
+/**
+ * Puts `part` at the end of the turn, replacing the last part it continues or adding it after.
+ * Once something shown follows a thought still running, the thought finishes and closes.
+ */
+function withLastPart(turn: Turn, part: TurnPart, mode: 'replacing' | 'adding', now: number): Turn {
+  const before = mode === 'replacing' ? turn.parts.slice(0, -1) : turn.parts;
+  const settled = partShown(part)
+    ? before.map((earlier) => (earlier.kind === 'thought' && earlier.endedAt === null ? { ...finished(earlier, now), open: false } : earlier))
+    : before;
+  return { ...turn, parts: [...settled, part] };
+}
+
+/** Finishes the current turn's thoughts and collapses its long groups of tool calls; the next work starts a new turn. */
 function endTurn(transcript: TranscriptState, now: number): TranscriptState {
   const { currentTurn } = transcript;
   const ended =
-    currentTurn === null
-      ? transcript
-      : withTurn(transcript, currentTurn, (turn) => ({
-          ...turn,
-          thought: turn.thought && finished(turn.thought, now),
-          toolCallsCollapsed: turn.toolCallsCollapsed || turn.toolCalls.length > TOOL_CALLS_SHOWN_EXPANDED,
-        }));
-  return withCurrent(ended, null, null);
+    currentTurn === null ? transcript : withTurn(transcript, currentTurn, (turn) => ({ ...turn, parts: turn.parts.map((part) => endedPart(part, now)) }));
+  return withCurrent(ended, null);
+}
+
+function endedPart(part: TurnPart, now: number): TurnPart {
+  switch (part.kind) {
+    case 'thought':
+      return finished(part, now);
+    case 'toolCalls':
+      return part.collapsed || part.toolCalls.length <= TOOL_CALLS_SHOWN_EXPANDED ? part : { ...part, collapsed: true };
+    default:
+      return part;
+  }
 }
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
-  const empty = transcript.entries.length === 0 && transcript.currentTurn === null && transcript.currentPlan === null;
-  return empty && transcript.sessionId === sessionId
-    ? transcript
-    : { ...transcript, sessionId, entries: [], currentTurn: null, currentPlan: null };
+  const empty = transcript.entries.length === 0 && transcript.currentTurn === null;
+  return empty && transcript.sessionId === sessionId ? transcript : { ...transcript, sessionId, entries: [], currentTurn: null };
 }
 
-function withCurrent(transcript: TranscriptState, currentTurn: EntryId | null, currentPlan: EntryId | null): TranscriptState {
-  return transcript.currentTurn === currentTurn && transcript.currentPlan === currentPlan
-    ? transcript
-    : { ...transcript, currentTurn, currentPlan };
+function withCurrent(transcript: TranscriptState, currentTurn: EntryId | null): TranscriptState {
+  return transcript.currentTurn === currentTurn ? transcript : { ...transcript, currentTurn };
 }
 
 function appended(transcript: TranscriptState, entry: (id: EntryId) => TranscriptEntry): TranscriptState {
@@ -383,8 +416,12 @@ function findTurn(transcript: TranscriptState, id: EntryId): Turn | undefined {
 /** Updates go wherever the tool call is, not only to the current turn; a repeated `tool_call` revises it there, so there is one. */
 function turnWithToolCall(transcript: TranscriptState, toolCallId: string): Turn | undefined {
   return transcript.entries.find(
-    (entry): entry is Turn => entry.kind === 'turn' && entry.toolCalls.some((call) => call.toolCallId === toolCallId),
+    (entry): entry is Turn => entry.kind === 'turn' && groupIndex(entry, toolCallId) !== -1,
   );
+}
+
+function groupIndex(turn: Turn, toolCallId: string): PartIndex {
+  return turn.parts.findIndex((part) => part.kind === 'toolCalls' && part.toolCalls.some((call) => call.toolCallId === toolCallId));
 }
 
 /** Applies `change` to the turn; returns the same state when there is no such turn or `change` returns it unchanged. */
@@ -397,13 +434,28 @@ function withTurn(transcript: TranscriptState, id: EntryId, change: (turn: Turn)
   return next === turn ? transcript : replaced(transcript, next);
 }
 
-function withToolCall(turn: Turn, toolCallId: string, change: (call: ToolCall) => ToolCall): Turn {
-  const call = turn.toolCalls.find((candidate) => candidate.toolCallId === toolCallId);
-  if (!call) {
+/** Applies `change` to the turn's part at `index`; returns the same turn when there is no such part or `change` returns it unchanged. */
+function withPart(turn: Turn, index: PartIndex, change: (part: TurnPart) => TurnPart): Turn {
+  const part = turn.parts[index];
+  if (!part) {
     return turn;
   }
-  const next = change(call);
-  return next === call ? turn : { ...turn, toolCalls: turn.toolCalls.map((candidate) => (candidate === call ? next : candidate)) };
+  const next = change(part);
+  return next === part ? turn : { ...turn, parts: turn.parts.map((candidate, at) => (at === index ? next : candidate)) };
+}
+
+function withToolCall(turn: Turn, toolCallId: string, change: (call: ToolCall) => ToolCall): Turn {
+  return withPart(turn, groupIndex(turn, toolCallId), (group) => {
+    if (group.kind !== 'toolCalls') {
+      return group;
+    }
+    const call = group.toolCalls.find((candidate) => candidate.toolCallId === toolCallId);
+    if (!call) {
+      return group;
+    }
+    const next = change(call);
+    return next === call ? group : { ...group, toolCalls: group.toolCalls.map((candidate) => (candidate === call ? next : candidate)) };
+  });
 }
 
 /** Applies `change` to the current turn, starting one if the agent's work has none to go into yet. */
@@ -411,14 +463,7 @@ function inCurrentTurn(transcript: TranscriptState, change: (turn: Turn) => Turn
   if (transcript.currentTurn !== null) {
     return withTurn(transcript, transcript.currentTurn, change);
   }
-  const started = appended(transcript, (id) => ({
-    kind: 'turn',
-    id,
-    thought: null,
-    message: { text: '' },
-    toolCalls: [],
-    toolCallsCollapsed: false,
-  }));
+  const started = appended(transcript, (id) => ({ kind: 'turn', id, parts: [] }));
   const id = started.nextId - 1;
   return withTurn({ ...started, currentTurn: id }, id, change);
 }

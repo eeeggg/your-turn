@@ -107,7 +107,7 @@ describe('the welcome card', () => {
 });
 
 describe('transcript entries', () => {
-  it('draws prompts, turns, plans and errors in order, with their classes', () => {
+  it('draws prompts, turns and errors in order, with their classes, and a plan inside its turn', () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'promptEdited', text: 'question' }, { type: 'promptSent' }, { type: 'promptStart' });
@@ -123,10 +123,10 @@ describe('transcript entries', () => {
     const entries = [...view.part('#messages').children].filter((child) => child.id !== 'emptyState');
     expect(entries.map((entry) => `${hookClasses(entry)}: ${entry.textContent}`)).toEqual([
       'message user: question',
-      'turn: answer',
-      'plan: Plan✅ done⬜ <b>next</b>',
+      'turn: answerPlan✅ done⬜ <b>next</b>',
       'message error: boom',
     ]);
+    expect(view.container.querySelector('.turn > .plan')).not.toBeNull();
     expect(view.all('.plan-entry').map((entry) => hookClasses(entry))).toEqual(['plan-entry completed', 'plan-entry']);
     expect(view.container.querySelector('.plan b')).toBeNull();
   });
@@ -153,7 +153,7 @@ describe('transcript entries', () => {
 });
 
 describe('a turn', () => {
-  it('shows the thought, then the answer, then the tool calls', () => {
+  it('shows its parts in the order they arrived', () => {
     const view = renderChatView();
     view.connect();
     view.update('tool_call', { toolCallId: 't1', title: 'Read' });
@@ -161,9 +161,9 @@ describe('a turn', () => {
     view.update('agent_thought_chunk', text('hmm'));
 
     expect([...view.part('.turn').children].map((child) => hookClasses(child))).toEqual([
-      'thought-block streaming',
-      'message agent',
       'turn-tools',
+      'message agent',
+      'thought-block streaming',
     ]);
   });
 
@@ -210,7 +210,7 @@ describe('a thought', () => {
     await toggle(thought);
 
     expect(thought.open).toBe(false);
-    expect(view.store.getSnapshot().transcript.entries[0]).toMatchObject({ thought: { open: false } });
+    expect(view.store.getSnapshot().transcript.entries[0]).toMatchObject({ parts: [{ kind: 'thought', open: false }] });
   });
 });
 
@@ -265,7 +265,7 @@ describe('tool calls', () => {
     await toggle(call);
 
     expect(call.open).toBe(false);
-    expect(view.store.getSnapshot().transcript.entries[0]).toMatchObject({ toolCalls: [{ open: false }] });
+    expect(view.store.getSnapshot().transcript.entries[0]).toMatchObject({ parts: [{ kind: 'toolCalls', toolCalls: [{ open: false }] }] });
   });
 
   it('counts the tool calls and collapses or expands the list on a click of the count', () => {

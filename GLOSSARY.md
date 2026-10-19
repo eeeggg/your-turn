@@ -124,6 +124,10 @@ _Avoid_: tool use, action, step
 The agent's list of intended steps and their statuses.
 _Avoid_: todo list, tasks
 
+**Part**:
+One piece of a turn, in the order it arrived: an agent message, a thought, a group of tool calls, or the plan.
+_Avoid_: block (a markdown block within an agent message), item, segment
+
 **Permission request**:
 The agent asking the user to approve an action by choosing one of the options it offers.
 _Avoid_: approval, confirmation, prompt

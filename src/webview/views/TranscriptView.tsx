@@ -3,7 +3,7 @@ import { memo, useLayoutEffect, useRef } from 'react';
 import { Markdown } from '@/webview/views/Markdown';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
-  messageShown,
+  partShown,
   planEntryIcon,
   showsWelcome,
   shownContent,
@@ -13,11 +13,14 @@ import {
   turnShown,
   type AgentMessage,
   type EntryId,
+  type PartIndex,
   type Plan,
   type Thought,
   type ToolCall,
+  type ToolCallGroup,
   type TranscriptEntry,
   type Turn,
+  type TurnPart,
 } from '@/webview/state/Transcript';
 
 /** The scrolling transcript, with the welcome card at its top while there is neither a session nor a transcript. */
@@ -91,8 +94,6 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
       return <div className={`message user ${messageBox} ${plainText} self-end bg-primary text-primary-foreground`}>{entry.text}</div>;
     case 'turn':
       return <TurnView turn={entry} />;
-    case 'plan':
-      return <PlanView plan={entry} />;
     case 'error':
       return (
         <div
@@ -105,29 +106,54 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
 });
 
 function TurnView({ turn }: { turn: Turn }) {
-  const streaming = useSelector((state) => state.transcript.currentTurn === turn.id);
+  const current = useSelector((state) => state.transcript.currentTurn === turn.id);
   if (!turnShown(turn)) {
     return null;
   }
+  const last = turn.parts.length - 1;
   return (
     <div className="turn flex max-w-[95%] flex-col gap-1 self-start">
-      {turn.thought && <ThoughtBlock turnId={turn.id} thought={turn.thought} />}
-      {messageShown(turn.message) && <AgentMessageView message={turn.message} streaming={streaming} />}
-      {turn.toolCalls.length > 0 && (
-        <ToolCallList turnId={turn.id} toolCalls={turn.toolCalls} collapsed={turn.toolCallsCollapsed} />
-      )}
+      {turn.parts.map((part, index) => (
+        <PartView key={index} turnId={turn.id} index={index} part={part} streaming={current && index === last} />
+      ))}
     </div>
   );
 }
 
-const ThoughtBlock = memo(function ThoughtBlock({ turnId, thought }: { turnId: EntryId; thought: Thought }) {
+const PartView = memo(function PartView({
+  turnId,
+  index,
+  part,
+  streaming,
+}: {
+  turnId: EntryId;
+  index: PartIndex;
+  part: TurnPart;
+  streaming: boolean;
+}) {
+  if (!partShown(part)) {
+    return null;
+  }
+  switch (part.kind) {
+    case 'message':
+      return <AgentMessageView message={part} streaming={streaming} />;
+    case 'thought':
+      return <ThoughtBlock turnId={turnId} index={index} thought={part} />;
+    case 'toolCalls':
+      return <ToolCallList turnId={turnId} index={index} group={part} />;
+    case 'plan':
+      return <PlanView plan={part} />;
+  }
+});
+
+const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { turnId: EntryId; index: PartIndex; thought: Thought }) {
   const dispatch = useDispatch();
   const thinking = thought.endedAt === null;
   return (
     <details
       className={`thought-block ${thinking ? 'streaming ' : ''}group mb-1 w-full`}
       open={thought.open}
-      onToggle={(event) => dispatch({ type: 'thoughtToggled', turnId, open: event.currentTarget.open })}
+      onToggle={(event) => dispatch({ type: 'thoughtToggled', turnId, part: index, open: event.currentTarget.open })}
     >
       <summary className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground select-none before:text-[0.9em] before:content-['▸'] group-open:before:content-['▾'] hover:text-foreground">
         {thinking ? (
@@ -156,22 +182,15 @@ const AgentMessageView = memo(function AgentMessageView({ message, streaming }: 
   );
 });
 
-const ToolCallList = memo(function ToolCallList({
-  turnId,
-  toolCalls,
-  collapsed,
-}: {
-  turnId: EntryId;
-  toolCalls: readonly ToolCall[];
-  collapsed: boolean;
-}) {
+const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turnId: EntryId; index: PartIndex; group: ToolCallGroup }) {
   const dispatch = useDispatch();
+  const { toolCalls, collapsed } = group;
   const count = toolCalls.length;
   return (
     <div className="turn-tools my-0.5 flex flex-col gap-0.5 border-l-2 border-border pl-2.5">
       <div
         className="turn-tools-summary cursor-pointer py-0.5 text-xs text-muted-foreground select-none hover:text-foreground"
-        onClick={() => dispatch({ type: 'toolCallsToggled', turnId })}
+        onClick={() => dispatch({ type: 'toolCallsToggled', turnId, part: index })}
       >
         {`${collapsed ? '▸' : '▾'} ${count} tool call${count === 1 ? '' : 's'}`}
       </div>

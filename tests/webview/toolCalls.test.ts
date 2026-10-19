@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -144,14 +144,6 @@ describe('tool calls', () => {
 
     expect(blocks('t1').join('')).toHaveLength(20_000);
     expect(toolCall('t1').querySelector('.tc-body-truncated')?.textContent).toBe('... (output truncated)');
-  });
-
-  it('places the answer above the tool calls of the same turn', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Read', status: 'completed' });
-    update(page, 'agent_message_chunk', textChunk('done'));
-
-    const turn = page.document.querySelector('.turn');
-    expect([...(turn?.children ?? [])].map((el) => hookClasses(el))).toEqual(['message agent', 'turn-tools']);
   });
 
   it('collapses more than three tool calls when the turn ends, and toggles on click', () => {
