@@ -40,6 +40,12 @@ interface PersistedShape {
   entries: PersistedSessionEntry[];
 }
 
+function isPersistedShape(raw: unknown): raw is PersistedShape {
+  return typeof raw === 'object' && raw !== null
+    && 'version' in raw && raw.version === 1
+    && 'entries' in raw && Array.isArray(raw.entries);
+}
+
 const STATE_KEY = 'acp.sessionHistory.v1';
 const MAX_PROMPT_LEN = 120;
 const DEFAULT_CAP_PER_AGENT = 50;
@@ -60,8 +66,8 @@ export class SessionHistoryStore extends EventEmitter {
     private readonly capPerAgent: number = DEFAULT_CAP_PER_AGENT,
   ) {
     super();
-    const raw = this.workspaceState.get<PersistedShape>(STATE_KEY);
-    if (raw && raw.version === 1 && Array.isArray(raw.entries)) {
+    const raw = this.workspaceState.get<unknown>(STATE_KEY);
+    if (isPersistedShape(raw)) {
       this.entries = raw.entries;
     }
   }
@@ -162,14 +168,10 @@ export class SessionHistoryStore extends EventEmitter {
    * agent for future use, but the tree itself uses the agent's list directly.
    */
   reconcileFromAgent(agentName: string, knownSessionIds: Set<string>): void {
-    let changed = false;
-    this.entries = this.entries.filter(e => {
-      if (e.agentName !== agentName) { return true; }
-      if (knownSessionIds.has(e.sessionId)) { return true; }
-      changed = true;
-      return false;
-    });
-    if (changed) { this.persist(); }
+    const kept = this.entries.filter(e => e.agentName !== agentName || knownSessionIds.has(e.sessionId));
+    if (kept.length === this.entries.length) { return; }
+    this.entries = kept;
+    this.persist();
   }
 
   private enforceCap(agentName: string): void {

@@ -26,12 +26,13 @@ export class StatusBarManager {
     const activeSession = this.sessionManager.getActiveSession();
     const agentsWithSessions = this.sessionManager.getAgentNamesWithSessions();
 
-    if (agentsWithSessions.length === 0) {
+    const firstAgent = agentsWithSessions[0];
+    if (firstAgent === undefined) {
       this.statusBarItem.text = '$(hubot) ACP: No session';
       this.statusBarItem.tooltip = 'Click to connect to an agent';
       this.statusBarItem.backgroundColor = undefined;
     } else {
-      const agentName = activeSession?.agentDisplayName || agentsWithSessions[0];
+      const agentName = activeSession?.agentDisplayName || firstAgent;
       this.statusBarItem.text = `$(hubot) ACP: ${agentName}`;
       this.statusBarItem.tooltip = `In session with ${agentName}`;
       this.statusBarItem.backgroundColor = undefined;

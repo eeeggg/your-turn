@@ -1,4 +1,4 @@
-import { log } from './Log';
+import { log, messageOf } from './Log';
 
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 
@@ -9,7 +9,7 @@ export type SessionUpdateListener = (update: SessionNotification) => void;
  * The ChatViewController registers as a listener to forward updates to the webview.
  */
 export class SessionUpdateHandler {
-  private listeners: Set<SessionUpdateListener> = new Set();
+  private listeners = new Set<SessionUpdateListener>();
 
   addListener(listener: SessionUpdateListener): void {
     this.listeners.add(listener);
@@ -20,14 +20,13 @@ export class SessionUpdateHandler {
   }
 
   handleUpdate(update: SessionNotification): void {
-    const updateType = (update.update as any)?.sessionUpdate || 'unknown';
-    log(`sessionUpdate: type=${updateType}, sessionId=${update.sessionId}`);
+    log(`sessionUpdate: type=${update.update.sessionUpdate}, sessionId=${update.sessionId}`);
 
     for (const listener of this.listeners) {
       try {
         listener(update);
       } catch (e) {
-        log(`Error in session update listener: ${e}`);
+        log(`Error in session update listener: ${messageOf(e)}`);
       }
     }
   }

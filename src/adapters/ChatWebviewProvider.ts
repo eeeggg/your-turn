@@ -57,7 +57,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
         path: uri.fsPath,
         name: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,
       });
-      this.view.show?.(true);
+      this.view.show(true);
     }
   }
 

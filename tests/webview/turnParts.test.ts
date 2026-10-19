@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
 import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
 
@@ -21,7 +21,7 @@ function parts(): string[] {
   return [...(turn?.children ?? [])].map((el) => `${hookClasses(el)}: ${el.textContent}`);
 }
 
-const plan = (...steps: Array<[content: string, status: 'pending' | 'completed']>) => ({
+const plan = (...steps: [content: string, status: 'pending' | 'completed'][]) => ({
   entries: steps.map(([content, status]) => ({ content, status, priority: 'medium' as const })),
 });
 
@@ -81,7 +81,9 @@ describe('the parts of a turn', () => {
     const summaries = () => [...page.document.querySelectorAll<HTMLElement>('.turn-tools-summary')];
     expect(summaries().map((summary) => summary.textContent)).toEqual(['▸ 4 tool calls', '▾ 2 tool calls']);
 
-    summaries()[1]!.click();
+    const second = summaries()[1];
+    assert.exists(second);
+    second.click();
     expect(summaries().map((summary) => summary.textContent)).toEqual(['▸ 4 tool calls', '▸ 2 tool calls']);
   });
 
@@ -99,12 +101,16 @@ describe('the parts of a turn', () => {
     update(page, 'agent_thought_chunk', { ...textChunk('one'), messageId: 'r1' });
     update(page, 'agent_thought_chunk', { ...textChunk('two'), messageId: 'r2' });
     const [first, second] = [...page.document.querySelectorAll<HTMLDetailsElement>('.thought-block')];
-    expect([first?.open, second?.open]).toEqual([false, true]);
+    assert.exists(first);
+    assert.exists(second);
+    expect([first.open, second.open]).toEqual([false, true]);
 
-    const toggled = new Promise((resolve) => first!.addEventListener('toggle', resolve, { once: true }));
-    first!.querySelector('summary')!.click();
+    const summary = first.querySelector('summary');
+    assert.exists(summary);
+    const toggled = new Promise((resolve) => first.addEventListener('toggle', resolve, { once: true }));
+    summary.click();
     await toggled;
 
-    expect([first?.open, second?.open]).toEqual([true, true]);
+    expect([first.open, second.open]).toEqual([true, true]);
   });
 });

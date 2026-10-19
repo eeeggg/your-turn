@@ -24,16 +24,24 @@ async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void
   }
 }
 
+/** The value at `path` in a JSON value, or undefined. */
+function at(value: unknown, ...path: string[]): unknown {
+  return path.reduce<unknown>(
+    (v, key) => (typeof v === 'object' && v !== null && key in v ? (v as Record<string, unknown>)[key] : undefined),
+    value,
+  );
+}
+
 const CLIENT_VERSION = '0.0.0-test';
 
 suite('ConnectionManager Test Suite', () => {
   let originalAutoApprove: string | undefined;
-  let agent: AgentProcess;
+  let agent: AgentProcess | undefined;
   let manager: ConnectionManager;
   let info: ConnectionInfo;
   const exits: (number | null)[] = [];
   const texts: string[] = [];
-  const traffic: { direction: TrafficDirection; data: any }[] = [];
+  const traffic: { direction: TrafficDirection; data: unknown }[] = [];
 
   suiteSetup(async () => {
     const config = vscode.workspace.getConfiguration('acp');
@@ -82,8 +90,8 @@ suite('ConnectionManager Test Suite', () => {
   });
 
   test('Sends the client version in initialize', () => {
-    const initialize = traffic.find(t => t.direction === 'send' && t.data?.method === 'initialize');
-    assert.strictEqual(initialize?.data.params.clientInfo.version, CLIENT_VERSION);
+    const initialize = traffic.find(t => t.direction === 'send' && at(t.data, 'method') === 'initialize');
+    assert.strictEqual(at(initialize?.data, 'params', 'clientInfo', 'version'), CLIENT_VERSION);
   });
 
   test('Creates a session and sets a config option', async () => {
@@ -115,13 +123,14 @@ suite('ConnectionManager Test Suite', () => {
   });
 
   test('Traffic tap records both directions', () => {
-    const sentMethods = traffic.filter(t => t.direction === 'send').map(t => t.data?.method);
-    const receivedMethods = traffic.filter(t => t.direction === 'recv').map(t => t.data?.method);
+    const sentMethods = traffic.filter(t => t.direction === 'send').map(t => at(t.data, 'method'));
+    const receivedMethods = traffic.filter(t => t.direction === 'recv').map(t => at(t.data, 'method'));
     assert.ok(sentMethods.includes('initialize'), `sent: ${JSON.stringify(sentMethods)}`);
     assert.ok(receivedMethods.includes('session/update'), `received: ${JSON.stringify(receivedMethods)}`);
   });
 
   test('Reports the agent exiting after it is killed', async () => {
+    assert.ok(agent);
     agent.kill();
     await waitFor(() => exits.length > 0);
     assert.strictEqual(exits.length, 1);

@@ -23,7 +23,7 @@ function message(): Element {
 }
 
 function bold(): string[] {
-  return [...message().querySelectorAll('[data-streamdown="strong"]')].map((el) => el.textContent ?? '');
+  return [...message().querySelectorAll('[data-streamdown="strong"]')].map((el) => el.textContent);
 }
 
 function answer(...chunks: string[]): void {

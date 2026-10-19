@@ -73,7 +73,7 @@ function listingAgent(pages: Record<string, ListSessionsResponse | (() => ListSe
     requests.push(params.cursor);
     const page = pages[params.cursor ?? ''];
     if (!page) {
-      throw new Error(`no page ${params.cursor}`);
+      throw new Error(`no page ${String(params.cursor)}`);
     }
     return typeof page === 'function' ? page() : page;
   }));

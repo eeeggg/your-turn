@@ -33,7 +33,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const agentManager = new AgentManager();
   const connectionManager = new ConnectionManager(
     sessionUpdateHandler,
-    context.extension.packageJSON.version,
+    (context.extension.packageJSON as { version: string }).version,
     () => ({
       files: new FileSystemHandler(),
       terminals: new ProcessTerminals(pseudoterminalDisplays),

@@ -16,7 +16,7 @@ function launch(script: string, options: { env?: Record<string, string>; cwd?: s
   const agent = new AgentManager().launch('test-agent', config, options.cwd ?? process.cwd(), {
     error: (error) => reports.push(`error: ${error.message}`),
     exit: (code) => {
-      reports.push(`exit: ${code}`);
+      reports.push(`exit: ${String(code)}`);
       reportExit(code);
     },
   });

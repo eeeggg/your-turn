@@ -47,7 +47,7 @@ function label(wrap: HTMLElement): string | null | undefined {
 
 function item(dropdown: Element, value: string): HTMLElement {
   const el = [...dropdown.querySelectorAll<HTMLElement>('.picker-dropdown-item')].find(
-    (candidate) => candidate.dataset['value'] === value || candidate.textContent?.includes(value),
+    (candidate) => candidate.dataset['value'] === value || candidate.textContent.includes(value),
   );
   if (!el) {
     throw new Error(`no item ${value}`);

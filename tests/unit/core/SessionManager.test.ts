@@ -353,6 +353,19 @@ describe('SessionManager', () => {
       expect(manager.getSession('s1')?.configOptions).toEqual([modelOption('b')]);
     });
 
+    it('keeps no config options when the agent responds with null ones', async () => {
+      const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.setConfigOption, () => (
+        { configOptions: null } as unknown as { configOptions: SessionConfigOption[] }
+      )));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+
+      const options = await manager.setConfigOption('s1', 'model', 'b');
+
+      expect(options).toBeNull();
+      expect(manager.getSession('s1')?.configOptions).toBeNull();
+    });
+
     it('sets the model through the model config option', async () => {
       const set: unknown[] = [];
       const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.setConfigOption, ({ params }) => {
@@ -437,6 +450,21 @@ describe('SessionManager', () => {
       expect(session.availableCommands).toEqual([{ name: 'init', description: 'Init' }]);
       expect(session.configOptions).toEqual([modelOption('b')]);
       expect(session.title).toBe('Early title');
+    });
+
+    it('treats null config options in an update as none', async () => {
+      const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.prompt, async ({ client }) => {
+        const update = { sessionUpdate: 'config_option_update', configOptions: null } as unknown as SessionNotification['update'];
+        await client.notify(methods.client.session.update, { sessionId: 's1', update });
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+
+      await manager.sendPrompt('s1', 'hello');
+      await settle();
+
+      expect(manager.getSession('s1')?.configOptions).toEqual([]);
     });
 
     it('records titles in the session history and clears them on null', async () => {

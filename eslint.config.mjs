@@ -55,21 +55,49 @@ export default defineConfig(
   },
   {
     files: ["**/*.{ts,tsx}"],
-    extends: typescriptEslint.configs.recommended,
+    extends: [typescriptEslint.configs.strictTypeChecked, typescriptEslint.configs.stylisticTypeChecked],
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
-      "@typescript-eslint/no-explicit-any": "off",
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
       "@typescript-eslint/naming-convention": [
-        "warn",
+        "error",
         {
           selector: "import",
           format: ["camelCase", "PascalCase"],
         },
       ],
-      curly: "warn",
-      eqeqeq: "warn",
-      "no-throw-literal": "warn",
-      semi: "warn",
+      "@typescript-eslint/require-array-sort-compare": "error",
+      "@typescript-eslint/switch-exhaustiveness-check": ["error", {
+        considerDefaultExhaustiveForUnions: true,
+        requireDefaultForNonUnion: true,
+      }],
+      "@typescript-eslint/restrict-template-expressions": ["error", {
+        allowAny: false,
+        allowBoolean: false,
+        allowNever: false,
+        allowNullish: false,
+        allowNumber: true,
+        allowRegExp: false,
+      }],
+      "@typescript-eslint/no-confusing-void-expression": ["error", { ignoreArrowShorthand: true }],
+      // An empty title, name or description falls through to the fallback, so strings keep `||`.
+      "@typescript-eslint/prefer-nullish-coalescing": ["error", { ignorePrimitives: { string: true } }],
+      "@typescript-eslint/no-empty-function": ["error", { allow: ["arrowFunctions"] }],
+      // Asks for the `!` that no-non-null-assertion forbids.
+      "@typescript-eslint/non-nullable-type-assertion-style": "off",
+      // An async function without `await` still turns a throw into a rejection,
+      // which implementations of promise-returning interfaces rely on.
+      "@typescript-eslint/require-await": "off",
+      // KeyValueStore and VsCodeApi.ts mirror VS Code's `get<T>`.
+      "@typescript-eslint/no-unnecessary-type-parameters": "off",
+      curly: ["error", "all"],
+      eqeqeq: ["error", "always", { null: "ignore" }],
+      semi: "error",
       ...restrictImports(),
     },
   },
@@ -132,5 +160,14 @@ export default defineConfig(
   {
     files: ["src/webview/**/*.tsx", "tests/**/*.tsx"],
     extends: [reactHooks.configs.flat.recommended],
+  },
+  {
+    files: ["tests/**/*.{ts,tsx}"],
+    rules: {
+      // `expect(fake.method)` hands a mock to the assertion; nothing calls it unbound.
+      "@typescript-eslint/unbound-method": "off",
+      // Fakes that do nothing are the point.
+      "@typescript-eslint/no-empty-function": "off",
+    },
   },
 );

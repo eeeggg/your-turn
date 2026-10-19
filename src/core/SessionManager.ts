@@ -16,12 +16,12 @@ import type {
   ListSessionsRequest,
   ListSessionsResponse,
 } from '@agentclientprotocol/sdk';
-import { methods, RequestError } from '@agentclientprotocol/sdk';
+import { methods } from '@agentclientprotocol/sdk';
 
 import type { AgentConfigEntry, AgentLauncher, AgentProcess } from './AgentManager';
 import type { ConnectionManager } from './ConnectionManager';
 import type { SessionHistoryStore } from './SessionHistoryStore';
-import { log, logError } from './Log';
+import { log, logError, messageOf } from './Log';
 
 /** What sessions need from the workspace the extension runs in. */
 export interface SessionEnvironment {
@@ -100,15 +100,17 @@ export class AuthenticationCancelled extends Error {
 }
 
 /** True if a thrown error denotes ACP "auth required" (-32000). */
-function isAuthRequiredError(e: any): boolean {
-  return (e instanceof RequestError && e.code === -32000)
-    || (e?.code === -32000)
-    || (typeof e?.message === 'string' && /auth.?required/i.test(e.message));
+function isAuthRequiredError(e: unknown): boolean {
+  if (typeof e !== 'object' || e === null) { return false; }
+  return ('code' in e && e.code === -32000)
+    || ('message' in e && typeof e.message === 'string' && /auth.?required/i.test(e.message));
 }
 
 /** True if the agent rejected a session because it no longer knows it. */
-function isUnknownSessionError(e: any): boolean {
-  return /not found|no such|unknown session/i.test(String(e?.message || ''));
+function isUnknownSessionError(e: unknown): boolean {
+  return typeof e === 'object' && e !== null
+    && 'message' in e && typeof e.message === 'string'
+    && /not found|no such|unknown session/i.test(e.message);
 }
 
 /**
@@ -121,17 +123,17 @@ function isUnknownSessionError(e: any): boolean {
  */
 export class SessionManager extends EventEmitter {
   /** Running agents by agent name. */
-  private agents: Map<string, RunningAgent> = new Map();
+  private agents = new Map<string, RunningAgent>();
   /** Launches in progress by agent name, so concurrent callers share one process. */
-  private launching: Map<string, Promise<RunningAgent>> = new Map();
+  private launching = new Map<string, Promise<RunningAgent>>();
   /** Session titles from each agent's `session/list` pages, by agent name then session ID. */
-  private listedTitles: Map<string, Map<string, string>> = new Map();
+  private listedTitles = new Map<string, Map<string, string>>();
 
-  private sessions: Map<string, SessionInfo> = new Map();
+  private sessions = new Map<string, SessionInfo>();
   private activeSessionId: string | null = null;
 
   /** Maps agentName → sessionId for the one-session-per-agent model. */
-  private agentSessions: Map<string, string> = new Map();
+  private agentSessions = new Map<string, string>();
 
   /**
    * Buffers session/update payloads that arrive before the corresponding
@@ -139,15 +141,15 @@ export class SessionManager extends EventEmitter {
    * registered. This closes a microtask race between the resolution of
    * `newSession` and the SDK's async notification dispatch.
    */
-  private pendingAvailableCommands: Map<string, AvailableCommand[]> = new Map();
-  private pendingConfigOptions: Map<string, SessionConfigOption[]> = new Map();
-  private pendingTitles: Map<string, string> = new Map();
+  private pendingAvailableCommands = new Map<string, AvailableCommand[]>();
+  private pendingConfigOptions = new Map<string, SessionConfigOption[]>();
+  private pendingTitles = new Map<string, string>();
 
   /**
    * Cache of `initialize.agentCapabilities` per agent so the tree can render
    * without paying the connect cost on every render.
    */
-  private capabilities: Map<string, AgentCapabilitySummary> = new Map();
+  private capabilities = new Map<string, AgentCapabilitySummary>();
 
   /** Client-side session history (optional — only used for tier-2 tree). */
   private historyStore: SessionHistoryStore | null = null;
@@ -302,14 +304,14 @@ export class SessionManager extends EventEmitter {
   }
 
   private handleAgentExit(agentName: string, agentProcess: AgentProcess, code: number | null): void {
-    log(`Agent ${agentName} closed with code ${code}`);
+    log(`Agent ${agentName} closed with code ${String(code)}`);
     if (this.agents.get(agentName)?.process === agentProcess) {
       this.agents.delete(agentName);
     }
 
     // Only the session running on this process goes; a newer one for the same agent stays.
     const session = this.sessionOf(agentName);
-    if (session && session.agentId === agentProcess.id) {
+    if (session?.agentId === agentProcess.id) {
       this.removeSession(session);
       this.emit('active-session-changed', null);
     }
@@ -395,10 +397,10 @@ export class SessionManager extends EventEmitter {
       log(`Authenticating with method: ${selectedMethod.name} (${selectedMethod.id})`);
       await agent.connection.agent.request(methods.agent.authenticate, { methodId: selectedMethod.id });
       log('Authentication successful');
-    } catch (authErr: any) {
+    } catch (authErr) {
       logError('Authentication failed', authErr);
       this.stopAgent(agent);
-      throw new Error(`Authentication failed: ${authErr.message}`);
+      throw new Error(`Authentication failed: ${messageOf(authErr)}`);
     }
   }
 
@@ -541,8 +543,9 @@ export class SessionManager extends EventEmitter {
       value,
     });
 
-    // The SDK's validation lets `configOptions: null` through despite its types.
-    const options = response.configOptions ?? null;
+    // The SDK validates an agent's requests and notifications but not its
+    // responses, so this arrives as the agent sent it, whatever its type says.
+    const options = Array.isArray(response.configOptions) ? response.configOptions : null;
     this.applyConfigOptions(sessionId, options);
     return options;
   }
@@ -559,7 +562,7 @@ export class SessionManager extends EventEmitter {
       this.pendingConfigOptions.set(sessionId, options ?? []);
       return;
     }
-    session.configOptions = options ?? null;
+    session.configOptions = options;
   }
 
   /**

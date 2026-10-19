@@ -179,7 +179,7 @@ interface PickerItemProps {
   label: string;
   description: string | null | undefined;
   selected: boolean;
-  onChoose(): void;
+  onChoose: () => void;
   anchorRef: Anchor;
 }
 

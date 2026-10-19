@@ -1,5 +1,5 @@
 import type { ChatViewController } from './ChatViewController';
-import { logError } from './Log';
+import { logError, messageOf } from './Log';
 import type { SessionManager } from './SessionManager';
 import { ProgressLocation, type Commands, type Window } from './VsCodeApi';
 
@@ -194,8 +194,4 @@ export class SessionCommands {
     logError(failure, e);
     void this.window.showErrorMessage(`${failure}: ${messageOf(e)}`);
   }
-}
-
-function messageOf(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

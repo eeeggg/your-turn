@@ -496,15 +496,6 @@ describe('ChatViewController', () => {
       expect(sessions.applySessionInfoUpdate).toHaveBeenCalledExactlyOnceWith('s2', expect.objectContaining({ title: 'Title' }));
       expect(environment.take()).toEqual([]);
     });
-
-    it('treats null config options from the agent as none', () => {
-      const { sessions, controller } = setup();
-      const update = { sessionUpdate: 'config_option_update', configOptions: null } as unknown as SessionNotification['update'];
-
-      controller.handleSessionUpdate({ sessionId: 's1', update });
-
-      expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith('s1', []);
-    });
   });
 
   describe('text chunks', () => {

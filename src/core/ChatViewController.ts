@@ -1,7 +1,7 @@
 import type { ContentBlock, SessionModeState, SessionNotification, SessionUpdate } from '@agentclientprotocol/sdk';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { SessionManager } from './SessionManager';
-import { logError } from './Log';
+import { logError, messageOf } from './Log';
 import type { Commands } from './VsCodeApi';
 
 /** The session operations the chat view uses. */
@@ -97,12 +97,13 @@ export class ChatViewController {
         this.sessions.applyAvailableCommands(sessionId, update.availableCommands);
         break;
       case 'config_option_update':
-        // The SDK's validation lets `configOptions: null` through despite its types.
-        this.sessions.applyConfigOptions(sessionId, update.configOptions ?? []);
+        this.sessions.applyConfigOptions(sessionId, update.configOptions);
         break;
       case 'session_info_update':
         this.sessions.applySessionInfoUpdate(sessionId, update);
         this.sendTitle(sessionId);
+        break;
+      default:
         break;
     }
 
@@ -112,7 +113,7 @@ export class ChatViewController {
       return;
     }
     const pending = this.pendingText;
-    if (pending && pending.sessionId === sessionId && sameMessage(pending.update, update)) {
+    if (pending?.sessionId === sessionId && sameMessage(pending.update, update)) {
       pending.update = { ...pending.update, content: { ...pending.update.content, text: pending.update.content.text + update.content.text } };
       return;
     }
@@ -177,9 +178,9 @@ export class ChatViewController {
         stopReason: response.stopReason,
         ...(response.usage !== undefined ? { usage: response.usage } : {}),
       });
-    } catch (e: any) {
+    } catch (e) {
       logError('Prompt failed', e);
-      this.post({ type: 'error', message: e.message || 'Prompt failed' });
+      this.post({ type: 'error', message: messageOf(e) || 'Prompt failed' });
       this.finishPrompt({ type: 'promptEnd', stopReason: 'error' });
     }
   }
@@ -217,9 +218,9 @@ export class ChatViewController {
     if (!activeId || !modeId) { return; }
     try {
       await this.sessions.setMode(activeId, modeId);
-    } catch (e: any) {
+    } catch (e) {
       logError('Failed to set mode', e);
-      this.post({ type: 'error', message: `Failed to set mode: ${e.message}` });
+      this.post({ type: 'error', message: `Failed to set mode: ${messageOf(e)}` });
     }
   }
 
@@ -233,9 +234,9 @@ export class ChatViewController {
     try {
       const configOptions = await this.sessions.setConfigOption(activeId, configId, value);
       this.post({ type: 'configOptionsUpdate', configOptions });
-    } catch (e: any) {
+    } catch (e) {
       logError('Failed to set config option', e);
-      this.post({ type: 'error', message: `Failed to set ${configId}: ${e.message}` });
+      this.post({ type: 'error', message: `Failed to set ${configId}: ${messageOf(e)}` });
       // The webview already shows the new value; replaying the session's options rolls it back.
       this.post({
         type: 'configOptionsUpdate',

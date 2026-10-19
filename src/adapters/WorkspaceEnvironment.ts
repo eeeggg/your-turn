@@ -16,7 +16,7 @@ export const workspaceEnvironment: SessionEnvironment = {
       return undefined;
     }
     const editor = vscode.window.activeTextEditor ?? vscode.window.visibleTextEditors[0];
-    if (!editor || !editor.document || editor.document.uri.scheme === 'output') {
+    if (!editor || editor.document.uri.scheme === 'output') {
       return undefined;
     }
     return {

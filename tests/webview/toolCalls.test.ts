@@ -20,7 +20,7 @@ function toolCall(id: string): HTMLDetailsElement {
 }
 
 function blocks(id: string): string[] {
-  return [...toolCall(id).querySelectorAll('.tc-body-block')].map((el) => el.textContent ?? '');
+  return [...toolCall(id).querySelectorAll('.tc-body-block')].map((el) => el.textContent);
 }
 
 describe('tool calls', () => {

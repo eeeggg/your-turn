@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { InputArea } from '@/webview/views/InputArea';
 import { initialState, update, type Action } from '@/webview/state/RootState';
@@ -157,7 +157,9 @@ describe('slash command popup', () => {
     expect(view.press('ArrowUp')).toBe(false);
     expect(active()).toEqual([true, false]);
 
-    fireEvent.mouseEnter(view.items()[1] as HTMLElement);
+    const second = view.items()[1];
+    assert.exists(second);
+    fireEvent.mouseEnter(second);
     expect(active()).toEqual([false, true]);
   });
 
@@ -189,7 +191,9 @@ describe('slash command popup', () => {
     view.connect();
     view.type('/');
 
-    fireEvent.click(view.items()[1] as HTMLElement);
+    const review = view.items()[1];
+    assert.exists(review);
+    fireEvent.click(review);
 
     expect(view.prompt().value).toBe('/review ');
     expect(document.activeElement).toBe(view.prompt());

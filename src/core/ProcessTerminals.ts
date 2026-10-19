@@ -1,4 +1,4 @@
-import { execa, type Subprocess } from 'execa';
+import { execa, ExecaError, type Subprocess } from 'execa';
 import type {
   CreateTerminalRequest,
   CreateTerminalResponse,
@@ -39,7 +39,7 @@ class OutputBuffer {
     let bytes = Buffer.concat([this.bytes, chunk]);
     if (bytes.length > this.byteLimit) {
       let start = bytes.length - this.byteLimit;
-      while (start < bytes.length && isContinuationByte(bytes[start]!)) {
+      while (start < bytes.length && isContinuationByte(bytes.readUInt8(start))) {
         start++;
       }
       bytes = bytes.subarray(start);
@@ -106,7 +106,7 @@ export class ProcessTerminals implements Terminals {
     }
 
     const exited = subprocess.then((result) => {
-      if (result.exitCode === undefined && result.signal === undefined) {
+      if (result instanceof ExecaError && result.exitCode === undefined && result.signal === undefined) {
         log(`Terminal ${terminalId} failed to start: ${result.shortMessage}`);
         output.append(Buffer.from(`${result.shortMessage}\n`));
         display.write(`${result.shortMessage}\n`);

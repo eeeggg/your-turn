@@ -18,7 +18,7 @@ function messages(): string[] {
   return [...page.document.querySelectorAll('.message')].map((el) => `${hookClasses(el)}: ${el.textContent}`);
 }
 
-function replay(turns: Array<[user: string, agent: string]>): void {
+function replay(turns: [user: string, agent: string][]): void {
   for (const [user, agent] of turns) {
     update(page, 'user_message_chunk', textChunk(user));
     update(page, 'agent_message_chunk', textChunk(agent));

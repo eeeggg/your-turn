@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { SessionInfo as ListedSession } from '@agentclientprotocol/sdk';
-import { logError } from './Log';
+import { logError, messageOf } from './Log';
 import type { SessionHistoryStore } from './SessionHistoryStore';
 import { AuthenticationCancelled, type AgentCapabilitySummary, type SessionManager } from './SessionManager';
 
@@ -213,10 +213,6 @@ function listed(sessions: readonly ListedSession[], nextCursor: string | undefin
 
 function failure(e: unknown): Failure {
   return e instanceof AuthenticationCancelled ? { kind: 'auth-required' } : { kind: 'failed', message: messageOf(e) };
-}
-
-function messageOf(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 function shortSessionId(id: string): string {

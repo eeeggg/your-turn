@@ -25,6 +25,8 @@ const hooks = new Set([
 ]);
 
 /** The element's hook classes, in order, as one string. */
+export function hookClasses(element: Element): string;
+export function hookClasses(element: Element | null | undefined): string | undefined;
 export function hookClasses(element: Element | null | undefined): string | undefined {
   return element ? [...element.classList].filter((name) => hooks.has(name)).join(' ') : undefined;
 }

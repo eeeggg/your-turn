@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 function agentMessages(): string[] {
-  return [...page.document.querySelectorAll('.message.agent')].map((el) => el.textContent ?? '');
+  return [...page.document.querySelectorAll('.message.agent')].map((el) => el.textContent);
 }
 
 describe('streaming a turn', () => {
@@ -173,7 +173,7 @@ describe('plans', () => {
 
 function plans(): string[][] {
   return [...page.document.querySelectorAll('.plan')].map((plan) =>
-    [...plan.querySelectorAll('.plan-entry')].map((entry) => entry.textContent ?? ''),
+    [...plan.querySelectorAll('.plan-entry')].map((entry) => entry.textContent),
   );
 }
 

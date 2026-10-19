@@ -18,7 +18,7 @@ export type SelectConfigOption = Extract<SessionConfigOption, { type: 'select' }
 /** An item in the open dropdown: a mode ID, or a value ID of the config option. */
 export interface PickerItemId {
   picker: PickerId;
-  item: SessionModeId | SessionConfigValueId;
+  item: string;
 }
 
 /** The session's mode and config option pickers, which one has its dropdown open, and the item under the pointer there. */
@@ -160,7 +160,7 @@ export function updatePickers(
     case 'configValueChosen': {
       const { configId, value } = action;
       const option = state.configOptions.find((candidate) => candidate.id === configId);
-      if (!option || option.type !== 'select' || option.currentValue === value) {
+      if (option?.type !== 'select' || option.currentValue === value) {
         return stateOnly(closed(state));
       }
       // The agent answers with the authoritative options, which replace this guess.

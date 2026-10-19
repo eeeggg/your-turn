@@ -53,4 +53,11 @@ describe('fetchRegistry', () => {
 
     expect(await fetchRegistry()).toEqual(agents);
   });
+
+  it('lists no agents from a registry without an agent list, fetched or cached', async () => {
+    respond(Response.json({}));
+
+    expect(await fetchRegistry()).toEqual([]);
+    expect(await fetchRegistry()).toEqual([]);
+  });
 });

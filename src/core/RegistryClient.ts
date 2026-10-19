@@ -35,18 +35,23 @@ export async function fetchRegistry(): Promise<RegistryAgent[]> {
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
-    const data = (await response.json()) as Registry;
+    const data = registryFrom(await response.json());
     cachedRegistry = data;
     cacheTime = now;
-    log(`Registry fetched: ${data.agents?.length || 0} agents`);
-    return data.agents || [];
+    log(`Registry fetched: ${data.agents.length} agents`);
+    return data.agents;
   } catch (e) {
     if (!cachedRegistry) {
       throw e;
     }
     logError('Failed to fetch registry; using the last copy', e);
-    return cachedRegistry.agents || [];
+    return cachedRegistry.agents;
   }
+}
+
+function registryFrom(json: unknown): Registry {
+  const agents = typeof json === 'object' && json !== null && 'agents' in json ? json.agents : undefined;
+  return { agents: Array.isArray(agents) ? agents as RegistryAgent[] : [] };
 }
 
 /**

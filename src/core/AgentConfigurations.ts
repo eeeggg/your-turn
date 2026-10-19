@@ -74,8 +74,7 @@ export class AgentConfigurations {
     if (choice !== 'Remove') { return; }
 
     await this.sessions.disconnectAgent(name);
-    const remaining = { ...this.agents() };
-    delete remaining[name];
+    const { [name]: _removed, ...remaining } = this.agents();
     await this.save(remaining);
     void this.window.showInformationMessage(`Agent "${name}" removed.`);
   }

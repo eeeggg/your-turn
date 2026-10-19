@@ -50,7 +50,7 @@ export class AgentManager implements AgentLauncher {
 
   launch(name: string, config: AgentConfigEntry, cwd: string, events: AgentProcessEvents): AgentProcess {
     const id = `agent_${this.nextId++}`;
-    log(`Spawning agent "${name}" (${id}): ${config.command} ${(config.args || []).join(' ')}`);
+    log(`Spawning agent "${name}" (${id}): ${config.command} ${(config.args ?? []).join(' ')}`);
 
     const subprocess = execa(config.command, config.args ?? [], {
       cwd,
@@ -74,7 +74,7 @@ export class AgentManager implements AgentLauncher {
         logError(`Agent "${name}" failed to start`, error);
         events.error(error);
       }
-      log(`Agent "${name}" exited (code=${result.exitCode}, signal=${result.signal})`);
+      log(`Agent "${name}" exited (code=${String(result.exitCode)}, signal=${String(result.signal)})`);
       events.exit(result.exitCode ?? null);
     });
 

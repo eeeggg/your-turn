@@ -1,20 +1,16 @@
 import * as vscode from 'vscode';
-import type { LogSink, TrafficDirection } from '@/core/Log';
+import { messageOf, type LogSink, type TrafficDirection } from '@/core/Log';
 
 let _outputChannel: vscode.OutputChannel | undefined;
 let _trafficChannel: vscode.OutputChannel | undefined;
 
 export function getOutputChannel(): vscode.OutputChannel {
-  if (!_outputChannel) {
-    _outputChannel = vscode.window.createOutputChannel('ACP Client');
-  }
+  _outputChannel ??= vscode.window.createOutputChannel('ACP Client');
   return _outputChannel;
 }
 
 export function getTrafficChannel(): vscode.OutputChannel {
-  if (!_trafficChannel) {
-    _trafficChannel = vscode.window.createOutputChannel('ACP Traffic');
-  }
+  _trafficChannel ??= vscode.window.createOutputChannel('ACP Traffic');
   return _trafficChannel;
 }
 
@@ -28,7 +24,7 @@ function appendLog(message: string, ...args: unknown[]): void {
 
 function appendError(message: string, error?: unknown): void {
   const timestamp = new Date().toISOString();
-  const errMsg = error instanceof Error ? error.message : String(error ?? '');
+  const errMsg = error === undefined ? '' : messageOf(error);
   getOutputChannel().appendLine(`[${timestamp}] ERROR: ${message} ${errMsg}`);
   if (error instanceof Error && error.stack) {
     getOutputChannel().appendLine(error.stack);
@@ -47,9 +43,9 @@ function appendTraffic(direction: TrafficDirection, data: unknown): void {
   let label = '';
   if (typeof data === 'object' && data !== null) {
     if ('method' in data) {
-      label = 'id' in data ? ` [REQUEST] ${data.method}` : ` [NOTIFICATION] ${data.method}`;
+      label = 'id' in data ? ` [REQUEST] ${String(data.method)}` : ` [NOTIFICATION] ${String(data.method)}`;
     } else if ('result' in data || 'error' in data) {
-      label = ` [RESPONSE] id=${'id' in data ? data.id : undefined}`;
+      label = ` [RESPONSE] id=${'id' in data ? String(data.id) : 'undefined'}`;
     }
   }
 

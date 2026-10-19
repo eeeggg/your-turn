@@ -10,9 +10,9 @@ export interface Transition<S, O> {
  * `useSyncExternalStore` takes.
  */
 export interface Store<S, A> {
-  subscribe(onStoreChange: () => void): () => void;
-  getSnapshot(): S;
-  dispatch(action: A): void;
+  subscribe: (onStoreChange: () => void) => () => void;
+  getSnapshot: () => S;
+  dispatch: (action: A) => void;
 }
 
 /**

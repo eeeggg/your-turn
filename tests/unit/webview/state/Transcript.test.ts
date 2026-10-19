@@ -1,5 +1,5 @@
 import type { AvailableCommand, SessionUpdate } from '@agentclientprotocol/sdk';
-import { describe, expect, it } from 'vitest';
+import { assert, describe, expect, it } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
@@ -315,7 +315,8 @@ describe('thoughts', () => {
 
     const [thought] = view.thoughts();
     expect(thought).toMatchObject({ text: 'let me think', startedAt: 10_000, endedAt: 13_000, open: false });
-    expect(thoughtSummary(thought!)).toBe('Thought for 3s');
+    assert.exists(thought);
+    expect(thoughtSummary(thought)).toBe('Thought for 3s');
   });
 
   it('finishes and closes a thought when a tool call, the plan or another thought follows it', () => {
@@ -350,7 +351,8 @@ describe('thoughts', () => {
 
     const [thought] = view.thoughts();
     expect(thought).toMatchObject({ endedAt: 1_400, open: true });
-    expect(thoughtSummary(thought!)).toBe('Thought');
+    assert.exists(thought);
+    expect(thoughtSummary(thought)).toBe('Thought');
   });
 
   it('leaves a thought as the user set it while the answer streams', () => {
@@ -490,7 +492,8 @@ describe('tool calls', () => {
     view.update('tool_call_update', { toolCallId: 't1', content: [textContent('body')] });
 
     expect(view.summary()).toEqual(['turn: tools t0 | then | tools t1', 'turn: next turn']);
-    const first = view.turns()[0]!;
+    const first = view.turns()[0];
+    assert.exists(first);
     expect(first.parts[2]).toEqual({
       kind: 'toolCalls',
       toolCalls: [{ toolCallId: 't1', title: 'Read foo.ts', status: 'completed', texts: ['body'], open: false }],

@@ -49,7 +49,7 @@ const earlierBuildState = {
 function transcriptOnScreen(page: ChatPage): string[] {
   return [...page.byId('messages').children]
     .filter((el) => el.id !== 'emptyState')
-    .map((el) => el.textContent ?? '');
+    .map((el) => el.textContent);
 }
 
 describe('a rebuilt page', () => {

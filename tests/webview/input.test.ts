@@ -18,7 +18,7 @@ function promptInput(): HTMLTextAreaElement {
 }
 
 function userMessages(): string[] {
-  return [...page.document.querySelectorAll('.message.user')].map((el) => el.textContent ?? '');
+  return [...page.document.querySelectorAll('.message.user')].map((el) => el.textContent);
 }
 
 function popupItems(): Element[] {

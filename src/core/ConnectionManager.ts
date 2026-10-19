@@ -91,8 +91,8 @@ export class ConnectionManager {
 
     // Pipe: sendTap.readable → original writable, original readable → recvTap.writable
     // These run in the background — no need to await
-    void sendTap.readable.pipeTo(stream.writable).catch(e => logError('Traffic tap send pipe error', e));
-    void stream.readable.pipeTo(recvTap.writable).catch(e => logError('Traffic tap recv pipe error', e));
+    void sendTap.readable.pipeTo(stream.writable).catch((e: unknown) => logError('Traffic tap send pipe error', e));
+    void stream.readable.pipeTo(recvTap.writable).catch((e: unknown) => logError('Traffic tap recv pipe error', e));
 
     return {
       writable: sendTap.writable,

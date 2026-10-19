@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, assert, describe, expect, it } from 'vitest';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
@@ -56,7 +56,9 @@ const text = (value: string) => ({ content: { type: 'text' as const, text: value
 /** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
 async function toggle(details: HTMLDetailsElement): Promise<void> {
   const toggled = new Promise((resolve) => details.addEventListener('toggle', resolve, { once: true }));
-  fireEvent.click(details.querySelector('summary')!);
+  const summary = details.querySelector('summary');
+  assert.exists(summary);
+  fireEvent.click(summary);
   await act(() => toggled);
 }
 
@@ -230,15 +232,17 @@ describe('tool calls', () => {
     view.update('tool_call', { toolCallId: 't2', title: '' });
 
     const [run, untitled] = view.all('.tool-call-inline');
-    expect(run!.id).toBe('tc-t1');
-    expect(hookClasses(run!.querySelector('.tc-icon'))).toBe('tc-icon running');
-    expect(run!.querySelector('.tc-icon')?.textContent).toBe('⟳');
-    expect(run!.querySelector('.tc-title')?.textContent).toBe('Run');
-    expect([...run!.querySelectorAll('.tc-body-block')].map((block) => block.textContent)).toEqual(['one', 'two']);
-    expect(run!.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
-    expect(run!.querySelector('.tc-body-truncated')).toBeNull();
-    expect(untitled!.querySelector('.tc-title')?.textContent).toBe('Tool Call');
-    expect(untitled!.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
+    assert.exists(run);
+    assert.exists(untitled);
+    expect(run.id).toBe('tc-t1');
+    expect(hookClasses(run.querySelector('.tc-icon'))).toBe('tc-icon running');
+    expect(run.querySelector('.tc-icon')?.textContent).toBe('⟳');
+    expect(run.querySelector('.tc-title')?.textContent).toBe('Run');
+    expect([...run.querySelectorAll('.tc-body-block')].map((block) => block.textContent)).toEqual(['one', 'two']);
+    expect(run.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
+    expect(run.querySelector('.tc-body-truncated')).toBeNull();
+    expect(untitled.querySelector('.tc-title')?.textContent).toBe('Tool Call');
+    expect(untitled.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
   });
 
   it('notes content cut off at the limit', () => {
