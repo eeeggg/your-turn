@@ -46,7 +46,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'loadSessionStart' }
   | { type: 'loadSessionEnd'; ok: boolean }
   | { type: 'markdownRendered'; items: RenderedMarkdown[] }
-  /** The webview has no handler for this yet, so the attachment is dropped (repo plan f.12). */
+  /** The webview has no handler for this yet, so the attachment is dropped. */
   | { type: 'file-attached'; path: string; name: string };
 
 export type WebviewToExtensionMessage =
