@@ -417,7 +417,7 @@
     "compile": "npm run check-types && node esbuild.mjs",
     "check-types": "tsc -b",
     "package": "npm run check-types && node esbuild.mjs --production",
-    "lint": "eslint src tests --max-warnings 0",
+    "lint": "eslint . --max-warnings 0",
     "pretest": "npm run compile && npm run lint",
     "test": "vitest run && vscode-test",
     "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage"

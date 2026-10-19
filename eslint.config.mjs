@@ -51,10 +51,10 @@ function restrictImports({ paths = [], patterns = [] } = {}) {
 
 export default defineConfig(
   {
-    ignores: ["dist/**"],
+    ignores: ["dist/**", "coverage/**", ".vscode-test/**"],
   },
   {
-    files: ["**/*.{ts,tsx}"],
+    files: ["**/*.{ts,tsx,mts,mjs}"],
     extends: [typescriptEslint.configs.strictTypeChecked, typescriptEslint.configs.stylisticTypeChecked],
     languageOptions: {
       parserOptions: {
