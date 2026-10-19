@@ -94,6 +94,14 @@ _Avoid_: event, message
 Everything the chat view shows for a session: prompts, agent messages, thoughts, tool calls, and plans.
 _Avoid_: chat, chat history, conversation history, messages
 
+**Following**:
+The transcript keeping the newest of the stream in view as it arrives.
+_Avoid_: auto-scroll, stick to bottom
+
+**Reading**:
+The transcript staying where the user scrolled while the stream continues below.
+_Avoid_: paused, scrolled up
+
 ### Turns
 
 **Prompt**:

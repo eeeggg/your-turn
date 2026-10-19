@@ -82,6 +82,8 @@ export interface TranscriptState {
   readonly nextId: EntryId;
   /** The turn the agent's work goes into, until the turn ends. */
   readonly currentTurn: EntryId | null;
+  /** Rises each time the view must follow the stream again: for each prompt the user sends, and on each clear. */
+  readonly followRequests: number;
 }
 
 export type WelcomeCommand = 'acp.connectAgent' | 'acp.addAgent';
@@ -97,6 +99,7 @@ export const initialTranscript: TranscriptState = {
   entries: [],
   nextId: 1,
   currentTurn: null,
+  followRequests: 0,
 };
 
 export const TOOL_CALL_CONTENT_LIMIT = 20_000;
@@ -225,16 +228,18 @@ export function updateTranscript(
   }
 }
 
-/** Adds each prompt the prompt box sent, so the transcript shows exactly what went to the agent. */
+/** Adds each prompt the prompt box sent, so the transcript shows exactly what went to the agent, and follows it. */
 export function withSentPrompts(
   transcript: TranscriptState,
   outgoing: readonly WebviewToExtensionMessage[],
 ): TranscriptState {
-  return outgoing.reduce(
-    (current, message) =>
-      message.type === 'sendPrompt' ? appended(current, (id) => ({ kind: 'prompt', id, text: message.text })) : current,
-    transcript,
-  );
+  return outgoing.reduce((current, message) => {
+    if (message.type !== 'sendPrompt') {
+      return current;
+    }
+    const added = appended(current, (id) => ({ kind: 'prompt', id, text: message.text }));
+    return { ...added, followRequests: added.followRequests + 1 };
+  }, transcript);
 }
 
 /** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
@@ -389,7 +394,9 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
   const empty = transcript.entries.length === 0 && transcript.currentTurn === null;
-  return empty && transcript.sessionId === sessionId ? transcript : { ...transcript, sessionId, entries: [], currentTurn: null };
+  return empty && transcript.sessionId === sessionId
+    ? transcript
+    : { ...transcript, sessionId, entries: [], currentTurn: null, followRequests: transcript.followRequests + 1 };
 }
 
 function withCurrent(transcript: TranscriptState, currentTurn: EntryId | null): TranscriptState {

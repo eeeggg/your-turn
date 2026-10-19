@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
-import { afterEach, assert, describe, expect, it } from 'vitest';
+import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
@@ -10,6 +10,36 @@ import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
 
 afterEach(cleanup);
+
+// jsdom has no layout to scroll, so the library's part is checked live; this records what the view hands it.
+const stickToBottom = vi.hoisted(() => ({
+  scrollElement: null as HTMLElement | null,
+  contentElement: null as HTMLElement | null,
+  scrollToBottom: vi.fn(),
+  /** Whether the user is at the bottom, which the library decides from their scrolling. */
+  setAtBottom: (_atBottom: boolean): void => {
+    throw new Error('the transcript is not rendered');
+  },
+}));
+vi.mock('use-stick-to-bottom', async () => {
+  const { useState } = await import('react');
+  return {
+    useStickToBottom: () => {
+      const [isAtBottom, setIsAtBottom] = useState(true);
+      stickToBottom.setAtBottom = setIsAtBottom;
+      return {
+        scrollRef: (element: HTMLElement | null) => {
+          stickToBottom.scrollElement = element;
+        },
+        contentRef: (element: HTMLElement | null) => {
+          stickToBottom.contentElement = element;
+        },
+        isAtBottom,
+        scrollToBottom: stickToBottom.scrollToBottom,
+      };
+    },
+  };
+});
 
 type SessionUpdateKind = SessionUpdate['sessionUpdate'];
 
@@ -66,7 +96,26 @@ describe('the chat view', () => {
   it('lays out the banner, the transcript, the input area and the load overlay in that order', () => {
     const { container } = renderChatView();
 
-    expect([...container.children].map((child) => child.id)).toEqual(['sessionBanner', 'messages', 'inputArea', 'loadOverlay']);
+    expect([...container.children].map((child) => child.id)).toEqual(['sessionBanner', 'transcript', 'inputArea', 'loadOverlay']);
+  });
+
+  it('gives the library that follows the stream the transcript to scroll and the entries inside it to watch', () => {
+    const view = renderChatView();
+
+    expect(stickToBottom.scrollElement).toBe(view.part('#transcript > #transcriptScroll'));
+    expect(stickToBottom.contentElement).toBe(view.part('#transcriptScroll > #messages'));
+  });
+
+  it('follows the stream again when the user sends a prompt, and not as the agent streams', () => {
+    const view = renderChatView();
+    view.connect();
+    stickToBottom.scrollToBottom.mockClear();
+
+    view.update('agent_message_chunk', text('streaming'));
+    expect(stickToBottom.scrollToBottom).not.toHaveBeenCalled();
+
+    view.send({ type: 'promptEdited', text: 'question' }, { type: 'promptSent' });
+    expect(stickToBottom.scrollToBottom).toHaveBeenCalledOnce();
   });
 
   it('covers the view only while a session loads', () => {
@@ -80,6 +129,51 @@ describe('the chat view', () => {
 
     view.send({ type: 'loadSessionEnd', ok: true });
     expect(hookClasses(overlay)).toBe('load-overlay');
+  });
+});
+
+describe('the jump to the end', () => {
+  const jumpToEnd = (view: ReturnType<typeof renderChatView>) => view.container.querySelector<HTMLButtonElement>('#transcript > #jumpToEnd');
+
+  it('is offered while the user reads during a turn, and follows the stream again', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'promptStart' });
+    expect(jumpToEnd(view)).toBeNull();
+
+    act(() => stickToBottom.setAtBottom(false));
+    const button = jumpToEnd(view);
+    assert.exists(button);
+    expect(button.getAttribute('aria-label')).toBe('Jump to the end');
+    stickToBottom.scrollToBottom.mockClear();
+    fireEvent.click(button);
+    expect(stickToBottom.scrollToBottom).toHaveBeenCalledOnce();
+
+    act(() => stickToBottom.setAtBottom(true));
+    expect(jumpToEnd(view)).toBeNull();
+  });
+
+  it('stays offered after the turn ends until the user is back at the bottom, and not after that', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'promptStart' });
+    act(() => stickToBottom.setAtBottom(false));
+
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    expect(jumpToEnd(view)).not.toBeNull();
+
+    act(() => stickToBottom.setAtBottom(true));
+    act(() => stickToBottom.setAtBottom(false));
+    expect(jumpToEnd(view)).toBeNull();
+  });
+
+  it('is not offered when the user scrolls up with no turn running', () => {
+    const view = renderChatView();
+    view.connect();
+
+    act(() => stickToBottom.setAtBottom(false));
+
+    expect(jumpToEnd(view)).toBeNull();
   });
 });
 
@@ -140,17 +234,6 @@ describe('transcript entries', () => {
     view.update('agent_message_chunk', text('\n '));
 
     expect(view.all('.turn')).toEqual([]);
-  });
-
-  it('scrolls to the bottom whenever the transcript changes', () => {
-    const view = renderChatView();
-    const messages = view.part('#messages');
-    Object.defineProperty(messages, 'scrollHeight', { configurable: true, value: 640 });
-    view.connect();
-
-    view.update('agent_message_chunk', text('hello'));
-
-    expect(messages.scrollTop).toBe(640);
   });
 });
 
