@@ -1,4 +1,4 @@
-import type { SessionModeState, SessionNotification } from '@agentclientprotocol/sdk';
+import type { ContentBlock, SessionModeState, SessionNotification, SessionUpdate } from '@agentclientprotocol/sdk';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { SessionManager } from './SessionManager';
 import { logError } from './Log';
@@ -20,6 +20,14 @@ export type ChatSessions = Pick<
   | 'applySessionInfoUpdate'
 >;
 
+/** Text chunks arriving within this many milliseconds reach the webview as one, so it renders about once a frame at most. */
+const TEXT_CHUNK_WINDOW_MS = 16;
+
+/** A plain text chunk, which can be joined with the next one of the same message. */
+type TextChunk = Extract<SessionUpdate, { sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk' | 'user_message_chunk' }> & {
+  content: Extract<ContentBlock, { type: 'text' }>;
+};
+
 /** What a mid-turn prompt does: wait for the running turn, or go straight to the agent. */
 export type MidTurnPrompt = 'queue' | 'send';
 
@@ -40,6 +48,8 @@ export class ChatViewController {
   private inFlightPrompts = 0;
   /** Prompts typed during a turn that wait for that turn to finish. */
   private pendingPrompts: string[] = [];
+  /** Text not yet posted, sent when its window closes or before anything else is posted. */
+  private pendingText: { sessionId: string; update: TextChunk; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -97,7 +107,17 @@ export class ChatViewController {
     }
 
     if (sessionId !== this.sessions.getActiveSessionId()) { return; }
-    this.post({ type: 'sessionUpdate', update, sessionId });
+    if (!isTextChunk(update)) {
+      this.post({ type: 'sessionUpdate', update, sessionId });
+      return;
+    }
+    const pending = this.pendingText;
+    if (pending && pending.sessionId === sessionId && sameMessage(pending.update, update)) {
+      pending.update = { ...pending.update, content: { ...pending.update.content, text: pending.update.content.text + update.content.text } };
+      return;
+    }
+    this.sendPendingText();
+    this.pendingText = { sessionId, update, timer: setTimeout(() => this.sendPendingText(), TEXT_CHUNK_WINDOW_MS) };
   }
 
   /** Tell the webview the active session changed. */
@@ -254,6 +274,31 @@ export class ChatViewController {
   }
 
   private post(message: ExtensionToWebviewMessage): void {
+    this.sendPendingText();
     this.environment.post(message);
   }
+
+  private sendPendingText(): void {
+    const pending = this.pendingText;
+    if (!pending) { return; }
+    this.pendingText = null;
+    clearTimeout(pending.timer);
+    this.environment.post({ type: 'sessionUpdate', sessionId: pending.sessionId, update: pending.update });
+  }
+}
+
+/** Annotations and metadata belong to their own chunk, so a chunk carrying either is never joined. */
+function isTextChunk(update: SessionUpdate): update is TextChunk {
+  switch (update.sessionUpdate) {
+    case 'agent_message_chunk':
+    case 'agent_thought_chunk':
+    case 'user_message_chunk':
+      return update.content.type === 'text' && !update.content.annotations && !update.content._meta && !update._meta;
+    default:
+      return false;
+  }
+}
+
+function sameMessage(a: TextChunk, b: TextChunk): boolean {
+  return a.sessionUpdate === b.sessionUpdate && (a.messageId ?? null) === (b.messageId ?? null);
 }

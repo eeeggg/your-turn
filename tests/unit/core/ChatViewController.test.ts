@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PromptResponse, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import {
   ChatViewController,
@@ -130,6 +130,11 @@ function setup() {
 function sendPrompt(controller: ChatViewController, text: string): Promise<void> {
   return controller.handleMessage({ type: 'sendPrompt', text });
 }
+
+const toolCall = (sessionId: string): SessionNotification => ({
+  sessionId,
+  update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read' },
+});
 
 describe('ChatViewController', () => {
   describe('session state', () => {
@@ -468,18 +473,13 @@ describe('ChatViewController', () => {
   });
 
   describe('session updates', () => {
-    const chunk = (sessionId: string): SessionNotification => ({
-      sessionId,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } },
-    });
-
     it('forwards updates for the active session only', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate(chunk('s1'));
-      controller.handleSessionUpdate(chunk('other'));
+      controller.handleSessionUpdate(toolCall('s1'));
+      controller.handleSessionUpdate(toolCall('other'));
 
-      expect(environment.take()).toEqual([{ type: 'sessionUpdate', sessionId: 's1', update: chunk('s1').update }]);
+      expect(environment.take()).toEqual([{ type: 'sessionUpdate', sessionId: 's1', update: toolCall('s1').update }]);
     });
 
     it('applies commands, config options and session info even before the session is active', () => {
@@ -504,6 +504,91 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate({ sessionId: 's1', update });
 
       expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith('s1', []);
+    });
+  });
+
+  describe('text chunks', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    type ChunkKind = 'agent_message_chunk' | 'agent_thought_chunk' | 'user_message_chunk';
+    const chunk = (sessionUpdate: ChunkKind, text: string, fields: { messageId?: string; _meta?: Record<string, unknown> } = {}): SessionNotification => ({
+      sessionId: 's1',
+      update: { sessionUpdate, content: { type: 'text', text }, ...fields },
+    });
+    const sent = (notification: SessionNotification): ExtensionToWebviewMessage => ({ type: 'sessionUpdate', ...notification });
+
+    it('joins the text chunks of a frame into one update', () => {
+      const { environment, controller } = setup();
+
+      for (const text of ['Hel', 'lo', ' world']) {
+        controller.handleSessionUpdate(chunk('agent_message_chunk', text));
+      }
+      vi.advanceTimersByTime(15);
+      expect(environment.take()).toEqual([]);
+
+      vi.advanceTimersByTime(1);
+      expect(environment.take()).toEqual([sent(chunk('agent_message_chunk', 'Hello world'))]);
+
+      controller.handleSessionUpdate(chunk('agent_message_chunk', '!'));
+      vi.advanceTimersByTime(16);
+      expect(environment.take()).toEqual([sent(chunk('agent_message_chunk', '!'))]);
+    });
+
+    it('sends the text before anything that follows it, without waiting', async () => {
+      const { sessions, environment, controller } = setup();
+      const turn = sendPrompt(controller, 'hello');
+      environment.take();
+
+      controller.handleSessionUpdate(chunk('agent_message_chunk', 'reading'));
+      controller.handleSessionUpdate(toolCall('s1'));
+      controller.handleSessionUpdate(chunk('agent_message_chunk', 'done'));
+      sessions.answer();
+      await turn;
+
+      expect(environment.take()).toEqual([
+        sent(chunk('agent_message_chunk', 'reading')),
+        sent(toolCall('s1')),
+        sent(chunk('agent_message_chunk', 'done')),
+        { type: 'promptEnd', stopReason: 'end_turn' },
+      ]);
+      vi.advanceTimersByTime(16);
+      expect(environment.take()).toEqual([]);
+    });
+
+    it('keeps chunks of different kinds or messages apart', () => {
+      const { environment, controller } = setup();
+
+      controller.handleSessionUpdate(chunk('user_message_chunk', 'q'));
+      controller.handleSessionUpdate(chunk('agent_thought_chunk', 'hm'));
+      controller.handleSessionUpdate(chunk('agent_thought_chunk', 'm'));
+      controller.handleSessionUpdate(chunk('agent_message_chunk', 'a', { messageId: 'm1' }));
+      controller.handleSessionUpdate(chunk('agent_message_chunk', 'b', { messageId: 'm2' }));
+      vi.advanceTimersByTime(16);
+
+      expect(environment.take()).toEqual([
+        sent(chunk('user_message_chunk', 'q')),
+        sent(chunk('agent_thought_chunk', 'hmm')),
+        sent(chunk('agent_message_chunk', 'a', { messageId: 'm1' })),
+        sent(chunk('agent_message_chunk', 'b', { messageId: 'm2' })),
+      ]);
+    });
+
+    it('passes chunks with annotations or metadata through unjoined, in order', () => {
+      const { environment, controller } = setup();
+      const annotated: SessionNotification = {
+        sessionId: 's1',
+        update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'file', annotations: { audience: ['assistant'] } } },
+      };
+      const withMeta = chunk('user_message_chunk', 'more', { _meta: { source: 'agent' } });
+
+      controller.handleSessionUpdate(chunk('user_message_chunk', 'q'));
+      controller.handleSessionUpdate(annotated);
+      controller.handleSessionUpdate(withMeta);
+      controller.handleSessionUpdate(chunk('user_message_chunk', ' again'));
+      vi.advanceTimersByTime(16);
+
+      expect(environment.take()).toEqual([sent(chunk('user_message_chunk', 'q')), sent(annotated), sent(withMeta), sent(chunk('user_message_chunk', ' again'))]);
     });
   });
 });
