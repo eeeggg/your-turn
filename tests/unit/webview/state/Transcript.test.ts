@@ -75,6 +75,7 @@ function chatView() {
 }
 
 const text = (value: string) => ({ content: { type: 'text' as const, text: value } });
+const forAgentOnly = (value: string) => ({ content: { type: 'text' as const, text: value, annotations: { audience: ['assistant' as const] } } });
 const textContent = (value: string) => ({ type: 'content' as const, content: { type: 'text' as const, text: value } });
 
 describe('the transcript and its session', () => {
@@ -231,6 +232,17 @@ describe('agent messages', () => {
     expect(view.summary()).toEqual([]);
   });
 
+  it('leaves out text meant only for the agent', () => {
+    const view = chatView();
+    view.connect();
+
+    view.update('agent_message_chunk', text('shown'));
+    view.update('agent_message_chunk', forAgentOnly(' hidden'));
+    view.update('agent_message_chunk', { content: { type: 'text', text: ' also shown', annotations: { audience: ['user', 'assistant'] } } });
+
+    expect(view.summary()).toEqual(['turn: shown also shown']);
+  });
+
   it('keeps the text of the answer and asks the extension for nothing when the turn ends', () => {
     const view = chatView();
     view.connect();
@@ -340,6 +352,15 @@ describe('thoughts', () => {
     view.connect();
 
     view.update('agent_thought_chunk', { content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
+
+    expect(view.summary()).toEqual([]);
+  });
+
+  it('leaves out thought text meant only for the agent', () => {
+    const view = chatView();
+    view.connect();
+
+    view.update('agent_thought_chunk', forAgentOnly('hidden'));
 
     expect(view.summary()).toEqual([]);
   });
@@ -499,6 +520,19 @@ describe('loading a session', () => {
     view.update('user_message_chunk', { content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
 
     expect(view.transcript()).toBe(before);
+  });
+
+  it('leaves out replayed prompt text meant only for the agent, such as an attached file read into the prompt', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+
+    view.update('user_message_chunk', text('q1'));
+    view.update('user_message_chunk', forAgentOnly('Called the Read tool'));
+    view.update('user_message_chunk', forAgentOnly('the file'));
+    view.update('agent_message_chunk', text('a1'));
+
+    expect(view.summary()).toEqual(['prompt: q1', 'turn: a1']);
   });
 
   it('ends each replayed turn as a live one ends', () => {

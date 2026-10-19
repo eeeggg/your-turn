@@ -63,6 +63,25 @@ describe('loading a session', () => {
     expect(messages()).toEqual(['message user: hello']);
   });
 
+  it('shows only what the user typed when the agent replays an attached file read into the prompt', () => {
+    const forAgentOnly = (text: string) => ({ content: { type: 'text' as const, text, annotations: { audience: ['assistant' as const] } } });
+    page.send({ type: 'loadSessionStart' });
+    for (const prompt of ['q1', 'q2']) {
+      update(page, 'user_message_chunk', textChunk(prompt));
+      update(page, 'user_message_chunk', forAgentOnly('Called the Read tool with the following input: {"filePath":"/work/a.ts"}'));
+      update(page, 'user_message_chunk', forAgentOnly('export const a = 1;'));
+      update(page, 'user_message_chunk', { content: { type: 'resource_link', uri: 'file:///work/a.ts', name: 'a.ts' } });
+      update(page, 'agent_message_chunk', textChunk(`answer to ${prompt}`));
+    }
+
+    expect(messages()).toEqual([
+      'message user: q1',
+      'message agent: answer to q1',
+      'message user: q2',
+      'message agent: answer to q2',
+    ]);
+  });
+
   it('renders replayed answers as markdown as they arrive, asking the extension for nothing', () => {
     page.send({ type: 'loadSessionStart' });
     replay([

@@ -1,4 +1,4 @@
-import type { PlanEntry, PlanEntryStatus, SessionUpdate, ToolCallContent, ToolCallStatus } from '@agentclientprotocol/sdk';
+import type { ContentBlock, PlanEntry, PlanEntryStatus, SessionUpdate, ToolCallContent, ToolCallStatus } from '@agentclientprotocol/sdk';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
@@ -220,15 +220,24 @@ export function withSentPrompts(
   );
 }
 
+/** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
+function textForUser(content: ContentBlock): string | null {
+  if (content.type !== 'text') {
+    return null;
+  }
+  const audience = content.annotations?.audience;
+  return audience && !audience.includes('user') ? null : content.text;
+}
+
 function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, now: number): TranscriptState {
   switch (update.sessionUpdate) {
     case 'agent_message_chunk': {
-      const { content } = update;
-      if (content.type !== 'text' || !content.text) {
+      const text = textForUser(update.content);
+      if (!text) {
         return transcript;
       }
       return inCurrentTurn(transcript, (turn) => {
-        const message = { ...turn.message, text: turn.message.text + content.text };
+        const message = { ...turn.message, text: turn.message.text + text };
         const answerStarts = !messageShown(turn.message) && messageShown(message);
         return {
           ...turn,
@@ -238,26 +247,26 @@ function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, 
       });
     }
     case 'agent_thought_chunk': {
-      const { content } = update;
-      if (content.type !== 'text') {
+      const text = textForUser(update.content);
+      if (text === null) {
         return transcript;
       }
       return inCurrentTurn(transcript, (turn) => {
         const thought = turn.thought ?? { text: '', startedAt: now, endedAt: null, open: true };
-        return { ...turn, thought: { ...thought, text: thought.text + content.text } };
+        return { ...turn, thought: { ...thought, text: thought.text + text } };
       });
     }
     case 'user_message_chunk': {
       // Only a load replays prompts; each one ends the turn before it.
-      const { content } = update;
-      if (content.type !== 'text') {
+      const text = textForUser(update.content);
+      if (text === null) {
         return transcript;
       }
       const ended = endTurn(transcript, now);
       const last = ended.entries.at(-1);
       return last?.kind === 'prompt'
-        ? replaced(ended, { ...last, text: last.text + content.text })
-        : appended(ended, (id) => ({ kind: 'prompt', id, text: content.text }));
+        ? replaced(ended, { ...last, text: last.text + text })
+        : appended(ended, (id) => ({ kind: 'prompt', id, text }));
     }
     case 'tool_call': {
       const reported = {
