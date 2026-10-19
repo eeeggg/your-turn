@@ -83,7 +83,7 @@ export class ChatViewController {
       case 'renderMarkdown':
         this.post({
           type: 'markdownRendered',
-          items: message.items.map((item) => ({ index: item.index, html: this.renderMarkdown(item.text) })),
+          items: message.items.map((item) => ({ id: item.id, html: this.renderMarkdown(item.text) })),
         });
         break;
     }

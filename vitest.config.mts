@@ -27,7 +27,7 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
       // These only run as the bundle in the webview suite, which is not measured.
-      exclude: ['src/webview/chat.ts', 'src/webview/Main.tsx', 'src/webview/VsCodeApi.ts'],
+      exclude: ['src/webview/Main.tsx', 'src/webview/VsCodeApi.ts'],
       reporter: ['text', 'html'],
       reportsDirectory: 'coverage',
     },

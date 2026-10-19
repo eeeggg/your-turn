@@ -225,7 +225,11 @@ describe('what the store is told', () => {
     const before = view.session();
     const notified = view.notified();
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' }, { type: 'error', message: 'boom' }, { type: 'pickersClosed' });
+    view.send(
+      { type: 'promptEnd', stopReason: 'end_turn' },
+      { type: 'file-attached', path: '/work/a.ts', name: 'a.ts' },
+      { type: 'pickersClosed' },
+    );
 
     expect(view.session()).toBe(before);
     expect(view.notified()).toBe(notified);

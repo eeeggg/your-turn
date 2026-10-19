@@ -248,7 +248,11 @@ describe('what the store is told', () => {
     view.send({ type: 'slashPopupDismissed' });
     const notified = view.notified();
 
-    view.send({ type: 'slashPopupDismissed' }, { type: 'slashCommandHighlighted', index: 0 }, { type: 'error', message: 'boom' });
+    view.send(
+      { type: 'slashPopupDismissed' },
+      { type: 'slashCommandHighlighted', index: 0 },
+      { type: 'markdownRendered', items: [{ id: 999, html: '<p>none</p>' }] },
+    );
 
     expect(view.notified()).toBe(notified);
   });

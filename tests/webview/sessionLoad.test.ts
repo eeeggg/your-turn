@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, markdownItems, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -72,21 +72,30 @@ describe('loading a session', () => {
 
     page.send({ type: 'loadSessionEnd', ok: true });
 
-    expect(page.takePosted()).toEqual([
-      {
-        type: 'renderMarkdown',
-        items: [
-          { index: 1, text: 'a1' },
-          { index: 3, text: 'a2' },
-        ],
-      },
-    ]);
+    const requests = page.takePosted();
+    expect(requests).toHaveLength(1);
+    const items = markdownItems(requests);
+    expect(items.map((item) => item.text)).toEqual(['a1', 'a2']);
     expect(page.byId('loadOverlay').classList.contains('visible')).toBe(false);
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
 
-    page.send({ type: 'markdownRendered', items: [{ index: 3, html: '<p>A2</p>' }] });
+    page.send({ type: 'markdownRendered', items: [{ id: items[1]!.id, html: '<p>A2</p>' }] });
     const answers = [...page.document.querySelectorAll('.message.agent')].map((el) => el.innerHTML);
     expect(answers).toEqual(['a1', '<p>A2</p>']);
+  });
+
+  it('collapses more than three tool calls in a replayed turn, as in a live one', () => {
+    page.send({ type: 'loadSessionStart' });
+    for (const prompt of ['q1', 'q2']) {
+      update(page, 'user_message_chunk', textChunk(prompt));
+      for (const id of ['1', '2', '3', '4']) {
+        update(page, 'tool_call', { toolCallId: `${prompt}-${id}`, title: id, status: 'completed' });
+      }
+    }
+    page.send({ type: 'loadSessionEnd', ok: true });
+
+    const lists = [...page.document.querySelectorAll('.turn-tools-list')];
+    expect(lists.map((list) => list.classList.contains('collapsed'))).toEqual([true, true]);
   });
 
   it('reports a failed load', () => {

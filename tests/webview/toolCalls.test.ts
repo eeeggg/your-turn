@@ -44,10 +44,9 @@ describe('tool calls', () => {
     update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'pending' });
     const icon = (): Element | null => toolCall('t1').querySelector('.tc-icon');
 
-    // Current behavior: in_progress gets the running class but keeps the pending glyph.
     update(page, 'tool_call_update', { toolCallId: 't1', status: 'in_progress' });
     expect(icon()?.className).toBe('tc-icon running');
-    expect(icon()?.textContent).toBe('…');
+    expect(icon()?.textContent).toBe('⟳');
 
     update(page, 'tool_call_update', { toolCallId: 't1', status: 'completed' });
     expect(icon()?.className).toBe('tc-icon completed');
@@ -63,6 +62,33 @@ describe('tool calls', () => {
     expect(toolCall('t1').open).toBe(true);
   });
 
+  it('expands a tool call the agent reports as failed from the start', () => {
+    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'failed' });
+
+    expect(toolCall('t1').open).toBe(true);
+  });
+
+  it('keeps the status when an update carries none', () => {
+    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'in_progress' });
+    update(page, 'tool_call_update', {
+      toolCallId: 't1',
+      content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
+    });
+
+    expect(toolCall('t1').querySelector('.tc-icon')?.className).toBe('tc-icon running');
+    expect(blocks('t1')).toEqual(['partial output']);
+  });
+
+  it('updates a tool call the agent reports again instead of adding a second one', () => {
+    update(page, 'tool_call', { toolCallId: 't1', title: 'Read', status: 'pending' });
+    update(page, 'tool_call', { toolCallId: 't1', title: 'Read foo.ts', status: 'completed' });
+
+    expect(page.document.querySelectorAll('.tool-call-inline')).toHaveLength(1);
+    expect(toolCall('t1').querySelector('.tc-title')?.textContent).toBe('Read foo.ts');
+    expect(toolCall('t1').querySelector('.tc-icon')?.className).toBe('tc-icon completed');
+    expect(page.document.querySelector('.turn-tools-summary')?.textContent).toBe('▾ 1 tool call');
+  });
+
   it('updates the title when the update carries one', () => {
     update(page, 'tool_call', { toolCallId: 't1', title: 'Edit', status: 'pending' });
     update(page, 'tool_call_update', { toolCallId: 't1', status: 'in_progress', title: 'Edit foo.ts' });
@@ -72,22 +98,17 @@ describe('tool calls', () => {
 
   it('shows text content and does not render diff content', () => {
     update(page, 'tool_call', { toolCallId: 't1', title: 'Edit foo.ts', kind: 'edit', status: 'pending' });
-    page.sendUnchecked({
-      type: 'sessionUpdate',
-      sessionId: 's1',
-      update: {
-        sessionUpdate: 'tool_call_update',
-        toolCallId: 't1',
-        status: 'completed',
-        content: [
-          { type: 'content', content: { type: 'text', text: 'wrapped text' } },
-          { type: 'text', text: 'bare text' },
-          { type: 'diff', path: '/work/project/foo.ts', oldText: 'a', newText: 'b' },
-        ],
-      },
+    update(page, 'tool_call_update', {
+      toolCallId: 't1',
+      status: 'completed',
+      content: [
+        { type: 'content', content: { type: 'text', text: 'first' } },
+        { type: 'diff', path: '/work/project/foo.ts', oldText: 'a', newText: 'b' },
+        { type: 'content', content: { type: 'text', text: 'second' } },
+      ],
     });
 
-    expect(blocks('t1')).toEqual(['wrapped text', 'bare text']);
+    expect(blocks('t1')).toEqual(['first', 'second']);
     expect(toolCall('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
   });
 

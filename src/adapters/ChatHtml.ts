@@ -20,33 +20,7 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
   <link href="${styleUri}" rel="stylesheet">
 </head>
 <body>
-  <div id="sessionBannerRoot"></div>
-
-  <div class="messages" id="messages">
-    <div class="empty-state" id="emptyState">
-      <div class="icon">🤖</div>
-      <div class="title">ACP Chat</div>
-      <div class="subtitle">Connect to an AI coding agent to start chatting.</div>
-      <div class="actions">
-        <button class="action-btn primary" id="welcomeConnectAgent">
-          🔌 Connect to Agent
-        </button>
-        <button class="action-btn secondary" id="welcomeAddAgent">
-          ⚙ Add Agent
-        </button>
-      </div>
-      <div class="hint">or press <kbd>Ctrl+Shift+A</kbd> anytime</div>
-    </div>
-  </div>
-
-  <div id="inputAreaRoot"></div>
-
-  <!-- Overlay shown during session/load history replay -->
-  <div class="load-overlay" id="loadOverlay" role="status" aria-live="polite">
-    <div class="spinner"></div>
-    <div class="label">Loading transcript…</div>
-  </div>
-
+  <div class="chat-view" id="chatView"></div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
 </body>
 </html>`;

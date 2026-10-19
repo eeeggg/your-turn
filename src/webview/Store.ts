@@ -15,11 +15,15 @@ export interface Store<S, A> {
   dispatch(action: A): void;
 }
 
-/** Listeners hear only of actions that change the state; `update` returns the same object for the rest. */
+/**
+ * Listeners hear only of actions that change the state; `update` returns the same object for the rest.
+ * `update` is handed the time of each dispatch, in milliseconds since the epoch, so it never reads a clock itself.
+ */
 export function createStore<S, A, O>(
   initial: S,
-  update: (state: S, action: A) => Transition<S, O>,
+  update: (state: S, action: A, now: number) => Transition<S, O>,
   post: (message: O) => void,
+  clock: () => number = () => Date.now(),
 ): Store<S, A> {
   let state = initial;
   const listeners = new Set<() => void>();
@@ -32,7 +36,7 @@ export function createStore<S, A, O>(
     },
     getSnapshot: () => state,
     dispatch(action) {
-      const next = update(state, action);
+      const next = update(state, action, clock());
       const changed = next.state !== state;
       state = next.state;
       next.outgoing.forEach((message) => post(message));

@@ -9,7 +9,7 @@ const vscodeApi = {
 
 const webviewApi = {
   name: "@/webview/VsCodeApi",
-  message: "Only Main.tsx and chat.ts post to the extension; views dispatch events to the store, which posts its outgoing messages.",
+  message: "Only Main.tsx posts to the extension; views dispatch events to the store, which posts its outgoing messages.",
 };
 
 const webviewLayers = {
@@ -109,10 +109,6 @@ export default defineConfig(
   {
     files: ["src/webview/Main.tsx"],
     rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers] }),
-  },
-  {
-    files: ["src/webview/chat.ts"],
-    rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers, react] }),
   },
   {
     files: ["src/webview/VsCodeApi.ts"],

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, markdownItems, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -67,9 +67,11 @@ describe('streaming a turn', () => {
     page.takePosted();
 
     page.send({ type: 'promptEnd', stopReason: 'end_turn' });
-    expect(page.takePosted()).toEqual([{ type: 'renderMarkdown', items: [{ index: 1, text: '**bold**' }] }]);
+    const requests = page.takePosted();
+    expect(requests).toEqual([{ type: 'renderMarkdown', items: [{ id: expect.any(Number), text: '**bold**' }] }]);
+    const id = markdownItems(requests)[0]!.id;
 
-    page.send({ type: 'markdownRendered', items: [{ index: 1, html: '<p><strong>bold</strong></p>' }] });
+    page.send({ type: 'markdownRendered', items: [{ id, html: '<p><strong>bold</strong></p>' }] });
     const el = page.document.querySelector('.message.agent');
     expect(el?.classList.contains('md-rendered')).toBe(true);
     expect(el?.innerHTML).toBe('<p><strong>bold</strong></p>');
@@ -115,6 +117,33 @@ describe('thinking', () => {
     expect(page.document.querySelector('.turn')?.firstElementChild).toBe(thought);
   });
 
+  it('lets the user reopen the thought while the answer streams', async () => {
+    page.send({ type: 'promptStart' });
+    update(page, 'agent_thought_chunk', textChunk('hmm'));
+    update(page, 'agent_message_chunk', textChunk('answer'));
+    const thought = page.document.querySelector<HTMLDetailsElement>('.thought-block');
+
+    await toggle(thought);
+    update(page, 'agent_message_chunk', textChunk(' continues'));
+
+    expect(thought?.open).toBe(true);
+  });
+
+  it('finishes the thought when the answer starts, even if the user closed it', async () => {
+    page.window.Date.now = () => 10_000;
+    page.send({ type: 'promptStart' });
+    update(page, 'agent_thought_chunk', textChunk('hmm'));
+    const thought = page.document.querySelector<HTMLDetailsElement>('.thought-block');
+    await toggle(thought);
+
+    page.window.Date.now = () => 13_000;
+    update(page, 'agent_message_chunk', textChunk('answer'));
+
+    expect(thought?.open).toBe(false);
+    expect(thought?.classList.contains('streaming')).toBe(false);
+    expect(thought?.querySelector('summary')?.textContent).toBe('Thought for 3s');
+  });
+
   it('finalizes a thought without an answer at promptEnd', () => {
     page.send({ type: 'promptStart' });
     update(page, 'agent_thought_chunk', textChunk('hmm'));
@@ -142,4 +171,43 @@ describe('plans', () => {
     expect(entries.map((el) => el.classList.contains('completed'))).toEqual([true, false, false]);
     expect(page.document.querySelector('.plan b')).toBeNull();
   });
+
+  it('replaces the plan when the agent updates it during a turn', () => {
+    page.send({ type: 'promptStart' });
+    update(page, 'plan', { entries: [{ content: 'a', status: 'pending', priority: 'high' }] });
+    update(page, 'plan', {
+      entries: [
+        { content: 'a', status: 'completed', priority: 'high' },
+        { content: 'b', status: 'pending', priority: 'low' },
+      ],
+    });
+
+    expect(plans()).toEqual([['✅ a', '⬜ b']]);
+  });
+
+  it('starts a new plan in the next turn', () => {
+    for (const step of ['first', 'second']) {
+      page.send({ type: 'promptStart' });
+      update(page, 'plan', { entries: [{ content: step, status: 'pending', priority: 'low' }] });
+      page.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    }
+
+    expect(plans()).toEqual([['⬜ first'], ['⬜ second']]);
+  });
 });
+
+function plans(): string[][] {
+  return [...page.document.querySelectorAll('.plan')].map((plan) =>
+    [...plan.querySelectorAll('.plan-entry')].map((entry) => entry.textContent ?? ''),
+  );
+}
+
+/** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
+async function toggle(details: HTMLDetailsElement | null): Promise<void> {
+  if (!details) {
+    throw new Error('no details element to toggle');
+  }
+  const toggled = new Promise((resolve) => details.addEventListener('toggle', resolve, { once: true }));
+  details.querySelector('summary')?.click();
+  await toggled;
+}

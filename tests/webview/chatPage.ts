@@ -5,7 +5,12 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
 import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
-import type { ExtensionToWebviewMessage, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type {
+  ExtensionToWebviewMessage,
+  MarkdownSource,
+  SessionSnapshot,
+  WebviewToExtensionMessage,
+} from '@/shared/WebviewMessages';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
@@ -170,4 +175,9 @@ export function update<K extends SessionUpdateKind>(
 
 export function textChunk(text: string): { content: { type: 'text'; text: string } } {
   return { content: { type: 'text', text } };
+}
+
+/** The agent messages the page asked the extension to render as markdown, in order. */
+export function markdownItems(posted: readonly WebviewToExtensionMessage[]): MarkdownSource[] {
+  return posted.flatMap((message) => (message.type === 'renderMarkdown' ? message.items : []));
 }

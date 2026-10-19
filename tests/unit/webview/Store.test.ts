@@ -47,6 +47,22 @@ describe('Store', () => {
     expect(posted).toEqual(['at 0', 'at 4']);
   });
 
+  it("hands update the clock's time at each dispatch", () => {
+    let time = 100;
+    const store = createStore(
+      [] as number[],
+      (seen: number[], _action: Action, now: number) => ({ state: [...seen, now], outgoing: [] }),
+      () => undefined,
+      () => time,
+    );
+
+    store.dispatch({ type: 'report' });
+    time = 250;
+    store.dispatch({ type: 'report' });
+
+    expect(store.getSnapshot()).toEqual([100, 250]);
+  });
+
   it('stops notifying a subscriber once it unsubscribes', () => {
     const { store, notifications, unsubscribe } = counter();
 

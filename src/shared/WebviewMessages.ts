@@ -22,13 +22,13 @@ export interface SessionSnapshot {
 }
 
 export interface MarkdownSource {
-  /** Position of the agent message in the webview's transcript. */
-  index: number;
+  /** The ID the webview gave the agent message, returned with its HTML. */
+  id: number;
   text: string;
 }
 
 export interface RenderedMarkdown {
-  index: number;
+  id: number;
   html: string;
 }
 

@@ -8,10 +8,13 @@ body {
   font-size: var(--vscode-font-size);
   color: var(--vscode-foreground);
   background: var(--vscode-sideBar-background);
-  display: flex;
-  flex-direction: column;
   height: 100vh;
   overflow: hidden;
+}
+.chat-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
 }
 
 /* Session connected banner */
@@ -270,8 +273,7 @@ body {
   text-align: center;
 }
 .tool-call-inline .tc-icon.pending { color: var(--vscode-badge-foreground); }
-.tool-call-inline .tc-icon.running,
-.tool-call-inline .tc-icon.in_progress { color: var(--vscode-progressBar-background); }
+.tool-call-inline .tc-icon.running { color: var(--vscode-progressBar-background); }
 .tool-call-inline .tc-icon.completed { color: var(--vscode-testing-iconPassed); }
 .tool-call-inline .tc-icon.failed { color: var(--vscode-testing-iconFailed); }
 .tool-call-inline .tc-title {
@@ -304,31 +306,6 @@ body {
   opacity: 0.7;
   font-style: italic;
 }
-
-/* Legacy standalone tool-call card (for history restore) */
-.tool-call {
-  padding: 8px 12px;
-  border-radius: var(--message-radius);
-  background: var(--vscode-editorWidget-background);
-  border: 1px solid var(--vscode-panel-border);
-  font-size: 0.9em;
-}
-.tool-call .title {
-  font-weight: 600;
-  margin-bottom: 4px;
-}
-.tool-call .status-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  font-size: 0.8em;
-  margin-left: 6px;
-}
-.tool-call .status-badge.pending { background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); }
-.tool-call .status-badge.running { background: var(--vscode-progressBar-background); color: white; }
-.tool-call .status-badge.completed { background: var(--vscode-testing-iconPassed); color: white; }
-.tool-call .status-badge.failed { background: var(--vscode-testing-iconFailed); color: white; }
-
 /* Plan */
 .plan {
   padding: 8px 12px;
