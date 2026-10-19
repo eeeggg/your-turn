@@ -1,8 +1,8 @@
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { canPrompt, type ActiveSession } from '@/webview/ActiveSession';
-import type { Action } from '@/webview/RootState';
-import type { Transition } from '@/webview/Store';
+import { canPrompt, type ActiveSession } from '@/webview/state/ActiveSession';
+import type { Action } from '@/webview/state/RootState';
+import type { Transition } from '@/webview/state/Store';
 
 /** What the user is writing, and the slash command popup over it. */
 export interface PromptBoxState {

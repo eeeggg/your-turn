@@ -1,9 +1,9 @@
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { highlightedIndex, matchingCommands, placeholder, type PromptBoxState } from '@/webview/PromptBox';
-import { initialState, update, type Action } from '@/webview/RootState';
-import { createStore } from '@/webview/Store';
+import { highlightedIndex, matchingCommands, placeholder, type PromptBoxState } from '@/webview/state/PromptBox';
+import { initialState, update, type Action } from '@/webview/state/RootState';
+import { createStore } from '@/webview/state/Store';
 
 const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
 const review: AvailableCommand = { name: 'review', description: 'Review changes', input: { hint: 'What to review' } };

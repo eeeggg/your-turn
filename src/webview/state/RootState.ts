@@ -1,15 +1,15 @@
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { updateActiveSession, type ActiveSession } from '@/webview/ActiveSession';
-import { initialPickers, updatePickers, type PickerAction, type PickersState } from '@/webview/Pickers';
-import { initialPromptBox, updatePromptBox, type PromptBoxAction, type PromptBoxState } from '@/webview/PromptBox';
-import type { Transition } from '@/webview/Store';
+import { updateActiveSession, type ActiveSession } from '@/webview/state/ActiveSession';
+import { initialPickers, updatePickers, type PickerAction, type PickersState } from '@/webview/state/Pickers';
+import { initialPromptBox, updatePromptBox, type PromptBoxAction, type PromptBoxState } from '@/webview/state/PromptBox';
+import type { Transition } from '@/webview/state/Store';
 import {
   initialTranscript,
   updateTranscript,
   withSentPrompts,
   type TranscriptAction,
   type TranscriptState,
-} from '@/webview/Transcript';
+} from '@/webview/state/Transcript';
 
 /** Everything the chat view shows. */
 export interface RootState {

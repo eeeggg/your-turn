@@ -1,8 +1,8 @@
 import type { PlanEntry, PlanEntryStatus, SessionUpdate, ToolCallContent, ToolCallStatus } from '@agentclientprotocol/sdk';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import type { ActiveSession } from '@/webview/ActiveSession';
-import type { Action } from '@/webview/RootState';
-import type { Transition } from '@/webview/Store';
+import type { ActiveSession } from '@/webview/state/ActiveSession';
+import type { Action } from '@/webview/state/RootState';
+import type { Transition } from '@/webview/state/Store';
 
 /** Unique for the life of the page, even across clears, so a late reply about a cleared entry matches nothing. */
 export type EntryId = number;

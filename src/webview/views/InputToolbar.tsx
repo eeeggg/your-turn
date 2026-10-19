@@ -11,8 +11,8 @@ import {
   type PickerId,
   type PickerItemId,
   type SelectConfigOption,
-} from '@/webview/Pickers';
-import { useDispatch, useSelector } from '@/webview/StoreContext';
+} from '@/webview/state/Pickers';
+import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 /** The hovered item's element, which the tooltip is placed beside. */
 type Anchor = RefObject<HTMLElement | null>;

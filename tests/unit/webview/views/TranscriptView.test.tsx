@@ -3,10 +3,10 @@ import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { ChatView } from '@/webview/ChatView';
-import { initialState, update, type Action } from '@/webview/RootState';
-import { createStore } from '@/webview/Store';
-import { StoreContext } from '@/webview/StoreContext';
+import { ChatView } from '@/webview/views/ChatView';
+import { initialState, update, type Action } from '@/webview/state/RootState';
+import { createStore } from '@/webview/state/Store';
+import { StoreContext } from '@/webview/views/StoreContext';
 
 afterEach(cleanup);
 

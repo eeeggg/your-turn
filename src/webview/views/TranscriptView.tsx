@@ -1,5 +1,5 @@
 import { memo, useLayoutEffect, useRef } from 'react';
-import { useDispatch, useSelector } from '@/webview/StoreContext';
+import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
   messageShown,
   planEntryIcon,
@@ -16,7 +16,7 @@ import {
   type ToolCall,
   type TranscriptEntry,
   type Turn,
-} from '@/webview/Transcript';
+} from '@/webview/state/Transcript';
 
 /** The scrolling transcript, with the welcome card at its top while there is neither a session nor a transcript. */
 export function TranscriptView() {

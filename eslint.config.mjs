@@ -19,7 +19,12 @@ const webviewLayers = {
 
 const react = {
   group: ["react", "react/*", "react-dom", "react-dom/*"],
-  message: "Webview .ts modules are the data layer and stay free of React; views live in .tsx.",
+  message: "Webview .ts modules stay free of React; views are .tsx modules in views/.",
+};
+
+const views = {
+  group: ["@/webview/views/*"],
+  message: "state/ is the data layer and depends on no view; views read the state through useSelector.",
 };
 
 const webviewState = {
@@ -105,6 +110,10 @@ export default defineConfig(
   {
     files: ["src/webview/**/*.ts"],
     rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, react] }),
+  },
+  {
+    files: ["src/webview/state/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, react, views] }),
   },
   {
     files: ["src/webview/Main.tsx"],

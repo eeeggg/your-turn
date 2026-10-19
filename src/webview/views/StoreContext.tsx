@@ -1,6 +1,6 @@
 import { createContext, use, useSyncExternalStore } from 'react';
-import type { Action, RootState } from '@/webview/RootState';
-import type { Store } from '@/webview/Store';
+import type { Action, RootState } from '@/webview/state/RootState';
+import type { Store } from '@/webview/state/Store';
 
 export const StoreContext = createContext<Store<RootState, Action> | null>(null);
 

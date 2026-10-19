@@ -1,8 +1,8 @@
 import type { AvailableCommand, SessionUpdate } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { initialState, update, type Action } from '@/webview/RootState';
-import { createStore } from '@/webview/Store';
+import { initialState, update, type Action } from '@/webview/state/RootState';
+import { createStore } from '@/webview/state/Store';
 import {
   contentTexts,
   planEntryIcon,
@@ -14,7 +14,7 @@ import {
   TOOL_CALL_CONTENT_LIMIT,
   turnShown,
   type Turn,
-} from '@/webview/Transcript';
+} from '@/webview/state/Transcript';
 
 const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
 const review: AvailableCommand = { name: 'review', description: 'Review changes', input: { hint: 'What to review' } };

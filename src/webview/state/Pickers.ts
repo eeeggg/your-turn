@@ -8,8 +8,8 @@ import type {
   SessionModeState,
 } from '@agentclientprotocol/sdk';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import type { Action } from '@/webview/RootState';
-import type { Transition } from '@/webview/Store';
+import type { Action } from '@/webview/state/RootState';
+import type { Transition } from '@/webview/state/Store';
 
 export type PickerId = { kind: 'mode' } | { kind: 'config'; configId: SessionConfigId };
 

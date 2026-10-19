@@ -1,10 +1,10 @@
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { ChatView } from '@/webview/ChatView';
-import { initialState, update, type Action, type RootState } from '@/webview/RootState';
-import { createStore, type Store } from '@/webview/Store';
-import { StoreContext } from '@/webview/StoreContext';
+import { ChatView } from '@/webview/views/ChatView';
+import { initialState, update, type Action, type RootState } from '@/webview/state/RootState';
+import { createStore, type Store } from '@/webview/state/Store';
+import { StoreContext } from '@/webview/views/StoreContext';
 import { postMessage } from '@/webview/VsCodeApi';
 
 const posting = createStore(initialState, update, postMessage);

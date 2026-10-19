@@ -1,9 +1,9 @@
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
-import { canPrompt } from '@/webview/ActiveSession';
-import { InputToolbar } from '@/webview/InputToolbar';
-import { highlightedIndex, matchingCommands, placeholder } from '@/webview/PromptBox';
-import { useDispatch, useSelector } from '@/webview/StoreContext';
+import { canPrompt } from '@/webview/state/ActiveSession';
+import { InputToolbar } from '@/webview/views/InputToolbar';
+import { highlightedIndex, matchingCommands, placeholder } from '@/webview/state/PromptBox';
+import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 const MIN_HEIGHT = 90;
 const MAX_HEIGHT = 400;

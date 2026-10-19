@@ -1,9 +1,9 @@
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot } from '@/shared/WebviewMessages';
-import { canPrompt, sessionName, type ActiveSession } from '@/webview/ActiveSession';
-import { initialState, update, type Action } from '@/webview/RootState';
-import { createStore } from '@/webview/Store';
+import { canPrompt, sessionName, type ActiveSession } from '@/webview/state/ActiveSession';
+import { initialState, update, type Action } from '@/webview/state/RootState';
+import { createStore } from '@/webview/state/Store';
 
 function snapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {

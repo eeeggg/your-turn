@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createStore, type Transition } from '@/webview/Store';
+import { createStore, type Transition } from '@/webview/state/Store';
 
 type Action = { type: 'add'; amount: number } | { type: 'report' };
 

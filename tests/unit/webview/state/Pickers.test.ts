@@ -1,7 +1,7 @@
 import type { SessionConfigOption, SessionModeState } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { initialState, update, type Action } from '@/webview/RootState';
+import { initialState, update, type Action } from '@/webview/state/RootState';
 import {
   categoryIcon,
   configPickers,
@@ -13,8 +13,8 @@ import {
   type PickerId,
   type PickersState,
   type SelectConfigOption,
-} from '@/webview/Pickers';
-import { createStore } from '@/webview/Store';
+} from '@/webview/state/Pickers';
+import { createStore } from '@/webview/state/Store';
 
 const modes: SessionModeState = {
   availableModes: [

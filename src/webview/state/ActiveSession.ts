@@ -1,5 +1,5 @@
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
-import type { Action } from '@/webview/RootState';
+import type { Action } from '@/webview/state/RootState';
 
 /** The session the chat view shows, whether a turn is running in it, and whether it is still loading. */
 export interface ActiveSession {

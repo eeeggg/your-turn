@@ -1,5 +1,5 @@
-import { sessionName } from '@/webview/ActiveSession';
-import { useSelector } from '@/webview/StoreContext';
+import { sessionName } from '@/webview/state/ActiveSession';
+import { useSelector } from '@/webview/views/StoreContext';
 
 /** The strip above the transcript naming the active session and its working directory, with a spinner while a turn runs. */
 export function SessionBanner() {

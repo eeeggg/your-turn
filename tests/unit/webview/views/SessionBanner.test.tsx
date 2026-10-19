@@ -2,10 +2,10 @@
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionSnapshot } from '@/shared/WebviewMessages';
-import { initialState, update, type Action } from '@/webview/RootState';
-import { SessionBanner } from '@/webview/SessionBanner';
-import { createStore } from '@/webview/Store';
-import { StoreContext } from '@/webview/StoreContext';
+import { initialState, update, type Action } from '@/webview/state/RootState';
+import { SessionBanner } from '@/webview/views/SessionBanner';
+import { createStore } from '@/webview/state/Store';
+import { StoreContext } from '@/webview/views/StoreContext';
 
 afterEach(cleanup);
 
