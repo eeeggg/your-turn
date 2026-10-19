@@ -113,8 +113,12 @@ One prompt and all of the agent's work in response, ending with a stop reason.
 _Avoid_: run, round, request
 
 **Mid-turn prompt**:
-A prompt the user sends while a turn is still running, which waits for that turn or goes straight to the agent.
+A prompt the user sends while a turn is still running, which waits for that turn to end.
 _Avoid_: mid-run prompt, interrupt
+
+**Queued prompt**:
+A prompt the user sent during a turn, pinned above the prompt box until the turn ends, when it goes to the agent and joins the transcript.
+_Avoid_: pending prompt
 
 **Agent message**:
 Text the agent streams back as its reply during a turn.

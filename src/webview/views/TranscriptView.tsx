@@ -198,7 +198,7 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
         )}
       </summary>
       <div
-        className={`thought-content mt-1 max-h-75 overflow-y-auto rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal text-muted-foreground italic ${plainText}`}
+        className={`thought-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal text-muted-foreground italic ${plainText}`}
       >
         {thought.text}
       </div>

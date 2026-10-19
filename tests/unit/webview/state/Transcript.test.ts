@@ -55,6 +55,7 @@ function chatView() {
     at: (now: number) => {
       time = now;
     },
+    store,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
     connect: (session: Partial<SessionSnapshot> = {}) => {
       const full = { sessionId: 's1', agentName: 'Fake', cwd: '/work', modes: null, configOptions: null, availableCommands: [init, review], ...session };
@@ -193,17 +194,113 @@ describe('prompts', () => {
     expect(view.summary()).toEqual(['prompt: /init']);
   });
 
-  it('places a mid-turn prompt below the running turn, which keeps growing', () => {
+});
+
+describe('the queue', () => {
+  it('holds a prompt sent during a turn instead of sending it, out of the transcript while the turn grows', () => {
     const view = chatView();
     view.connect();
     view.prompt('first');
     view.send({ type: 'promptStart' });
     view.update('agent_message_chunk', text('working'));
+    view.takePosted();
 
     view.prompt('also this');
     view.update('agent_message_chunk', text(' still'));
 
-    expect(view.summary()).toEqual(['prompt: first', 'turn: working still', 'prompt: also this']);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.transcript().queued).toEqual(['also this']);
+    expect(view.summary()).toEqual(['prompt: first', 'turn: working still']);
+  });
+
+  it('holds a second prompt sent before the extension reports that the first one started', () => {
+    const view = chatView();
+    view.connect();
+
+    view.prompt('first');
+    view.prompt('second');
+
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'first' }]);
+    expect(view.transcript().queued).toEqual(['second']);
+  });
+
+  it('sends the top prompt when the turn ends, below that turn, and the next one only when its turn ends', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.send({ type: 'promptStart' });
+    view.update('agent_message_chunk', text('one'));
+    view.prompt('second');
+    view.prompt('third');
+    view.takePosted();
+
+    view.send({ type: 'promptEnd', stopReason: 'cancelled' });
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }]);
+    expect(view.transcript().queued).toEqual(['third']);
+    expect(view.store.getSnapshot().activeSession?.turnRunning).toBe(true);
+
+    view.send({ type: 'promptStart' });
+    view.update('agent_message_chunk', text('two'));
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'third' }]);
+    expect(view.transcript().queued).toEqual([]);
+
+    view.send({ type: 'promptStart' }, { type: 'promptEnd', stopReason: 'end_turn' });
+    expect(view.takePosted()).toEqual([]);
+    expect(view.summary()).toEqual(['prompt: first', 'turn: one', 'prompt: second', 'turn: two', 'prompt: third']);
+  });
+
+  it('sends the top prompt now by cancelling the turn, as often as the user asks, so it goes out when the turn ends', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.prompt('second');
+    view.prompt('third');
+    view.takePosted();
+    const before = view.transcript().followRequests;
+
+    view.send({ type: 'sendNowChosen' }, { type: 'sendNowChosen' });
+
+    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }, { type: 'cancelTurn' }]);
+    expect(view.transcript().queued).toEqual(['second', 'third']);
+    expect(view.transcript().followRequests).toBe(before + 2);
+
+    view.send({ type: 'promptEnd', stopReason: 'cancelled' });
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }]);
+  });
+
+  it('does not cancel the turn to send now when nothing is queued', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.takePosted();
+
+    view.send({ type: 'sendNowChosen' });
+
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it('drops the queue when the transcript is cleared', () => {
+    type View = ReturnType<typeof chatView>;
+    const clears: [string, (view: View) => void][] = [
+      ['another session', (view) => view.connect({ sessionId: 's2' })],
+      ['a disconnect', (view) => view.send({ type: 'state', activeSessionId: null, session: null })],
+      ['a load', (view) => view.send({ type: 'loadSessionStart' })],
+      ['clearTranscript', (view) => view.send({ type: 'clearTranscript' })],
+    ];
+    for (const [name, clear] of clears) {
+      const view = chatView();
+      view.connect();
+      view.prompt('first');
+      view.prompt('second');
+      view.takePosted();
+
+      clear(view);
+      view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+
+      expect(view.transcript().queued, name).toEqual([]);
+      expect(view.takePosted(), name).toEqual([]);
+    }
   });
 });
 
@@ -683,6 +780,20 @@ describe('following the stream', () => {
     view.send({ type: 'slashCommandChosen', name: 'init' });
 
     expect(view.transcript().followRequests).toBe(before + 3);
+  });
+
+  it('does not ask the view to follow when a queued prompt goes out by itself at the end of a turn', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.prompt('queued');
+    view.takePosted();
+    const before = view.transcript().followRequests;
+
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+
+    expect(view.takePosted()).toContainEqual({ type: 'sendPrompt', text: 'queued' });
+    expect(view.transcript().followRequests).toBe(before);
   });
 
   it('asks the view to follow each time the transcript is cleared', () => {

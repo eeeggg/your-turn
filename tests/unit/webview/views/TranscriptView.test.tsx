@@ -132,6 +132,72 @@ describe('the chat view', () => {
   });
 });
 
+describe('the queue', () => {
+  const queue = (view: ReturnType<typeof renderChatView>) => view.container.querySelector('#queuedPrompts');
+  const queued = (view: ReturnType<typeof renderChatView>) =>
+    view.all('#queuedPrompts > .queued-prompt').map((item) => [item.querySelector('.queued-label')?.textContent, item.querySelector('.queued-text')?.textContent, item.title]);
+  const prompt = (view: ReturnType<typeof renderChatView>, value: string) =>
+    view.send({ type: 'promptEdited', text: value }, { type: 'promptSent' });
+  const userMessages = (view: ReturnType<typeof renderChatView>) => view.all('#messages > .message.user').map((message) => message.textContent);
+
+  it('is not shown while no prompt is queued', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+
+    expect(queue(view)).toBeNull();
+  });
+
+  it('pins the prompts sent during a turn between the transcript and the input area, next to go out at the top, each marked as queued', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+
+    prompt(view, 'second');
+    prompt(view, 'third');
+
+    expect([...view.container.children].map((child) => child.id)).toEqual(['sessionBanner', 'transcript', 'queuedPrompts', 'inputArea', 'loadOverlay']);
+    expect(queue(view)?.getAttribute('aria-label')).toBe('Queued prompts');
+    expect(queued(view)).toEqual([
+      ['Queued', 'second', 'second'],
+      ['Queued', 'third', 'third'],
+    ]);
+    expect(userMessages(view)).toEqual(['first']);
+  });
+
+  it('offers to send only the top prompt now, which cancels the running turn', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    prompt(view, 'second');
+    prompt(view, 'third');
+    view.takePosted();
+
+    const buttons = view.all('#queuedPrompts .send-now');
+    expect(buttons.map((button) => button.closest('.queued-prompt')?.querySelector('.queued-text')?.textContent)).toEqual(['second']);
+    expect(buttons[0]?.textContent).toBe('Send now');
+    fireEvent.click(view.part('#queuedPrompts .send-now'));
+
+    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
+  });
+
+  it('moves a queued prompt into the transcript when it goes out, and is gone once the last one has', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    prompt(view, 'second');
+    prompt(view, 'third');
+
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    expect(queued(view).map(([, value]) => value)).toEqual(['third']);
+    expect(userMessages(view)).toEqual(['first', 'second']);
+
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    expect(queue(view)).toBeNull();
+    expect(userMessages(view)).toEqual(['first', 'second', 'third']);
+  });
+});
+
 describe('the jump to the end', () => {
   const jumpToEnd = (view: ReturnType<typeof renderChatView>) => view.container.querySelector<HTMLButtonElement>('#transcript > #jumpToEnd');
 

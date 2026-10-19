@@ -66,7 +66,7 @@ function setup(scripts: Record<string, AgentScript>) {
   manager.setHistoryStore(sessionHistory);
 
   // As in the extension, the chat view applies session updates to the sessions.
-  const chatView = new ChatViewController(manager, { post() {}, midTurnPrompt: () => 'queue', executeCommand: async () => {} });
+  const chatView = new ChatViewController(manager, { post() {}, executeCommand: async () => {} });
   const received: SessionNotification[] = [];
   updates.addListener((update) => {
     received.push(update);

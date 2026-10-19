@@ -1,4 +1,5 @@
 import type { AvailableCommand } from '@agentclientprotocol/sdk';
+import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
 
 /** The session the chat view shows, whether a turn is running in it, and whether it is still loading. */
@@ -8,7 +9,7 @@ export interface ActiveSession {
   readonly title: string | null;
   readonly cwd: string;
   readonly availableCommands: readonly AvailableCommand[];
-  /** From `promptStart` to `promptEnd`, which the extension sends once every prompt sent mid-turn has returned. */
+  /** From the webview posting a prompt, or the extension's `promptStart`, to `promptEnd`. */
   readonly turnRunning: boolean;
   /** From `loadSessionStart` to `loadSessionEnd`, while the agent replays the transcript. */
   readonly loading: boolean;
@@ -64,6 +65,11 @@ export function updateActiveSession(
     default:
       return session;
   }
+}
+
+/** A posted prompt starts its turn at once, before its `promptStart` arrives, so the next prompt waits in the queue. */
+export function withPromptsPosted(session: ActiveSession | null, outgoing: readonly WebviewToExtensionMessage[]): ActiveSession | null {
+  return outgoing.some((message) => message.type === 'sendPrompt') ? withChanges(session, { turnRunning: true }) : session;
 }
 
 function withChanges(session: ActiveSession | null, changes: Partial<ActiveSession>): ActiveSession | null {
