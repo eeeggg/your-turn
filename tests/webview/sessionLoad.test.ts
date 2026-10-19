@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { hookClasses } from '@tests/hookClasses';
 import { connect, loadChatPage, markdownItems, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
@@ -14,7 +15,7 @@ afterEach(() => {
 });
 
 function messages(): string[] {
-  return [...page.document.querySelectorAll('.message')].map((el) => `${el.className}: ${el.textContent}`);
+  return [...page.document.querySelectorAll('.message')].map((el) => `${hookClasses(el)}: ${el.textContent}`);
 }
 
 function replay(turns: Array<[user: string, agent: string]>): void {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { hookClasses } from '@tests/hookClasses';
 import { connect, loadChatPage, markdownItems, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
@@ -23,12 +24,12 @@ describe('streaming a turn', () => {
     page.send({ type: 'promptStart' });
     const button = page.byId<HTMLButtonElement>('sendStopBtn');
 
-    expect(button.className).toBe('send-stop-btn stop');
+    expect(hookClasses(button)).toBe('send-stop-btn stop');
     expect(button.textContent).toBe('■ Stop');
     expect(page.byId('status').querySelector('.spinner')).not.toBeNull();
 
     page.send({ type: 'promptEnd', stopReason: 'end_turn' });
-    expect(button.className).toBe('send-stop-btn send');
+    expect(hookClasses(button)).toBe('send-stop-btn send');
     expect(button.textContent).toBe('Send');
     expect(page.byId('status').textContent).toBe('');
   });

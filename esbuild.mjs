@@ -1,5 +1,6 @@
 import { rmSync } from 'node:fs';
 import * as esbuild from 'esbuild';
+import { execa } from 'execa';
 
 const production = process.argv.includes('--production');
 
@@ -47,11 +48,18 @@ const integrationTests = {
 	external: ['vscode', 'mocha'],
 };
 
+const webviewStyles = () =>
+	execa(
+		'tailwindcss',
+		['--input', 'src/webview/chat.css', '--output', 'dist/webview/chat.css', ...(production ? ['--minify'] : [])],
+		{ preferLocal: true, stdio: 'inherit' },
+	);
+
 rmSync('dist', { recursive: true, force: true });
 try {
 	const builds = production ? [extension, webview] : [extension, webview, integrationTests];
-	await Promise.all(builds.map((options) => esbuild.build(options)));
+	await Promise.all([...builds.map((options) => esbuild.build(options)), webviewStyles()]);
 } catch {
-	// esbuild has already printed the errors.
+	// esbuild and Tailwind have already printed the errors.
 	process.exit(1);
 }

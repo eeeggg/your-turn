@@ -69,7 +69,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
     return renderChatHtml({
       cspSource: webview.cspSource,
       nonce: getNonce(),
-      styleUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'media', 'chat.css')).toString(),
+      styleUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'chat.css')).toString(),
       scriptUri: webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'chat.js')).toString(),
     });
   }

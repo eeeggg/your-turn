@@ -6,18 +6,23 @@ export function SessionBanner() {
   const session = useSelector((state) => state.activeSession);
 
   return (
-    <div className={session ? 'session-banner visible' : 'session-banner'} id="sessionBanner">
-      <span className="dot" />
-      <div className="info">
-        <div className="agent" id="bannerAgent">
+    <div
+      className={`session-banner ${session ? 'visible flex' : 'hidden'} items-center gap-2 border-b border-border bg-muted px-3 py-2.5 text-md`}
+      id="sessionBanner"
+    >
+      <span className="dot size-2 flex-none rounded-full bg-success" />
+      <div className="info flex-1">
+        <div className="agent font-semibold" id="bannerAgent">
           {session && sessionName(session)}
         </div>
-        <div className="cwd" id="bannerCwd">
+        <div className="cwd mt-px text-sm text-muted-foreground" id="bannerCwd">
           {session?.cwd}
         </div>
       </div>
-      <span className="status" id="status">
-        {session?.turnRunning && <span className="spinner" />}
+      <span className="status flex-none text-sm opacity-70" id="status">
+        {session?.turnRunning && (
+          <span className="spinner inline-block size-3.5 animate-spin rounded-full border-2 border-foreground border-t-transparent opacity-60" />
+        )}
       </span>
     </div>
   );

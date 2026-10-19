@@ -7,6 +7,7 @@ import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
+import { hookClasses } from '@tests/hookClasses';
 
 afterEach(cleanup);
 
@@ -69,14 +70,14 @@ describe('the chat view', () => {
   it('covers the view only while a session loads', () => {
     const view = renderChatView();
     const overlay = view.part('#loadOverlay');
-    expect(overlay.className).toBe('load-overlay');
+    expect(hookClasses(overlay)).toBe('load-overlay');
 
     view.connect();
     view.send({ type: 'loadSessionStart' });
-    expect(overlay.className).toBe('load-overlay visible');
+    expect(hookClasses(overlay)).toBe('load-overlay visible');
 
     view.send({ type: 'loadSessionEnd', ok: true });
-    expect(overlay.className).toBe('load-overlay');
+    expect(hookClasses(overlay)).toBe('load-overlay');
   });
 });
 
@@ -120,13 +121,13 @@ describe('transcript entries', () => {
     view.send({ type: 'error', message: 'boom' });
 
     const entries = [...view.part('#messages').children].filter((child) => child.id !== 'emptyState');
-    expect(entries.map((entry) => `${entry.className}: ${entry.textContent}`)).toEqual([
+    expect(entries.map((entry) => `${hookClasses(entry)}: ${entry.textContent}`)).toEqual([
       'message user: question',
       'turn: answer',
       'plan: Plan✅ done⬜ <b>next</b>',
       'message error: boom',
     ]);
-    expect(view.all('.plan-entry').map((entry) => entry.className)).toEqual(['plan-entry completed', 'plan-entry']);
+    expect(view.all('.plan-entry').map((entry) => hookClasses(entry))).toEqual(['plan-entry completed', 'plan-entry']);
     expect(view.container.querySelector('.plan b')).toBeNull();
   });
 
@@ -159,7 +160,7 @@ describe('a turn', () => {
     view.update('agent_message_chunk', text('answer'));
     view.update('agent_thought_chunk', text('hmm'));
 
-    expect([...view.part('.turn').children].map((child) => child.className)).toEqual([
+    expect([...view.part('.turn').children].map((child) => hookClasses(child))).toEqual([
       'thought-block streaming',
       'message agent',
       'turn-tools',
@@ -180,7 +181,7 @@ describe('a turn', () => {
     const id = request?.type === 'renderMarkdown' ? request.items[0]!.id : -1;
     view.send({ type: 'markdownRendered', items: [{ id, html: '<p><em>x</em></p>' }] });
 
-    expect(message().className).toBe('message agent md-rendered');
+    expect(hookClasses(message())).toBe('message agent md-rendered');
     expect(message().innerHTML).toBe('<p><em>x</em></p>');
   });
 });
@@ -192,7 +193,7 @@ describe('a thought', () => {
     view.at(1_000);
     view.update('agent_thought_chunk', text('let me think'));
     const thought = view.part<HTMLDetailsElement>('.thought-block');
-    expect(thought.className).toBe('thought-block streaming');
+    expect(hookClasses(thought)).toBe('thought-block streaming');
     expect(thought.open).toBe(true);
     expect(thought.querySelector('summary .thought-indicator')).not.toBeNull();
     expect(thought.querySelector('summary')?.textContent).toBe(' Thinking…');
@@ -201,7 +202,7 @@ describe('a thought', () => {
     view.at(3_000);
     view.update('agent_message_chunk', text('answer'));
 
-    expect(thought.className).toBe('thought-block');
+    expect(hookClasses(thought)).toBe('thought-block');
     expect(thought.open).toBe(false);
     expect(thought.querySelector('summary')?.textContent).toBe('Thought for 2s');
   });
@@ -236,7 +237,7 @@ describe('tool calls', () => {
 
     const [run, untitled] = view.all('.tool-call-inline');
     expect(run!.id).toBe('tc-t1');
-    expect(run!.querySelector('.tc-icon')?.className).toBe('tc-icon running');
+    expect(hookClasses(run!.querySelector('.tc-icon'))).toBe('tc-icon running');
     expect(run!.querySelector('.tc-icon')?.textContent).toBe('⟳');
     expect(run!.querySelector('.tc-title')?.textContent).toBe('Run');
     expect([...run!.querySelectorAll('.tc-body-block')].map((block) => block.textContent)).toEqual(['one', 'two']);
@@ -287,10 +288,10 @@ describe('tool calls', () => {
     }
     view.send({ type: 'promptEnd', stopReason: 'end_turn' });
     expect(summary.textContent).toBe('▸ 4 tool calls');
-    expect(list.className).toBe('turn-tools-list collapsed');
+    expect(hookClasses(list)).toBe('turn-tools-list collapsed');
 
     fireEvent.click(summary);
     expect(summary.textContent).toBe('▾ 4 tool calls');
-    expect(list.className).toBe('turn-tools-list');
+    expect(hookClasses(list)).toBe('turn-tools-list');
   });
 });

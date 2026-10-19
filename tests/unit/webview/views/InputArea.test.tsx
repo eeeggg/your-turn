@@ -7,6 +7,7 @@ import { InputArea } from '@/webview/views/InputArea';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
+import { hookClasses } from '@tests/hookClasses';
 
 const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
 const review: AvailableCommand = { name: 'review', description: 'Review changes', input: { hint: 'What to review' } };
@@ -109,12 +110,12 @@ describe('input area', () => {
     view.type('hello');
 
     view.send({ type: 'promptStart' });
-    expect([view.button().className, view.button().textContent]).toEqual(['send-stop-btn stop', '■ Stop']);
+    expect([hookClasses(view.button()), view.button().textContent]).toEqual(['send-stop-btn stop', '■ Stop']);
     fireEvent.click(view.button());
     expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
 
     view.send({ type: 'promptEnd', stopReason: 'cancelled' });
-    expect([view.button().className, view.button().textContent]).toEqual(['send-stop-btn send', 'Send']);
+    expect([hookClasses(view.button()), view.button().textContent]).toEqual(['send-stop-btn send', 'Send']);
     fireEvent.click(view.button());
     expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
   });

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { hookClasses } from '@tests/hookClasses';
 import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
@@ -29,7 +30,7 @@ describe('tool calls', () => {
     const el = toolCall('t1');
     expect(el.closest('.turn .turn-tools-list')).not.toBeNull();
     expect(el.querySelector('.tc-title')?.textContent).toBe('Read file');
-    expect(el.querySelector('.tc-icon')?.className).toBe('tc-icon pending');
+    expect(hookClasses(el.querySelector('.tc-icon'))).toBe('tc-icon pending');
     expect(el.querySelector('.tc-icon')?.textContent).toBe('…');
     expect(page.document.querySelector('.turn-tools-summary')?.textContent).toBe('▾ 1 tool call');
   });
@@ -37,7 +38,7 @@ describe('tool calls', () => {
   it('shows a tool call as pending when the agent omits the status', () => {
     update(page, 'tool_call', { toolCallId: 't1', title: 'Run' });
 
-    expect(toolCall('t1').querySelector('.tc-icon')?.className).toBe('tc-icon pending');
+    expect(hookClasses(toolCall('t1').querySelector('.tc-icon'))).toBe('tc-icon pending');
   });
 
   it('reflects status updates in the icon', () => {
@@ -45,11 +46,11 @@ describe('tool calls', () => {
     const icon = (): Element | null => toolCall('t1').querySelector('.tc-icon');
 
     update(page, 'tool_call_update', { toolCallId: 't1', status: 'in_progress' });
-    expect(icon()?.className).toBe('tc-icon running');
+    expect(hookClasses(icon())).toBe('tc-icon running');
     expect(icon()?.textContent).toBe('⟳');
 
     update(page, 'tool_call_update', { toolCallId: 't1', status: 'completed' });
-    expect(icon()?.className).toBe('tc-icon completed');
+    expect(hookClasses(icon())).toBe('tc-icon completed');
     expect(icon()?.textContent).toBe('✓');
     expect(toolCall('t1').open).toBe(false);
   });
@@ -75,7 +76,7 @@ describe('tool calls', () => {
       content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
     });
 
-    expect(toolCall('t1').querySelector('.tc-icon')?.className).toBe('tc-icon running');
+    expect(hookClasses(toolCall('t1').querySelector('.tc-icon'))).toBe('tc-icon running');
     expect(blocks('t1')).toEqual(['partial output']);
   });
 
@@ -85,7 +86,7 @@ describe('tool calls', () => {
 
     expect(page.document.querySelectorAll('.tool-call-inline')).toHaveLength(1);
     expect(toolCall('t1').querySelector('.tc-title')?.textContent).toBe('Read foo.ts');
-    expect(toolCall('t1').querySelector('.tc-icon')?.className).toBe('tc-icon completed');
+    expect(hookClasses(toolCall('t1').querySelector('.tc-icon'))).toBe('tc-icon completed');
     expect(page.document.querySelector('.turn-tools-summary')?.textContent).toBe('▾ 1 tool call');
   });
 
@@ -150,7 +151,7 @@ describe('tool calls', () => {
     update(page, 'agent_message_chunk', textChunk('done'));
 
     const turn = page.document.querySelector('.turn');
-    expect([...(turn?.children ?? [])].map((el) => el.className)).toEqual(['message agent', 'turn-tools']);
+    expect([...(turn?.children ?? [])].map((el) => hookClasses(el))).toEqual(['message agent', 'turn-tools']);
   });
 
   it('collapses more than three tool calls when the turn ends, and toggles on click', () => {

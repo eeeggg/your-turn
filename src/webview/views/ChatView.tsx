@@ -19,9 +19,14 @@ export function ChatView() {
 function LoadOverlay() {
   const loading = useSelector((state) => state.activeSession?.loading ?? false);
   return (
-    <div className={loading ? 'load-overlay visible' : 'load-overlay'} id="loadOverlay" role="status" aria-live="polite">
-      <div className="spinner" />
-      <div className="label">Loading transcript…</div>
+    <div
+      className={`load-overlay ${loading ? 'visible flex' : 'hidden'} fixed inset-0 z-400 flex-col items-center justify-center gap-2.5 bg-background/88 text-md text-foreground backdrop-blur-[2px]`}
+      id="loadOverlay"
+      role="status"
+      aria-live="polite"
+    >
+      <div className="spinner inline-block size-5.5 animate-spin rounded-full border-3 border-foreground border-t-transparent opacity-90" />
+      <div className="label opacity-85">Loading transcript…</div>
     </div>
   );
 }

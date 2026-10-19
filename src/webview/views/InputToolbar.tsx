@@ -19,6 +19,8 @@ type Anchor = RefObject<HTMLElement | null>;
 
 const modePicker: PickerId = { kind: 'mode' };
 
+const pickerWrap = 'picker-wrap relative max-w-full min-w-0';
+
 /** The row above the prompt box: the session's pickers and their shared tooltip. */
 export function InputToolbar() {
   const pickers = useSelector((state) => state.pickers);
@@ -26,7 +28,7 @@ export function InputToolbar() {
 
   return (
     <>
-      <div className="picker-row" id="configOptionsContainer">
+      <div className="picker-row contents" id="configOptionsContainer">
         {configPickers(pickers).map((option) => {
           const picker: PickerId = { kind: 'config', configId: option.id };
           return (
@@ -39,7 +41,7 @@ export function InputToolbar() {
         open={isOpen(pickers, modePicker)}
         anchorRef={anchorRef}
       />
-      <span className="toolbar-spacer" />
+      <span className="toolbar-spacer flex-1" />
       <PickerTooltip text={tooltipText(pickers)} hovered={pickers.hovered} anchorRef={anchorRef} />
     </>
   );
@@ -59,7 +61,7 @@ function ConfigPicker({
   const dispatch = useDispatch();
   const current = currentValue(option);
   return (
-    <div className="picker-wrap" data-config-id={option.id}>
+    <div className={pickerWrap} data-config-id={option.id}>
       <PickerButton
         picker={picker}
         title={current?.description || option.description || option.name}
@@ -69,7 +71,11 @@ function ConfigPicker({
       <PickerDropdown open={open}>
         {valueGroups(option).map((group) => (
           <Fragment key={group.id}>
-            {group.header !== undefined && <div className="picker-dropdown-group-header">{group.header}</div>}
+            {group.header !== undefined && (
+              <div className="picker-dropdown-group-header pointer-events-none px-2.5 pt-1.5 pb-0.5 text-2xs tracking-[0.05em] text-muted-foreground uppercase not-first:mt-1 not-first:border-t not-first:border-border">
+                {group.header}
+              </div>
+            )}
             {group.values.map((value) => (
               <PickerItem
                 key={value.value}
@@ -94,7 +100,7 @@ function ModePicker({ modes, open, anchorRef }: { modes: SessionModeState | null
   const dispatch = useDispatch();
   const current = modes?.availableModes.find((mode) => mode.id === modes.currentModeId);
   return (
-    <div className={modes ? 'picker-wrap' : 'picker-wrap hidden'} id="modePickerWrap">
+    <div className={modes ? pickerWrap : `${pickerWrap} hidden`} id="modePickerWrap">
       <PickerButton
         picker={modePicker}
         id="modePickerBtn"
@@ -135,7 +141,7 @@ function PickerButton({ picker, id, labelId, title, labelTitle, icon, label }: P
   const dispatch = useDispatch();
   return (
     <button
-      className="picker-btn"
+      className="picker-btn inline-flex max-w-full min-w-0 cursor-pointer items-center gap-1 rounded-[3px] px-2 py-0.5 text-control whitespace-nowrap text-foreground opacity-80 hover:bg-toolbar-hover hover:opacity-100"
       id={id}
       title={title}
       onClick={(event) => {
@@ -144,11 +150,11 @@ function PickerButton({ picker, id, labelId, title, labelTitle, icon, label }: P
         dispatch({ type: 'pickerToggled', picker });
       }}
     >
-      <span className="picker-icon">{icon}</span>
-      <span className="picker-label" id={labelId} title={labelTitle}>
+      <span className="picker-icon flex-none text-[14px]">{icon}</span>
+      <span className="picker-label min-w-0 truncate" id={labelId} title={labelTitle}>
         {label}
       </span>
-      <span className="picker-chevron">▾</span>
+      <span className="picker-chevron flex-none text-[10px] opacity-60">▾</span>
     </button>
   );
 }
@@ -157,7 +163,7 @@ function PickerDropdown({ id, open, children }: { id?: string; open: boolean; ch
   const dispatch = useDispatch();
   return (
     <div
-      className={open ? 'picker-dropdown open' : 'picker-dropdown'}
+      className={`picker-dropdown ${open ? 'open block' : 'hidden'} absolute bottom-full left-0 z-100 mb-1 max-h-60 max-w-[min(420px,calc(100vw-16px))] min-w-45 overflow-y-auto rounded-sm border border-popover-border bg-popover shadow-popover`}
       id={id}
       // Scrolling would leave the tooltip beside an item that has moved.
       onScroll={() => dispatch({ type: 'pickerItemLeft' })}
@@ -181,7 +187,7 @@ function PickerItem({ itemId, dataValue, label, description, selected, onChoose,
   const dispatch = useDispatch();
   return (
     <div
-      className={selected ? 'picker-dropdown-item selected' : 'picker-dropdown-item'}
+      className={`picker-dropdown-item ${selected ? 'selected bg-selected text-selected-foreground' : 'text-popover-foreground hover:bg-hover'} flex cursor-pointer items-center gap-1.5 px-2.5 py-1.5 text-control`}
       data-value={dataValue}
       title={description || undefined}
       onClick={(event) => {
@@ -194,8 +200,8 @@ function PickerItem({ itemId, dataValue, label, description, selected, onChoose,
       }}
       onMouseLeave={() => dispatch({ type: 'pickerItemLeft' })}
     >
-      <span className="check">{selected ? '✓' : ''}</span>
-      <span className="item-label">{label}</span>
+      <span className="check w-3.5 flex-none text-center">{selected ? '✓' : ''}</span>
+      <span className="item-label min-w-0 flex-auto truncate">{label}</span>
     </div>
   );
 }
@@ -208,7 +214,12 @@ function PickerTooltip({ text, hovered, anchorRef }: { text: string | null; hove
     }
   }, [hovered, text, anchorRef]);
   return (
-    <div ref={tooltip} className={text ? 'picker-tooltip visible' : 'picker-tooltip'} id="pickerTooltip" role="tooltip">
+    <div
+      ref={tooltip}
+      className={`picker-tooltip ${text ? 'visible block' : 'hidden'} pointer-events-none fixed z-300 max-w-70 rounded-sm border border-tooltip-border bg-tooltip px-2.5 py-1.5 text-control leading-[1.4] wrap-anywhere whitespace-normal text-tooltip-foreground shadow-popover`}
+      id="pickerTooltip"
+      role="tooltip"
+    >
       {text}
     </div>
   );
