@@ -1,83 +1,59 @@
-import { ClientSideConnection, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { Agent, InitializeResponse } from '@agentclientprotocol/sdk';
-import type { Stream } from '@agentclientprotocol/sdk/dist/stream.js';
-import { ChildProcess } from 'node:child_process';
-import { Readable, Writable } from 'node:stream';
+import { client as createClientApp, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import type { ClientConnection, InitializeResponse, Stream } from '@agentclientprotocol/sdk';
 
-import { AcpClientImpl } from './AcpClientImpl';
-import { FileSystemHandler } from '../handlers/FileSystemHandler';
-import { TerminalHandler } from '../handlers/TerminalHandler';
-import { PermissionHandler } from '../handlers/PermissionHandler';
-import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
-import { log, logError, logTraffic } from '../utils/Logger';
-import { version as extensionVersion } from '../../package.json';
+import type { ClientHandlers } from './ClientHandlers';
+import type { AgentStreams } from './AgentManager';
+import { SessionUpdateHandler } from './SessionUpdateHandler';
+import { log, logError, logTraffic } from './Log';
 
 export interface ConnectionInfo {
-  connection: ClientSideConnection;
-  client: AcpClientImpl;
+  connection: ClientConnection;
   initResponse: InitializeResponse;
 }
 
 /**
- * Manages ACP connections to agent processes.
- * Creates ClientSideConnection instances from spawned child processes.
+ * Opens client-side ACP connections to agents and performs the initialize handshake.
  */
 export class ConnectionManager {
-  private connections: Map<string, ConnectionInfo> = new Map();
-
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
+    private readonly clientVersion: string,
+    private readonly createHandlers: () => ClientHandlers,
   ) {}
 
-  /**
-   * Create an ACP connection from a child process.
-   * Sets up streams, creates connection, and performs initialization handshake.
-   */
-  async connect(agentId: string, process: ChildProcess): Promise<ConnectionInfo> {
-    if (!process.stdout || !process.stdin) {
-      throw new Error('Agent process missing stdio streams');
-    }
+  /** Connect to an agent over its streams and initialize the connection. */
+  async connect(agentName: string, streams: AgentStreams): Promise<ConnectionInfo> {
+    log(`ConnectionManager: connecting to agent ${agentName}`);
 
-    log(`ConnectionManager: connecting to agent ${agentId}`);
-
-    // Create Web Streams from Node.js streams
-    const readable = Readable.toWeb(process.stdout) as ReadableStream<Uint8Array>;
-    const writable = Writable.toWeb(process.stdin) as WritableStream<Uint8Array>;
-
-    const stream = ndJsonStream(writable, readable);
+    const stream = ndJsonStream(streams.input, streams.output);
 
     // Wrap the stream to intercept and log all ACP traffic
     const tappedStream = this.tapStream(stream);
 
-    // Create handlers
-    const fsHandler = new FileSystemHandler();
-    const terminalHandler = new TerminalHandler();
-    const permissionHandler = new PermissionHandler();
+    const { files, terminals, permissions } = this.createHandlers();
 
-    // Create client implementation
-    const client = new AcpClientImpl(
-      fsHandler,
-      terminalHandler,
-      permissionHandler,
-      this.sessionUpdateHandler,
-    );
-
-    // Create connection — toClient factory receives the Agent proxy
-    const connection = new ClientSideConnection(
-      (agent: Agent) => {
-        client.setAgent(agent);
-        return client;
-      },
-      tappedStream,
-    );
+    // The connection must stay open for the agent's lifetime, so use connect()
+    // rather than connectWith(), which closes when its callback returns.
+    const app = createClientApp({ name: 'vscode-acp-client' })
+      .onRequest(methods.client.session.requestPermission, ({ params }) => permissions.requestPermission(params))
+      .onNotification(methods.client.session.update, ({ params }) => this.sessionUpdateHandler.handleUpdate(params))
+      .onRequest(methods.client.fs.readTextFile, ({ params }) => files.readTextFile(params))
+      .onRequest(methods.client.fs.writeTextFile, ({ params }) => files.writeTextFile(params))
+      .onRequest(methods.client.terminal.create, ({ params }) => terminals.createTerminal(params))
+      .onRequest(methods.client.terminal.output, ({ params }) => terminals.terminalOutput(params))
+      .onRequest(methods.client.terminal.waitForExit, ({ params }) => terminals.waitForTerminalExit(params))
+      .onRequest(methods.client.terminal.kill, ({ params }) => terminals.killTerminal(params))
+      .onRequest(methods.client.terminal.release, ({ params }) => terminals.releaseTerminal(params));
+    const connection = app.connect(tappedStream);
+    connection.signal.addEventListener('abort', () => terminals.dispose(), { once: true });
 
     // Initialize the connection
-    log(`ConnectionManager: initializing connection to agent ${agentId}`);
-    const initResponse = await connection.initialize({
+    log(`ConnectionManager: initializing connection to agent ${agentName}`);
+    const initResponse = await connection.agent.request(methods.agent.initialize, {
       protocolVersion: PROTOCOL_VERSION,
       clientInfo: {
         name: 'vscode-acp-client',
-        version: extensionVersion,
+        version: this.clientVersion,
       },
       clientCapabilities: {
         fs: {
@@ -90,22 +66,7 @@ export class ConnectionManager {
 
     log(`ConnectionManager: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);
 
-    const info: ConnectionInfo = { connection, client, initResponse };
-    this.connections.set(agentId, info);
-
-    return info;
-  }
-
-  getConnection(agentId: string): ConnectionInfo | undefined {
-    return this.connections.get(agentId);
-  }
-
-  removeConnection(agentId: string): void {
-    this.connections.delete(agentId);
-  }
-
-  dispose(): void {
-    this.connections.clear();
+    return { connection, initResponse };
   }
 
   /**
@@ -130,8 +91,8 @@ export class ConnectionManager {
 
     // Pipe: sendTap.readable → original writable, original readable → recvTap.writable
     // These run in the background — no need to await
-    void sendTap.readable.pipeTo(stream.writable).catch(e => logError('Traffic tap send pipe error', e));
-    void stream.readable.pipeTo(recvTap.writable).catch(e => logError('Traffic tap recv pipe error', e));
+    void sendTap.readable.pipeTo(stream.writable).catch((e: unknown) => logError('Traffic tap send pipe error', e));
+    void stream.readable.pipeTo(recvTap.writable).catch((e: unknown) => logError('Traffic tap recv pipe error', e));
 
     return {
       writable: sendTap.writable,

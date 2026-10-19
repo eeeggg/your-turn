@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "nodenext",
+    "lib": ["es2022"],
+    "types": ["node"],
+    "allowJs": true,
+    "checkJs": true
+  },
+  "files": ["esbuild.mjs", "eslint.config.mjs", ".vscode-test.mjs", "vitest.config.mts"]
+}

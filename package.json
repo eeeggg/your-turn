@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.2.0",
+  "version": "0.3.2",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -16,7 +16,7 @@
     "url": "https://github.com/formulahendry/vscode-acp.git"
   },
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.140.0"
   },
   "categories": [
     "AI",
@@ -46,12 +46,14 @@
         {
           "id": "acp-sessions",
           "name": "Agents",
-          "type": "tree"
+          "type": "tree",
+          "icon": "$(hubot)"
         },
         {
           "id": "acp-chat",
           "name": "Chat",
-          "type": "webview"
+          "type": "webview",
+          "icon": "$(comment-discussion)"
         }
       ]
     },
@@ -72,8 +74,8 @@
         "icon": "$(plug)"
       },
       {
-        "command": "acp.newConversation",
-        "title": "ACP: New Conversation",
+        "command": "acp.newSession",
+        "title": "ACP: New Session",
         "icon": "$(add)"
       },
       {
@@ -92,7 +94,7 @@
       },
       {
         "command": "acp.openChat",
-        "title": "ACP: Open Chat Panel"
+        "title": "ACP: Open Chat View"
       },
       {
         "command": "acp.addAgent",
@@ -194,7 +196,7 @@
           "when": "view == acp-sessions"
         },
         {
-          "command": "acp.newConversation",
+          "command": "acp.newSession",
           "when": "view == acp-chat",
           "group": "navigation@1"
         },
@@ -229,12 +231,12 @@
       "view/item/context": [
         {
           "command": "acp.connectAgent",
-          "when": "view == acp-sessions && viewItem == agent-disconnected",
+          "when": "view == acp-sessions && viewItem == agent-without-session",
           "group": "inline"
         },
         {
           "command": "acp.disconnectAgent",
-          "when": "view == acp-sessions && viewItem == agent-connected",
+          "when": "view == acp-sessions && viewItem == agent-with-session",
           "group": "inline"
         },
         {
@@ -243,7 +245,7 @@
         },
         {
           "command": "acp.restartAgent",
-          "when": "view == acp-sessions && viewItem == agent-connected"
+          "when": "view == acp-sessions && viewItem == agent-with-session"
         },
         {
           "command": "acp.refreshSessions",
@@ -370,6 +372,19 @@
             }
           }
         },
+        "acp.chat.midTurnPrompt": {
+          "type": "string",
+          "enum": [
+            "queue",
+            "send"
+          ],
+          "enumDescriptions": [
+            "Hold the prompt until the running turn finishes, then send it.",
+            "Send the prompt right away and let the agent decide what to do with it. Agents that can steer a running turn apply it immediately; agents that do not accept a prompt mid-turn answer with an error."
+          ],
+          "default": "queue",
+          "description": "What happens to a prompt you send while the agent is still working on the previous one."
+        },
         "acp.autoApprovePermissions": {
           "type": "string",
           "enum": [
@@ -384,6 +399,11 @@
           "default": "",
           "description": "Default working directory for agent sessions. Leave empty to use the current workspace folder."
         },
+        "acp.includeActiveFile": {
+          "type": "boolean",
+          "default": true,
+          "description": "Attach the currently active editor file to each prompt as a resource_link content block."
+        },
         "acp.logTraffic": {
           "type": "boolean",
           "default": true,
@@ -394,34 +414,44 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "webpack",
-    "watch": "webpack --watch",
-    "package": "webpack --mode production --devtool hidden-source-map",
-    "compile-tests": "tsc -p . --outDir out",
-    "watch-tests": "tsc -p . -w --outDir out",
-    "lint": "eslint src --max-warnings 0",
-    "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "test": "vscode-test"
+    "compile": "npm run check-types && node esbuild.mjs",
+    "check-types": "tsc -b",
+    "package": "npm run check-types && node esbuild.mjs --production",
+    "lint": "eslint . --max-warnings 0",
+    "pretest": "npm run compile && npm run lint",
+    "test": "vitest run && vscode-test",
+    "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.21.1",
-    "@vscode/extension-telemetry": "^1.5.0",
-    "marked": "^15.0.0"
+    "@agentclientprotocol/sdk": "^1.9.0",
+    "execa": "^10.2.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "streamdown": "^2.7.1"
   },
   "devDependencies": {
-    "@types/mocha": "^10.0.6",
-    "@types/node": "^20.0.0",
-    "@types/vscode": "^1.85.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
-    "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1",
+    "@tailwindcss/cli": "^4.3.3",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
+    "@types/jsdom": "^30.0.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/vscode": "~1.140.0",
+    "@types/vscode-webview": "^1.57.5",
+    "@vitest/coverage-v8": "^5.0.5",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
     "@vscode/vsce": "^3.7.1",
-    "eslint": "^9.0.0",
-    "ts-loader": "^9.5.0",
-    "typescript": "^5.5.0",
-    "typescript-eslint": "^8.0.0",
-    "webpack": "^5.95.0",
-    "webpack-cli": "^5.1.0"
+    "esbuild": "^0.28.2",
+    "eslint": "^10.13.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "jsdom": "^30.1.3",
+    "mocha": "^11.8.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.2",
+    "vitest": "^5.0.5"
   }
 }

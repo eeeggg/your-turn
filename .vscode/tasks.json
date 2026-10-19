@@ -5,27 +5,13 @@
 	"tasks": [
 		{
 			"type": "npm",
-			"script": "watch",
-			"problemMatcher": [
-				"$ts-webpack-watch"
-			],
-			"isBackground": true,
-			"presentation": {
-				"reveal": "never"
-			},
+			"script": "compile",
+			"label": "npm: compile",
+			"problemMatcher": "$tsc",
 			"group": {
 				"kind": "build",
 				"isDefault": true
 			}
-		},
-		{
-			"type": "npm",
-			"script": "compile-tests",
-			"problemMatcher": [
-				"$tsc"
-			],
-			"group": "build",
-			"label": "npm: compile-tests"
 		}
 	]
 }

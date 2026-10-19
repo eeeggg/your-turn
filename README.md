@@ -19,7 +19,7 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Permission Management**: Configurable auto-approve policies for agent actions
 - **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
 - **Agent Registry**: Browse and discover available ACP agents
-- **Chat Persistence**: Conversations are preserved when switching panels
+- **Chat Persistence**: Transcripts are preserved when switching panels
 
 ## Quick Start
 
@@ -72,12 +72,12 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 | Command | Description |
 |---------|-------------|
 | `ACP: Connect to Agent` | Connect to an agent |
-| `ACP: New Conversation` | Start a new conversation with the connected agent |
+| `ACP: New Session` | Start a new session with the connected agent |
 | `ACP: Send Prompt` | Send a message to the agent |
 | `ACP: Cancel Current Turn` | Cancel the current agent turn |
 | `ACP: Disconnect Agent` | Disconnect from the current agent |
 | `ACP: Restart Agent` | Restart the current agent process |
-| `ACP: Open Chat Panel` | Focus the chat webview |
+| `ACP: Open Chat View` | Focus the chat view |
 | `ACP: Add Agent Configuration` | Add a new agent to settings |
 | `ACP: Remove Agent` | Remove an agent configuration |
 | `ACP: Set Agent Mode` | Change the agent's operating mode |
@@ -91,15 +91,15 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+Shift+A` (`Cmd+Shift+A` on Mac) | Open Chat Panel |
+| `Ctrl+Shift+A` (`Cmd+Shift+A` on Mac) | Open Chat View |
 | `Escape` (when turn in progress) | Cancel Current Turn |
 
 ## Development
 
 ### Prerequisites
 
-- Node.js 18+
-- VS Code 1.85+
+- Node.js 24 (`nvm use` reads `.nvmrc`)
+- VS Code 1.140+
 
 ### Setup
 
@@ -112,17 +112,19 @@ npm install
 ### Build & Run
 
 ```bash
-npm run compile    # One-time build
-npm run watch      # Watch mode for development
+npm run compile          # Development build: tsc type-checks, esbuild bundles the extension, webview, and integration suite
 ```
 
-Press `F5` in VS Code to launch the Extension Development Host.
+Press `F5` in VS Code to compile and launch the Extension Development Host. Development bundles carry source maps; `npm run package` minifies and leaves out the integration suite.
 
 ### Testing
 
 ```bash
-npm run pretest    # Compile tests + lint
-npm test           # Run tests
+npm run pretest    # Type-check every project, build, lint
+npm test           # Vitest suites (tests/unit, tests/webview), then VS Code integration suites (tests/integration)
+xvfb-run -a npm test   # Same, on Linux without a display (what `make test` runs)
+npx vitest run     # Vitest suites only; webview tests need a current `npm run compile`
+npm run coverage   # Unit suite under coverage; HTML report in coverage/
 ```
 
 ### Packaging
@@ -140,7 +142,7 @@ The extension follows a modular architecture:
 - **Handlers**: `FileSystemHandler`, `TerminalHandler`, `PermissionHandler`, `SessionUpdateHandler`
 - **UI**: `SessionTreeProvider`, `ChatWebviewProvider`, `StatusBarManager`
 - **Config**: `AgentConfig`, `RegistryClient`
-- **Utils**: `Logger`, `StreamAdapter`
+- **Utils**: `Logger`
 
 Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio).
 

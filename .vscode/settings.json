@@ -1,3 +1,9 @@
 {
-	"typescript.tsdk": "node_modules/typescript/lib"
+	"js/ts.tsdk.path": "node_modules/typescript/lib",
+	// The build runs through npm scripts, so VS Code's own tsc tasks would only duplicate them.
+	"js/ts.tsc.autoDetect": "off",
+	"search.exclude": {
+		"dist": true,
+		"coverage": true
+	}
 }
