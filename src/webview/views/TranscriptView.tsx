@@ -1,5 +1,6 @@
 import type { ToolCallStatus } from '@agentclientprotocol/sdk';
-import { memo, useLayoutEffect, useRef } from 'react';
+import { memo, useLayoutEffect, useState } from 'react';
+import { useStickToBottom } from 'use-stick-to-bottom';
 import { Markdown } from '@/webview/views/Markdown';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
@@ -23,26 +24,57 @@ import {
   type TurnPart,
 } from '@/webview/state/Transcript';
 
-/** The scrolling transcript, with the welcome card at its top while there is neither a session nor a transcript. */
+/**
+ * The scrolling transcript, following the stream until the user scrolls up to read, with the welcome card at its top
+ * while there is neither a session nor a transcript, and a jump to the end while the user reads during a turn.
+ */
 export function TranscriptView() {
   const entries = useSelector((state) => state.transcript.entries);
   const welcome = useSelector((state) => showsWelcome(state.transcript, state.activeSession));
-  const ref = useRef<HTMLDivElement>(null);
+  const followRequests = useSelector((state) => state.transcript.followRequests);
+  const turnRunning = useSelector((state) => state.activeSession?.turnRunning ?? false);
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom();
+  // Offered while the user reads during a turn, and kept after the turn ends until they are back at the bottom.
+  const [jumpOffered, setJumpOffered] = useState(false);
+  if (jumpOffered ? isAtBottom : !isAtBottom && turnRunning) {
+    setJumpOffered(!jumpOffered);
+  }
 
   useLayoutEffect(() => {
-    const messages = ref.current;
-    if (messages) {
-      messages.scrollTop = messages.scrollHeight;
-    }
-  }, [entries]);
+    void scrollToBottom();
+  }, [followRequests, scrollToBottom]);
 
   return (
-    <div className="messages flex flex-1 flex-col gap-2 overflow-y-auto p-3" id="messages" ref={ref}>
-      <WelcomeCard shown={welcome} />
-      {entries.map((entry) => (
-        <Entry key={entry.id} entry={entry} />
-      ))}
+    <div className="transcript relative flex min-h-0 flex-1 flex-col" id="transcript">
+      <div className="transcript-scroll flex-1 overflow-y-auto" id="transcriptScroll" ref={scrollRef}>
+        <div className="messages flex min-h-full flex-col gap-2 p-3" id="messages" ref={contentRef}>
+          <WelcomeCard shown={welcome} />
+          {entries.map((entry) => (
+            <Entry key={entry.id} entry={entry} />
+          ))}
+        </div>
+      </div>
+      {jumpOffered && <JumpToEnd onClick={() => void scrollToBottom()} />}
     </div>
+  );
+}
+
+function JumpToEnd({ onClick }: { onClick: () => void }) {
+  // The hover color can be translucent, so it is laid over the opaque background instead of replacing it.
+  return (
+    <button
+      type="button"
+      aria-label="Jump to the end"
+      title="Jump to the end"
+      className="jump-to-end absolute bottom-3 left-1/2 flex size-8 -translate-x-1/2 cursor-pointer items-center justify-center rounded-full border border-popover-border bg-popover text-popover-foreground shadow-popover hover:bg-linear-to-b hover:from-hover hover:to-hover"
+      id="jumpToEnd"
+      onClick={onClick}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M12 5v14" />
+        <path d="m19 12-7 7-7-7" />
+      </svg>
+    </button>
   );
 }
 
@@ -52,7 +84,7 @@ function WelcomeCard({ shown }: { shown: boolean }) {
   const dispatch = useDispatch();
   return (
     <div
-      className="empty-state flex h-full flex-col items-center justify-center gap-1.5 px-5 py-6 text-center"
+      className="empty-state flex flex-1 flex-col items-center justify-center gap-1.5 px-5 py-6 text-center"
       id="emptyState"
       style={shown ? undefined : { display: 'none' }}
     >

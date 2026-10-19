@@ -34,6 +34,12 @@ export interface ChatPage {
 
 let bundle: string | undefined;
 
+class NoResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
 /** The compiled webview script, refusing to run against a build older than its sources. */
 function readBundle(): string {
   if (bundle !== undefined) {
@@ -92,9 +98,9 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     pretendToBeVisual: true,
     virtualConsole,
     beforeParse(window) {
-      // jsdom does not implement scrolling.
+      // jsdom does not implement scrolling, or the layout that would resize anything.
       window.Element.prototype.scrollIntoView = () => undefined;
-      Object.assign(window, { acquireVsCodeApi: () => api });
+      Object.assign(window, { acquireVsCodeApi: () => api, ResizeObserver: NoResizeObserver });
     },
   });
   const { window } = dom;

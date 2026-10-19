@@ -670,6 +670,63 @@ describe('loading a session', () => {
   });
 });
 
+describe('following the stream', () => {
+  it('asks the view to follow for each prompt the user sends, mid-turn ones included, and not for one that cannot be sent', () => {
+    const view = chatView();
+    view.connect();
+    const before = view.transcript().followRequests;
+
+    view.prompt('first');
+    view.send({ type: 'promptStart' });
+    view.prompt('mid-turn');
+    view.prompt('   ');
+    view.send({ type: 'slashCommandChosen', name: 'init' });
+
+    expect(view.transcript().followRequests).toBe(before + 3);
+  });
+
+  it('asks the view to follow each time the transcript is cleared', () => {
+    const view = chatView();
+    const clears: [string, () => void][] = [
+      ['another session', () => view.connect({ sessionId: 's2' })],
+      ['a disconnect', () => view.send({ type: 'state', activeSessionId: null, session: null })],
+      ['a load', () => view.send({ type: 'loadSessionStart' })],
+      ['clearTranscript', () => view.send({ type: 'clearTranscript' })],
+    ];
+    for (const [name, clear] of clears) {
+      view.connect({ sessionId: 's1' });
+      view.prompt('hello');
+      const before = view.transcript().followRequests;
+
+      clear();
+
+      expect(view.transcript().followRequests, name).toBe(before + 1);
+    }
+  });
+
+  it('does not ask the view to follow for what the agent sends, replayed prompts included, or for the same session again', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('question');
+    view.send({ type: 'promptStart' });
+    const live = view.transcript().followRequests;
+
+    view.update('agent_message_chunk', text('answer'));
+    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.connect({ title: 'Renamed' });
+    expect(view.transcript().followRequests).toBe(live);
+
+    view.send({ type: 'loadSessionStart' });
+    const loading = view.transcript().followRequests;
+    view.update('user_message_chunk', text('q1'));
+    view.update('agent_message_chunk', text('a1'));
+    view.update('user_message_chunk', text('q2'));
+    view.send({ type: 'loadSessionEnd', ok: true });
+    expect(view.transcript().followRequests).toBe(loading);
+  });
+});
+
 describe('errors and the welcome card', () => {
   it('shows extension errors, with a fallback for an empty one', () => {
     const view = chatView();
