@@ -1,5 +1,6 @@
 import type { ToolCallStatus } from '@agentclientprotocol/sdk';
 import { memo, useLayoutEffect, useRef } from 'react';
+import { Markdown } from '@/webview/views/Markdown';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
   messageShown,
@@ -104,13 +105,14 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
 });
 
 function TurnView({ turn }: { turn: Turn }) {
+  const streaming = useSelector((state) => state.transcript.currentTurn === turn.id);
   if (!turnShown(turn)) {
     return null;
   }
   return (
     <div className="turn flex max-w-[95%] flex-col gap-1 self-start">
       {turn.thought && <ThoughtBlock turnId={turn.id} thought={turn.thought} />}
-      {messageShown(turn.message) && <AgentMessageView message={turn.message} />}
+      {messageShown(turn.message) && <AgentMessageView message={turn.message} streaming={streaming} />}
       {turn.toolCalls.length > 0 && (
         <ToolCallList turnId={turn.id} toolCalls={turn.toolCalls} collapsed={turn.toolCallsCollapsed} />
       )}
@@ -146,16 +148,11 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, thought }: { turnId: E
   );
 });
 
-const agentMessage = `message agent ${messageBox} self-start border border-border bg-card`;
-
-/** Plain text while it streams; the extension's markdown rendering once it arrives. */
-const AgentMessageView = memo(function AgentMessageView({ message }: { message: AgentMessage }) {
-  return message.html === null ? (
-    <div key="text" className={`${agentMessage} ${plainText}`}>
-      {message.text}
+const AgentMessageView = memo(function AgentMessageView({ message, streaming }: { message: AgentMessage; streaming: boolean }) {
+  return (
+    <div className={`message agent ${messageBox} self-start border border-border bg-card wrap-anywhere`}>
+      <Markdown text={message.text} streaming={streaming} />
     </div>
-  ) : (
-    <div key="html" className={`${agentMessage} md-rendered wrap-anywhere`} dangerouslySetInnerHTML={{ __html: message.html }} />
   );
 });
 

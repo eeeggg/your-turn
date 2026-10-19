@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, markdownItems, textChunk, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -63,26 +63,22 @@ describe('loading a session', () => {
     expect(messages()).toEqual(['message user: hello']);
   });
 
-  it('requests markdown for every replayed answer in one batch when the load ends', () => {
+  it('renders replayed answers as markdown as they arrive, asking the extension for nothing', () => {
     page.send({ type: 'loadSessionStart' });
     replay([
-      ['q1', 'a1'],
-      ['q2', 'a2'],
+      ['q1', '**a1**'],
+      ['q2', '*a2*'],
     ]);
     page.takePosted();
+    const emphasis = () => [...page.document.querySelectorAll('.message.agent')].map((el) => el.querySelector('[data-streamdown="strong"], em')?.textContent);
+    expect(emphasis()).toEqual(['a1', 'a2']);
 
     page.send({ type: 'loadSessionEnd', ok: true });
 
-    const requests = page.takePosted();
-    expect(requests).toHaveLength(1);
-    const items = markdownItems(requests);
-    expect(items.map((item) => item.text)).toEqual(['a1', 'a2']);
+    expect(page.takePosted()).toEqual([]);
+    expect(emphasis()).toEqual(['a1', 'a2']);
     expect(page.byId('loadOverlay').classList.contains('visible')).toBe(false);
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
-
-    page.send({ type: 'markdownRendered', items: [{ id: items[1]!.id, html: '<p>A2</p>' }] });
-    const answers = [...page.document.querySelectorAll('.message.agent')].map((el) => el.innerHTML);
-    expect(answers).toEqual(['a1', '<p>A2</p>']);
   });
 
   it('collapses more than three tool calls in a replayed turn, as in a live one', () => {

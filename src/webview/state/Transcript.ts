@@ -32,10 +32,8 @@ export interface Thought {
 }
 
 export interface AgentMessage {
-  /** Everything streamed so far; shown once it has more than whitespace. */
+  /** Everything streamed so far, as markdown; shown once it has more than whitespace. */
   readonly text: string;
-  /** The extension's rendering of `text` as markdown, asked for once the turn ends. */
-  readonly html: string | null;
 }
 
 export interface ToolCall {
@@ -179,28 +177,14 @@ export function updateTranscript(
       return stateOnly(cleared(transcript, transcript.sessionId));
     case 'promptStart':
       return stateOnly(withCurrent(transcript, null, null));
-    case 'promptEnd': {
-      const ended = endTurn(transcript, now);
-      const turn = transcript.currentTurn === null ? undefined : findTurn(ended, transcript.currentTurn);
-      return { state: ended, outgoing: markdownRequest(turn ? [turn] : []) };
-    }
+    case 'promptEnd':
+      return stateOnly(endTurn(transcript, now));
     case 'loadSessionEnd': {
       const ended = endTurn(transcript, now);
-      const turns = ended.entries.filter((entry) => entry.kind === 'turn');
-      return {
-        state: action.ok ? ended : appended(ended, (id) => ({ kind: 'error', id, text: 'Failed to load session.' })),
-        outgoing: markdownRequest(turns),
-      };
+      return stateOnly(action.ok ? ended : appended(ended, (id) => ({ kind: 'error', id, text: 'Failed to load session.' })));
     }
     case 'error':
       return stateOnly(appended(transcript, (id) => ({ kind: 'error', id, text: action.message || 'An error occurred' })));
-    case 'markdownRendered':
-      return stateOnly(
-        action.items.reduce(
-          (current, item) => withTurn(current, item.id, (turn) => ({ ...turn, message: { ...turn.message, html: item.html } })),
-          transcript,
-        ),
-      );
     case 'sessionUpdate':
       return stateOnly(applySessionUpdate(transcript, action.update, now));
     case 'thoughtToggled':
@@ -357,11 +341,6 @@ function endTurn(transcript: TranscriptState, now: number): TranscriptState {
   return withCurrent(ended, null, null);
 }
 
-function markdownRequest(turns: readonly Turn[]): WebviewToExtensionMessage[] {
-  const items = turns.filter((turn) => messageShown(turn.message)).map((turn) => ({ id: turn.id, text: turn.message.text }));
-  return items.length > 0 ? [{ type: 'renderMarkdown', items }] : [];
-}
-
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
   const empty = transcript.entries.length === 0 && transcript.currentTurn === null && transcript.currentPlan === null;
   return empty && transcript.sessionId === sessionId
@@ -427,7 +406,7 @@ function inCurrentTurn(transcript: TranscriptState, change: (turn: Turn) => Turn
     kind: 'turn',
     id,
     thought: null,
-    message: { text: '', html: null },
+    message: { text: '' },
     toolCalls: [],
     toolCallsCollapsed: false,
   }));

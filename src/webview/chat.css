@@ -1,11 +1,13 @@
 @import "tailwindcss" source(none);
 @source ".";
+@source "../../node_modules/streamdown/dist/*.js";
 
 /* Every color is a VS Code theme color, so the chat view follows the user's theme. */
 @theme inline {
   --color-*: initial;
   --color-background: var(--vscode-sideBar-background);
   --color-foreground: var(--vscode-foreground);
+  --color-sidebar: var(--vscode-sideBar-background);
   --color-card: var(--vscode-editor-background);
   --color-muted: var(--vscode-editorWidget-background);
   --color-muted-foreground: var(--vscode-descriptionForeground);
@@ -86,72 +88,5 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-  }
-}
-
-/* The extension's rendered markdown, whose elements carry no classes. */
-@layer components {
-  .md-rendered {
-    p {
-      @apply mb-[0.5em] last:mb-0;
-    }
-    pre {
-      @apply my-[0.5em] overflow-x-auto rounded-sm border border-border bg-code px-2.5 py-2 font-mono text-md leading-[1.4];
-    }
-    code {
-      @apply rounded-[3px] bg-code px-1 py-px font-mono text-md;
-    }
-    pre code {
-      @apply rounded-none bg-transparent p-0;
-    }
-    ul,
-    ol {
-      @apply my-[0.4em] pl-[1.5em];
-    }
-    ul {
-      @apply list-disc;
-    }
-    ol {
-      @apply list-decimal;
-    }
-    li {
-      @apply my-[0.15em];
-    }
-    h1,
-    h2,
-    h3,
-    h4,
-    h5,
-    h6 {
-      @apply mt-[0.6em] mb-[0.3em] font-semibold;
-    }
-    h1 {
-      @apply text-[1.3em];
-    }
-    h2 {
-      @apply text-[1.15em];
-    }
-    h3 {
-      @apply text-[1.05em];
-    }
-    blockquote {
-      @apply my-[0.4em] border-l-3 border-ring py-[0.2em] pl-[0.8em] opacity-85;
-    }
-    a {
-      @apply text-link no-underline hover:underline;
-    }
-    table {
-      @apply my-[0.4em] text-md;
-    }
-    th,
-    td {
-      @apply border border-border px-2 py-1;
-    }
-    th {
-      @apply bg-muted font-semibold;
-    }
-    hr {
-      @apply my-[0.6em] border-0 border-t border-border;
-    }
   }
 }

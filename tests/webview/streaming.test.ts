@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, markdownItems, textChunk, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -49,33 +49,7 @@ describe('streaming a turn', () => {
     expect(agentMessages()).toEqual([]);
 
     update(page, 'agent_message_chunk', textChunk('hi'));
-    expect(agentMessages()).toEqual(['\n  hi']);
-  });
-
-  it('shows streamed text as plain text until markdown is rendered', () => {
-    page.send({ type: 'promptStart' });
-    update(page, 'agent_message_chunk', textChunk('<img src="x">'));
-
-    expect(page.document.querySelector('.message.agent img')).toBeNull();
-    expect(agentMessages()).toEqual(['<img src="x">']);
-  });
-
-  it('requests markdown rendering at promptEnd and applies the rendered HTML', () => {
-    page.typePrompt('question');
-    page.pressKey('Enter');
-    page.send({ type: 'promptStart' });
-    update(page, 'agent_message_chunk', textChunk('**bold**'));
-    page.takePosted();
-
-    page.send({ type: 'promptEnd', stopReason: 'end_turn' });
-    const requests = page.takePosted();
-    expect(requests).toEqual([{ type: 'renderMarkdown', items: [{ id: expect.any(Number), text: '**bold**' }] }]);
-    const id = markdownItems(requests)[0]!.id;
-
-    page.send({ type: 'markdownRendered', items: [{ id, html: '<p><strong>bold</strong></p>' }] });
-    const el = page.document.querySelector('.message.agent');
-    expect(el?.classList.contains('md-rendered')).toBe(true);
-    expect(el?.innerHTML).toBe('<p><strong>bold</strong></p>');
+    expect(agentMessages()).toEqual(['hi']);
   });
 
   it('starts a separate agent message for each turn', () => {
@@ -153,7 +127,7 @@ describe('thinking', () => {
     const thought = page.document.querySelector('.thought-block');
     expect(thought?.classList.contains('streaming')).toBe(false);
     expect(thought?.querySelector('summary')?.textContent).toBe('Thought');
-    expect(page.takePosted().filter((m) => m.type === 'renderMarkdown')).toEqual([]);
+    expect(page.takePosted()).toEqual([]);
   });
 });
 

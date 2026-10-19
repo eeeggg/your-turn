@@ -137,7 +137,7 @@ describe('the transcript and its session', () => {
     expect(view.transcript()).toBe(before);
   });
 
-  it('never reuses an entry ID, so a late rendering of a cleared message lands nowhere', () => {
+  it('never reuses an entry ID after clearing the transcript', () => {
     const view = chatView();
     view.connect({ sessionId: 's1' });
     view.send({ type: 'promptStart' });
@@ -148,10 +148,8 @@ describe('the transcript and its session', () => {
     view.connect({ sessionId: 's2' });
     view.send({ type: 'promptStart' });
     view.update('agent_message_chunk', text('new'));
-    view.send({ type: 'markdownRendered', items: [{ id: oldId, html: '<p>old</p>' }] });
 
     expect(view.lastTurn().id).not.toBe(oldId);
-    expect(view.lastTurn().message.html).toBeNull();
   });
 });
 
@@ -233,7 +231,7 @@ describe('agent messages', () => {
     expect(view.summary()).toEqual([]);
   });
 
-  it('asks for markdown at the end of a turn and applies what comes back', () => {
+  it('keeps the text of the answer and asks the extension for nothing when the turn ends', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'promptStart' });
@@ -241,34 +239,22 @@ describe('agent messages', () => {
     view.takePosted();
 
     view.send({ type: 'promptEnd', stopReason: 'end_turn' });
-    const { id } = view.lastTurn();
-    expect(view.takePosted()).toEqual([{ type: 'renderMarkdown', items: [{ id, text: '**bold**' }] }]);
-
-    view.send({ type: 'markdownRendered', items: [{ id, html: '<p><b>bold</b></p>' }] });
-    expect(view.lastTurn().message).toEqual({ text: '**bold**', html: '<p><b>bold</b></p>' });
-  });
-
-  it('asks for no markdown when the turn showed no answer', () => {
-    const view = chatView();
-    view.connect();
-    view.send({ type: 'promptStart' }, { type: 'promptEnd', stopReason: 'end_turn' });
-    view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('  '));
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
 
     expect(view.takePosted()).toEqual([]);
+    expect(view.lastTurn().message).toEqual({ text: '**bold**' });
   });
 
-  it('ignores rendered markdown for an entry that is not a turn', () => {
+  it('is the current turn from its first chunk until the prompt ends', () => {
     const view = chatView();
     view.connect();
-    view.prompt('hello');
-    const before = view.transcript();
-    const promptId = before.entries[0]!.id;
+    view.send({ type: 'promptStart' });
+    expect(view.transcript().currentTurn).toBeNull();
 
-    view.send({ type: 'markdownRendered', items: [{ id: promptId, html: '<p>x</p>' }] });
+    view.update('agent_message_chunk', text('answer'));
+    expect(view.transcript().currentTurn).toBe(view.lastTurn().id);
 
-    expect(view.transcript()).toBe(before);
+    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    expect(view.transcript().currentTurn).toBeNull();
   });
 });
 
@@ -534,30 +520,21 @@ describe('loading a session', () => {
     ]);
   });
 
-  it('asks for the markdown of every replayed answer in one batch when the load ends', () => {
+  it('asks the extension for nothing when the load ends, and leaves no turn current', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'loadSessionStart' });
     view.update('user_message_chunk', text('q1'));
     view.update('agent_message_chunk', text('a1'));
     view.update('user_message_chunk', text('q2'));
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
-    view.update('user_message_chunk', text('q3'));
-    view.update('agent_message_chunk', text('a3'));
+    view.update('agent_message_chunk', text('a2'));
     view.takePosted();
 
     view.send({ type: 'loadSessionEnd', ok: true });
 
-    const [first, , third] = view.turns();
-    expect(view.takePosted()).toEqual([
-      {
-        type: 'renderMarkdown',
-        items: [
-          { id: first!.id, text: 'a1' },
-          { id: third!.id, text: 'a3' },
-        ],
-      },
-    ]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.turns().map((turn) => turn.message.text)).toEqual(['a1', 'a2']);
+    expect(view.transcript().currentTurn).toBeNull();
   });
 
   it('reports a failed load in the transcript', () => {

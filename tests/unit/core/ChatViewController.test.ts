@@ -467,16 +467,6 @@ describe('ChatViewController', () => {
     });
   });
 
-  it('renders agent messages as markdown for the webview', async () => {
-    const { environment, controller } = setup();
-
-    await controller.handleMessage({ type: 'renderMarkdown', items: [{ id: 3, text: '**bold**' }] });
-
-    expect(environment.take()).toEqual([
-      { type: 'markdownRendered', items: [{ id: 3, html: '<p><strong>bold</strong></p>\n' }] },
-    ]);
-  });
-
   describe('session updates', () => {
     const chunk = (sessionId: string): SessionNotification => ({
       sessionId,

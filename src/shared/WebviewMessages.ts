@@ -21,17 +21,6 @@ export interface SessionSnapshot {
   availableCommands: AvailableCommand[];
 }
 
-export interface MarkdownSource {
-  /** The ID the webview gave the agent message, returned with its HTML. */
-  id: number;
-  text: string;
-}
-
-export interface RenderedMarkdown {
-  id: number;
-  html: string;
-}
-
 export type ExtensionToWebviewMessage =
   | { type: 'state'; activeSessionId: string | null; session: SessionSnapshot | null }
   | { type: 'clearTranscript' }
@@ -45,7 +34,6 @@ export type ExtensionToWebviewMessage =
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }
   | { type: 'loadSessionEnd'; ok: boolean }
-  | { type: 'markdownRendered'; items: RenderedMarkdown[] }
   /** The webview has no handler for this yet, so the attachment is dropped. */
   | { type: 'file-attached'; path: string; name: string };
 
@@ -55,5 +43,4 @@ export type WebviewToExtensionMessage =
   | { type: 'cancelTurn' }
   | { type: 'setMode'; modeId: SessionModeId }
   | { type: 'setConfigOption'; configId: SessionConfigId; value: SessionConfigValueId }
-  | { type: 'executeCommand'; command: string }
-  | { type: 'renderMarkdown'; items: MarkdownSource[] };
+  | { type: 'executeCommand'; command: string };

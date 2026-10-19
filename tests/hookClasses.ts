@@ -6,7 +6,6 @@ const hooks = new Set([
   'error',
   'failed',
   'load-overlay',
-  'md-rendered',
   'message',
   'pending',
   'plan',

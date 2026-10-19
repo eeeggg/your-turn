@@ -167,22 +167,16 @@ describe('a turn', () => {
     ]);
   });
 
-  it('shows the answer as plain text until its markdown arrives, then as HTML', () => {
+  it('renders the answer as markdown while it streams', () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('<img src="x">'));
-    const message = () => view.part('.message.agent');
-    expect(message().querySelector('img')).toBeNull();
-    expect(message().textContent).toBe('<img src="x">');
+    view.update('agent_message_chunk', text('*x* and '));
+    view.update('agent_message_chunk', text('**y**'));
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
-    const [request] = view.takePosted();
-    const id = request?.type === 'renderMarkdown' ? request.items[0]!.id : -1;
-    view.send({ type: 'markdownRendered', items: [{ id, html: '<p><em>x</em></p>' }] });
-
-    expect(hookClasses(message())).toBe('message agent md-rendered');
-    expect(message().innerHTML).toBe('<p><em>x</em></p>');
+    const message = view.part('.message.agent');
+    expect(hookClasses(message)).toBe('message agent');
+    expect([message.querySelector('em')?.textContent, message.querySelector('[data-streamdown="strong"]')?.textContent]).toEqual(['x', 'y']);
   });
 });
 

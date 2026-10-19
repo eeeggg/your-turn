@@ -1,4 +1,3 @@
-import { marked } from 'marked';
 import type { SessionModeState, SessionNotification } from '@agentclientprotocol/sdk';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { SessionManager } from './SessionManager';
@@ -45,12 +44,7 @@ export class ChatViewController {
   constructor(
     private readonly sessions: ChatSessions,
     private readonly environment: ChatViewEnvironment,
-  ) {
-    marked.setOptions({
-      breaks: true,
-      gfm: true,
-    });
-  }
+  ) {}
 
   /** Whether a prompt has been sent since the transcript was last cleared. */
   get hasTranscript(): boolean {
@@ -79,12 +73,6 @@ export class ChatViewController {
         break;
       case 'ready':
         this.sendCurrentState();
-        break;
-      case 'renderMarkdown':
-        this.post({
-          type: 'markdownRendered',
-          items: message.items.map((item) => ({ id: item.id, html: this.renderMarkdown(item.text) })),
-        });
         break;
     }
   }
@@ -265,23 +253,7 @@ export class ChatViewController {
     void this.environment.executeCommand('setContext', 'acp.turnInProgress', inProgress);
   }
 
-  private renderMarkdown(text: string): string {
-    try {
-      return marked.parse(text) as string;
-    } catch {
-      return escapeHtml(text);
-    }
-  }
-
   private post(message: ExtensionToWebviewMessage): void {
     this.environment.post(message);
   }
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
