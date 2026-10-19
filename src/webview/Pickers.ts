@@ -7,7 +7,8 @@ import type {
   SessionModeId,
   SessionModeState,
 } from '@agentclientprotocol/sdk';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { Action } from '@/webview/RootState';
 import type { Transition } from '@/webview/Store';
 
 export type PickerId = { kind: 'mode' } | { kind: 'config'; configId: SessionConfigId };
@@ -109,7 +110,7 @@ export function categoryIcon(category: SessionConfigOptionCategory | null | unde
 
 export function updatePickers(
   state: PickersState,
-  action: ExtensionToWebviewMessage | PickerAction,
+  action: Action,
 ): Transition<PickersState, WebviewToExtensionMessage> {
   switch (action.type) {
     case 'state':

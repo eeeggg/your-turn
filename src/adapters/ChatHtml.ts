@@ -20,14 +20,7 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
   <link href="${styleUri}" rel="stylesheet">
 </head>
 <body>
-  <div class="session-banner" id="sessionBanner">
-    <span class="dot"></span>
-    <div class="info">
-      <div class="agent" id="bannerAgent"></div>
-      <div class="cwd" id="bannerCwd"></div>
-    </div>
-    <span class="status" id="status"></span>
-  </div>
+  <div id="sessionBannerRoot"></div>
 
   <div class="messages" id="messages">
     <div class="empty-state" id="emptyState">

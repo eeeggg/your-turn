@@ -102,16 +102,31 @@ describe('session state', () => {
     expect([...page.document.querySelectorAll('.message.user')].map((el) => el.textContent)).toEqual(['hello']);
   });
 
-  it('keeps the transcript on disconnect and clears it when a new session follows', () => {
+  it('clears the transcript on disconnect, leaving only the welcome card', () => {
+    page = loadChatPage();
+    connect(page, { sessionId: 's1' });
+    page.typePrompt('hello');
+    page.pressKey('Enter');
+    page.send({ type: 'promptStart' });
+
+    page.send({ type: 'state', activeSessionId: null, session: null });
+
+    expect(page.document.querySelectorAll('.message')).toHaveLength(0);
+    expect(page.byId('messages').contains(page.byId('emptyState'))).toBe(true);
+    expect(page.byId('emptyState').style.display).toBe('');
+    expect(page.byId('sendStopBtn').textContent).toBe('Send');
+    expect(page.byId('status').textContent).toBe('');
+  });
+
+  it('keeps the transcript cleared when the same session reconnects', () => {
     page = loadChatPage();
     connect(page, { sessionId: 's1' });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
     page.send({ type: 'state', activeSessionId: null, session: null });
-    expect(page.document.querySelectorAll('.message.user')).toHaveLength(1);
+    connect(page, { sessionId: 's1' });
 
-    connect(page, { sessionId: 's2' });
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
   });
 

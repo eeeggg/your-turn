@@ -421,16 +421,6 @@ body {
   background: var(--vscode-editor-background);
 }
 
-/* Session connected banner */
-.session-banner {
-  display: none;
-  padding: 10px var(--container-padding);
-  background: var(--vscode-editorWidget-background);
-  border-bottom: 1px solid var(--vscode-panel-border);
-  font-size: 0.9em;
-}
-.session-banner.visible { display: flex; align-items: center; gap: 8px; }
-
 /* Input area states */
 .input-area.disabled .input-toolbar,
 .input-area.disabled .input-editor-wrap,

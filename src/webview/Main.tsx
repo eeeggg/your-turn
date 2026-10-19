@@ -1,9 +1,11 @@
 import '@/webview/chat';
+import type { ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { InputToolbar } from '@/webview/InputToolbar';
 import { initialState, update, type Action, type RootState } from '@/webview/RootState';
+import { SessionBanner } from '@/webview/SessionBanner';
 import { createStore, type Store } from '@/webview/Store';
 import { StoreContext } from '@/webview/StoreContext';
 import { postMessage } from '@/webview/VsCodeApi';
@@ -19,17 +21,16 @@ const store: Store<RootState, Action> = {
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => store.dispatch(event.data));
 document.addEventListener('click', () => store.dispatch({ type: 'pickersClosed' }));
 
-const toolbar = document.getElementById('inputToolbar');
-if (!toolbar) {
-  throw new Error('The webview page has no #inputToolbar.');
+function mount(containerId: string, view: ReactNode): void {
+  const container = document.getElementById(containerId);
+  if (!container) {
+    throw new Error(`The webview page has no #${containerId}.`);
+  }
+  const root = createRoot(container);
+  flushSync(() => root.render(<StoreContext value={store}>{view}</StoreContext>));
 }
-const root = createRoot(toolbar);
-flushSync(() =>
-  root.render(
-    <StoreContext value={store}>
-      <InputToolbar />
-    </StoreContext>,
-  ),
-);
+
+mount('sessionBannerRoot', <SessionBanner />);
+mount('inputToolbar', <InputToolbar />);
 
 postMessage({ type: 'ready' });

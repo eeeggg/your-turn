@@ -7,10 +7,6 @@ const messagesEl = document.getElementById('messages');
 const emptyState = document.getElementById('emptyState');
 const promptInput = document.getElementById('promptInput');
 const sendStopBtn = document.getElementById('sendStopBtn');
-const statusEl = document.getElementById('status');
-const sessionBanner = document.getElementById('sessionBanner');
-const bannerAgent = document.getElementById('bannerAgent');
-const bannerCwd = document.getElementById('bannerCwd');
 const inputArea = document.getElementById('inputArea');
 const resizeHandle = document.getElementById('resizeHandle');
 const slashPopup = document.getElementById('slashPopup');
@@ -43,9 +39,7 @@ function updatePlaceholder() {
 // rebuilt page starts empty, and a transcript comes back only by loading
 // the session from the agent.
 let transcript = [];
-let sessionState = null;
-// The session the transcript on screen belongs to; it survives a disconnect
-// so the transcript stays readable until a different session arrives.
+// The session the transcript on screen belongs to.
 let transcriptSessionId = null;
 
 // Start with input disabled
@@ -193,13 +187,11 @@ function setProcessing(processing) {
     sendStopBtn.className = 'send-stop-btn stop';
     sendStopBtn.textContent = '■ Stop';
     sendStopBtn.disabled = false;
-    statusEl.innerHTML = '<span class="spinner"></span>';
   } else {
     sendStopBtn.className = 'send-stop-btn send';
     sendStopBtn.textContent = 'Send';
     sendStopBtn.disabled = false;
     promptInput.disabled = false;
-    statusEl.textContent = '';
   }
 }
 
@@ -254,18 +246,6 @@ function handleLoadSessionEnd(ok) {
   scrollToBottom();
   if (!ok) {
     addMessage('error', 'Failed to load session.');
-  }
-}
-
-function handleSessionInfoUpdate(title) {
-  if (!sessionState) { return; }
-  if (typeof title === 'string') {
-    sessionState.title = title;
-  } else if (title === null) {
-    delete sessionState.title;
-  }
-  if (bannerAgent) {
-    bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent';
   }
 }
 
@@ -607,15 +587,7 @@ function finalizeCurrentTurn() {
 }
 
 function showSession(session) {
-  sessionState = {
-    agentName: session.agentName,
-    cwd: session.cwd,
-    title: session.title || undefined,
-  };
   hideEmpty();
-  if (bannerAgent) { bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent'; }
-  if (bannerCwd) { bannerCwd.textContent = sessionState.cwd || ''; }
-  if (sessionBanner) { sessionBanner.classList.add('visible'); }
   if (inputArea) { inputArea.classList.remove('disabled'); }
   promptInput.disabled = false;
 
@@ -626,11 +598,15 @@ function showSession(session) {
   updatePlaceholder();
 }
 
+/** Without a session nothing on screen can be used, so only the welcome card is left. */
 function showNoSession() {
-  sessionState = null;
-  if (sessionBanner) { sessionBanner.classList.remove('visible'); }
+  clearTranscript();
+  transcriptSessionId = null;
+  availableCommands = [];
+  slashPopup.classList.remove('open');
   if (emptyState) { emptyState.style.display = ''; }
   if (inputArea) { inputArea.classList.add('disabled'); }
+  setProcessing(false);
 }
 
 // Handle messages from the extension
@@ -709,15 +685,7 @@ window.addEventListener('message', (event) => {
       break;
 
     case 'clearTranscript':
-      clearTranscript();
-      transcriptSessionId = null;
-      sessionState = null;
-      availableCommands = [];
-      slashPopup.classList.remove('open');
-      if (emptyState) { emptyState.style.display = ''; }
-      if (sessionBanner) { sessionBanner.classList.remove('visible'); }
-      if (inputArea) { inputArea.classList.add('disabled'); }
-      setProcessing(false);
+      showNoSession();
       break;
 
     case 'error':
@@ -734,10 +702,6 @@ window.addEventListener('message', (event) => {
 
     case 'loadSessionEnd':
       handleLoadSessionEnd(!!msg.ok);
-      break;
-
-    case 'sessionInfoUpdate':
-      handleSessionInfoUpdate(msg.title);
       break;
 
     case 'markdownRendered': {
