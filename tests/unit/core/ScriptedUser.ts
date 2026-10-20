@@ -1,8 +1,10 @@
 import type {
   Commands,
+  Disposable,
   InputBoxOptions,
   MessageOptions,
   ProgressOptions,
+  QuickPick,
   QuickPickItem,
   QuickPickOptions,
   Window,
@@ -12,13 +14,14 @@ type MessageCall = 'showInformationMessage' | 'showWarningMessage' | 'showErrorM
 
 export type Call =
   | { call: 'showQuickPick'; items: readonly (string | QuickPickItem)[]; options?: QuickPickOptions }
+  | { call: 'createQuickPick'; title?: string; placeholder?: string; busy: boolean; items: readonly QuickPickItem[] }
   | { call: 'showInputBox'; options?: InputBoxOptions }
   | { call: MessageCall; message: string; options?: MessageOptions; items?: string[] }
   | { call: 'withProgress'; options: ProgressOptions }
   | { call: 'executeCommand'; command: string; rest?: unknown[] };
 
-/** A label to pick, text to enter, a message button to click, or `undefined` to dismiss. */
-export type Answer = string | undefined;
+/** A label to pick, labels to pick several, text to enter, a message button to click, or `undefined` to dismiss. */
+export type Answer = string | readonly string[] | undefined;
 
 /**
  * A user who answers in advance, standing in for `vscode.window` and
@@ -40,27 +43,46 @@ export class ScriptedUser implements Window, Commands {
   }
 
   showQuickPick(items: readonly string[], options?: QuickPickOptions): Promise<string | undefined>;
+  showQuickPick<T extends QuickPickItem>(items: readonly T[], options: QuickPickOptions & { canPickMany: true }): Promise<T[] | undefined>;
   showQuickPick<T extends QuickPickItem>(items: readonly T[], options?: QuickPickOptions): Promise<T | undefined>;
-  async showQuickPick<T extends string | QuickPickItem>(items: readonly T[], options?: QuickPickOptions): Promise<T | undefined> {
+  async showQuickPick<T extends string | QuickPickItem>(items: readonly T[], options?: QuickPickOptions): Promise<T | T[] | undefined> {
     this.calls.push({ call: 'showQuickPick', items, ...(options ? { options } : {}) });
     const answer = this.next('showQuickPick');
     if (answer === undefined) {
       return undefined;
     }
-    const item = items.find((i) => (typeof i === 'string' ? i : i.label) === answer);
-    if (!item) {
-      throw new Error(`no item labelled ${answer} to pick`);
+    const pick = (label: string) => {
+      const item = items.find((i) => (typeof i === 'string' ? i : i.label) === label);
+      if (!item) {
+        throw new Error(`no item labelled ${label} to pick`);
+      }
+      return item;
+    };
+    if (options?.canPickMany) {
+      if (typeof answer === 'string') { throw new Error('a quick pick of several needs a list of labels'); }
+      return answer.map(pick);
     }
-    return item;
+    if (typeof answer !== 'string') { throw new Error('a quick pick of one needs a single label'); }
+    return pick(answer);
+  }
+
+  createQuickPick<T extends QuickPickItem>(): QuickPick<T> {
+    return new ScriptedQuickPick<T>(this);
   }
 
   async showInputBox(options?: InputBoxOptions): Promise<string | undefined> {
     this.calls.push({ call: 'showInputBox', ...(options ? { options } : {}) });
-    return this.next('showInputBox');
+    return this.text('showInputBox');
   }
 
-  showInformationMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined> {
-    return this.message('showInformationMessage', message, items);
+  showInformationMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined>;
+  showInformationMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): Promise<T | undefined>;
+  showInformationMessage<T extends string>(message: string, ...rest: (T | MessageOptions)[]): Promise<T | undefined> {
+    const [first, ...others] = rest;
+    if (typeof first === 'object') {
+      return this.message('showInformationMessage', message, others as T[], first);
+    }
+    return this.message('showInformationMessage', message, rest as T[]);
   }
 
   showWarningMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined>;
@@ -92,17 +114,107 @@ export class ScriptedUser implements Window, Commands {
     if (items.length === 0) {
       return undefined;
     }
-    const answer = this.next(call);
+    const answer = this.text(call);
     if (answer !== undefined && !items.includes(answer as T)) {
       throw new Error(`no button ${answer} to click`);
     }
     return answer as T | undefined;
   }
 
-  private next(call: string): Answer {
+  /** The next answer, which must be text or a dismissal. */
+  private text(call: string): string | undefined {
+    const answer = this.next(call);
+    if (typeof answer === 'object') { throw new Error(`${call} needs a single answer, not a list`); }
+    return answer;
+  }
+
+  /** The next answer, left in place until {@link next} takes it. */
+  peek(call: string): Answer {
     if (this.answers.length === 0) {
       throw new Error(`unexpected ${call}: no answer left`);
     }
+    return this.answers[0];
+  }
+
+  next(call: string): Answer {
+    this.peek(call);
     return this.answers.shift();
+  }
+}
+
+/**
+ * A quick pick the scripted user answers as soon as it can: a label once an
+ * item with it is listed, a dismissal once the list stops loading. An answer
+ * that leaves it open, such as an item that cannot be chosen, is followed by
+ * the next. Each answer records the quick pick as the user saw it.
+ */
+class ScriptedQuickPick<T extends QuickPickItem> implements QuickPick<T> {
+  title: string | undefined;
+  placeholder: string | undefined;
+  selectedItems: readonly T[] = [];
+  private shownItems: readonly T[] = [];
+  private loading = false;
+  private open = false;
+  private readonly accepted = new Set<() => unknown>();
+  private readonly hidden = new Set<() => unknown>();
+
+  constructor(private readonly user: ScriptedUser) {}
+
+  get items(): readonly T[] { return this.shownItems; }
+  set items(items: readonly T[]) {
+    this.shownItems = items;
+    this.answer();
+  }
+
+  get busy(): boolean { return this.loading; }
+  set busy(busy: boolean) {
+    this.loading = busy;
+    this.answer();
+  }
+
+  onDidAccept(listener: () => unknown): Disposable { return this.listen(this.accepted, listener); }
+  onDidHide(listener: () => unknown): Disposable { return this.listen(this.hidden, listener); }
+
+  show(): void {
+    this.open = true;
+    this.answer();
+  }
+
+  dispose(): void {
+    if (!this.open) { return; }
+    this.open = false;
+    this.hidden.forEach((listener) => listener());
+  }
+
+  private answer(): void {
+    while (this.open) {
+      const label = this.user.peek('createQuickPick');
+      if (typeof label === 'object') { throw new Error('createQuickPick needs a single label, not a list'); }
+      const item = this.shownItems.find((i) => i.label === label);
+      if (label !== undefined && !item) {
+        if (!this.loading) { throw new Error(`no item labelled ${label} to pick`); }
+        return;
+      }
+      if (label === undefined && this.loading) { return; }
+      this.user.next('createQuickPick');
+      this.user.calls.push({
+        call: 'createQuickPick',
+        ...(this.title !== undefined ? { title: this.title } : {}),
+        ...(this.placeholder !== undefined ? { placeholder: this.placeholder } : {}),
+        busy: this.loading,
+        items: this.shownItems,
+      });
+      if (!item) {
+        this.dispose();
+        return;
+      }
+      this.selectedItems = [item];
+      this.accepted.forEach((listener) => listener());
+    }
+  }
+
+  private listen(listeners: Set<() => unknown>, listener: () => unknown): Disposable {
+    listeners.add(listener);
+    return { dispose: () => listeners.delete(listener) };
   }
 }

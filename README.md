@@ -6,7 +6,7 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 
 ## Features
 
-- **Multi-Agent Support**: Connect to 11 pre-configured ACP agents or add your own
+- **Multi-Agent Support**: Connect to any ACP agent you configure
 - **Single-Agent Focus**: One agent active at a time — seamlessly switch between agents
 - **Per-Agent Session List**: Each agent in the Agents view is expandable into its previous sessions. Click a session to restore its history in the chat. Backed by `session/list` when the agent supports it, or by a local per-workspace cache otherwise.
 - **Session Config Options**: Dynamic per-session selectors (mode, model, reasoning level, …) advertised by the agent are rendered automatically in the composer toolbar.
@@ -16,14 +16,14 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Mode & Model Picker**: Switch agent modes and models directly from the chat toolbar (kept for agents that haven't migrated to Session Config Options yet)
 - **Permission Management**: Configurable auto-approve policies for agent actions
 - **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
-- **Agent Registry**: Browse and discover available ACP agents
+- **Agent Registry**: Add an agent from the ACP agent registry, run through `npx` or `uvx` at the version the registry lists
 - **Chat Persistence**: Transcripts are preserved when switching panels
 
 ## Quick Start
 
 1. Install: [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) | [Open in VS Code](https://vscode.dev/redirect?url=vscode%3Aextension%2Fformulahendry.acp-client) | [Open VSX Marketplace](https://open-vsx.org/extension/formulahendry/acp-client)
 2. Open the ACP Client panel from the Activity Bar (ACP icon)
-3. Click **+** to add an agent configuration, or use the defaults
+3. Click **+** to add an agent configuration
 4. Click an agent to connect
 5. Start chatting!
 
@@ -32,33 +32,30 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - Node.js 18+ (for spawning agent processes)
 - An ACP-compatible agent installed or available via `npx`
 
-## Pre-configured Agents
+## Adding an Agent
 
-The extension comes with default configurations for:
+The extension comes with no agents configured. Add one with **ACP: Add Agent Configuration** (the **+** in the Agents view), which saves it to your user settings:
 
-| Agent | Command |
-|-------|---------|
-| GitHub Copilot | `npx @github/copilot-language-server@latest --acp` |
-| Claude Code | `npx @agentclientprotocol/claude-agent-acp@latest` |
-| Gemini CLI | `npx @google/gemini-cli@latest --experimental-acp` |
-| Qwen Code | `npx @qwen-code/qwen-code@latest --acp --experimental-skills` |
-| Auggie CLI | `npx @augmentcode/auggie@latest --acp` |
-| Qoder CLI | `npx @qoder-ai/qodercli@latest --acp` |
-| Codex CLI | `npx @zed-industries/codex-acp@latest` |
-| OpenCode | `npx opencode-ai@latest acp` |
-| OpenClaw | `npx openclaw acp` |
-| [Kiro CLI](https://kiro.dev/docs/cli/acp/) | `kiro-cli acp` |
-| [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp) | `hermes acp` |
+- **From the [ACP agent registry](https://github.com/agentclientprotocol/registry):** pick an agent that runs through `npx` or `uvx`, at the version the registry lists. Agents distributed only as a binary are listed but not added, as installing them is up to you; once installed, **ACP: Detect Agents** adds them. Having `npx` or `uvx` where VS Code finds it is up to you too.
+- **Custom:** enter a name, the command that starts the agent in ACP mode, and its arguments.
 
-You can add custom agent configurations in settings.
+**ACP: Detect Agents** looks on the `PATH` VS Code sees for the registry's agents distributed as a binary, and adds those you pick under the registry's names. It runs nothing to find them, so the version it shows is the registry's; yours may differ.
 
-> **Note on Hermes Agent**: Hermes is a Python package, not an npm package. Install it via the [Hermes Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) (Linux/macOS/WSL2 only — Windows requires [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)). Make sure `hermes` is on your `PATH` and launch VS Code from the same shell/venv. Configure credentials with `hermes model`.
+Or edit `acp.agents` in `settings.json` directly; for example, [OpenCode](https://opencode.ai) 2.x installed on your `PATH`:
+
+```json
+"acp.agents": {
+  "OpenCode": { "command": "opencode", "args": ["acp"] }
+}
+```
+
+Run through `npx` instead, the same agent is `"command": "npx", "args": ["@opencode/cli", "acp"]`. Each agent's own documentation gives its ACP command. Keeping an agent installed, up to date and signed in is up to you; the extension only starts it.
 
 ## Extension Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `acp.agents` | *(11 agents)* | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
+| `acp.agents` | `{}` | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
 | `acp.autoApprovePermissions` | `ask` | How agent permission requests are handled: `ask` or `allowAll`. |
 | `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
 | `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
@@ -77,14 +74,13 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 | `ACP: Restart Agent` | Restart the current agent process |
 | `ACP: Open Chat View` | Focus the chat view |
 | `ACP: Add Agent Configuration` | Add a new agent to settings |
+| `ACP: Detect Agents` | Add agents from the ACP agent registry already installed on your `PATH` |
 | `ACP: Remove Agent` | Remove an agent configuration |
 | `ACP: Set Agent Mode` | Change the agent's operating mode |
 | `ACP: Set Agent Model` | Change the agent's model |
 | `ACP: Refresh Sessions` | Re-fetch the session list for an agent (also on the agent's right-click menu) |
 | `ACP: Show Log` | Open the ACP Client log output channel |
 | `ACP: Show Protocol Traffic` | Open the ACP Traffic output channel |
-| `ACP: Browse Agent Registry` | Browse the ACP agent registry |
-
 ## Keyboard Shortcuts
 
 | Shortcut | Action |

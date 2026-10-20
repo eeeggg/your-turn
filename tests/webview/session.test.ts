@@ -102,7 +102,7 @@ describe('session state', () => {
     expect([...page.document.querySelectorAll('.message.user')].map((el) => el.textContent)).toEqual(['hello']);
   });
 
-  it('clears the transcript on disconnect, leaving only the welcome card', () => {
+  it('clears the transcript on disconnect, leaving only the empty state', () => {
     page = loadChatPage();
     connect(page, { sessionId: 's1' });
     page.typePrompt('hello');
@@ -128,19 +128,6 @@ describe('session state', () => {
     connect(page, { sessionId: 's1' });
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
-  });
-
-  it('welcome buttons run the connect and add-agent commands', () => {
-    page = loadChatPage();
-    page.takePosted();
-
-    page.byId('welcomeConnectAgent').click();
-    page.byId('welcomeAddAgent').click();
-
-    expect(page.takePosted()).toEqual([
-      { type: 'executeCommand', command: 'acp.connectAgent' },
-      { type: 'executeCommand', command: 'acp.addAgent' },
-    ]);
   });
 
   it('shows extension errors as error messages', () => {

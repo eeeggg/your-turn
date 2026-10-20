@@ -7,7 +7,7 @@ import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
-import { showsWelcome } from '@/webview/state/Transcript';
+import { showsEmptyState } from '@/webview/state/Transcript';
 import { fakeAgent, InProcessAgents, unusedHandlers, type ExitOrder } from './InProcessAgents';
 
 /** Let pending callbacks, agent exits and webview messages included, run. */
@@ -74,7 +74,7 @@ describe('an agent that exits during a turn', () => {
       expect(activeSession).toBeNull();
       expect(transcript.currentTurn).toBeNull();
       expect(transcript.queued).toEqual([]);
-      expect(showsWelcome(transcript, activeSession)).toBe(false);
+      expect(showsEmptyState(transcript, activeSession)).toBe(false);
       expect(turnInProgress.at(-1)).toBe(false);
     });
   }

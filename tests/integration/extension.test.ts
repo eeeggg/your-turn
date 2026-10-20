@@ -24,4 +24,22 @@ suite('Extension Test Suite', () => {
 		assert.ok(acpCommands.includes('acp.newSession'), 'newSession command should exist');
 		assert.ok(acpCommands.includes('acp.openChat'), 'openChat command should exist');
 	});
+
+	test('Contributes no built-in agents', () => {
+		assert.deepStrictEqual(vscode.workspace.getConfiguration('acp').inspect('agents')?.defaultValue, {});
+	});
+
+	// VS Code shows welcome content only in views that ask for it, such as tree views, never in a webview view like Chat.
+	test('Offers adding and detecting agents in the empty Agents view, through registered commands', async () => {
+		const ext = vscode.extensions.getExtension('formulahendry.acp-client');
+		assert.ok(ext);
+		const { viewsWelcome } = (ext.packageJSON as { contributes: { viewsWelcome: { view: string; contents: string; when?: string }[] } }).contributes;
+		assert.deepStrictEqual(viewsWelcome.map((welcome) => welcome.view), ['acp-sessions']);
+		// VS Code shows a tree view's welcome until the tree's first items arrive, even when agents are configured.
+		assert.deepStrictEqual(viewsWelcome.map((welcome) => welcome.when), ['acp.noAgentsConfigured']);
+		const linked = viewsWelcome.flatMap((welcome) => [...welcome.contents.matchAll(/\(command:([\w.]+)\)/g)].flatMap((match) => match[1] ?? []));
+		assert.deepStrictEqual(linked, ['acp.addAgent', 'acp.detectAgents']);
+		const commands = await vscode.commands.getCommands(true);
+		assert.deepStrictEqual(linked.filter((command) => !commands.includes(command)), []);
+	});
 });

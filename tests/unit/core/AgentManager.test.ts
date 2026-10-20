@@ -1,7 +1,8 @@
-import { realpathSync } from 'node:fs';
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { describe, expect, it } from 'vitest';
-import { AgentManager, type AgentConfigEntry, type AgentProcess } from '@/core/AgentManager';
+import { delimiter, join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AgentManager, findOnPath, type AgentConfigEntry, type AgentProcess } from '@/core/AgentManager';
 
 /** Launch a Node script as the agent and record what the launcher reports. */
 function launch(script: string, options: { env?: Record<string, string>; cwd?: string } = {}) {
@@ -111,5 +112,32 @@ describe('AgentManager', () => {
 
     expect(await exited).toBeNull();
     await until(() => !isRunning(pid));
+  });
+});
+
+describe('findOnPath', () => {
+  let bin: string;
+
+  beforeEach(() => {
+    bin = mkdtempSync(join(tmpdir(), 'acp-path-'));
+    vi.stubEnv('PATH', ['/nonexistent/acp-test', bin].join(delimiter));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(bin, { recursive: true, force: true });
+  });
+
+  it('gives the full path of an executable on the PATH VS Code sees', async () => {
+    writeFileSync(join(bin, 'opencode'), '#!/bin/sh\n', { mode: 0o755 });
+
+    expect(await findOnPath('opencode')).toBe(join(bin, 'opencode'));
+  });
+
+  it('finds nothing for a command missing from the PATH, or a file there that is not executable', async () => {
+    writeFileSync(join(bin, 'notes'), 'not a program', { mode: 0o644 });
+
+    expect(await findOnPath('opencode')).toBeUndefined();
+    expect(await findOnPath('notes')).toBeUndefined();
   });
 });

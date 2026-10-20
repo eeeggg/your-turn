@@ -6,7 +6,7 @@ import { createStore } from '@/webview/state/Store';
 import {
   contentTexts,
   planEntryIcon,
-  showsWelcome,
+  showsEmptyState,
   shownContent,
   statusClass,
   statusGlyph,
@@ -51,7 +51,7 @@ function chatView() {
     /** Each entry as `kind: text`, and a turn as its parts in order, the way a reader would summarize the transcript. */
     summary: () =>
       transcript().entries.map((entry) => (entry.kind === 'turn' ? `turn: ${entry.parts.map(partSummary).join(' | ')}` : `${entry.kind}: ${entry.text}`)),
-    welcome: () => showsWelcome(transcript(), store.getSnapshot().activeSession),
+    emptyState: () => showsEmptyState(transcript(), store.getSnapshot().activeSession),
     at: (now: number) => {
       time = now;
     },
@@ -89,16 +89,16 @@ const forAgentOnly = (value: string) => ({ content: { type: 'text' as const, tex
 const textContent = (value: string) => ({ type: 'content' as const, content: { type: 'text' as const, text: value } });
 
 describe('the transcript and its session', () => {
-  it('leaves room for the welcome card only without a session and an empty transcript', () => {
+  it('leaves room for the empty state only without a session and an empty transcript', () => {
     const view = chatView();
-    expect(view.welcome()).toBe(true);
+    expect(view.emptyState()).toBe(true);
 
     view.send({ type: 'error', message: 'boom' });
-    expect(view.welcome()).toBe(false);
+    expect(view.emptyState()).toBe(false);
 
     view.connect();
     expect(view.summary()).toEqual([]);
-    expect(view.welcome()).toBe(false);
+    expect(view.emptyState()).toBe(false);
   });
 
   it('keeps the transcript for the same session and clears it for another', () => {
@@ -125,18 +125,18 @@ describe('the transcript and its session', () => {
       view.send(end);
 
       expect(view.summary()).toEqual([]);
-      expect(view.welcome()).toBe(true);
+      expect(view.emptyState()).toBe(true);
     }
   });
 
-  it('leaves only the welcome card after a state without a session, even when none was connected', () => {
+  it('leaves only the empty state after a state without a session, even when none was connected', () => {
     const view = chatView();
     view.send({ type: 'error', message: 'boom' });
 
     view.send({ type: 'state', activeSessionId: null, session: null });
 
     expect(view.summary()).toEqual([]);
-    expect(view.welcome()).toBe(true);
+    expect(view.emptyState()).toBe(true);
   });
 
   it('changes nothing when an empty transcript is cleared again', () => {
@@ -189,7 +189,7 @@ describe('a session whose agent exited', () => {
     expect(view.transcript().queued).toEqual([]);
     expect(view.takePosted()).toEqual([]);
     expect(view.store.getSnapshot().activeSession).toBeNull();
-    expect(view.welcome()).toBe(false);
+    expect(view.emptyState()).toBe(false);
   });
 
   it('sends nothing when a late promptEnd arrives', () => {
@@ -220,7 +220,7 @@ describe('a session whose agent exited', () => {
     view.send(noSession);
 
     expect(view.summary()).toEqual([]);
-    expect(view.welcome()).toBe(true);
+    expect(view.emptyState()).toBe(true);
   });
 });
 
@@ -898,23 +898,12 @@ describe('following the stream', () => {
   });
 });
 
-describe('errors and the welcome card', () => {
+describe('errors', () => {
   it('shows extension errors, with a fallback for an empty one', () => {
     const view = chatView();
     view.send({ type: 'error', message: 'boom' }, { type: 'error', message: '' });
 
     expect(view.summary()).toEqual(['error: boom', 'error: An error occurred']);
-  });
-
-  it("runs the welcome card's commands", () => {
-    const view = chatView();
-
-    view.send({ type: 'welcomeCommandChosen', command: 'acp.connectAgent' }, { type: 'welcomeCommandChosen', command: 'acp.addAgent' });
-
-    expect(view.takePosted()).toEqual([
-      { type: 'executeCommand', command: 'acp.connectAgent' },
-      { type: 'executeCommand', command: 'acp.addAgent' },
-    ]);
   });
 });
 

@@ -18,7 +18,7 @@ import type {
 } from '@agentclientprotocol/sdk';
 import { methods } from '@agentclientprotocol/sdk';
 
-import type { AgentConfigEntry, AgentLauncher, AgentProcess } from './AgentManager';
+import { commandNotFound, type AgentConfigEntry, type AgentLauncher, type AgentProcess, type LaunchError } from './AgentManager';
 import type { ConnectionManager } from './ConnectionManager';
 import type { SessionHistoryStore } from './SessionHistoryStore';
 import { log, logError, messageOf } from './Log';
@@ -294,7 +294,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     let exitHandled!: () => void;
     const exited = new Promise<void>((resolve) => { exitHandled = resolve; });
-    const outcome: { launchError?: Error; exitCode?: number | null } = {};
+    const outcome: { launchError?: LaunchError; exitCode?: number | null } = {};
     const agentProcess = this.launcher.launch(agentName, config, this.environment.workspaceCwd(), {
       error: (error) => { outcome.launchError = error; },
       exit: (code) => {
@@ -312,6 +312,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       agentProcess.kill();
       // The connection can fail before the launcher reports why the process ended, which says more than a closed connection.
       await exited;
+      if (outcome.launchError?.code === 'ENOENT') {
+        throw new Error(commandNotFound(config.command));
+      }
       if (outcome.launchError) {
         throw outcome.launchError;
       }

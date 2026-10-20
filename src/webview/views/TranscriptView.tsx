@@ -6,7 +6,7 @@ import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
   partShown,
   planEntryIcon,
-  showsWelcome,
+  showsEmptyState,
   shownContent,
   statusClass,
   statusGlyph,
@@ -25,12 +25,12 @@ import {
 } from '@/webview/state/Transcript';
 
 /**
- * The scrolling transcript, following the stream until the user scrolls up to read, with the welcome card at its top
+ * The scrolling transcript, following the stream until the user scrolls up to read, with the empty state at its top
  * while there is neither a session nor a transcript, and a jump to the end while the user reads during a turn.
  */
 export function TranscriptView() {
   const entries = useSelector((state) => state.transcript.entries);
-  const welcome = useSelector((state) => showsWelcome(state.transcript, state.activeSession));
+  const empty = useSelector((state) => showsEmptyState(state.transcript, state.activeSession));
   const followRequests = useSelector((state) => state.transcript.followRequests);
   const turnRunning = useSelector((state) => state.activeSession?.turnRunning ?? false);
   const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom();
@@ -48,7 +48,7 @@ export function TranscriptView() {
     <div className="transcript relative flex min-h-0 flex-1 flex-col" id="transcript">
       <div className="transcript-scroll flex-1 overflow-y-auto" id="transcriptScroll" ref={scrollRef}>
         <div className="messages flex min-h-full flex-col gap-2 p-3" id="messages" ref={contentRef}>
-          <WelcomeCard shown={welcome} />
+          <EmptyState shown={empty} />
           {entries.map((entry) => (
             <Entry key={entry.id} entry={entry} />
           ))}
@@ -78,41 +78,15 @@ function JumpToEnd({ onClick }: { onClick: () => void }) {
   );
 }
 
-const actionButton = 'flex cursor-pointer items-center justify-center gap-1.5 rounded-sm px-4 py-2 font-medium';
-
-function WelcomeCard({ shown }: { shown: boolean }) {
-  const dispatch = useDispatch();
+/** The agent actions live in the Agents view alone, so this only points there. */
+function EmptyState({ shown }: { shown: boolean }) {
   return (
     <div
-      className="empty-state flex flex-1 flex-col items-center justify-center gap-1.5 px-5 py-6 text-center"
+      className="empty-state flex flex-1 items-center justify-center px-5 py-6 text-center text-sm text-muted-foreground"
       id="emptyState"
       style={shown ? undefined : { display: 'none' }}
     >
-      <div className="icon mb-1 text-[2.4em] opacity-85">🤖</div>
-      <div className="title mb-0.5 text-lg font-semibold">ACP Chat</div>
-      <div className="subtitle mb-3 text-sm leading-[1.4] text-muted-foreground">
-        Connect to an AI coding agent to start chatting.
-      </div>
-      <div className="actions flex w-full max-w-55 flex-col gap-2">
-        <button
-          className={`action-btn primary ${actionButton} bg-primary text-primary-foreground hover:bg-primary-hover`}
-          id="welcomeConnectAgent"
-          onClick={() => dispatch({ type: 'welcomeCommandChosen', command: 'acp.connectAgent' })}
-        >
-          🔌 Connect to Agent
-        </button>
-        <button
-          className={`action-btn secondary ${actionButton} bg-secondary text-secondary-foreground hover:bg-secondary-hover`}
-          id="welcomeAddAgent"
-          onClick={() => dispatch({ type: 'welcomeCommandChosen', command: 'acp.addAgent' })}
-        >
-          ⚙ Add Agent
-        </button>
-      </div>
-      <div className="hint mt-2 text-xs text-muted-foreground">
-        or press <kbd className="rounded-[3px] border border-border bg-card px-1.25 py-px font-mono text-[0.95em]">Ctrl+Shift+A</kbd>{' '}
-        anytime
-      </div>
+      Add or pick an agent in the Agents view to start a session.
     </div>
   );
 }

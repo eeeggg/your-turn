@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod, ResourceLink, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
-import { AgentManager, type AgentConfigEntry } from '@/core/AgentManager';
+import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
@@ -961,10 +961,10 @@ describe('SessionManager', () => {
         );
       }
 
-      it('fails to connect with the launch error, which names the command', async () => {
+      it('fails to connect through a command missing from the PATH with the explanation checking a package runner gives', async () => {
         const manager = realAgent({ command: 'acp-test-no-such-command', args: ['acp'] });
 
-        await expect(manager.connectToAgent('broken')).rejects.toThrow(/ENOENT: acp-test-no-such-command acp/);
+        await expect(manager.connectToAgent('broken')).rejects.toThrow(commandNotFound('acp-test-no-such-command'));
         expect(manager.getActiveSessionId()).toBeNull();
       });
 

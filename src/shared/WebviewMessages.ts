@@ -43,5 +43,4 @@ export type WebviewToExtensionMessage =
   | { type: 'sendPrompt'; text: string }
   | { type: 'cancelTurn' }
   | { type: 'setMode'; modeId: SessionModeId }
-  | { type: 'setConfigOption'; configId: SessionConfigId; value: SessionConfigValueId }
-  | { type: 'executeCommand'; command: string };
+  | { type: 'setConfigOption'; configId: SessionConfigId; value: SessionConfigValueId };

@@ -243,28 +243,18 @@ describe('the jump to the end', () => {
   });
 });
 
-describe('the welcome card', () => {
-  it('is shown at the top of the transcript until a session connects', () => {
+describe('the empty state', () => {
+  it('points to the Agents view at the top of the transcript until a session connects, with no actions of its own', () => {
     const view = renderChatView();
-    const card = view.part('#emptyState');
-    expect(view.part('#messages').firstElementChild).toBe(card);
-    expect(card.style.display).toBe('');
+    const line = view.part('#emptyState');
+    expect(view.part('#messages').firstElementChild).toBe(line);
+    expect(line.textContent).toBe('Add or pick an agent in the Agents view to start a session.');
+    expect(line.querySelector('button, a')).toBeNull();
+    expect(line.style.display).toBe('');
 
     view.connect();
 
-    expect(card.style.display).toBe('none');
-  });
-
-  it('runs the connect and add-agent commands', () => {
-    const view = renderChatView();
-
-    fireEvent.click(view.part('#welcomeConnectAgent'));
-    fireEvent.click(view.part('#welcomeAddAgent'));
-
-    expect(view.takePosted()).toEqual([
-      { type: 'executeCommand', command: 'acp.connectAgent' },
-      { type: 'executeCommand', command: 'acp.addAgent' },
-    ]);
+    expect(line.style.display).toBe('none');
   });
 });
 

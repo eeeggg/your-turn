@@ -1,5 +1,6 @@
 import { Readable, Writable } from 'node:stream';
 import { execa } from 'execa';
+import which from 'which';
 import { log, logError } from './Log';
 
 /**
@@ -28,9 +29,39 @@ export interface AgentProcess extends AgentStreams {
   kill(): void;
 }
 
+/**
+ * An agent that could not start. `code` is Node's error code: `ENOENT` when
+ * the command is not on the `PATH`, though also when the working directory
+ * does not exist.
+ */
+export class LaunchError extends Error {
+  constructor(message: string | undefined, readonly code: string | undefined) {
+    super(message);
+    this.name = 'LaunchError';
+  }
+}
+
+/** The `PATH` agents are launched with: the extension host's, which can differ from a terminal's. */
+export function launchPath(): string {
+  return process.env['PATH'] ?? '';
+}
+
+/** Where `command` is on the {@link launchPath}, searched as launching it would search, if it is there. */
+export async function findOnPath(command: string): Promise<string | undefined> {
+  return (await which(command, { nothrow: true, path: launchPath() })) ?? undefined;
+}
+
+/**
+ * Why a command cannot start, the same whether a package runner is checked
+ * before an agent is added through it or an agent's command is launched.
+ */
+export function commandNotFound(command: string): string {
+  return `"${command}" was not found: it is not installed, or it is installed where VS Code does not see it. The PATH VS Code sees: ${launchPath()}`;
+}
+
 /** What happens to one launched agent. */
 export interface AgentProcessEvents {
-  error(error: Error): void;
+  error(error: LaunchError): void;
   exit(code: number | null): void;
 }
 
@@ -70,7 +101,7 @@ export class AgentManager implements AgentLauncher {
 
     void subprocess.then((result) => {
       if (result.exitCode === undefined && result.signal === undefined) {
-        const error = new Error(result.shortMessage);
+        const error = new LaunchError(result.shortMessage, result.code);
         logError(`Agent "${name}" failed to start`, error);
         events.error(error);
       }
