@@ -119,6 +119,20 @@ function isUnknownSessionError(e: unknown): boolean {
     && /not found|no such|unknown session/i.test(e.message);
 }
 
+/** The events a {@link SessionManager} emits, with the arguments each passes its listeners. */
+export interface SessionManagerEvents {
+  'session-added': [sessionId: string, agentName: string];
+  'session-removed': [sessionId: string, agentName: string];
+  'active-session-changed': [sessionId: string | null];
+  'clear-transcript': [];
+  'mode-changed': [sessionId: string, modeId: string];
+  'session-info-changed': [sessionId: string, update: { title?: string | null; updatedAt?: string | null }];
+  'session-load-start': [sessionId: string, agentName: string];
+  'session-load-end': [sessionId: string, agentName: string, ok: boolean];
+  'session-ended': [sessionId: string, reason: string];
+  'agent-closed': [agentId: string, code: number | null];
+}
+
 /**
  * Manages agents, their connections, and their sessions.
  *
@@ -127,7 +141,7 @@ function isUnknownSessionError(e: unknown): boolean {
  * agent process runs per agent name; it is launched on first use, either for a
  * session or to list an agent's sessions, and reused after that.
  */
-export class SessionManager extends EventEmitter {
+export class SessionManager extends EventEmitter<SessionManagerEvents> {
   /** Running agents by agent name. */
   private agents = new Map<string, RunningAgent>();
   /** Launches in progress by agent name, so concurrent callers share one process. */
@@ -532,7 +546,6 @@ export class SessionManager extends EventEmitter {
 
     await connection.agent.request(methods.agent.session.setMode, { sessionId, modeId });
 
-    // Update local state
     if (session.modes) {
       session.modes.currentModeId = modeId;
     }
@@ -822,8 +835,6 @@ export class SessionManager extends EventEmitter {
     }
   }
 
-  // --- Getters ---
-
   getSession(sessionId: string): SessionInfo | undefined {
     return this.sessions.get(sessionId);
   }
@@ -850,8 +861,6 @@ export class SessionManager extends EventEmitter {
   getAgentNamesWithSessions(): string[] {
     return Array.from(this.agentSessions.keys());
   }
-
-  // --- Cleanup ---
 
   dispose(): void {
     for (const agent of this.agents.values()) {

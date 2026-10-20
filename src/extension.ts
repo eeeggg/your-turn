@@ -35,7 +35,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   setLogSink(outputChannelSink);
   log('ACP Client extension activating...');
 
-  // --- Core services ---
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
   const connectionManager = new ConnectionManager(
@@ -56,7 +55,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionManager.setHistoryStore(historyStore);
   context.subscriptions.push({ dispose: () => historyStore.dispose() });
 
-  // --- UI ---
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const sessionList = new SessionList(sessionManager, historyStore, getAgentNames, workspaceCwd);
   const sessionTreeProvider = new SessionTreeProvider(sessionList);
@@ -83,33 +81,25 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
-  // Notify the webview when the active session changes
   sessionManager.on('active-session-changed', () => {
     chatViewController.notifyActiveSessionChanged();
   });
-
-  sessionManager.on('session-ended', (sessionId: string, reason: string) => {
+  sessionManager.on('session-ended', (sessionId, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
   });
-
-  // Clear the transcript when a new session is started
   sessionManager.on('clear-transcript', () => {
     chatViewController.clearTranscript();
   });
-
-  // Forward mode changes to webview
-  sessionManager.on('mode-changed', (_sessionId: string, _modeId: string) => {
+  sessionManager.on('mode-changed', () => {
     const session = sessionManager.getActiveSession();
     if (session?.modes) {
       chatViewController.notifyModesUpdate(session.modes);
     }
   });
-
-  // Session-load replay state — drive the webview overlay.
   sessionManager.on('session-load-start', () => {
     chatViewController.notifyLoadSessionStart();
   });
-  sessionManager.on('session-load-end', (_sessionId: string, _agentName: string, ok: boolean) => {
+  sessionManager.on('session-load-end', (_sessionId, _agentName, ok) => {
     chatViewController.notifyLoadSessionEnd(ok);
     if (ok) {
       // The loadSession response carries modes/configOptions for the
@@ -120,7 +110,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
 
-  // --- Commands ---
   const sessionCommands = new SessionCommands(sessionManager, chatViewController, vscode.window, vscode.commands, getAgentNames);
   const agentConfigurations = new AgentConfigurations(
     () => vscode.workspace.getConfiguration('acp'),

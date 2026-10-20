@@ -5,7 +5,7 @@ import { AgentManager, type AgentConfigEntry } from '@/core/AgentManager';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
-import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment } from '@/core/SessionManager';
+import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment, type SessionManagerEvents } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
 
@@ -30,7 +30,7 @@ const EVENTS = [
   'session-load-end',
   'session-ended',
   'agent-closed',
-] as const;
+] as const satisfies readonly (keyof SessionManagerEvents)[];
 
 function modelOption(currentValue: string): SessionConfigOption {
   return {

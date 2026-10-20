@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -404,7 +404,7 @@
     "compile": "npm run check-types && node esbuild.mjs",
     "check-types": "tsc -b",
     "package": "npm run check-types && node esbuild.mjs --production",
-    "lint": "eslint . --max-warnings 0",
+    "lint": "eslint . --max-warnings 0 && knip",
     "pretest": "npm run compile && npm run lint",
     "test": "vitest run && vscode-test",
     "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage",
@@ -439,10 +439,19 @@
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "jsdom": "^30.1.3",
+    "knip": "^6.42.1",
     "mocha": "^11.8.0",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.2",
     "vitest": "^5.0.5"
+  },
+  "knip": {
+    "entry": [
+      ".vscode-test.mjs"
+    ],
+    "ignoreDependencies": [
+      "@vscode/test-electron"
+    ]
   }
 }
