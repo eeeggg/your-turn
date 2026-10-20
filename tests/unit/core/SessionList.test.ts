@@ -1,24 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, ListSessionsResponse, SessionInfo } from '@agentclientprotocol/sdk';
-import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionManager, type AuthPrompt } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, type AgentScript } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript } from './InProcessAgents';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
-
-const unused = (): never => {
-  throw new Error('not used by these tests');
-};
-const unusedHandlers: ClientHandlers = {
-  files: { readTextFile: unused, writeTextFile: unused },
-  terminals: { createTerminal: unused, terminalOutput: unused, waitForTerminalExit: unused, killTerminal: unused, releaseTerminal: unused, dispose() {} },
-  permissions: { requestPermission: unused },
-};
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -141,19 +131,36 @@ describe('SessionList', () => {
           {
             sessionId: 'titled',
             label: 'Fix the build',
-            age: '3h ago',
+            age: '3 hours ago',
             isActive: true,
             tooltip: 'Agent: fake\nSession: titled\ncwd: /work\nLast active: 2026-10-18T09:00:00Z\nListed by agent',
           },
           {
             sessionId: '0123456789abcdefghij',
             label: '01234567…ghij',
-            age: '1w ago',
+            age: '7 days ago',
             isActive: false,
             tooltip: 'Agent: fake\nSession: 0123456789abcdefghij\ncwd: /work\nLast active: 2026-10-11T12:00:00Z\nListed by agent',
           },
         ],
       });
+    });
+
+    it('rounds ages down, shows a time ahead of ours as just now, and shows no age for an undated session', async () => {
+      const fake = listingAgent({
+        '': {
+          sessions: [
+            session('nearly-an-hour', { updatedAt: '2026-10-18T11:00:01Z' }),
+            session('ahead', { updatedAt: '2026-10-18T12:00:05Z' }),
+            session('undated'),
+          ],
+        },
+      });
+      const { list } = setup({ fake: fake.script });
+
+      const shown = await listed(list, 'fake');
+
+      expect(shown.kind === 'listed' && shown.rows.map((row) => row.age)).toEqual(['59 minutes ago', 'just now', undefined]);
     });
 
     it('lists them once, until invalidated', async () => {
@@ -288,9 +295,9 @@ describe('SessionList', () => {
 
       expect(sessions).toMatchObject({ kind: 'listed', source: 'history', more: { kind: 'none' } });
       expect(sessions.kind === 'listed' && sessions.rows.map(({ sessionId, label, age }) => ({ sessionId, label, age }))).toEqual([
-        { sessionId: 'titled', label: 'A title', age: '30s ago' },
-        { sessionId: 'prompted', label: `${'p'.repeat(59)}…`, age: '30m ago' },
-        { sessionId: 'untitled-session-id', label: 'untitled…n-id', age: '1h ago' },
+        { sessionId: 'titled', label: 'A title', age: '30 seconds ago' },
+        { sessionId: 'prompted', label: `${'p'.repeat(59)}…`, age: '30 minutes ago' },
+        { sessionId: 'untitled-session-id', label: 'untitled…n-id', age: '1 hour ago' },
       ]);
       expect(sessions.kind === 'listed' && sessions.rows[0]?.tooltip).toBe(
         'Agent: fake\nSession: titled\ncwd: /work\nLast active: 2026-10-18T11:59:30.000Z\nStored locally — agent does not list sessions',

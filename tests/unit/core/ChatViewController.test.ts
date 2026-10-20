@@ -363,6 +363,56 @@ describe('ChatViewController', () => {
       expect(environment.take().map((message) => message.type)).toEqual(['state']);
     });
 
+    describe('when the agent of a session exits', () => {
+      it('tells the chat view why its session ended, which ends the turn', async () => {
+        const { environment, controller } = setup();
+        await controller.handleMessage({ type: 'ready' });
+        void sendPrompt(controller, 'hello');
+        environment.take();
+
+        controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
+
+        expect(environment.take()).toEqual([{ type: 'sessionEnded', message: 'Fake Agent exited unexpectedly (code 1).' }]);
+      });
+
+      it('says nothing more when the turn then fails, the session being gone', async () => {
+        const { sessions, environment, controller } = setup();
+        await controller.handleMessage({ type: 'ready' });
+        const turn = sendPrompt(controller, 'hello');
+        controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
+        sessions.activeId = null;
+        controller.notifyActiveSessionChanged();
+        environment.take();
+
+        sessions.fail(new Error('ACP connection closed'));
+        await turn;
+
+        expect(environment.take()).toEqual([]);
+      });
+
+      it('forgets the turn, so the chat view is not told it is running when it opens again', async () => {
+        const { environment, controller } = setup();
+        await controller.handleMessage({ type: 'ready' });
+        void sendPrompt(controller, 'hello');
+
+        controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
+        environment.take();
+        await controller.handleMessage({ type: 'ready' });
+
+        expect(environment.take().map((message) => message.type)).toEqual(['state']);
+      });
+
+      it('does not tell the chat view about a session it does not show', async () => {
+        const { environment, controller } = setup();
+        await controller.handleMessage({ type: 'ready' });
+        environment.take();
+
+        controller.notifySessionEnded('s2', 'Other exited unexpectedly (code 1).');
+
+        expect(environment.take()).toEqual([]);
+      });
+    });
+
     it('forgets that a prompt was sent when the transcript is cleared', () => {
       const { environment, controller } = setup();
       void sendPrompt(controller, 'hello');

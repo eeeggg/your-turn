@@ -26,8 +26,14 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
-      // These only run as the bundle in the webview suite, which is not measured.
-      exclude: ['src/webview/Main.tsx', 'src/webview/VsCodeApi.ts'],
+      exclude: [
+        // These only run as the bundle in the webview suite, which is not measured.
+        'src/webview/Main.tsx',
+        'src/webview/VsCodeApi.ts',
+        // These need the real `vscode` module; `make coverage-integration` measures them.
+        'src/extension.ts',
+        'src/adapters/**',
+      ],
       reporter: ['text', 'html'],
       reportsDirectory: 'coverage',
     },

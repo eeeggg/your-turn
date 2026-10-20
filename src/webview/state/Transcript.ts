@@ -76,8 +76,10 @@ export interface TranscriptError {
 export type TranscriptEntry = Prompt | Turn | TranscriptError;
 
 export interface TranscriptState {
-  /** The session the entries belong to; a `state` for any other session clears them. */
+  /** The session the entries belong to; a `state` for any other session clears them, unless {@link sessionEnded}. */
   readonly sessionId: string | null;
+  /** Its agent exited, ending the session; the entries stay through the sessionless `state` that follows, until another session replaces them. */
+  readonly sessionEnded: boolean;
   readonly entries: readonly TranscriptEntry[];
   readonly nextId: EntryId;
   /** The turn the agent's work goes into, until the turn ends. */
@@ -99,6 +101,7 @@ export type TranscriptAction =
 
 export const initialTranscript: TranscriptState = {
   sessionId: null,
+  sessionEnded: false,
   entries: [],
   nextId: 1,
   currentTurn: null,
@@ -189,8 +192,21 @@ export function updateTranscript(
   switch (action.type) {
     case 'state': {
       const sessionId = action.session?.sessionId ?? null;
-      return stateOnly(sessionId !== null && sessionId === transcript.sessionId ? transcript : cleared(transcript, sessionId));
+      if (sessionId === null) {
+        return stateOnly(transcript.sessionEnded ? transcript : cleared(transcript, null));
+      }
+      if (sessionId !== transcript.sessionId) {
+        return stateOnly(cleared(transcript, sessionId));
+      }
+      return stateOnly(transcript.sessionEnded ? { ...transcript, sessionEnded: false } : transcript);
     }
+    case 'sessionEnded':
+      // Nothing can send the queued prompts now, and the transcript shows only what happened.
+      return stateOnly({
+        ...appended(endTurn(transcript, now), (id) => ({ kind: 'error', id, text: action.message })),
+        queued: [],
+        sessionEnded: true,
+      });
     case 'clearTranscript':
       return stateOnly(cleared(transcript, null));
     case 'loadSessionStart':
@@ -432,7 +448,7 @@ function cleared(transcript: TranscriptState, sessionId: string | null): Transcr
   const empty = transcript.entries.length === 0 && transcript.currentTurn === null && transcript.queued.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
-    : { ...transcript, sessionId, entries: [], currentTurn: null, queued: [], followRequests: transcript.followRequests + 1 };
+    : { ...transcript, sessionId, sessionEnded: false, entries: [], currentTurn: null, queued: [], followRequests: transcript.followRequests + 1 };
 }
 
 function withCurrent(transcript: TranscriptState, currentTurn: EntryId | null): TranscriptState {

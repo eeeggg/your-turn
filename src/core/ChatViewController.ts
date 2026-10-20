@@ -132,6 +132,17 @@ export class ChatViewController {
     }
   }
 
+  /**
+   * The session's agent exited on its own, ending any turn in it. Called before the session is dropped, so the chat
+   * view keeps the transcript and shows why.
+   */
+  notifySessionEnded(sessionId: string, reason: string): void {
+    this.runningTurns.delete(sessionId);
+    if (sessionId === this.shownSessionId) {
+      this.post({ type: 'sessionEnded', message: reason });
+    }
+  }
+
   notifyModesUpdate(modes: SessionModeState | null): void {
     this.post({ type: 'modesUpdate', modes });
   }

@@ -15,16 +15,23 @@ import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
 import { PermissionRequests } from '@/core/PermissionRequests';
-import { ProcessTerminals } from '@/core/ProcessTerminals';
-import { FileSystemHandler } from '@/adapters/FileSystemHandler';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
-import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
+import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
-export function activate(context: vscode.ExtensionContext): void {
+/**
+ * What `activate` returns in extension tests, and only there. Each test bundles its own copies of `src/`, so it cannot
+ * reach the extension's objects otherwise.
+ */
+export interface ExtensionTestApi {
+  /** The messages the chat view's webview sends the extension. */
+  readonly chatMessages: vscode.Event<WebviewToExtensionMessage>;
+}
+
+export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
   setLogSink(outputChannelSink);
   log('ACP Client extension activating...');
 
@@ -34,11 +41,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const connectionManager = new ConnectionManager(
     sessionUpdateHandler,
     (context.extension.packageJSON as { version: string }).version,
-    () => ({
-      files: new FileSystemHandler(),
-      terminals: new ProcessTerminals(pseudoterminalDisplays),
-      permissions: new PermissionRequests(permissionQuickPick),
-    }),
+    () => ({ permissions: new PermissionRequests(permissionQuickPick) }),
   );
   const sessionManager = new SessionManager(
     agentManager,
@@ -83,6 +86,10 @@ export function activate(context: vscode.ExtensionContext): void {
   // Notify the webview when the active session changes
   sessionManager.on('active-session-changed', () => {
     chatViewController.notifyActiveSessionChanged();
+  });
+
+  sessionManager.on('session-ended', (sessionId: string, reason: string) => {
+    chatViewController.notifySessionEnded(sessionId, reason);
   });
 
   // Clear the transcript when a new session is started
@@ -138,7 +145,6 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand('acp.setModel', (modelId?: string) => sessionCommands.setModel(modelId)),
     vscode.commands.registerCommand('acp.openSession', (arg?: SessionArgument) => sessionCommands.open(arg?.agentName, arg?.sessionId)),
     vscode.commands.registerCommand('acp.openChat', focusChatView),
-    // Bound to a key: there is no prompt to send outside the chat view.
     vscode.commands.registerCommand('acp.sendPrompt', focusChatView),
     vscode.commands.registerCommand('acp.showLog', () => getOutputChannel().show()),
     vscode.commands.registerCommand('acp.showTraffic', () => getTrafficChannel().show()),
@@ -185,6 +191,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   log('ACP Client extension activated.');
+  return context.extensionMode === vscode.ExtensionMode.Test ? { chatMessages: chatWebviewProvider.onDidReceiveMessage } : undefined;
 }
 
 export function deactivate(): void {

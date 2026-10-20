@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AgentContext, SessionNotification } from '@agentclientprotocol/sdk';
+import type { AgentContext, InitializeRequest, SessionNotification } from '@agentclientprotocol/sdk';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -8,18 +8,6 @@ import { fakeAgent, InProcessAgents } from './InProcessAgents';
 
 function handlers() {
   return {
-    files: {
-      readTextFile: vi.fn<ClientHandlers['files']['readTextFile']>(async () => ({ content: 'file text' })),
-      writeTextFile: vi.fn<ClientHandlers['files']['writeTextFile']>(async () => ({})),
-    },
-    terminals: {
-      createTerminal: vi.fn<ClientHandlers['terminals']['createTerminal']>(async () => ({ terminalId: 'term_1' })),
-      terminalOutput: vi.fn<ClientHandlers['terminals']['terminalOutput']>(async () => ({ output: 'ok', truncated: false })),
-      waitForTerminalExit: vi.fn<ClientHandlers['terminals']['waitForTerminalExit']>(async () => ({ exitCode: 0, signal: null })),
-      killTerminal: vi.fn<ClientHandlers['terminals']['killTerminal']>(async () => ({})),
-      releaseTerminal: vi.fn<ClientHandlers['terminals']['releaseTerminal']>(async () => ({})),
-      dispose: vi.fn(),
-    },
     permissions: {
       requestPermission: vi.fn<ClientHandlers['permissions']['requestPermission']>(async () => ({ outcome: { outcome: 'cancelled' as const } })),
     },
@@ -53,8 +41,8 @@ async function connectWith(work: (client: AgentContext) => Promise<void>) {
 }
 
 describe('ConnectionManager', () => {
-  it('initializes with the client version and its capabilities', async () => {
-    const initialize = vi.fn();
+  it('initializes with the client version, offering the agent no file access or terminals', async () => {
+    const initialize = vi.fn<(params: InitializeRequest) => void>();
     const agents = new InProcessAgents({
       fake: () => agent({ name: 'bare-agent' }).onRequest(methods.agent.initialize, ({ params }) => {
         initialize(params);
@@ -66,23 +54,31 @@ describe('ConnectionManager', () => {
     await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
 
     expect(initialize).toHaveBeenCalledOnce();
-    expect(initialize.mock.calls[0]?.[0]).toMatchObject({
+    expect(initialize.mock.calls[0]?.[0]).toEqual({
       protocolVersion: PROTOCOL_VERSION,
       clientInfo: { name: 'vscode-acp-client', version: '1.2.3' },
-      clientCapabilities: { fs: { readTextFile: true, writeTextFile: true }, terminal: true },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } },
     });
   });
 
-  it("routes the agent's requests to the connection's handlers", async () => {
+  it('answers file and terminal requests as unknown methods', async () => {
+    const answers: unknown[] = [];
+    const { prompt } = await connectWith(async (client) => {
+      answers.push(await client.request(methods.client.fs.readTextFile, { sessionId: 's1', path: '/work/a.ts' }).catch((e: unknown) => e));
+      answers.push(await client.request(methods.client.terminal.create, { sessionId: 's1', command: 'ls' }).catch((e: unknown) => e));
+    });
+
+    await prompt();
+
+    expect(answers).toEqual([
+      expect.objectContaining({ code: -32601 }),
+      expect.objectContaining({ code: -32601 }),
+    ]);
+  });
+
+  it("routes the agent's permission requests to the connection's handlers", async () => {
     const answers: unknown[] = [];
     const { handlerSets, prompt } = await connectWith(async (client) => {
-      answers.push(await client.request(methods.client.fs.readTextFile, { sessionId: 's1', path: '/work/a.ts' }));
-      answers.push(await client.request(methods.client.fs.writeTextFile, { sessionId: 's1', path: '/work/a.ts', content: 'x' }));
-      answers.push(await client.request(methods.client.terminal.create, { sessionId: 's1', command: 'ls' }));
-      answers.push(await client.request(methods.client.terminal.output, { sessionId: 's1', terminalId: 'term_1' }));
-      answers.push(await client.request(methods.client.terminal.waitForExit, { sessionId: 's1', terminalId: 'term_1' }));
-      answers.push(await client.request(methods.client.terminal.kill, { sessionId: 's1', terminalId: 'term_1' }));
-      answers.push(await client.request(methods.client.terminal.release, { sessionId: 's1', terminalId: 'term_1' }));
       answers.push(await client.request(methods.client.session.requestPermission, {
         sessionId: 's1',
         toolCall: { toolCallId: 'c1' },
@@ -92,24 +88,8 @@ describe('ConnectionManager', () => {
 
     await prompt();
 
-    const [set] = handlerSets;
-    expect(set?.files.readTextFile).toHaveBeenCalledExactlyOnceWith({ sessionId: 's1', path: '/work/a.ts' });
-    expect(set?.files.writeTextFile).toHaveBeenCalledExactlyOnceWith({ sessionId: 's1', path: '/work/a.ts', content: 'x' });
-    expect(set?.terminals.createTerminal).toHaveBeenCalledExactlyOnceWith({ sessionId: 's1', command: 'ls' });
-    for (const handler of [set?.terminals.terminalOutput, set?.terminals.waitForTerminalExit, set?.terminals.killTerminal, set?.terminals.releaseTerminal]) {
-      expect(handler).toHaveBeenCalledExactlyOnceWith({ sessionId: 's1', terminalId: 'term_1' });
-    }
-    expect(set?.permissions.requestPermission).toHaveBeenCalledOnce();
-    expect(answers).toEqual([
-      { content: 'file text' },
-      {},
-      { terminalId: 'term_1' },
-      { output: 'ok', truncated: false },
-      { exitCode: 0, signal: null },
-      {},
-      {},
-      { outcome: { outcome: 'cancelled' } },
-    ]);
+    expect(handlerSets[0]?.permissions.requestPermission).toHaveBeenCalledOnce();
+    expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }]);
   });
 
   it('passes session updates to the session update handler', async () => {
@@ -126,16 +106,6 @@ describe('ConnectionManager', () => {
       sessionId: 's1',
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
     }]);
-  });
-
-  it("releases the connection's terminals when the agent exits", async () => {
-    const { agents, connection, handlerSets } = await connectWith(async () => {});
-    expect(handlerSets[0]?.terminals.dispose).not.toHaveBeenCalled();
-
-    agents.launched[0]?.crash(1);
-    await connection.closed;
-
-    expect(handlerSets[0]?.terminals.dispose).toHaveBeenCalledOnce();
   });
 
   it('gives each connection its own handlers', async () => {

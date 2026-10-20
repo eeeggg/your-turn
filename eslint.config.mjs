@@ -51,7 +51,7 @@ function restrictImports({ paths = [], patterns = [] } = {}) {
 
 export default defineConfig(
   {
-    ignores: ["dist/**", "coverage/**", ".vscode-test/**"],
+    ignores: ["dist/**", "coverage/**", "coverage-integration/**", ".vscode-test/**"],
   },
   {
     files: ["**/*.{ts,tsx,mts,mjs}"],

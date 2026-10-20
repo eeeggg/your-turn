@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { SessionInfo as ListedSession } from '@agentclientprotocol/sdk';
+import { formatDistanceStrict } from 'date-fns';
 import { logError, messageOf } from './Log';
 import type { SessionHistoryStore } from './SessionHistoryStore';
 import { AuthenticationCancelled, type AgentCapabilitySummary, type SessionManager } from './SessionManager';
@@ -14,7 +15,6 @@ export interface AgentEntry {
 export interface SessionRow {
   readonly sessionId: string;
   readonly label: string;
-  /** How long ago the session was last active, such as `3h ago`. */
   readonly age?: string;
   readonly tooltip: string;
   readonly isActive: boolean;
@@ -228,30 +228,9 @@ function relativeTime(iso: string | undefined, now: number): string | undefined 
   if (Number.isNaN(time)) {
     return undefined;
   }
-  const seconds = Math.floor((now - time) / 1000);
-  if (seconds < 0) {
+  // An agent's clock can be ahead of ours.
+  if (time > now) {
     return 'just now';
   }
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (seconds < 60) {
-    return `${seconds}s ago`;
-  }
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  if (hours < 24) {
-    return `${hours}h ago`;
-  }
-  if (days < 7) {
-    return `${days}d ago`;
-  }
-  if (days < 35) {
-    return `${Math.floor(days / 7)}w ago`;
-  }
-  if (days < 360) {
-    return `${Math.floor(days / 30)}mo ago`;
-  }
-  return `${Math.floor(days / 365)}y ago`;
+  return formatDistanceStrict(time, now, { addSuffix: true, roundingMethod: 'floor' });
 }

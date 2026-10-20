@@ -18,7 +18,6 @@ export class StatusBarManager {
     this.sessionManager.on('session-added', () => this.updateStatus());
     this.sessionManager.on('session-removed', () => this.updateStatus());
     this.sessionManager.on('active-session-changed', () => this.updateStatus());
-    this.sessionManager.on('agent-error', () => this.showError());
     this.sessionManager.on('agent-closed', () => this.updateStatus());
   }
 
@@ -30,20 +29,13 @@ export class StatusBarManager {
     if (firstAgent === undefined) {
       this.statusBarItem.text = '$(hubot) ACP: No session';
       this.statusBarItem.tooltip = 'Click to connect to an agent';
-      this.statusBarItem.backgroundColor = undefined;
     } else {
       const agentName = activeSession?.agentDisplayName || firstAgent;
       this.statusBarItem.text = `$(hubot) ACP: ${agentName}`;
       this.statusBarItem.tooltip = `In session with ${agentName}`;
-      this.statusBarItem.backgroundColor = undefined;
     }
 
     this.statusBarItem.show();
-  }
-
-  private showError(): void {
-    this.statusBarItem.text = '$(error) ACP: Error';
-    this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
   }
 
   dispose(): void {

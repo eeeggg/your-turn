@@ -62,7 +62,7 @@ describe('the active session', () => {
     expect(view.session()?.title).toBeNull();
   });
 
-  it('is none again after a disconnect or a cleared transcript', () => {
+  it('is none again after a disconnect, a cleared transcript or the end of the session', () => {
     const view = chatView();
 
     view.connect();
@@ -71,6 +71,10 @@ describe('the active session', () => {
 
     view.connect();
     view.send({ type: 'clearTranscript' });
+    expect(view.session()).toBeNull();
+
+    view.connect();
+    view.send({ type: 'promptStart' }, { type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' });
     expect(view.session()).toBeNull();
   });
 });

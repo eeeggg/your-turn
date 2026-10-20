@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -407,10 +407,12 @@
     "lint": "eslint . --max-warnings 0",
     "pretest": "npm run compile && npm run lint",
     "test": "vitest run && vscode-test",
-    "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage"
+    "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage",
+    "coverage:integration": "npm run compile && npm run lint && vscode-test --coverage --coverage-output coverage-integration"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.0.0",
+    "date-fns": "^4.4.0",
     "execa": "^10.2.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
