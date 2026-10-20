@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { AgentSessions, SessionList, SessionRow } from '@/core/SessionList';
 
 /** Tier 1: a configured agent, expandable to its session list. */
-export class AgentTreeItem extends vscode.TreeItem {
+class AgentTreeItem extends vscode.TreeItem {
   constructor(
     public readonly agentName: string,
     public readonly hasSession: boolean,
@@ -34,7 +34,7 @@ export class AgentTreeItem extends vscode.TreeItem {
  * Tier 2: a past session of an agent. Clicking it routes to
  * `acp.openSession`, which loads or resumes it.
  */
-export class SessionTreeItem extends vscode.TreeItem {
+class SessionTreeItem extends vscode.TreeItem {
   public readonly sessionId: string;
 
   constructor(
@@ -66,7 +66,7 @@ export class SessionTreeItem extends vscode.TreeItem {
 }
 
 /** A leaf under an agent that shows a status, a failure or a next step instead of a session. */
-export class InfoTreeItem extends vscode.TreeItem {
+class InfoTreeItem extends vscode.TreeItem {
   constructor(
     public readonly kind:
       | 'loading'

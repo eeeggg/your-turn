@@ -20,7 +20,7 @@ export interface SessionRow {
   readonly isActive: boolean;
 }
 
-export type MoreSessions =
+type MoreSessions =
   | { readonly kind: 'none' }
   | { readonly kind: 'available' }
   | { readonly kind: 'loading' }
@@ -52,7 +52,7 @@ const SESSION_EVENTS = ['session-added', 'session-removed', 'active-session-chan
  * An agent's list is requested once and kept, including a failure, until
  * {@link invalidate}. Emits `'changed'` whenever what it would show changes.
  */
-export class SessionList extends EventEmitter {
+export class SessionList extends EventEmitter<{ changed: [] }> {
   private readonly listings = new Map<string, Listing>();
   private readonly announce = () => this.emit('changed');
 

@@ -45,7 +45,7 @@ function setup() {
   });
   updates.addListener((notification) => controller.handleSessionUpdate(notification));
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
-  manager.on('session-ended', (sessionId: string, reason: string) => controller.notifySessionEnded(sessionId, reason));
+  manager.on('session-ended', (sessionId, reason) => controller.notifySessionEnded(sessionId, reason));
 
   const prompt = (text: string) => {
     store.dispatch({ type: 'promptEdited', text });

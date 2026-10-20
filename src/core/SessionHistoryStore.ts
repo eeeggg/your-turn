@@ -69,7 +69,7 @@ const DEFAULT_CAP_PER_AGENT = 50;
  *
  * Emits `'changed'` whenever the cache mutates; the tree view subscribes for refresh.
  */
-export class SessionHistoryStore extends EventEmitter {
+export class SessionHistoryStore extends EventEmitter<{ changed: [] }> {
   private entries: PersistedSessionEntry[] = [];
 
   constructor(

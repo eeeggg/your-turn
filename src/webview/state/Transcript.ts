@@ -7,7 +7,7 @@ import type { Transition } from '@/webview/state/Store';
 /** Unique for the life of the page, even across clears, so a late reply about a cleared entry matches nothing. */
 export type EntryId = number;
 
-export interface Prompt {
+interface Prompt {
   readonly kind: 'prompt';
   readonly id: EntryId;
   readonly text: string;
@@ -67,7 +67,7 @@ export interface Plan {
   readonly entries: readonly PlanEntry[];
 }
 
-export interface TranscriptError {
+interface TranscriptError {
   readonly kind: 'error';
   readonly id: EntryId;
   readonly text: string;
@@ -90,7 +90,7 @@ export interface TranscriptState {
   readonly followRequests: number;
 }
 
-export type WelcomeCommand = 'acp.connectAgent' | 'acp.addAgent';
+type WelcomeCommand = 'acp.connectAgent' | 'acp.addAgent';
 
 export type TranscriptAction =
   | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }

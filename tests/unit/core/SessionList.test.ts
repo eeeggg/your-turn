@@ -49,7 +49,7 @@ async function listed(list: SessionList, agentName: string): Promise<AgentSessio
     if (!loading) {
       return sessions;
     }
-    await new Promise((resolve) => list.once('changed', resolve));
+    await new Promise<void>((resolve) => list.once('changed', () => resolve()));
   }
   throw new Error(`Sessions of ${agentName} were still loading after 20 looks`);
 }
