@@ -1,25 +1,16 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod, ResourceLink, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
-import type { ClientHandlers } from '@/core/ClientHandlers';
+import { AgentManager, type AgentConfigEntry } from '@/core/AgentManager';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, type AgentScript } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
 
 /** Let pending callbacks, including agent exits, run. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
-
-const unused = (): never => {
-  throw new Error('not used by these tests');
-};
-const unusedHandlers: ClientHandlers = {
-  files: { readTextFile: unused, writeTextFile: unused },
-  terminals: { createTerminal: unused, terminalOutput: unused, waitForTerminalExit: unused, killTerminal: unused, releaseTerminal: unused, dispose() {} },
-  permissions: { requestPermission: unused },
-};
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -37,6 +28,7 @@ const EVENTS = [
   'mode-changed',
   'session-load-start',
   'session-load-end',
+  'session-ended',
   'agent-closed',
 ] as const;
 
@@ -81,6 +73,7 @@ function setup(scripts: Record<string, AgentScript>) {
   return {
     agents,
     manager,
+    chatView,
     sessionHistory,
     authPrompt,
     received,
@@ -289,6 +282,73 @@ describe('SessionManager', () => {
       expect(agents.launched[0]?.killed).toBe(true);
     });
 
+    it('stops the agent and says why when authentication fails', async () => {
+      const script: AgentScript = () => fakeAgent({ authMethods: methodsOffered })
+        .onRequest(methods.agent.authenticate, () => {
+          throw RequestError.internalError(undefined, 'token expired');
+        })
+        .onRequest(methods.agent.session.new, () => {
+          throw RequestError.authRequired();
+        });
+      const { agents, manager, authPrompt } = setup({ fake: script });
+      authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[0]);
+
+      await expect(manager.connectToAgent('fake')).rejects.toThrow(/^Authentication failed: .*token expired/);
+      expect(agents.launched[0]?.killed).toBe(true);
+    });
+
+    it('stops the agent when the session still cannot be created after authenticating', async () => {
+      const script: AgentScript = () => fakeAgent({ authMethods: methodsOffered })
+        .onRequest(methods.agent.authenticate, () => ({}))
+        .onRequest(methods.agent.session.new, () => {
+          throw RequestError.authRequired();
+        });
+      const { agents, manager, authPrompt } = setup({ fake: script });
+      authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[0]);
+
+      await expect(manager.connectToAgent('fake')).rejects.toThrow('Authentication required');
+      expect(authPrompt.chooseAuthMethod).toHaveBeenCalledOnce();
+      expect(agents.launched[0]?.killed).toBe(true);
+    });
+
+    describe('when listing sessions', () => {
+      /** An agent that lists its sessions only once authenticated. */
+      function listingAgent() {
+        const authenticated: string[] = [];
+        const script: AgentScript = () => fakeAgent({ agentCapabilities: { sessionCapabilities: { list: {} } }, authMethods: methodsOffered })
+          .onRequest(methods.agent.authenticate, ({ params }) => {
+            authenticated.push(params.methodId);
+            return {};
+          })
+          .onRequest(methods.agent.session.list, () => {
+            if (authenticated.length === 0) {
+              throw RequestError.authRequired();
+            }
+            return { sessions: [{ sessionId: 'old', cwd: '/work' }] };
+          });
+        return { script, authenticated };
+      }
+
+      it('authenticates with the method the user picks, then lists again, keeping the agent', async () => {
+        const fake = listingAgent();
+        const { agents, manager, authPrompt } = setup({ fake: fake.script });
+        authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[1]);
+
+        const listed = await manager.listSessions('fake');
+
+        expect(fake.authenticated).toEqual(['browser']);
+        expect(listed.sessions.map((s) => s.sessionId)).toEqual(['old']);
+        expect(agents.running('fake')).toHaveLength(1);
+      });
+
+      it('stops the agent when the user cancels', async () => {
+        const { agents, manager } = setup({ fake: listingAgent().script });
+
+        await expect(manager.listSessions('fake')).rejects.toThrow(AuthenticationCancelled);
+        expect(agents.launched[0]?.killed).toBe(true);
+      });
+    });
+
     it('fails clearly when the agent requires authentication but offers no method', async () => {
       const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, () => {
         throw RequestError.authRequired();
@@ -488,6 +548,24 @@ describe('SessionManager', () => {
       manager.recordFirstPrompt('s1', 'second');
 
       expect(sessionHistory.get('fake', 's1')?.firstPrompt).toBe('first');
+    });
+
+    it('moves the session to the top of the session history when a turn ends', async () => {
+      vi.useFakeTimers({ now: Date.parse('2026-10-18T10:00:00Z'), toFake: ['Date'] });
+      try {
+        const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })));
+        const { manager, chatView, sessionHistory } = setup({ fake: fake.script });
+        await manager.connectToAgent('fake');
+        vi.setSystemTime(Date.parse('2026-10-18T11:00:00Z'));
+        sessionHistory.upsertNew('fake', '/work', 'newer');
+        vi.setSystemTime(Date.parse('2026-10-18T12:00:00Z'));
+
+        await chatView.handleMessage({ type: 'sendPrompt', text: 'hello' });
+
+        expect(sessionHistory.list('fake').map((e) => e.sessionId)).toEqual(['s1', 'newer']);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
@@ -771,10 +849,64 @@ describe('SessionManager', () => {
       expect(manager.getActiveSessionId()).toBeNull();
       expect(manager.hasSession('fake')).toBe(false);
       expect(takeEvents()).toEqual([
+        ['session-ended', 's1', 'Fake Agent exited unexpectedly (code 1).'],
         ['session-removed', 's1', 'fake'],
         ['active-session-changed', null],
         ['agent-closed', 'agent_1', 1],
       ]);
+    });
+
+    it('names no exit code when a signal killed the agent', async () => {
+      const { agents, manager, takeEvents } = setup({ fake: sessionAgent().script });
+      await manager.connectToAgent('fake');
+      takeEvents();
+
+      agents.launched[0]?.crash(null);
+      await settle();
+
+      expect(takeEvents()).toContainEqual(['session-ended', 's1', 'Fake Agent exited unexpectedly.']);
+    });
+
+    it('announces no end for a session whose agent it stopped itself', async () => {
+      const stops: [string, (manager: SessionManager) => Promise<unknown>][] = [
+        ['disconnect', (manager) => manager.disconnectAgent('fake')],
+        ['new session', (manager) => manager.newSession()],
+        // The session outlives the stop until the exit drops it.
+        ['authentication cancelled while listing', (manager) => manager.listSessions('fake').catch(() => {})],
+      ];
+      for (const [name, stop] of stops) {
+        const init = { agentCapabilities: { sessionCapabilities: { list: {} } }, authMethods: [{ id: 'login', name: 'Log in' }] };
+        const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.list, () => {
+          throw RequestError.authRequired();
+        }), init);
+        const { manager, takeEvents } = setup({ fake: fake.script });
+        await manager.connectToAgent('fake');
+
+        await stop(manager);
+        await settle();
+
+        const events = takeEvents().map(([event]) => event);
+        expect(events, name).toContain('session-removed');
+        expect(events, name).not.toContain('session-ended');
+      }
+    });
+
+    it('fails a prompt in flight only once the exit has ended its session, whichever the agent reports first', async () => {
+      for (const order of ['output-then-exit', 'exit-then-output'] as ExitOrder[]) {
+        const script: AgentScript = () => fakeAgent()
+          .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' }))
+          .onRequest(methods.agent.session.prompt, () => new Promise(() => {}));
+        const { agents, manager, events } = setup({ fake: script });
+        await manager.connectToAgent('fake');
+        const prompt = manager.sendPrompt('s1', 'hello');
+        await settle();
+
+        agents.launched[0]?.crash(1, order);
+        const failure = await prompt.then(() => 'answered', () => events.map(([event]) => event));
+
+        expect(failure, order).toContain('session-ended');
+        expect(manager.getActiveSessionId(), order).toBeNull();
+      }
     });
 
     it('drops a loaded session when its agent exits', async () => {
@@ -817,6 +949,30 @@ describe('SessionManager', () => {
       expect(manager.getActiveSessionId()).toBe('s2');
       expect(manager.hasSession('fake')).toBe(true);
       await expect(manager.sendPrompt('s2', 'still there?')).resolves.toEqual({ stopReason: 'end_turn' });
+    });
+
+    describe('when the command cannot start, as real processes', () => {
+      function realAgent(config: AgentConfigEntry): SessionManager {
+        return new SessionManager(
+          new AgentManager(),
+          new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
+          { workspaceCwd: () => process.cwd(), agentConfigs: () => ({ broken: config }), activeFileLink: () => undefined },
+          { chooseAuthMethod: vi.fn() },
+        );
+      }
+
+      it('fails to connect with the launch error, which names the command', async () => {
+        const manager = realAgent({ command: 'acp-test-no-such-command', args: ['acp'] });
+
+        await expect(manager.connectToAgent('broken')).rejects.toThrow(/ENOENT: acp-test-no-such-command acp/);
+        expect(manager.getActiveSessionId()).toBeNull();
+      });
+
+      it('fails to connect with the exit code of a command that exits before answering', async () => {
+        const manager = realAgent({ command: process.execPath, args: ['-e', 'process.exitCode = 2'] });
+
+        await expect(manager.connectToAgent('broken')).rejects.toThrow('Agent "broken" exited with code 2 before connecting; its output is in the ACP log (ACP: Show Log).');
+      });
     });
 
     it('stops every agent on dispose', async () => {

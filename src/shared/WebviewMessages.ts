@@ -26,6 +26,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'promptStart' }
   | { type: 'promptEnd'; stopReason: StopReason | 'error' }
   | { type: 'error'; message: string }
+  /** The shown session's agent exited on its own; the message says so. A sessionless `state` follows. */
+  | { type: 'sessionEnded'; message: string }
   | { type: 'sessionUpdate'; sessionId: string; update: SessionUpdate }
   | { type: 'modesUpdate'; modes: SessionModeState | null }
   | { type: 'configOptionsUpdate'; configOptions: SessionConfigOption[] | null }

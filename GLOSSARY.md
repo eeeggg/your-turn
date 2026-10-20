@@ -15,7 +15,7 @@ The part of the extension that holds its logic and does not depend on the VS Cod
 _Avoid_: backend, extension side, host
 
 **Adapter**:
-The part of the extension that connects core to the VS Code API: views, commands, settings, storage, terminals, and the file system.
+The part of the extension that connects core to the VS Code API: views, commands, settings, and storage.
 _Avoid_: host, glue, integration
 
 **Chat view**:
@@ -117,7 +117,7 @@ A prompt the user sends while a turn is still running, which waits for that turn
 _Avoid_: mid-run prompt, interrupt
 
 **Queued prompt**:
-A prompt the user sent during a turn, pinned above the prompt box until the turn ends, when it goes to the agent and joins the transcript.
+A prompt the user sent during a turn, pinned above the prompt box until the turn ends, when it goes to the agent and joins the transcript. If the agent exits instead, it is dropped: nothing can send it.
 _Avoid_: pending prompt
 
 **Agent message**:
@@ -143,10 +143,6 @@ _Avoid_: block (a markdown block within an agent message), item, segment
 **Permission request**:
 The agent asking the user to approve an action by choosing one of the options it offers.
 _Avoid_: approval, confirmation, prompt
-
-**Terminal**:
-A command the agent asks the extension to run for it, whose output the agent reads and the user watches in a VS Code terminal.
-_Avoid_: shell, process (when the agent's terminal is meant)
 
 ### Session controls
 

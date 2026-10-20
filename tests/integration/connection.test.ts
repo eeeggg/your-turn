@@ -9,10 +9,7 @@ import { ConnectionManager, ConnectionInfo } from '@/core/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { setLogSink, type TrafficDirection } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';
-import { ProcessTerminals } from '@/core/ProcessTerminals';
-import { FileSystemHandler } from '@/adapters/FileSystemHandler';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
-import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -60,11 +57,7 @@ suite('ConnectionManager Test Suite', () => {
         texts.push(n.update.content.text);
       }
     });
-    manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({
-      files: new FileSystemHandler(),
-      terminals: new ProcessTerminals(pseudoterminalDisplays),
-      permissions: new PermissionRequests(permissionQuickPick),
-    }));
+    manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
 
     // Inside the test host, process.execPath is the Electron binary.
     agent = new AgentManager().launch('fake-agent', {

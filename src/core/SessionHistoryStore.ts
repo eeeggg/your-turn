@@ -46,6 +46,17 @@ function isPersistedShape(raw: unknown): raw is PersistedShape {
     && 'entries' in raw && Array.isArray(raw.entries);
 }
 
+const REQUIRED_FIELDS = ['agentName', 'cwd', 'sessionId', 'createdAt', 'lastActiveAt'] as const;
+const OPTIONAL_FIELDS = ['title', 'firstPrompt'] as const;
+
+/** Saved data outlives the code that wrote it, so each entry is checked before it is trusted. */
+function isPersistedEntry(raw: unknown): raw is PersistedSessionEntry {
+  if (typeof raw !== 'object' || raw === null) { return false; }
+  const fields = raw as Record<string, unknown>;
+  return REQUIRED_FIELDS.every((field) => typeof fields[field] === 'string')
+    && OPTIONAL_FIELDS.every((field) => fields[field] === undefined || typeof fields[field] === 'string');
+}
+
 const STATE_KEY = 'acp.sessionHistory.v1';
 const MAX_PROMPT_LEN = 120;
 const DEFAULT_CAP_PER_AGENT = 50;
@@ -68,7 +79,7 @@ export class SessionHistoryStore extends EventEmitter {
     super();
     const raw = this.workspaceState.get<unknown>(STATE_KEY);
     if (isPersistedShape(raw)) {
-      this.entries = raw.entries;
+      this.entries = raw.entries.filter(isPersistedEntry);
     }
   }
 
@@ -151,15 +162,6 @@ export class SessionHistoryStore extends EventEmitter {
       return true;
     }
     return false;
-  }
-
-  /** Remove every entry for an agent. */
-  forgetAgent(agentName: string): number {
-    const before = this.entries.length;
-    this.entries = this.entries.filter(e => e.agentName !== agentName);
-    const removed = before - this.entries.length;
-    if (removed > 0) { this.persist(); }
-    return removed;
   }
 
   /**

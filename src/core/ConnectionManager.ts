@@ -30,22 +30,14 @@ export class ConnectionManager {
     // Wrap the stream to intercept and log all ACP traffic
     const tappedStream = this.tapStream(stream);
 
-    const { files, terminals, permissions } = this.createHandlers();
+    const { permissions } = this.createHandlers();
 
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = createClientApp({ name: 'vscode-acp-client' })
       .onRequest(methods.client.session.requestPermission, ({ params }) => permissions.requestPermission(params))
-      .onNotification(methods.client.session.update, ({ params }) => this.sessionUpdateHandler.handleUpdate(params))
-      .onRequest(methods.client.fs.readTextFile, ({ params }) => files.readTextFile(params))
-      .onRequest(methods.client.fs.writeTextFile, ({ params }) => files.writeTextFile(params))
-      .onRequest(methods.client.terminal.create, ({ params }) => terminals.createTerminal(params))
-      .onRequest(methods.client.terminal.output, ({ params }) => terminals.terminalOutput(params))
-      .onRequest(methods.client.terminal.waitForExit, ({ params }) => terminals.waitForTerminalExit(params))
-      .onRequest(methods.client.terminal.kill, ({ params }) => terminals.killTerminal(params))
-      .onRequest(methods.client.terminal.release, ({ params }) => terminals.releaseTerminal(params));
+      .onNotification(methods.client.session.update, ({ params }) => this.sessionUpdateHandler.handleUpdate(params));
     const connection = app.connect(tappedStream);
-    connection.signal.addEventListener('abort', () => terminals.dispose(), { once: true });
 
     // Initialize the connection
     log(`ConnectionManager: initializing connection to agent ${agentName}`);
@@ -55,13 +47,8 @@ export class ConnectionManager {
         name: 'vscode-acp-client',
         version: this.clientVersion,
       },
-      clientCapabilities: {
-        fs: {
-          readTextFile: true,
-          writeTextFile: true,
-        },
-        terminal: true,
-      },
+      // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities.
+      clientCapabilities: {},
     });
 
     log(`ConnectionManager: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);

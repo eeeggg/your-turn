@@ -1,23 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentConfigEntry } from '@/core/AgentManager';
 import { AgentConfigurations } from '@/core/AgentConfigurations';
-import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import type { RegistryAgent } from '@/core/RegistryClient';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ConfigurationTarget, type WorkspaceConfiguration } from '@/core/VsCodeApi';
-import { fakeAgent, InProcessAgents } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers } from './InProcessAgents';
 import { ScriptedUser } from './ScriptedUser';
-
-const unused = (): never => {
-  throw new Error('not used by these tests');
-};
-const unusedHandlers: ClientHandlers = {
-  files: { readTextFile: unused, writeTextFile: unused },
-  terminals: { createTerminal: unused, terminalOutput: unused, waitForTerminalExit: unused, killTerminal: unused, releaseTerminal: unused, dispose() {} },
-  permissions: { requestPermission: unused },
-};
 
 type Agents = Record<string, AgentConfigEntry>;
 

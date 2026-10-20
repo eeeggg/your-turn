@@ -47,6 +47,7 @@ export function updateActiveSession(
       };
     }
     case 'clearTranscript':
+    case 'sessionEnded':
       return null;
     case 'sessionInfoUpdate':
       return session && { ...session, title: action.title };

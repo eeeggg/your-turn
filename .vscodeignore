@@ -2,6 +2,7 @@
 .vscode-test/**
 src/**
 coverage/**
+coverage-integration/**
 node_modules/**
 .gitignore
 .gitattributes

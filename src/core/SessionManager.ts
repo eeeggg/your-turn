@@ -76,6 +76,8 @@ interface RunningAgent {
   process: AgentProcess;
   connection: ClientConnection;
   initResponse: InitializeResponse;
+  /** Settles once the process's exit has been handled. */
+  exited: Promise<void>;
 }
 
 interface SessionState {
@@ -97,6 +99,10 @@ export class AuthenticationCancelled extends Error {
     super('Authentication cancelled by user.');
     this.name = 'AuthenticationCancelled';
   }
+}
+
+function exitReason(agentDisplayName: string, code: number | null): string {
+  return code === null ? `${agentDisplayName} exited unexpectedly.` : `${agentDisplayName} exited unexpectedly (code ${code}).`;
 }
 
 /** True if a thrown error denotes ACP "auth required" (-32000). */
@@ -272,12 +278,16 @@ export class SessionManager extends EventEmitter {
       throw new Error(`No agent configuration named "${agentName}". Configured: ${Object.keys(configs).join(', ')}`);
     }
 
+    let exitHandled!: () => void;
+    const exited = new Promise<void>((resolve) => { exitHandled = resolve; });
+    const outcome: { launchError?: Error; exitCode?: number | null } = {};
     const agentProcess = this.launcher.launch(agentName, config, this.environment.workspaceCwd(), {
-      error: (error) => {
-        logError(`Agent ${agentName} error`, error);
-        this.emit('agent-error', agentProcess.id, error);
+      error: (error) => { outcome.launchError = error; },
+      exit: (code) => {
+        outcome.exitCode = code;
+        this.handleAgentExit(agentName, agentProcess, code);
+        exitHandled();
       },
-      exit: (code) => this.handleAgentExit(agentName, agentProcess, code),
     });
 
     let connection: ClientConnection;
@@ -286,10 +296,18 @@ export class SessionManager extends EventEmitter {
       ({ connection, initResponse } = await this.connectionManager.connect(agentName, agentProcess));
     } catch (e) {
       agentProcess.kill();
+      // The connection can fail before the launcher reports why the process ended, which says more than a closed connection.
+      await exited;
+      if (outcome.launchError) {
+        throw outcome.launchError;
+      }
+      if (typeof outcome.exitCode === 'number') {
+        throw new Error(`Agent "${agentName}" exited with code ${outcome.exitCode} before connecting; its output is in the ACP log (ACP: Show Log).`);
+      }
       throw e;
     }
 
-    const agent: RunningAgent = { name: agentName, process: agentProcess, connection, initResponse };
+    const agent: RunningAgent = { name: agentName, process: agentProcess, connection, initResponse, exited };
     this.agents.set(agentName, agent);
     this.capabilities.set(agentName, summarizeCapabilities(initResponse.agentCapabilities));
     return agent;
@@ -305,13 +323,18 @@ export class SessionManager extends EventEmitter {
 
   private handleAgentExit(agentName: string, agentProcess: AgentProcess, code: number | null): void {
     log(`Agent ${agentName} closed with code ${String(code)}`);
-    if (this.agents.get(agentName)?.process === agentProcess) {
+    // Still registered means nothing here stopped it.
+    const unexpected = this.agents.get(agentName)?.process === agentProcess;
+    if (unexpected) {
       this.agents.delete(agentName);
     }
 
     // Only the session running on this process goes; a newer one for the same agent stays.
     const session = this.sessionOf(agentName);
     if (session?.agentId === agentProcess.id) {
+      if (unexpected) {
+        this.emit('session-ended', session.sessionId, exitReason(session.agentDisplayName, code));
+      }
       this.removeSession(session);
       this.emit('active-session-changed', null);
     }
@@ -437,8 +460,8 @@ export class SessionManager extends EventEmitter {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
-    const connection = this.connectionFor(session);
-    if (!connection) {
+    const agent = this.agents.get(session.agentName);
+    if (!agent) {
       throw new Error(`No connection for agent: ${session.agentName}`);
     }
 
@@ -454,10 +477,17 @@ export class SessionManager extends EventEmitter {
       prompt.unshift({ type: 'resource_link', ...fileLink });
     }
 
-    const response = await connection.agent.request(methods.agent.session.prompt, {
-      sessionId,
-      prompt,
-    });
+    let response: PromptResponse;
+    try {
+      response = await agent.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt });
+    } catch (e) {
+      // The connection can close before the process's exit is reported; the exit ends the session and says why,
+      // so the prompt fails after it.
+      if (agent.connection.signal.aborted) {
+        await agent.exited;
+      }
+      throw e;
+    }
 
     log(`Prompt response: stopReason=${response.stopReason}`);
     return response;

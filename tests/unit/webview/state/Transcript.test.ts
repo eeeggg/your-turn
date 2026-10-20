@@ -164,6 +164,66 @@ describe('the transcript and its session', () => {
   });
 });
 
+describe('a session whose agent exited', () => {
+  const ended: Action = { type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' };
+  const noSession: Action = { type: 'state', activeSessionId: null, session: null };
+
+  function midTurn() {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.send({ type: 'promptStart' });
+    view.update('agent_message_chunk', text('working'));
+    view.prompt('second');
+    view.takePosted();
+    return view;
+  }
+
+  it('keeps the conversation and ends it with why, sending no queued prompt', () => {
+    const view = midTurn();
+
+    view.send(ended, noSession);
+
+    expect(view.summary()).toEqual(['prompt: first', 'turn: working', 'error: Fake exited unexpectedly (code 1).']);
+    expect(view.transcript().currentTurn).toBeNull();
+    expect(view.transcript().queued).toEqual([]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.store.getSnapshot().activeSession).toBeNull();
+    expect(view.welcome()).toBe(false);
+  });
+
+  it('sends nothing when a late promptEnd arrives', () => {
+    const view = midTurn();
+    view.send(ended, noSession);
+
+    view.send({ type: 'promptEnd', stopReason: 'error' });
+
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it('belongs to its session again when it is reopened, so a disconnect then clears it', () => {
+    const view = midTurn();
+    view.send(ended, noSession);
+
+    view.connect();
+    expect(view.summary()).toHaveLength(3);
+
+    view.send(noSession);
+    expect(view.summary()).toEqual([]);
+  });
+
+  it('gives way to the next session', () => {
+    const view = midTurn();
+    view.send(ended, noSession);
+
+    view.connect({ sessionId: 's2' });
+    view.send(noSession);
+
+    expect(view.summary()).toEqual([]);
+    expect(view.welcome()).toBe(true);
+  });
+});
+
 describe('prompts', () => {
   it('shows exactly the prompt the prompt box sent', () => {
     const view = chatView();

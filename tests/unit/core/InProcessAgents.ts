@@ -1,9 +1,22 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
+import type { ClientHandlers } from '@/core/ClientHandlers';
 
 /** Builds the agent a launch talks to; called once per launch. */
 export type AgentScript = () => AgentApp;
+
+const unused = (): never => {
+  throw new Error('not used by these tests');
+};
+
+/** Client handlers for agents that never call them. */
+export const unusedHandlers: ClientHandlers = {
+  permissions: { requestPermission: unused },
+};
+
+/** A real process's output can close before its exit is reported, or after. */
+export type ExitOrder = 'output-then-exit' | 'exit-then-output';
 
 /**
  * An SDK agent that answers `initialize`; add the requests a test needs. The
@@ -24,8 +37,8 @@ export interface LaunchedAgent {
   readonly process: AgentProcess;
   killed: boolean;
   exited: boolean;
-  /** The process dies on its own, without being killed. */
-  crash(code?: number): void;
+  /** The process dies on its own, without being killed; a null code is a death by signal. */
+  crash(code?: number | null, order?: ExitOrder): void;
 }
 
 /**
@@ -43,6 +56,7 @@ export class InProcessAgents implements AgentLauncher {
     if (!script) {
       throw new Error(`no script for agent ${name}`);
     }
+    // Coffee is for closers.
     const closers: (() => void)[] = [];
     const pipe = () => new TransformStream<Uint8Array, Uint8Array>({
       start: (controller) => { closers.push(() => controller.terminate()); },
@@ -52,11 +66,19 @@ export class InProcessAgents implements AgentLauncher {
     script().connect(ndJsonStream(toClient.writable, toAgent.readable));
 
     // Like a process's stdio, both streams close when the agent exits.
-    const exit = (code: number | null) => {
+    const exit = (code: number | null, order: ExitOrder = 'output-then-exit') => {
       if (launched.exited) { return; }
       launched.exited = true;
-      for (const close of closers) { close(); }
-      setImmediate(() => events.exit(code));
+      const closeOutput = () => { for (const close of closers) { close(); } };
+      if (order === 'output-then-exit') {
+        closeOutput();
+        setImmediate(() => events.exit(code));
+      } else {
+        setImmediate(() => {
+          events.exit(code);
+          setImmediate(closeOutput);
+        });
+      }
     };
     const process: AgentProcess = {
       id: `agent_${this.nextId++}`,
@@ -67,7 +89,7 @@ export class InProcessAgents implements AgentLauncher {
         exit(null);
       },
     };
-    const launched: LaunchedAgent = { name, cwd, process, killed: false, exited: false, crash: (code = 1) => exit(code) };
+    const launched: LaunchedAgent = { name, cwd, process, killed: false, exited: false, crash: (code = 1, order) => exit(code, order) };
     this.launched.push(launched);
     return process;
   }

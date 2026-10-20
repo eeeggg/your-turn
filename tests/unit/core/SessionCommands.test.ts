@@ -1,23 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
-import type { ClientHandlers } from '@/core/ClientHandlers';
 import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ProgressLocation } from '@/core/VsCodeApi';
-import { fakeAgent, InProcessAgents, type AgentScript } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript } from './InProcessAgents';
 import { ScriptedUser, type Call } from './ScriptedUser';
-
-const unused = (): never => {
-  throw new Error('not used by these tests');
-};
-const unusedHandlers: ClientHandlers = {
-  files: { readTextFile: unused, writeTextFile: unused },
-  terminals: { createTerminal: unused, terminalOutput: unused, waitForTerminalExit: unused, killTerminal: unused, releaseTerminal: unused, dispose() {} },
-  permissions: { requestPermission: unused },
-};
 
 const progress = (title: string): Call => ({ call: 'withProgress', options: { location: ProgressLocation.Notification, title, cancellable: false } });
 const focusChatView: Call = { call: 'executeCommand', command: 'acp-chat.focus' };

@@ -14,8 +14,6 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Thinking Display**: See agent reasoning in a collapsible block with streaming animation and elapsed time
 - **Slash Commands**: Autocomplete popup for agent-provided commands with keyboard navigation
 - **Mode & Model Picker**: Switch agent modes and models directly from the chat toolbar (kept for agents that haven't migrated to Session Config Options yet)
-- **File System Integration**: Agents can read and write files in your workspace
-- **Terminal Execution**: Agents can run commands with terminal output display
 - **Permission Management**: Configurable auto-approve policies for agent actions
 - **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
 - **Agent Registry**: Browse and discover available ACP agents
@@ -139,7 +137,7 @@ npx @vscode/vsce package   # Create .vsix
 The extension follows a modular architecture:
 
 - **Core**: `AgentManager`, `ConnectionManager`, `SessionManager`, `AcpClientImpl`
-- **Handlers**: `FileSystemHandler`, `TerminalHandler`, `PermissionHandler`, `SessionUpdateHandler`
+- **Handlers**: `PermissionRequests`, `SessionUpdateHandler`
 - **UI**: `SessionTreeProvider`, `ChatWebviewProvider`, `StatusBarManager`
 - **Config**: `AgentConfig`, `RegistryClient`
 - **Utils**: `Logger`
