@@ -1,15 +1,16 @@
 import * as vscode from 'vscode';
 
 import { AgentConfigurations } from '@/core/AgentConfigurations';
-import { AgentManager } from '@/core/AgentManager';
+import { AgentManager, findOnPath } from '@/core/AgentManager';
 import { ConnectionManager } from '@/core/ConnectionManager';
+import { checkPackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionHistoryStore } from '@/core/SessionHistoryStore';
 import { SessionList } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ChatViewController } from '@/core/ChatViewController';
-import { fetchRegistry } from '@/core/RegistryClient';
+import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
 import { log, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
@@ -61,8 +62,13 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const treeView = vscode.window.createTreeView('acp-sessions', {
     treeDataProvider: sessionTreeProvider,
   });
+  // The Agents view's welcome is shown on this rather than on the tree being empty, which VS Code assumes until the
+  // tree's first items arrive; `when` clauses cannot test the `acp.agents` object for emptiness themselves.
+  const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'acp.noAgentsConfigured', getAgentNames().length === 0);
+  markNoAgentsConfigured();
   const agentsChanged = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('acp.agents')) {
+      markNoAgentsConfigured();
       sessionTreeProvider.refresh();
     }
   });
@@ -115,7 +121,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     () => vscode.workspace.getConfiguration('acp'),
     sessionManager,
     vscode.window,
-    fetchRegistry,
+    {
+      fetchRegistry,
+      checkRunner: (runner) => checkPackageRunner(agentManager, runner, workspaceEnvironment.workspaceCwd()),
+      findOnPath,
+      platform: registryPlatform(),
+    },
   );
   const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
 
@@ -155,8 +166,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       }
     }),
     vscode.commands.registerCommand('acp.addAgent', () => agentConfigurations.add()),
+    vscode.commands.registerCommand('acp.detectAgents', () => agentConfigurations.detect()),
     vscode.commands.registerCommand('acp.removeAgent', (arg?: unknown) => agentConfigurations.remove(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.browseRegistry', () => agentConfigurations.browseRegistry()),
     vscode.commands.registerCommand('acp.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,

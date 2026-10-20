@@ -60,6 +60,10 @@ _Avoid_: profile, agent (when the recipe is meant)
 The public catalog of ACP agents from which the user can add an agent configuration.
 _Avoid_: marketplace, store
 
+**Package runner**:
+`npx` or `uvx`, which fetches an agent's package when the agent is launched and runs it; the only way an agent from the agent registry can be added.
+_Avoid_: tool, package manager, installer
+
 **Connection**:
 The live ACP link to one running agent, established by the initialize handshake.
 _Avoid_: agent instance, link

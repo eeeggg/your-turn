@@ -1,8 +1,8 @@
 {
   "name": "acp-client",
   "displayName": "ACP Client",
-  "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.3.7",
+  "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
+  "version": "0.3.8",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -60,11 +60,8 @@
     "viewsWelcome": [
       {
         "view": "acp-sessions",
-        "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\nConfigure agents in settings or browse the [Agent Registry](command:acp.browseRegistry)."
-      },
-      {
-        "view": "acp-chat",
-        "contents": "Start chatting with an AI coding agent.\n[Connect to Agent](command:acp.connectAgent)\nSelect an agent from the list above to begin."
+        "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\n[Detect Agents](command:acp.detectAgents)\nDetect Agents looks on your PATH for agents from the ACP registry.",
+        "when": "acp.noAgentsConfigured"
       }
     ],
     "commands": [
@@ -102,6 +99,10 @@
         "icon": "$(add)"
       },
       {
+        "command": "acp.detectAgents",
+        "title": "ACP: Detect Agents"
+      },
+      {
         "command": "acp.removeAgent",
         "title": "ACP: Remove Agent"
       },
@@ -112,10 +113,6 @@
       {
         "command": "acp.showTraffic",
         "title": "ACP: Show Protocol Traffic"
-      },
-      {
-        "command": "acp.browseRegistry",
-        "title": "ACP: Browse Agent Registry"
       },
       {
         "command": "acp.setMode",
@@ -190,10 +187,6 @@
           "command": "acp.refreshAgents",
           "when": "view == acp-sessions",
           "group": "navigation@2"
-        },
-        {
-          "command": "acp.browseRegistry",
-          "when": "view == acp-sessions"
         },
         {
           "command": "acp.newSession",
@@ -282,95 +275,7 @@
         "acp.agents": {
           "type": "object",
           "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
-          "default": {
-            "GitHub Copilot": {
-              "command": "npx",
-              "args": [
-                "@github/copilot-language-server@latest",
-                "--acp"
-              ],
-              "env": {}
-            },
-            "Claude Code": {
-              "command": "npx",
-              "args": [
-                "@agentclientprotocol/claude-agent-acp@latest"
-              ],
-              "env": {}
-            },
-            "Gemini CLI": {
-              "command": "npx",
-              "args": [
-                "@google/gemini-cli@latest",
-                "--experimental-acp"
-              ],
-              "env": {}
-            },
-            "Qwen Code": {
-              "command": "npx",
-              "args": [
-                "@qwen-code/qwen-code@latest",
-                "--acp",
-                "--experimental-skills"
-              ],
-              "env": {}
-            },
-            "Auggie CLI": {
-              "command": "npx",
-              "args": [
-                "@augmentcode/auggie@latest",
-                "--acp"
-              ],
-              "env": {
-                "AUGMENT_DISABLE_AUTO_UPDATE": "1"
-              }
-            },
-            "Qoder CLI": {
-              "command": "npx",
-              "args": [
-                "@qoder-ai/qodercli@latest",
-                "--acp"
-              ],
-              "env": {}
-            },
-            "Codex CLI": {
-              "command": "npx",
-              "args": [
-                "@zed-industries/codex-acp@latest"
-              ],
-              "env": {}
-            },
-            "OpenCode": {
-              "command": "npx",
-              "args": [
-                "opencode-ai@latest",
-                "acp"
-              ],
-              "env": {}
-            },
-            "OpenClaw": {
-              "command": "npx",
-              "args": [
-                "openclaw",
-                "acp"
-              ],
-              "env": {}
-            },
-            "Kiro CLI": {
-              "command": "kiro-cli",
-              "args": [
-                "acp"
-              ],
-              "env": {}
-            },
-            "Hermes Agent": {
-              "command": "hermes",
-              "args": [
-                "acp"
-              ],
-              "env": {}
-            }
-          }
+          "default": {}
         },
         "acp.autoApprovePermissions": {
           "type": "string",
@@ -418,6 +323,7 @@
     "react-dom": "^19.3.1",
     "streamdown": "^2.7.1",
     "use-stick-to-bottom": "^1.1.6",
+    "which": "^7.0.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
@@ -431,6 +337,7 @@
     "@types/react-dom": "^19.3.0",
     "@types/vscode": "~1.140.0",
     "@types/vscode-webview": "^1.57.5",
+    "@types/which": "^3.0.4",
     "@vitest/coverage-v8": "^5.0.5",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",

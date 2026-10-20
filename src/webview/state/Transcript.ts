@@ -90,14 +90,11 @@ export interface TranscriptState {
   readonly followRequests: number;
 }
 
-type WelcomeCommand = 'acp.connectAgent' | 'acp.addAgent';
-
 export type TranscriptAction =
   | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }
   | { type: 'toolCallToggled'; turnId: EntryId; toolCallId: string; open: boolean }
   | { type: 'toolCallsToggled'; turnId: EntryId; part: PartIndex }
-  | { type: 'sendNowChosen' }
-  | { type: 'welcomeCommandChosen'; command: WelcomeCommand };
+  | { type: 'sendNowChosen' };
 
 export const initialTranscript: TranscriptState = {
   sessionId: null,
@@ -114,8 +111,8 @@ export const TOOL_CALL_CONTENT_LIMIT = 20_000;
 /** A group of tool calls is collapsed when its turn ends with more than this many in it. */
 const TOOL_CALLS_SHOWN_EXPANDED = 3;
 
-/** Without a session, an empty transcript leaves room for the welcome card. */
-export function showsWelcome(transcript: TranscriptState, session: ActiveSession | null): boolean {
+/** Without a session, an empty transcript leaves room for the empty state, which points to the Agents view. */
+export function showsEmptyState(transcript: TranscriptState, session: ActiveSession | null): boolean {
   return session === null && transcript.entries.length === 0;
 }
 
@@ -246,8 +243,6 @@ export function updateTranscript(
       return transcript.queued.length === 0
         ? stateOnly(transcript)
         : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'cancelTurn' }] };
-    case 'welcomeCommandChosen':
-      return { state: transcript, outgoing: [{ type: 'executeCommand', command: action.command }] };
     default:
       return stateOnly(transcript);
   }

@@ -478,15 +478,6 @@ describe('ChatViewController', () => {
         { type: 'configOptionsUpdate', configOptions: [modelOption] },
       ]);
     });
-
-    it('runs slash-menu commands in the editor, ignoring empty ones', async () => {
-      const { environment, controller } = setup();
-
-      await controller.handleMessage({ type: 'executeCommand', command: 'acp.newSession' });
-      await controller.handleMessage({ type: 'executeCommand', command: '' });
-
-      expect(environment.executeCommand).toHaveBeenCalledExactlyOnceWith('acp.newSession');
-    });
   });
 
   describe('session updates', () => {

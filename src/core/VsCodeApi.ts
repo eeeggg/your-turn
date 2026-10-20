@@ -6,8 +6,12 @@
  * these stop matching.
  */
 
+/** The `vscode.QuickPickItemKind` values core uses. */
+export const QuickPickItemKind = { Separator: -1 } as const;
+
 export interface QuickPickItem {
   label: string;
+  kind?: (typeof QuickPickItemKind)[keyof typeof QuickPickItemKind];
   description?: string;
   detail?: string;
 }
@@ -15,6 +19,24 @@ export interface QuickPickItem {
 export interface QuickPickOptions {
   title?: string;
   placeHolder?: string;
+  canPickMany?: boolean;
+}
+
+export interface Disposable {
+  dispose(): unknown;
+}
+
+/** A quick pick whose items can change while it is open, as `vscode.window.createQuickPick` makes. */
+export interface QuickPick<T extends QuickPickItem> {
+  title: string | undefined;
+  placeholder: string | undefined;
+  items: readonly T[];
+  busy: boolean;
+  readonly selectedItems: readonly T[];
+  onDidAccept(listener: () => unknown): Disposable;
+  onDidHide(listener: () => unknown): Disposable;
+  show(): void;
+  dispose(): void;
 }
 
 export interface InputBoxOptions {
@@ -38,9 +60,12 @@ export interface ProgressOptions {
 
 export interface Window {
   showQuickPick(items: readonly string[], options?: QuickPickOptions): PromiseLike<string | undefined>;
+  showQuickPick<T extends QuickPickItem>(items: readonly T[], options: QuickPickOptions & { canPickMany: true }): PromiseLike<T[] | undefined>;
   showQuickPick<T extends QuickPickItem>(items: readonly T[], options?: QuickPickOptions): PromiseLike<T | undefined>;
+  createQuickPick<T extends QuickPickItem>(): QuickPick<T>;
   showInputBox(options?: InputBoxOptions): PromiseLike<string | undefined>;
   showInformationMessage<T extends string>(message: string, ...items: T[]): PromiseLike<T | undefined>;
+  showInformationMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): PromiseLike<T | undefined>;
   showWarningMessage<T extends string>(message: string, ...items: T[]): PromiseLike<T | undefined>;
   showWarningMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): PromiseLike<T | undefined>;
   showErrorMessage<T extends string>(message: string, ...items: T[]): PromiseLike<T | undefined>;
@@ -56,5 +81,6 @@ export const ConfigurationTarget = { Global: 1 } as const;
 
 export interface WorkspaceConfiguration {
   get<T>(section: string): T | undefined;
+  inspect<T>(section: string): { globalValue?: T; workspaceValue?: T } | undefined;
   update(section: string, value: unknown, configurationTarget: (typeof ConfigurationTarget)[keyof typeof ConfigurationTarget]): PromiseLike<void>;
 }

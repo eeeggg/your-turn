@@ -76,11 +76,6 @@ export class ChatViewController {
       case 'setConfigOption':
         await this.setConfigOption(message.configId, message.value);
         break;
-      case 'executeCommand':
-        if (message.command) {
-          await this.environment.executeCommand(message.command);
-        }
-        break;
       case 'ready':
         this.sendCurrentState();
         this.sendRunningTurn();
