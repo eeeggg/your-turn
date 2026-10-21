@@ -28,7 +28,7 @@ function renderBanner() {
     send({
       type: 'state',
       activeSessionId: 's1',
-      session: { sessionId: 's1', agentName: 'OpenCode', cwd: '/work/project', modes: null, configOptions: null, availableCommands: [], ...session },
+      session: { sessionId: 's1', agentName: 'OpenCode', cwd: '/work/project', pickers: [], commands: [], ...session },
     });
   return { send, connect, part };
 }
@@ -60,7 +60,7 @@ describe('session banner', () => {
     send({ type: 'promptStart' });
     expect(part('.status .spinner')).toBeTruthy();
 
-    send({ type: 'promptEnd', stopReason: 'end_turn' });
+    send({ type: 'promptEnd' });
     expect(part('.status').childElementCount).toBe(0);
   });
 

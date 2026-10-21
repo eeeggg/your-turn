@@ -1,6 +1,5 @@
-import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
-import type { SessionSnapshot } from '@/shared/WebviewMessages';
+import type { SessionSnapshot, SlashCommand } from '@/shared/WebviewMessages';
 import { canPrompt, sessionName, type ActiveSession } from '@/webview/state/ActiveSession';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
@@ -10,9 +9,8 @@ function snapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
     sessionId: 's1',
     agentName: 'Fake Agent',
     cwd: '/work',
-    modes: null,
-    configOptions: null,
-    availableCommands: [],
+    pickers: [],
+    commands: [],
     ...session,
   };
 }
@@ -31,7 +29,7 @@ function chatView() {
 }
 
 const disconnect: Action = { type: 'state', activeSessionId: null, session: null };
-const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
+const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 
 describe('the active session', () => {
   it('is none until the extension reports one', () => {
@@ -41,14 +39,14 @@ describe('the active session', () => {
   it('takes the agent, title, working directory and slash commands from the state message', () => {
     const view = chatView();
 
-    view.connect({ agentName: 'OpenCode', title: 'Fix the build', cwd: '/work/project', availableCommands: [init] });
+    view.connect({ agentName: 'OpenCode', title: 'Fix the build', cwd: '/work/project', commands: [init] });
 
     expect(view.session()).toEqual({
       sessionId: 's1',
       agentName: 'OpenCode',
       title: 'Fix the build',
       cwd: '/work/project',
-      availableCommands: [init],
+      commands: [init],
       turnRunning: false,
       loading: false,
     });
@@ -105,7 +103,7 @@ describe('the title', () => {
       agentName: 'OpenCode',
       title: 'Fix the build',
       cwd: '/w',
-      availableCommands: [],
+      commands: [],
       turnRunning: false,
       loading: false,
     };
@@ -124,7 +122,7 @@ describe('whether a turn is running', () => {
     view.send({ type: 'promptStart' });
     expect(view.session()?.turnRunning).toBe(true);
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'promptEnd' });
     expect(view.session()?.turnRunning).toBe(false);
   });
 
@@ -177,24 +175,24 @@ describe('whether a turn is running', () => {
 });
 
 describe('slash commands', () => {
-  it('are replaced by available_commands_update', () => {
+  it('are replaced by the commands the extension sends', () => {
     const view = chatView();
-    view.connect({ availableCommands: [init] });
-    const review: AvailableCommand = { name: 'review', description: 'Review changes' };
+    view.connect({ commands: [init] });
+    const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'what to review' };
 
-    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'available_commands_update', availableCommands: [review] } });
+    view.send({ type: 'commands', commands: [review] });
 
-    expect(view.session()?.availableCommands).toEqual([review]);
+    expect(view.session()?.commands).toEqual([review]);
   });
 
-  it('are left alone by other session updates, and ignored without a session', () => {
+  it('are left alone by other messages, and ignored without a session', () => {
     const view = chatView();
-    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'available_commands_update', availableCommands: [init] } });
+    view.send({ type: 'commands', commands: [init] });
     expect(view.session()).toBeNull();
 
-    view.connect({ availableCommands: [init] });
+    view.connect({ commands: [init] });
     const before = view.session();
-    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } });
+    view.send({ type: 'pickers', pickers: [] }, { type: 'agentText', messageId: null, text: 'hi' });
     expect(view.session()).toBe(before);
   });
 });
@@ -239,7 +237,7 @@ describe('what the store is told', () => {
     const notified = view.notified();
 
     view.send(
-      { type: 'promptEnd', stopReason: 'end_turn' },
+      { type: 'promptEnd' },
       { type: 'file-attached', path: '/work/a.ts', name: 'a.ts' },
       { type: 'pickersClosed' },
     );

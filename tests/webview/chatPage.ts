@@ -1,11 +1,10 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
 import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
-import type { ExtensionToWebviewMessage, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
@@ -24,8 +23,6 @@ export interface ChatPage {
   savedState(): unknown;
   /** Deliver a message from the extension. */
   send(message: ExtensionToWebviewMessage): void;
-  /** Deliver a message that breaks the SDK's types but passes its runtime validation, so it can still reach the webview. */
-  sendUnchecked(message: unknown): void;
   byId<T extends HTMLElement = HTMLElement>(id: string): T;
   typePrompt(text: string): void;
   pressKey(key: string, init?: KeyboardEventInit): void;
@@ -106,7 +103,7 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   const { window } = dom;
   const { document } = window;
 
-  const deliver = (message: unknown): void => {
+  const deliver = (message: ExtensionToWebviewMessage): void => {
     window.dispatchEvent(new window.MessageEvent('message', { data: structuredClone(message) }));
   };
 
@@ -129,7 +126,6 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     },
     savedState: () => state,
     send: deliver,
-    sendUnchecked: deliver,
     byId,
     typePrompt(text) {
       const input = byId<HTMLTextAreaElement>('promptInput');
@@ -147,14 +143,13 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   };
 }
 
-export function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
+function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
     sessionId: 's1',
     agentName: 'Fake Agent',
     cwd: '/work/project',
-    modes: null,
-    configOptions: null,
-    availableCommands: [],
+    pickers: [],
+    commands: [],
     ...session,
   };
 }
@@ -165,17 +160,23 @@ export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}):
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
 }
 
-type SessionUpdateKind = SessionUpdate['sessionUpdate'];
-
-/** Send a `sessionUpdate` notification for the active session. */
-export function update<K extends SessionUpdateKind>(
-  page: ChatPage,
-  sessionUpdate: K,
-  fields: Omit<Extract<SessionUpdate, { sessionUpdate: K }>, 'sessionUpdate'>,
-): void {
-  page.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate, ...fields } as SessionUpdate });
+export function answer(page: ChatPage, text: string, messageId: string | null = null): void {
+  page.send({ type: 'agentText', messageId, text });
 }
 
-export function textChunk(text: string): { content: { type: 'text'; text: string } } {
-  return { content: { type: 'text', text } };
+export function thought(page: ChatPage, text: string, messageId: string | null = null): void {
+  page.send({ type: 'thoughtText', messageId, text });
+}
+
+/** A prompt the agent replays while a session loads. */
+export function replayed(page: ChatPage, text: string): void {
+  page.send({ type: 'promptText', text });
+}
+
+export function toolCall(page: ChatPage, report: Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>): void {
+  page.send({ type: 'toolCall', ...report });
+}
+
+export function plan(page: ChatPage, ...steps: PlanStep[]): void {
+  page.send({ type: 'plan', steps });
 }

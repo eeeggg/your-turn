@@ -1,13 +1,12 @@
-import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { describe, expect, it } from 'vitest';
-import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { SessionSnapshot, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { highlightedIndex, matchingCommands, placeholder, type PromptBoxState } from '@/webview/state/PromptBox';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 
-const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
-const review: AvailableCommand = { name: 'review', description: 'Review changes', input: { hint: 'What to review' } };
-const reset: AvailableCommand = { name: 'Reset', description: 'Start over' };
+const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
+const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
+const reset: SlashCommand = { name: 'Reset', description: 'Start over', takesInput: false, hint: null };
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -28,7 +27,7 @@ function chatView() {
       store.dispatch({
         type: 'state',
         activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', modes: null, configOptions: null, availableCommands: [init, review, reset], ...session },
+        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review, reset], ...session },
       }),
     takePosted: () => posted.splice(0),
     notified: () => notified,
@@ -121,7 +120,7 @@ describe('the slash command popup', () => {
     view.send({ type: 'loadSessionStart' });
     expect(view.matches()).toEqual([]);
 
-    view.connect({ sessionId: 's2', availableCommands: [] });
+    view.connect({ sessionId: 's2', commands: [] });
     expect(view.matches()).toEqual([]);
   });
 
@@ -172,7 +171,7 @@ describe('the slash command popup', () => {
     view.type('/');
     view.send({ type: 'slashCommandHighlighted', index: 2 });
 
-    view.send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'available_commands_update', availableCommands: [init] } });
+    view.send({ type: 'commands', commands: [init] });
     expect(view.highlighted()).toBe(0);
 
     view.send({ type: 'slashHighlightMoved', by: 1 });
@@ -232,7 +231,7 @@ describe('the placeholder', () => {
     const view = chatView();
     expect(placeholder(view.session())).toBe('Type a message...');
 
-    view.connect({ availableCommands: [] });
+    view.connect({ commands: [] });
     expect(placeholder(view.session())).toBe('Type a message...');
 
     view.connect();

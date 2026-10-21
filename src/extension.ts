@@ -97,10 +97,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatViewController.clearTranscript();
   });
   sessionManager.on('mode-changed', () => {
-    const session = sessionManager.getActiveSession();
-    if (session?.modes) {
-      chatViewController.notifyModesUpdate(session.modes);
-    }
+    chatViewController.notifyPickersChanged();
   });
   sessionManager.on('session-load-start', () => {
     chatViewController.notifyLoadSessionStart();

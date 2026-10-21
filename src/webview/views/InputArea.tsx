@@ -1,5 +1,5 @@
-import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
+import type { SlashCommand } from '@/shared/WebviewMessages';
 import { canPrompt } from '@/webview/state/ActiveSession';
 import { InputToolbar } from '@/webview/views/InputToolbar';
 import { highlightedIndex, matchingCommands, placeholder } from '@/webview/state/PromptBox';
@@ -26,7 +26,7 @@ export function InputArea() {
   const matches = matchingCommands(box, session);
   const highlighted = highlightedIndex(box, matches);
 
-  const choose = (command: AvailableCommand) => {
+  const choose = (command: SlashCommand) => {
     dispatch({ type: 'slashCommandChosen', name: command.name });
     promptRef.current?.focus();
   };
@@ -117,7 +117,7 @@ function SlashCommandItem({
   onHover,
   onChoose,
 }: {
-  command: AvailableCommand;
+  command: SlashCommand;
   active: boolean;
   onHover: () => void;
   onChoose: () => void;
@@ -137,9 +137,7 @@ function SlashCommandItem({
       onClick={onChoose}
     >
       <span className="cmd-name font-mono font-semibold whitespace-nowrap text-link">/{command.name}</span>
-      {command.input?.hint && (
-        <span className="cmd-hint font-mono whitespace-nowrap text-muted-foreground italic">{command.input.hint}</span>
-      )}
+      {command.hint && <span className="cmd-hint font-mono whitespace-nowrap text-muted-foreground italic">{command.hint}</span>}
       <span className="cmd-desc flex-1 truncate text-md text-muted-foreground">{command.description}</span>
     </div>
   );

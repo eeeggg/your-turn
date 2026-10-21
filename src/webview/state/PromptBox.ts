@@ -1,5 +1,4 @@
-import type { AvailableCommand } from '@agentclientprotocol/sdk';
-import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { canPrompt, type ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
@@ -25,22 +24,22 @@ export type PromptBoxAction =
 export const initialPromptBox: PromptBoxState = { text: '', highlighted: 0, dismissed: false };
 
 /** The commands whose names start with what follows the `/`; none while the popup is closed. */
-export function matchingCommands(box: PromptBoxState, session: ActiveSession | null): readonly AvailableCommand[] {
+export function matchingCommands(box: PromptBoxState, session: ActiveSession | null): readonly SlashCommand[] {
   const { text } = box;
   if (box.dismissed || !canPrompt(session) || !text.startsWith('/')) {
     return [];
   }
   const query = text.slice(1).toLowerCase();
-  return session.availableCommands.filter((command) => command.name.toLowerCase().startsWith(query));
+  return session.commands.filter((command) => command.name.toLowerCase().startsWith(query));
 }
 
 /** The highlighted command's position, kept within the matches when the agent's commands change under the popup. */
-export function highlightedIndex(box: PromptBoxState, matches: readonly AvailableCommand[]): number {
+export function highlightedIndex(box: PromptBoxState, matches: readonly SlashCommand[]): number {
   return Math.min(box.highlighted, matches.length - 1);
 }
 
 export function placeholder(session: ActiveSession | null): string {
-  return session && session.availableCommands.length > 0 ? 'Type a message or / for commands...' : 'Type a message...';
+  return session && session.commands.length > 0 ? 'Type a message or / for commands...' : 'Type a message...';
 }
 
 export function updatePromptBox(
@@ -63,11 +62,11 @@ export function updatePromptBox(
       return stateOnly(matches.length === 0 || highlighted === box.highlighted ? box : { ...box, highlighted });
     }
     case 'slashCommandChosen': {
-      const command = session?.availableCommands.find((candidate) => candidate.name === action.name);
+      const command = session?.commands.find((candidate) => candidate.name === action.name);
       if (!command) {
         return stateOnly(box);
       }
-      return command.input
+      return command.takesInput
         ? stateOnly({ text: `/${command.name} `, highlighted: 0, dismissed: false })
         : send(box, `/${command.name}`, session);
     }

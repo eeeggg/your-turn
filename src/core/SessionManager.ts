@@ -611,6 +611,14 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     session.configOptions = options;
   }
 
+  /** Apply a `current_mode_update`: the agent switched the session's mode itself. */
+  applyCurrentMode(sessionId: string, modeId: string): void {
+    const modes = this.sessions.get(sessionId)?.modes;
+    if (modes) {
+      modes.currentModeId = modeId;
+    }
+  }
+
   /**
    * Replace a session's availableCommands. Buffers the value if the session
    * isn't registered yet (race during creation).

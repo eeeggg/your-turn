@@ -1,6 +1,27 @@
-import type { ContentBlock, SessionModeState, SessionNotification, SessionUpdate } from '@agentclientprotocol/sdk';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import type { SessionManager } from './SessionManager';
+import type {
+  AvailableCommand,
+  ContentBlock,
+  PlanEntryStatus,
+  SessionConfigOption,
+  SessionConfigSelectOption,
+  SessionConfigSelectOptions,
+  SessionNotification,
+  SessionUpdate,
+  ToolCallContent,
+  ToolCallStatus as AcpToolCallStatus,
+} from '@agentclientprotocol/sdk';
+import type {
+  ExtensionToWebviewMessage,
+  Picker,
+  PickerCategory,
+  PickerValue,
+  PickerValueGroup,
+  PlanStepStatus,
+  SlashCommand,
+  ToolCallStatus,
+  WebviewToExtensionMessage,
+} from '@/shared/WebviewMessages';
+import type { SessionInfo, SessionManager } from './SessionManager';
 import { logError, messageOf } from './Log';
 import type { Commands } from './VsCodeApi';
 
@@ -17,16 +38,14 @@ export type ChatSessions = Pick<
   | 'touchHistory'
   | 'applyAvailableCommands'
   | 'applyConfigOptions'
+  | 'applyCurrentMode'
   | 'applySessionInfoUpdate'
 >;
 
-/** Text chunks arriving within this many milliseconds reach the webview as one, so it renders about once a frame at most. */
+/** Text arriving within this many milliseconds reaches the webview as one message, so it renders about once a frame at most. */
 const TEXT_CHUNK_WINDOW_MS = 16;
 
-/** A plain text chunk, which can be joined with the next one of the same message. */
-type TextChunk = Extract<SessionUpdate, { sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk' | 'user_message_chunk' }> & {
-  content: Extract<ContentBlock, { type: 'text' }>;
-};
+type TextMessage = Extract<ExtensionToWebviewMessage, { type: 'agentText' | 'thoughtText' | 'promptText' }>;
 
 /** What the chat view needs from the editor it runs in. */
 export interface ChatViewEnvironment extends Commands {
@@ -36,7 +55,8 @@ export interface ChatViewEnvironment extends Commands {
 
 /**
  * The extension's side of the chat view: answers webview messages, runs turns
- * against the active session, and tells the webview what to show.
+ * against the active session, and tells the webview what to show, translating
+ * ACP into the webview's contract. What the contract has no place for is dropped here.
  * The webview sends one prompt at a time and queues the rest.
  */
 export class ChatViewController {
@@ -49,7 +69,7 @@ export class ChatViewController {
   /** The session the chat view was last told about; reporting the same one again would split its running turn. */
   private shownSessionId: string | null = null;
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
-  private pendingText: { sessionId: string; update: TextChunk; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -70,11 +90,8 @@ export class ChatViewController {
       case 'cancelTurn':
         await this.cancelTurn();
         break;
-      case 'setMode':
-        await this.setMode(message.modeId);
-        break;
-      case 'setConfigOption':
-        await this.setConfigOption(message.configId, message.value);
+      case 'pickerValueChosen':
+        await this.choosePickerValue(message.pickerId, message.value);
         break;
       case 'ready':
         this.sendCurrentState();
@@ -95,6 +112,9 @@ export class ChatViewController {
       case 'config_option_update':
         this.sessions.applyConfigOptions(sessionId, update.configOptions);
         break;
+      case 'current_mode_update':
+        this.sessions.applyCurrentMode(sessionId, update.currentModeId);
+        break;
       case 'session_info_update':
         this.sessions.applySessionInfoUpdate(sessionId, update);
         this.sendTitle(sessionId);
@@ -104,17 +124,19 @@ export class ChatViewController {
     }
 
     if (sessionId !== this.sessions.getActiveSessionId()) { return; }
-    if (!isTextChunk(update)) {
-      this.post({ type: 'sessionUpdate', update, sessionId });
+    const message = this.translate(sessionId, update);
+    if (!message) { return; }
+    if (!isText(message)) {
+      this.post(message);
       return;
     }
     const pending = this.pendingText;
-    if (pending?.sessionId === sessionId && sameMessage(pending.update, update)) {
-      pending.update = { ...pending.update, content: { ...pending.update.content, text: pending.update.content.text + update.content.text } };
+    if (pending && sameText(pending.message, message)) {
+      pending.message = { ...pending.message, text: pending.message.text + message.text };
       return;
     }
     this.sendPendingText();
-    this.pendingText = { sessionId, update, timer: setTimeout(() => this.sendPendingText(), TEXT_CHUNK_WINDOW_MS) };
+    this.pendingText = { message, timer: setTimeout(() => this.sendPendingText(), TEXT_CHUNK_WINDOW_MS) };
   }
 
   /** Tell the webview the active session changed. */
@@ -138,8 +160,12 @@ export class ChatViewController {
     }
   }
 
-  notifyModesUpdate(modes: SessionModeState | null): void {
-    this.post({ type: 'modesUpdate', modes });
+  /** The active session's mode or config options changed outside the chat view. */
+  notifyPickersChanged(): void {
+    const activeId = this.sessions.getActiveSessionId();
+    if (activeId) {
+      this.sendPickers(activeId);
+    }
   }
 
   /**
@@ -176,22 +202,21 @@ export class ChatViewController {
     this.setTurnInProgress(true);
 
     try {
-      const response = await this.sessions.sendPrompt(activeId, text);
+      await this.sessions.sendPrompt(activeId, text);
       this.sessions.touchHistory(activeId);
-      this.endTurn(activeId, { type: 'promptEnd', stopReason: response.stopReason });
     } catch (e) {
       logError('Prompt failed', e);
       if (activeId === this.sessions.getActiveSessionId()) {
         this.post({ type: 'error', message: messageOf(e) || 'Prompt failed' });
       }
-      this.endTurn(activeId, { type: 'promptEnd', stopReason: 'error' });
     }
+    this.endTurn(activeId);
   }
 
-  private endTurn(sessionId: string, endMessage: Extract<ExtensionToWebviewMessage, { type: 'promptEnd' }>): void {
+  private endTurn(sessionId: string): void {
     this.runningTurns.delete(sessionId);
     if (sessionId !== this.sessions.getActiveSessionId()) { return; }
-    this.post(endMessage);
+    this.post({ type: 'promptEnd' });
     this.setTurnInProgress(false);
   }
 
@@ -215,36 +240,35 @@ export class ChatViewController {
     }
   }
 
-  private async setMode(modeId: string): Promise<void> {
+  /**
+   * A picker stands for the session's modes only while it has no config options (see {@link pickersOf}). The webview
+   * already shows the chosen value; the session's pickers are re-sent after a change, so that changes cascading from it
+   * reach the webview too, and after a failure, which rolls the choice back.
+   */
+  private async choosePickerValue(pickerId: string, value: string): Promise<void> {
     const activeId = this.sessions.getActiveSessionId();
-    if (!activeId || !modeId) { return; }
+    const session = activeId ? this.sessions.getSession(activeId) : undefined;
+    if (!activeId || !session || !value) { return; }
+    const isConfigOption = (session.configOptions?.length ?? 0) > 0;
     try {
-      await this.sessions.setMode(activeId, modeId);
+      if (isConfigOption) {
+        await this.sessions.setConfigOption(activeId, pickerId, value);
+        this.sendPickers(activeId);
+      } else {
+        // The session reports the new mode, which re-sends the pickers (notifyPickersChanged).
+        await this.sessions.setMode(activeId, value);
+      }
     } catch (e) {
-      logError('Failed to set mode', e);
-      this.post({ type: 'error', message: `Failed to set mode: ${messageOf(e)}` });
+      logError(isConfigOption ? 'Failed to set config option' : 'Failed to set mode', e);
+      this.post({ type: 'error', message: `Failed to set ${isConfigOption ? pickerId : 'mode'}: ${messageOf(e)}` });
+      this.sendPickers(activeId);
     }
   }
 
-  /**
-   * The agent answers with every config option, which is re-sent so that
-   * changes cascading from this one reach the pickers too.
-   */
-  private async setConfigOption(configId: string, value: string): Promise<void> {
-    const activeId = this.sessions.getActiveSessionId();
-    if (!activeId || !configId) { return; }
-    try {
-      const configOptions = await this.sessions.setConfigOption(activeId, configId, value);
-      this.post({ type: 'configOptionsUpdate', configOptions });
-    } catch (e) {
-      logError('Failed to set config option', e);
-      this.post({ type: 'error', message: `Failed to set ${configId}: ${messageOf(e)}` });
-      // The webview already shows the new value; replaying the session's options rolls it back.
-      this.post({
-        type: 'configOptionsUpdate',
-        configOptions: this.sessions.getSession(activeId)?.configOptions ?? null,
-      });
-    }
+  private sendPickers(sessionId: string): void {
+    const session = this.sessions.getSession(sessionId);
+    if (sessionId !== this.sessions.getActiveSessionId() || !session) { return; }
+    this.post({ type: 'pickers', pickers: pickersOf(session) });
   }
 
   /** The session's resulting title, not the update: an update without a title leaves it unchanged. */
@@ -265,11 +289,50 @@ export class ChatViewController {
         agentName: session.agentDisplayName,
         ...(session.title !== undefined ? { title: session.title } : {}),
         cwd: session.cwd,
-        modes: session.modes,
-        configOptions: session.configOptions,
-        availableCommands: session.availableCommands,
+        pickers: pickersOf(session),
+        commands: session.availableCommands.map(slashCommand),
       } : null,
     });
+  }
+
+  /** The webview message for a session update to the active session, or null when the contract has no place for it. */
+  private translate(sessionId: string, update: SessionUpdate): ExtensionToWebviewMessage | null {
+    switch (update.sessionUpdate) {
+      case 'agent_message_chunk': {
+        const text = textForUser(update.content);
+        return text ? { type: 'agentText', messageId: update.messageId ?? null, text } : null;
+      }
+      case 'agent_thought_chunk': {
+        const text = textForUser(update.content);
+        return text === null ? null : { type: 'thoughtText', messageId: update.messageId ?? null, text };
+      }
+      case 'user_message_chunk': {
+        const text = textForUser(update.content);
+        return text === null ? null : { type: 'promptText', text };
+      }
+      case 'tool_call':
+      case 'tool_call_update': {
+        const status = update.status ? toolCallStatus(update.status) : null;
+        return {
+          type: 'toolCall',
+          toolCallId: update.toolCallId,
+          ...(update.title ? { title: update.title } : {}),
+          ...(status ? { status } : {}),
+          ...(update.content ? { texts: contentTexts(update.content) } : {}),
+        };
+      }
+      case 'plan':
+        return { type: 'plan', steps: update.entries.map((entry) => ({ text: entry.content, status: planStepStatus(entry.status) })) };
+      case 'available_commands_update':
+        return { type: 'commands', commands: update.availableCommands.map(slashCommand) };
+      case 'config_option_update':
+      case 'current_mode_update': {
+        const session = this.sessions.getSession(sessionId);
+        return session ? { type: 'pickers', pickers: pickersOf(session) } : null;
+      }
+      default:
+        return null;
+    }
   }
 
   /** Shows the Cancel button in the chat view's title bar (the `acp.turnInProgress` `when` clause in package.json). */
@@ -287,22 +350,119 @@ export class ChatViewController {
     if (!pending) { return; }
     this.pendingText = null;
     clearTimeout(pending.timer);
-    this.environment.post({ type: 'sessionUpdate', sessionId: pending.sessionId, update: pending.update });
+    this.environment.post(pending.message);
   }
 }
 
-/** Annotations and metadata belong to their own chunk, so a chunk carrying either is never joined. */
-function isTextChunk(update: SessionUpdate): update is TextChunk {
-  switch (update.sessionUpdate) {
-    case 'agent_message_chunk':
-    case 'agent_thought_chunk':
-    case 'user_message_chunk':
-      return update.content.type === 'text' && !update.content.annotations && !update.content._meta && !update._meta;
+function isText(message: ExtensionToWebviewMessage): message is TextMessage {
+  return message.type === 'agentText' || message.type === 'thoughtText' || message.type === 'promptText';
+}
+
+function sameText(a: TextMessage, b: TextMessage): boolean {
+  return a.type === b.type && messageIdOf(a) === messageIdOf(b);
+}
+
+function messageIdOf(message: TextMessage): string | null {
+  return message.type === 'promptText' ? null : message.messageId;
+}
+
+/** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
+function textForUser(content: ContentBlock): string | null {
+  if (content.type !== 'text') {
+    return null;
+  }
+  const audience = content.annotations?.audience;
+  return audience && !audience.includes('user') ? null : content.text;
+}
+
+/** The non-empty text blocks of a tool call's content; diffs and terminals have no place in the chat view yet. */
+function contentTexts(content: readonly ToolCallContent[]): string[] {
+  return content.flatMap((block) => (block.type === 'content' && block.content.type === 'text' && block.content.text ? [block.content.text] : []));
+}
+
+function toolCallStatus(status: AcpToolCallStatus): ToolCallStatus | null {
+  switch (status) {
+    case 'pending':
+    case 'completed':
+    case 'failed':
+      return status;
+    case 'in_progress':
+      return 'running';
     default:
-      return false;
+      return null;
   }
 }
 
-function sameMessage(a: TextChunk, b: TextChunk): boolean {
-  return a.sessionUpdate === b.sessionUpdate && (a.messageId ?? null) === (b.messageId ?? null);
+function planStepStatus(status: PlanEntryStatus): PlanStepStatus {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'in_progress':
+      return 'running';
+    default:
+      return 'pending';
+  }
+}
+
+function slashCommand(command: AvailableCommand): SlashCommand {
+  return { name: command.name, description: command.description, takesInput: !!command.input, hint: command.input?.hint || null };
+}
+
+/**
+ * The session's pickers. Config options replace modes, as the ACP spec says, so the modes are a picker only for a
+ * session without config options; only selects with values to choose from are pickers, as other types have none yet.
+ */
+function pickersOf(session: SessionInfo): Picker[] {
+  const options = session.configOptions ?? [];
+  if (options.length > 0) {
+    return options.flatMap((option) => (option.type === 'select' && option.options.length > 0 ? [configPicker(option)] : []));
+  }
+  const { modes } = session;
+  if (!modes || modes.availableModes.length === 0) {
+    return [];
+  }
+  return [{
+    id: 'mode',
+    category: 'mode',
+    name: 'Mode',
+    description: null,
+    current: modes.currentModeId,
+    groups: [{
+      header: null,
+      values: modes.availableModes.map((mode) => ({ id: mode.id, name: mode.name, description: mode.description ?? null })),
+    }],
+  }];
+}
+
+function configPicker(option: Extract<SessionConfigOption, { type: 'select' }>): Picker {
+  return {
+    id: option.id,
+    category: pickerCategory(option.category),
+    name: option.name,
+    description: option.description ?? null,
+    current: option.currentValue,
+    groups: valueGroups(option.options),
+  };
+}
+
+/** Values the agent left ungrouped form one group without a header. */
+function valueGroups(options: SessionConfigSelectOptions): PickerValueGroup[] {
+  const ungrouped = options.flatMap((entry) => ('group' in entry ? [] : [pickerValue(entry)]));
+  const grouped = options.flatMap((entry) => ('group' in entry ? [{ header: entry.name || entry.group, values: entry.options.map(pickerValue) }] : []));
+  return ungrouped.length > 0 ? [{ header: null, values: ungrouped }, ...grouped] : grouped;
+}
+
+function pickerValue(value: SessionConfigSelectOption): PickerValue {
+  return { id: value.value, name: value.name, description: value.description ?? null };
+}
+
+function pickerCategory(category: string | null | undefined): PickerCategory {
+  switch (category) {
+    case 'mode':
+    case 'model':
+    case 'thought_level':
+      return category;
+    default:
+      return 'other';
+  }
 }

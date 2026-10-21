@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, replayed, toolCall, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -20,8 +20,8 @@ function messages(): string[] {
 
 function replay(turns: [user: string, agent: string][]): void {
   for (const [user, agent] of turns) {
-    update(page, 'user_message_chunk', textChunk(user));
-    update(page, 'agent_message_chunk', textChunk(agent));
+    replayed(page, user);
+    answer(page, agent);
   }
 }
 
@@ -39,7 +39,7 @@ describe('loading a session', () => {
     expect(page.byId('emptyState').style.display).toBe('none');
   });
 
-  it('splits replayed history into turns at each user message', () => {
+  it('splits replayed history into turns at each prompt', () => {
     page.send({ type: 'loadSessionStart' });
     replay([
       ['q1', 'a1'],
@@ -55,31 +55,12 @@ describe('loading a session', () => {
     expect(page.document.querySelectorAll('.turn')).toHaveLength(2);
   });
 
-  it('joins consecutive user chunks into one message', () => {
+  it('joins consecutive prompt text into one message', () => {
     page.send({ type: 'loadSessionStart' });
-    update(page, 'user_message_chunk', textChunk('hel'));
-    update(page, 'user_message_chunk', textChunk('lo'));
+    replayed(page, 'hel');
+    replayed(page, 'lo');
 
     expect(messages()).toEqual(['message user: hello']);
-  });
-
-  it('shows only what the user typed when the agent replays an attached file read into the prompt', () => {
-    const forAgentOnly = (text: string) => ({ content: { type: 'text' as const, text, annotations: { audience: ['assistant' as const] } } });
-    page.send({ type: 'loadSessionStart' });
-    for (const prompt of ['q1', 'q2']) {
-      update(page, 'user_message_chunk', textChunk(prompt));
-      update(page, 'user_message_chunk', forAgentOnly('Called the Read tool with the following input: {"filePath":"/work/a.ts"}'));
-      update(page, 'user_message_chunk', forAgentOnly('export const a = 1;'));
-      update(page, 'user_message_chunk', { content: { type: 'resource_link', uri: 'file:///work/a.ts', name: 'a.ts' } });
-      update(page, 'agent_message_chunk', textChunk(`answer to ${prompt}`));
-    }
-
-    expect(messages()).toEqual([
-      'message user: q1',
-      'message agent: answer to q1',
-      'message user: q2',
-      'message agent: answer to q2',
-    ]);
   });
 
   it('renders replayed answers as markdown as they arrive, asking the extension for nothing', () => {
@@ -103,9 +84,9 @@ describe('loading a session', () => {
   it('collapses more than three tool calls in a replayed turn, as in a live one', () => {
     page.send({ type: 'loadSessionStart' });
     for (const prompt of ['q1', 'q2']) {
-      update(page, 'user_message_chunk', textChunk(prompt));
+      replayed(page, prompt);
       for (const id of ['1', '2', '3', '4']) {
-        update(page, 'tool_call', { toolCallId: `${prompt}-${id}`, title: id, status: 'completed' });
+        toolCall(page, { toolCallId: `${prompt}-${id}`, title: id, status: 'completed' });
       }
     }
     page.send({ type: 'loadSessionEnd', ok: true });

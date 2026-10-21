@@ -540,6 +540,19 @@ describe('SessionManager', () => {
       expect(sessionHistory.get('fake', 's1')).not.toHaveProperty('title');
     });
 
+    it('records the mode the agent switches to itself', async () => {
+      const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, () => ({
+        sessionId: 's1',
+        modes: { availableModes: [{ id: 'ask', name: 'Ask' }, { id: 'code', name: 'Code' }], currentModeId: 'ask' },
+      }));
+      const { manager } = setup({ fake: script });
+      await manager.connectToAgent('fake');
+
+      manager.applyCurrentMode('s1', 'code');
+
+      expect(manager.getSession('s1')?.modes?.currentModeId).toBe('code');
+    });
+
     it('records only the first prompt in the session history', async () => {
       const { manager, sessionHistory } = setup({ fake: sessionAgent().script });
       await manager.connectToAgent('fake');
