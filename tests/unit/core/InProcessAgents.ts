@@ -1,15 +1,14 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
+import type { AgentApp, AgentConnector, InitializeResponse } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import type { AcpDriver, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { V2Driver } from '@/core/acp/V2Driver';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
-/** Builds the agent a launch talks to; called once per launch. */
-export type AgentScript = () => AgentApp;
+/** Builds the agent a launch talks to, an SDK agent of either version or a router; called once per launch. */
+export type AgentScript = () => AgentConnector;
 
 const unused = (): never => {
   throw new Error('not used by these tests');
@@ -105,22 +104,22 @@ export class InProcessAgents implements AgentLauncher {
   }
 }
 
-/** A driver connected to the agent `script` builds, and the session updates it passes up, as session ID and update. */
+/**
+ * A driver connected to the agent `script` builds, of the version they negotiate; the session updates it passes up,
+ * as session ID and update; and `exit`, which ends the agent as its process's death would.
+ */
 export async function connectedDriver(
   script: AgentScript,
   handlers: ClientHandlers = unusedHandlers,
-): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][] }> {
+): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; exit: () => void }> {
   const agents = new InProcessAgents({ fake: script });
   const sessionUpdates = new SessionUpdateHandler();
   const updates: [string, SessionUpdate][] = [];
   sessionUpdates.addListener((sessionId, update) => updates.push([sessionId, update]));
   const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
   const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
-  return { driver, updates };
+  return { driver, updates, exit: () => agents.launched[0]?.crash() };
 }
-
-/** Builds the ACP v2 agent a test talks to. */
-export type V2AgentScript = () => V2.AgentApp;
 
 /** An ACP v2 SDK agent with sessions that answers `initialize`; add the requests a test needs. */
 export function fakeV2Agent(init: Partial<V2.InitializeResponse> = {}): V2.AgentApp {
@@ -130,26 +129,4 @@ export function fakeV2Agent(init: Partial<V2.InitializeResponse> = {}): V2.Agent
     capabilities: { session: {} },
     ...init,
   }));
-}
-
-/**
- * A v2 driver connected to the agent `script` builds, over in-memory newline-delimited streams; the session updates it
- * passes up, as session ID and update; and `exit`, which closes both streams as the agent's exit would.
- */
-export async function connectedV2Driver(
-  script: V2AgentScript,
-  handlers: ClientHandlers = unusedHandlers,
-): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; exit: () => void }> {
-  const sessionUpdates = new SessionUpdateHandler();
-  const updates: [string, SessionUpdate][] = [];
-  sessionUpdates.addListener((sessionId, update) => updates.push([sessionId, update]));
-  const closers: (() => void)[] = [];
-  const pipe = () => new TransformStream<Uint8Array, Uint8Array>({
-    start: (controller) => { closers.push(() => controller.terminate()); },
-  });
-  const toAgent = pipe();
-  const toClient = pipe();
-  script().connect(V2.ndJsonStream(toClient.writable, toAgent.readable));
-  const driver = await V2Driver.connect('fake', V2.ndJsonStream(toAgent.writable, toClient.readable), '0.0.0-test', sessionUpdates, handlers);
-  return { driver, updates, exit: () => { for (const close of closers) { close(); } } };
 }

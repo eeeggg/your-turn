@@ -26,6 +26,16 @@ import type {
 } from './AcpDriver';
 import { authChecked, sessionChecked } from './RequestErrors';
 
+/** The `initialize` request the v1 client sends, which the negotiation sends to the agent for it. */
+export function v1InitializeRequest(clientVersion: string): Acp.InitializeRequest {
+  return {
+    protocolVersion: PROTOCOL_VERSION,
+    clientInfo: { name: 'vscode-acp-client', version: clientVersion },
+    // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities.
+    clientCapabilities: {},
+  };
+}
+
 /** Speaks ACP v1 over a connection, through the SDK's stable v1 client. */
 export class V1Driver implements AcpDriver {
   /** Connect the SDK's v1 client to the stream and initialize the connection. */
@@ -51,15 +61,7 @@ export class V1Driver implements AcpDriver {
     const connection = app.connect(stream);
 
     log(`V1Driver: initializing connection to agent ${agentName}`);
-    const initResponse = await connection.agent.request(methods.agent.initialize, {
-      protocolVersion: PROTOCOL_VERSION,
-      clientInfo: {
-        name: 'vscode-acp-client',
-        version: clientVersion,
-      },
-      // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities.
-      clientCapabilities: {},
-    });
+    const initResponse = await connection.agent.request(methods.agent.initialize, v1InitializeRequest(clientVersion));
     log(`V1Driver: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);
 
     return new V1Driver(connection, agentDescription(initResponse));

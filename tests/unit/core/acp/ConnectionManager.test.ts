@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { agent, methods, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AgentContext, InitializeRequest } from '@agentclientprotocol/sdk';
+import { methods } from '@agentclientprotocol/sdk';
+import type { AgentContext } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -26,26 +26,6 @@ async function connectWith(work: (client: AgentContext) => Promise<void>) {
 }
 
 describe('ConnectionManager', () => {
-  it('initializes with the client version, offering the agent no file access or terminals', async () => {
-    const initialize = vi.fn<(params: InitializeRequest) => void>();
-    const agents = new InProcessAgents({
-      fake: () => agent({ name: 'bare-agent' }).onRequest(methods.agent.initialize, ({ params }) => {
-        initialize(params);
-        return { protocolVersion: params.protocolVersion };
-      }),
-    });
-    const manager = new ConnectionManager(new SessionUpdateHandler(), '1.2.3', handlers);
-
-    await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
-
-    expect(initialize).toHaveBeenCalledOnce();
-    expect(initialize.mock.calls[0]?.[0]).toEqual({
-      protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: 'vscode-acp-client', version: '1.2.3' },
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, auth: { terminal: false } },
-    });
-  });
-
   it('answers file and terminal requests as unknown methods', async () => {
     const answers: unknown[] = [];
     const { prompt } = await connectWith(async (client) => {

@@ -6,7 +6,9 @@ import type { ClientHandlers } from '@/core/ClientHandlers';
 import { log, logError, logTraffic } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { AcpDriver } from './AcpDriver';
+import { negotiate } from './Negotiation';
 import { V1Driver } from './V1Driver';
+import { V2Driver } from './V2Driver';
 
 /**
  * Opens client-side ACP connections to agents, each spoken through an ACP driver.
@@ -27,7 +29,11 @@ export class ConnectionManager {
     // Wrap the stream to intercept and log all ACP traffic
     const tappedStream = this.tapStream(stream);
 
-    return V1Driver.connect(agentName, tappedStream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers());
+    const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
+    log(`ConnectionManager: negotiated ACP v${negotiated.version} with agent ${agentName}`);
+    return negotiated.version === 2
+      ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers())
+      : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers());
   }
 
   /**

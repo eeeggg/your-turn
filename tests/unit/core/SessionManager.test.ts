@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod as AcpAuthMethod, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
+import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import type { AuthMethod, ConfigOption, FileLink, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
@@ -8,7 +9,7 @@ import { ChatViewController } from '@/core/ChatViewController';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment, type SessionManagerEvents } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
+import { fakeAgent, fakeV2Agent, InProcessAgents, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
 
 /** Let pending callbacks, including agent exits, run. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -525,6 +526,22 @@ describe('SessionManager', () => {
       expect(session.availableCommands).toEqual([{ name: 'init', description: 'Init', takesInput: false, hint: null }]);
       expect(session.configOptions).toEqual([modelConfig('b')]);
       expect(session.title).toBe('Early title');
+    });
+
+    it.each([
+      ['creating', (manager: SessionManager) => manager.connectToAgent('fake')],
+      ['resuming', (manager: SessionManager) => manager.resumeSession('fake', 's1')],
+      ['loading', (manager: SessionManager) => manager.loadSession('fake', 's1')],
+    ])('takes the slash commands a v2 session state carries, on %s the session', async (_, open) => {
+      const availableCommands = [{ name: 'init', description: 'Init' }];
+      const script: AgentScript = () => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1', availableCommands }))
+        .onRequest(V2.methods.agent.session.resume, () => ({ availableCommands }));
+      const { manager } = setup({ fake: script });
+
+      const session = await open(manager);
+
+      expect(session.availableCommands).toEqual([{ name: 'init', description: 'Init', takesInput: false, hint: null }]);
     });
 
     it('treats null config options in an update as none', async () => {

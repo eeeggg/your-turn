@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionUpdate } from '@/core/acp/AcpDriver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { connectedV2Driver, fakeV2Agent, type V2AgentScript } from '@tests/unit/core/InProcessAgents';
+import { connectedDriver, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const go: PromptPart[] = [{ kind: 'text', text: 'go' }];
 
@@ -16,7 +16,7 @@ function notify(client: V2.AgentContext, update: V2.SessionUpdate, sessionId = '
 
 /** The session updates the driver passes up, by session, for those the agent sends, by session, while creating a session. */
 async function passedUp(...sent: [string, V2.SessionUpdate][]): Promise<[string, SessionUpdate][]> {
-  const { driver, updates } = await connectedV2Driver(() => fakeV2Agent()
+  const { driver, updates } = await connectedDriver(() => fakeV2Agent()
     .onRequest(V2.methods.agent.session.new, async ({ client }) => {
       for (const [sessionId, update] of sent) {
         await notify(client, update, sessionId);
@@ -59,7 +59,7 @@ async function soFar(outcome: Promise<unknown>): Promise<unknown> {
 async function turnAgent(...beforeAnswer: V2.StateUpdate[]) {
   let promptedBy: (client: V2.AgentContext) => void = () => {};
   const prompted = new Promise<V2.AgentContext>((resolve) => { promptedBy = resolve; });
-  const { driver, exit } = await connectedV2Driver(() => fakeV2Agent()
+  const { driver, exit } = await connectedDriver(() => fakeV2Agent()
     .onRequest(V2.methods.agent.session.prompt, async ({ client }) => {
       for (const update of beforeAnswer) {
         await reportState(client, update);
@@ -84,7 +84,7 @@ async function turnAgent(...beforeAnswer: V2.StateUpdate[]) {
 
 /** The config options of a session the agent creates with these. */
 async function configOptionsOf(...options: V2.SessionConfigOption[]): Promise<ConfigOption[] | null> {
-  const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1', configOptions: options })));
+  const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1', configOptions: options })));
   return (await driver.newSession('/work')).configOptions;
 }
 
@@ -100,7 +100,7 @@ const modelOption: V2.SessionConfigOption = {
 describe('V2Driver', () => {
   describe('the agent', () => {
     it('describes the agent as its initialize response does, offering only the auth methods it handles itself', async () => {
-      const { driver } = await connectedV2Driver(() => fakeV2Agent({
+      const { driver } = await connectedDriver(() => fakeV2Agent({
         authMethods: [
           { type: 'agent', methodId: 'token', name: 'Token', description: 'Paste an API token' },
           { type: 'agent', methodId: 'browser', name: 'Browser' },
@@ -120,7 +120,7 @@ describe('V2Driver', () => {
     });
 
     it('names the agent by its name when it has no title, and offers no past sessions when it has no sessions capability', async () => {
-      const { driver } = await connectedV2Driver(() => fakeV2Agent({ info: { name: 'fake-agent', version: '1' }, capabilities: {} }));
+      const { driver } = await connectedDriver(() => fakeV2Agent({ info: { name: 'fake-agent', version: '1' }, capabilities: {} }));
 
       expect(driver.agent.displayName).toBe('fake-agent');
       expect(driver.agent.capabilities).toEqual({ list: false, load: false, resume: false });
@@ -130,7 +130,7 @@ describe('V2Driver', () => {
   describe('sessions', () => {
     it('creates a session in the directory given, with no modes, and no config options or commands when it has none', async () => {
       const received: V2.NewSessionRequest[] = [];
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, ({ params }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, ({ params }) => {
         received.push(params);
         return { sessionId: 's1' };
       }));
@@ -140,7 +140,7 @@ describe('V2Driver', () => {
     });
 
     it('gives a session the commands the agent starts it with, with the hint a text input has', async () => {
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({
         sessionId: 's1',
         availableCommands: [
           { name: 'web', description: 'Search the web', input: { type: 'text', hint: 'query' } },
@@ -158,7 +158,7 @@ describe('V2Driver', () => {
 
     it('lists sessions with their titles and times, null where the agent gives none, asking only for what is given', async () => {
       const received: V2.ListSessionsRequest[] = [];
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.list, ({ params }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.list, ({ params }) => {
         received.push(params);
         return {
           sessions: [{ sessionId: 'a', cwd: '/work', title: 'Fix the build', updatedAt: '2026-10-20T00:00:00Z' }, { sessionId: 'b', cwd: '/work' }],
@@ -179,7 +179,7 @@ describe('V2Driver', () => {
 
     it('loads a session by resuming it with a replay from the start, and resumes one without a replay', async () => {
       const received: V2.ResumeSessionRequest[] = [];
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.resume, ({ params }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.resume, ({ params }) => {
         received.push(params);
         return { configOptions: [modelOption] };
       }));
@@ -198,7 +198,7 @@ describe('V2Driver', () => {
 
     it('sets a config option to a value by its ID, and reports the options the agent returns', async () => {
       const received: V2.SetSessionConfigOptionRequest[] = [];
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.setConfigOption, ({ params }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.setConfigOption, ({ params }) => {
         received.push(params);
         return { configOptions: [{ ...modelOption, currentValue: 'b' }] };
       }));
@@ -210,7 +210,7 @@ describe('V2Driver', () => {
     });
 
     it('has no modes to set', async () => {
-      const { driver } = await connectedV2Driver(() => fakeV2Agent());
+      const { driver } = await connectedDriver(() => fakeV2Agent());
 
       await expect(driver.setMode('s1', 'code')).rejects.toThrow('ACP v2 sessions have no modes');
     });
@@ -219,7 +219,7 @@ describe('V2Driver', () => {
       const logins: V2.LoginAuthRequest[] = [];
       let cancelled: (sessionId: string) => void = () => {};
       const cancel = new Promise<string>((resolve) => { cancelled = resolve; });
-      const { driver } = await connectedV2Driver(() => fakeV2Agent()
+      const { driver } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.auth.login, ({ params }) => { logins.push(params); })
         .onNotification(V2.methods.agent.session.cancel, ({ params }) => cancelled(params.sessionId)));
 
@@ -291,7 +291,7 @@ describe('V2Driver', () => {
   describe('prompts', () => {
     it('sends the text and the file link as content blocks', async () => {
       const received: V2.PromptRequest[] = [];
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.prompt, async ({ params, client }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.prompt, async ({ params, client }) => {
         received.push(params);
         await reportState(client, running);
         await reportState(client, idle);
@@ -381,7 +381,7 @@ describe('V2Driver', () => {
     });
 
     it('fails a prompt the agent refuses with its error, leaving nothing to fail when the connection closes', async () => {
-      const { driver, exit } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.prompt, () => {
+      const { driver, exit } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.prompt, () => {
         throw V2.RequestError.internalError(undefined, 'Too many prompts');
       }));
 
@@ -425,7 +425,7 @@ describe('V2Driver', () => {
     });
 
     it("passes up the prompts a load replays, before a turn and after it, but not the agent's report of the prompt it is answering", async () => {
-      const { driver, updates } = await connectedV2Driver(() => fakeV2Agent()
+      const { driver, updates } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.session.resume, async ({ client }) => {
           await notify(client, { sessionUpdate: 'user_message', messageId: 'u0', content: [text('Fix the build')] });
           await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'u0', content: text(' now') });
@@ -457,7 +457,7 @@ describe('V2Driver', () => {
     });
 
     it('passes up the prompts a load replays after a prompt the agent refused', async () => {
-      const { driver, updates } = await connectedV2Driver(() => fakeV2Agent()
+      const { driver, updates } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.session.prompt, () => {
           throw V2.RequestError.internalError(undefined, 'Too many prompts');
         })
@@ -558,7 +558,7 @@ describe('V2Driver', () => {
         requestPermission.mockResolvedValueOnce(answer);
       }
       const received: V2.RequestPermissionResponse[] = [];
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
         for (const request of sent) {
           received.push(await client.request(V2.methods.client.session.requestPermission, { sessionId: 's1', ...request }));
         }
@@ -616,7 +616,7 @@ describe('V2Driver', () => {
     it('answers an elicitation with method not found', async () => {
       let answered: (outcome: unknown) => void = () => {};
       const answer = new Promise<unknown>((resolve) => { answered = resolve; });
-      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
         answered(await client.request(V2.methods.client.elicitation.create, {
           mode: 'url', sessionId: 's1', elicitationId: 'e1', url: 'https://example.com/login', message: 'Sign in',
         }).catch((e: unknown) => e));
@@ -630,7 +630,7 @@ describe('V2Driver', () => {
   });
 
   describe('errors', () => {
-    const failing: V2AgentScript = () => fakeV2Agent()
+    const failing: AgentScript = () => fakeV2Agent()
       .onRequest(V2.methods.agent.session.new, () => {
         throw V2.RequestError.authRequired();
       })
@@ -642,7 +642,7 @@ describe('V2Driver', () => {
       });
 
     it("reports the agent's refusal until the user authenticates as AuthRequired, with the agent's message", async () => {
-      const { driver } = await connectedV2Driver(failing);
+      const { driver } = await connectedDriver(failing);
 
       const error = await driver.newSession('/work').catch((e: unknown) => e);
 
@@ -651,7 +651,7 @@ describe('V2Driver', () => {
     });
 
     it('reports a session the agent does not know as UnknownSession, and other failures as they are', async () => {
-      const { driver } = await connectedV2Driver(failing);
+      const { driver } = await connectedDriver(failing);
 
       const unknown = await driver.loadSession('gone', '/work').catch((e: unknown) => e);
       const other = await driver.resumeSession('old', '/work').catch((e: unknown) => e);

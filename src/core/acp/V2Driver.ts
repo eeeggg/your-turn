@@ -27,6 +27,16 @@ import {
 } from './AcpDriver';
 import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
 
+/** The `initialize` request the v2 client sends, which the negotiation sends to the agent for it. */
+export function v2InitializeRequest(clientVersion: string): Acp.InitializeRequest {
+  return {
+    protocolVersion: Acp.PROTOCOL_VERSION,
+    info: { name: 'vscode-acp-client', version: clientVersion },
+    // Without auth.terminal, agents advertise only the auth methods they handle themselves.
+    capabilities: {},
+  };
+}
+
 /** Speaks ACP v2 over a connection, through the SDK's stable v2 client. */
 export class V2Driver implements AcpDriver {
   /** Connect the SDK's v2 client to the stream and initialize the connection. */
@@ -59,12 +69,7 @@ export class V2Driver implements AcpDriver {
     connection.signal.addEventListener('abort', () => foreground.close(), { once: true });
 
     log(`V2Driver: initializing connection to agent ${agentName}`);
-    const initResponse = await connection.agent.request(Acp.methods.agent.initialize, {
-      protocolVersion: Acp.PROTOCOL_VERSION,
-      info: { name: 'vscode-acp-client', version: clientVersion },
-      // Without auth.terminal, agents advertise only the auth methods they handle themselves.
-      capabilities: {},
-    });
+    const initResponse = await connection.agent.request(Acp.methods.agent.initialize, v2InitializeRequest(clientVersion));
     log(`V2Driver: initialized. Agent: ${initResponse.info.name} v${initResponse.info.version}`);
 
     return new V2Driver(connection, agentDescription(initResponse), foreground, translator);

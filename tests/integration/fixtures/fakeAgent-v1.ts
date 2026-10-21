@@ -3,7 +3,7 @@ import type { SessionConfigOption } from '@agentclientprotocol/sdk';
 import { Readable, Writable } from 'node:stream';
 
 /**
- * Minimal ACP agent spoken to over stdio by `connection.test.ts`.
+ * Minimal ACP v1 agent spoken to over stdio by `connection.test.ts`; `fakeAgent-v2.ts` is its v2 twin.
  *
  * A prompt streams "hello", requests permission, then streams
  * "perm:<optionId>". A cancel notification streams "cancel-ack".
