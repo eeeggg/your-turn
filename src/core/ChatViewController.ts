@@ -1,24 +1,10 @@
-import type {
-  AvailableCommand,
-  ContentBlock,
-  PlanEntryStatus,
-  SessionConfigOption,
-  SessionConfigSelectOption,
-  SessionConfigSelectOptions,
-  SessionNotification,
-  SessionUpdate,
-  ToolCallContent,
-  ToolCallStatus as AcpToolCallStatus,
-} from '@agentclientprotocol/sdk';
+import type { ConfigOption, ConfigValueGroup, PlanStep, SessionUpdate, SlashCommand } from '@/core/acp/AcpDriver';
 import type {
   ExtensionToWebviewMessage,
   Picker,
-  PickerCategory,
-  PickerValue,
   PickerValueGroup,
-  PlanStepStatus,
-  SlashCommand,
-  ToolCallStatus,
+  PlanStep as WebviewPlanStep,
+  SlashCommand as WebviewSlashCommand,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { SessionInfo, SessionManager } from './SessionManager';
@@ -56,7 +42,7 @@ export interface ChatViewEnvironment extends Commands {
 /**
  * The extension's side of the chat view: answers webview messages, runs turns
  * against the active session, and tells the webview what to show, translating
- * ACP into the webview's contract. What the contract has no place for is dropped here.
+ * the ACP drivers' session updates into the webview's contract. What the contract has no place for is dropped here.
  * The webview sends one prompt at a time and queues the rest.
  */
 export class ChatViewController {
@@ -100,22 +86,20 @@ export class ChatViewController {
     }
   }
 
-  handleSessionUpdate(notification: SessionNotification): void {
-    const { sessionId, update } = notification;
-
+  handleSessionUpdate(sessionId: string, update: SessionUpdate): void {
     // Applied before the active-session check: an agent can send these while
     // a session is still being created, before it becomes the active session.
-    switch (update.sessionUpdate) {
-      case 'available_commands_update':
-        this.sessions.applyAvailableCommands(sessionId, update.availableCommands);
+    switch (update.kind) {
+      case 'commands':
+        this.sessions.applyAvailableCommands(sessionId, update.commands);
         break;
-      case 'config_option_update':
-        this.sessions.applyConfigOptions(sessionId, update.configOptions);
+      case 'configOptions':
+        this.sessions.applyConfigOptions(sessionId, update.options);
         break;
-      case 'current_mode_update':
-        this.sessions.applyCurrentMode(sessionId, update.currentModeId);
+      case 'currentMode':
+        this.sessions.applyCurrentMode(sessionId, update.modeId);
         break;
-      case 'session_info_update':
+      case 'sessionInfo':
         this.sessions.applySessionInfoUpdate(sessionId, update);
         this.sendTitle(sessionId);
         break;
@@ -297,40 +281,31 @@ export class ChatViewController {
 
   /** The webview message for a session update to the active session, or null when the contract has no place for it. */
   private translate(sessionId: string, update: SessionUpdate): ExtensionToWebviewMessage | null {
-    switch (update.sessionUpdate) {
-      case 'agent_message_chunk': {
-        const text = textForUser(update.content);
-        return text ? { type: 'agentText', messageId: update.messageId ?? null, text } : null;
-      }
-      case 'agent_thought_chunk': {
-        const text = textForUser(update.content);
-        return text === null ? null : { type: 'thoughtText', messageId: update.messageId ?? null, text };
-      }
-      case 'user_message_chunk': {
-        const text = textForUser(update.content);
-        return text === null ? null : { type: 'promptText', text };
-      }
-      case 'tool_call':
-      case 'tool_call_update': {
-        const status = update.status ? toolCallStatus(update.status) : null;
+    switch (update.kind) {
+      case 'agentText':
+        return { type: 'agentText', messageId: update.messageId, text: update.text };
+      case 'thoughtText':
+        return { type: 'thoughtText', messageId: update.messageId, text: update.text };
+      case 'promptText':
+        return { type: 'promptText', text: update.text };
+      case 'toolCall':
         return {
           type: 'toolCall',
           toolCallId: update.toolCallId,
-          ...(update.title ? { title: update.title } : {}),
-          ...(status ? { status } : {}),
-          ...(update.content ? { texts: contentTexts(update.content) } : {}),
+          ...(update.title !== undefined ? { title: update.title } : {}),
+          ...(update.status !== undefined ? { status: update.status } : {}),
+          ...(update.texts !== undefined ? { texts: [...update.texts] } : {}),
         };
-      }
       case 'plan':
-        return { type: 'plan', steps: update.entries.map((entry) => ({ text: entry.content, status: planStepStatus(entry.status) })) };
-      case 'available_commands_update':
-        return { type: 'commands', commands: update.availableCommands.map(slashCommand) };
-      case 'config_option_update':
-      case 'current_mode_update': {
+        return { type: 'plan', steps: update.steps.map(planStep) };
+      case 'commands':
+        return { type: 'commands', commands: update.commands.map(slashCommand) };
+      case 'configOptions':
+      case 'currentMode': {
         const session = this.sessions.getSession(sessionId);
         return session ? { type: 'pickers', pickers: pickersOf(session) } : null;
       }
-      default:
+      case 'sessionInfo':
         return null;
     }
   }
@@ -366,59 +341,25 @@ function messageIdOf(message: TextMessage): string | null {
   return message.type === 'promptText' ? null : message.messageId;
 }
 
-/** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
-function textForUser(content: ContentBlock): string | null {
-  if (content.type !== 'text') {
-    return null;
-  }
-  const audience = content.annotations?.audience;
-  return audience && !audience.includes('user') ? null : content.text;
+function planStep(step: PlanStep): WebviewPlanStep {
+  return { text: step.text, status: step.status };
 }
 
-/** The non-empty text blocks of a tool call's content; diffs and terminals have no place in the chat view yet. */
-function contentTexts(content: readonly ToolCallContent[]): string[] {
-  return content.flatMap((block) => (block.type === 'content' && block.content.type === 'text' && block.content.text ? [block.content.text] : []));
-}
-
-function toolCallStatus(status: AcpToolCallStatus): ToolCallStatus | null {
-  switch (status) {
-    case 'pending':
-    case 'completed':
-    case 'failed':
-      return status;
-    case 'in_progress':
-      return 'running';
-    default:
-      return null;
-  }
-}
-
-function planStepStatus(status: PlanEntryStatus): PlanStepStatus {
-  switch (status) {
-    case 'completed':
-      return 'completed';
-    case 'in_progress':
-      return 'running';
-    default:
-      return 'pending';
-  }
-}
-
-function slashCommand(command: AvailableCommand): SlashCommand {
-  return { name: command.name, description: command.description, takesInput: !!command.input, hint: command.input?.hint || null };
+function slashCommand(command: SlashCommand): WebviewSlashCommand {
+  return { name: command.name, description: command.description, takesInput: command.takesInput, hint: command.hint };
 }
 
 /**
  * The session's pickers. Config options replace modes, as the ACP spec says, so the modes are a picker only for a
- * session without config options; only selects with values to choose from are pickers, as other types have none yet.
+ * session without config options; only selects with values to choose from are pickers, as other kinds have none yet.
  */
 function pickersOf(session: SessionInfo): Picker[] {
   const options = session.configOptions ?? [];
   if (options.length > 0) {
-    return options.flatMap((option) => (option.type === 'select' && option.options.length > 0 ? [configPicker(option)] : []));
+    return options.flatMap((option) => (option.kind === 'select' && option.groups.length > 0 ? [configPicker(option)] : []));
   }
   const { modes } = session;
-  if (!modes || modes.availableModes.length === 0) {
+  if (!modes || modes.available.length === 0) {
     return [];
   }
   return [{
@@ -426,43 +367,25 @@ function pickersOf(session: SessionInfo): Picker[] {
     category: 'mode',
     name: 'Mode',
     description: null,
-    current: modes.currentModeId,
+    current: modes.current,
     groups: [{
       header: null,
-      values: modes.availableModes.map((mode) => ({ id: mode.id, name: mode.name, description: mode.description ?? null })),
+      values: modes.available.map((mode) => ({ id: mode.id, name: mode.name, description: mode.description })),
     }],
   }];
 }
 
-function configPicker(option: Extract<SessionConfigOption, { type: 'select' }>): Picker {
+function configPicker(option: Extract<ConfigOption, { kind: 'select' }>): Picker {
   return {
     id: option.id,
-    category: pickerCategory(option.category),
+    category: option.category,
     name: option.name,
-    description: option.description ?? null,
-    current: option.currentValue,
-    groups: valueGroups(option.options),
+    description: option.description,
+    current: option.current,
+    groups: option.groups.map(valueGroup),
   };
 }
 
-/** Values the agent left ungrouped form one group without a header. */
-function valueGroups(options: SessionConfigSelectOptions): PickerValueGroup[] {
-  const ungrouped = options.flatMap((entry) => ('group' in entry ? [] : [pickerValue(entry)]));
-  const grouped = options.flatMap((entry) => ('group' in entry ? [{ header: entry.name || entry.group, values: entry.options.map(pickerValue) }] : []));
-  return ungrouped.length > 0 ? [{ header: null, values: ungrouped }, ...grouped] : grouped;
-}
-
-function pickerValue(value: SessionConfigSelectOption): PickerValue {
-  return { id: value.value, name: value.name, description: value.description ?? null };
-}
-
-function pickerCategory(category: string | null | undefined): PickerCategory {
-  switch (category) {
-    case 'mode':
-    case 'model':
-    case 'thought_level':
-      return category;
-    default:
-      return 'other';
-  }
+function valueGroup(group: ConfigValueGroup): PickerValueGroup {
+  return { header: group.header, values: group.values.map((value) => ({ id: value.id, name: value.name, description: value.description })) };
 }

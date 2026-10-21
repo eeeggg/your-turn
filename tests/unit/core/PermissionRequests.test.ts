@@ -1,18 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PermissionOption, RequestPermissionRequest } from '@agentclientprotocol/sdk';
+import type { PermissionOption, PermissionRequest } from '@/core/acp/AcpDriver';
 import { PermissionRequests, type AutoApprove, type PermissionChooser } from '@/core/PermissionRequests';
 
-const allowOnce: PermissionOption = { optionId: 'allow', name: 'Allow', kind: 'allow_once' };
-const allowAlways: PermissionOption = { optionId: 'always', name: 'Always allow', kind: 'allow_always' };
-const reject: PermissionOption = { optionId: 'reject', name: 'Reject', kind: 'reject_once' };
+const allowOnce: PermissionOption = { id: 'allow', name: 'Allow', kind: 'allow_once' };
+const allowAlways: PermissionOption = { id: 'always', name: 'Always allow', kind: 'allow_always' };
+const reject: PermissionOption = { id: 'reject', name: 'Reject', kind: 'reject_once' };
 
-function request(title: string | undefined, options: PermissionOption[] = [reject, allowOnce]): RequestPermissionRequest {
-  return {
-    sessionId: 's1',
-    options,
-    toolCall: { toolCallId: `call-${title ?? 'untitled'}`, ...(title !== undefined ? { title } : {}) },
-  };
+function request(title: string | null, options: PermissionOption[] = [reject, allowOnce]): PermissionRequest {
+  return { sessionId: 's1', title, options };
 }
+
+const selected = (optionId: string) => ({ kind: 'selected', optionId });
+const cancelled = { kind: 'cancelled' };
 
 /** A chooser the test answers by hand, one pending choice at a time. */
 function manualChooser(autoApprove: AutoApprove = 'ask') {
@@ -29,7 +28,7 @@ function manualChooser(autoApprove: AutoApprove = 'ask') {
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('PermissionRequests', () => {
-  it("returns the option the user chooses, showing the tool call's title", async () => {
+  it("returns the option the user chooses, showing the request's title", async () => {
     const { chooser, pending } = manualChooser();
     const requests = new PermissionRequests(chooser);
 
@@ -38,14 +37,14 @@ describe('PermissionRequests', () => {
     expect(pending.map((p) => [p.title, p.options])).toEqual([['Edit a.ts', [reject, allowOnce]]]);
     pending[0]?.answer('allow');
 
-    expect(await answer).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+    expect(await answer).toEqual(selected('allow'));
   });
 
-  it('falls back to a generic title when the tool call has none', async () => {
+  it('falls back to a generic title when the request has none', async () => {
     const { chooser, pending } = manualChooser();
     const requests = new PermissionRequests(chooser);
 
-    void requests.requestPermission(request(undefined));
+    void requests.requestPermission(request(null));
     await settle();
 
     expect(pending[0]?.title).toBe('Permission Request');
@@ -59,7 +58,7 @@ describe('PermissionRequests', () => {
     await settle();
     pending[0]?.answer(undefined);
 
-    expect(await answer).toEqual({ outcome: { outcome: 'cancelled' } });
+    expect(await answer).toEqual(cancelled);
   });
 
   it('asks about one request at a time, in the order they arrive', async () => {
@@ -72,12 +71,12 @@ describe('PermissionRequests', () => {
     expect(pending.map((p) => p.title)).toEqual(['first']);
 
     pending[0]?.answer('allow');
-    expect(await first).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+    expect(await first).toEqual(selected('allow'));
     await settle();
     expect(pending.map((p) => p.title)).toEqual(['first', 'second']);
 
     pending[1]?.answer('reject');
-    expect(await second).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } });
+    expect(await second).toEqual(selected('reject'));
   });
 
   it('cancels a request whose choice fails, and goes on to the next', async () => {
@@ -89,10 +88,10 @@ describe('PermissionRequests', () => {
     await settle();
     pending[0]?.fail(new Error('quick pick broke'));
 
-    expect(await failing).toEqual({ outcome: { outcome: 'cancelled' } });
+    expect(await failing).toEqual(cancelled);
     await settle();
     pending[1]?.answer('allow');
-    expect(await next).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+    expect(await next).toEqual(selected('allow'));
   });
 
   it('allows without asking when auto-approve is allowAll, picking the first allow option', async () => {
@@ -101,7 +100,7 @@ describe('PermissionRequests', () => {
 
     const answer = await requests.requestPermission(request('Edit a.ts', [reject, allowAlways, allowOnce]));
 
-    expect(answer).toEqual({ outcome: { outcome: 'selected', optionId: 'always' } });
+    expect(answer).toEqual(selected('always'));
     expect(choose).not.toHaveBeenCalled();
   });
 
@@ -112,7 +111,7 @@ describe('PermissionRequests', () => {
     const answer = await requests.requestPermission(request('Delete a.ts', [reject]));
 
     expect(choose).toHaveBeenCalledExactlyOnceWith('Delete a.ts', [reject]);
-    expect(answer).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } });
+    expect(answer).toEqual(selected('reject'));
   });
 
   it('reads the auto-approve setting for every request', async () => {
@@ -120,9 +119,9 @@ describe('PermissionRequests', () => {
     const choose = vi.fn<PermissionChooser['choose']>(async () => 'reject');
     const requests = new PermissionRequests({ autoApprove: () => setting, choose });
 
-    expect(await requests.requestPermission(request('first'))).toEqual({ outcome: { outcome: 'selected', optionId: 'reject' } });
+    expect(await requests.requestPermission(request('first'))).toEqual(selected('reject'));
     setting = 'allowAll';
-    expect(await requests.requestPermission(request('second'))).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+    expect(await requests.requestPermission(request('second'))).toEqual(selected('allow'));
     expect(choose).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events';
-import type { SessionInfo as ListedSession } from '@agentclientprotocol/sdk';
 import { formatDistanceStrict } from 'date-fns';
+import type { AgentCapabilities, ListedSession } from '@/core/acp/AcpDriver';
 import { logError, messageOf } from './Log';
 import type { SessionHistoryStore } from './SessionHistoryStore';
-import { AuthenticationCancelled, type AgentCapabilitySummary, type SessionManager } from './SessionManager';
+import { AuthenticationCancelled, type SessionManager } from './SessionManager';
 
 export interface AgentEntry {
   readonly name: string;
@@ -84,7 +84,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
 
   /** Starts the agent first if its capabilities are not known yet. */
   async sessionsOf(agentName: string): Promise<AgentSessions> {
-    let caps: AgentCapabilitySummary;
+    let caps: AgentCapabilities;
     try {
       caps = this.sessions.getCachedCapabilities(agentName) ?? await this.sessions.ensureConnected(agentName);
     } catch (e) {

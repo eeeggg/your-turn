@@ -11,7 +11,7 @@ export const permissionQuickPick: PermissionChooser = {
     const items = options.map((option) => ({
       label: `${option.kind.startsWith('allow') ? '$(check)' : '$(x)'} ${option.name}`,
       description: option.kind,
-      optionId: option.optionId,
+      optionId: option.id,
     }));
     const selection = await vscode.window.showQuickPick(items, {
       placeHolder: title,

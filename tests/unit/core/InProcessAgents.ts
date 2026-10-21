@@ -1,7 +1,10 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
+import type { AcpDriver, SessionUpdate } from '@/core/acp/AcpDriver';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
 /** Builds the agent a launch talks to; called once per launch. */
 export type AgentScript = () => AgentApp;
@@ -98,4 +101,18 @@ export class InProcessAgents implements AgentLauncher {
   running(name: string): LaunchedAgent[] {
     return this.launched.filter((l) => l.name === name && !l.exited);
   }
+}
+
+/** A driver connected to the agent `script` builds, and the session updates it passes up, as session ID and update. */
+export async function connectedDriver(
+  script: AgentScript,
+  handlers: ClientHandlers = unusedHandlers,
+): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][] }> {
+  const agents = new InProcessAgents({ fake: script });
+  const sessionUpdates = new SessionUpdateHandler();
+  const updates: [string, SessionUpdate][] = [];
+  sessionUpdates.addListener((sessionId, update) => updates.push([sessionId, update]));
+  const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
+  const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+  return { driver, updates };
 }

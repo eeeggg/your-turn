@@ -2,10 +2,9 @@ import * as assert from 'assert';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { methods } from '@agentclientprotocol/sdk';
-import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { AcpDriver } from '@/core/acp/AcpDriver';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, type AgentProcess } from '@/core/AgentManager';
-import { ConnectionManager, ConnectionInfo } from '@/core/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { setLogSink, type TrafficDirection } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';
@@ -35,7 +34,7 @@ suite('ConnectionManager Test Suite', () => {
   let originalAutoApprove: string | undefined;
   let agent: AgentProcess | undefined;
   let manager: ConnectionManager;
-  let info: ConnectionInfo;
+  let driver: AcpDriver;
   const exits: (number | null)[] = [];
   const texts: string[] = [];
   const traffic: { direction: TrafficDirection; data: unknown }[] = [];
@@ -52,9 +51,9 @@ suite('ConnectionManager Test Suite', () => {
     });
 
     const updates = new SessionUpdateHandler();
-    updates.addListener((n: SessionNotification) => {
-      if (n.update.sessionUpdate === 'agent_message_chunk' && n.update.content.type === 'text') {
-        texts.push(n.update.content.text);
+    updates.addListener((_sessionId, update) => {
+      if (update.kind === 'agentText') {
+        texts.push(update.text);
       }
     });
     manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
@@ -68,7 +67,7 @@ suite('ConnectionManager Test Suite', () => {
       error: () => {},
       exit: (code) => exits.push(code),
     });
-    info = await manager.connect('fake-agent', agent);
+    driver = await manager.connect('fake-agent', agent);
   });
 
   suiteTeardown(async () => {
@@ -79,7 +78,7 @@ suite('ConnectionManager Test Suite', () => {
   });
 
   test('Initializes the connection', () => {
-    assert.strictEqual(info.initResponse.agentInfo?.name, 'FakeAgent');
+    assert.strictEqual(driver.agent.displayName, 'FakeAgent');
   });
 
   test('Sends the client version in initialize', () => {
@@ -88,30 +87,22 @@ suite('ConnectionManager Test Suite', () => {
   });
 
   test('Creates a session and sets a config option', async () => {
-    const created = await info.connection.agent.request(methods.agent.session.new, { cwd: __dirname, mcpServers: [] });
+    const created = await driver.newSession(__dirname);
     assert.strictEqual(created.sessionId, 'fake-session');
     assert.strictEqual(created.configOptions?.[0]?.category, 'model');
 
-    const updated = await info.connection.agent.request(methods.agent.session.setConfigOption, {
-      sessionId: created.sessionId,
-      configId: 'model',
-      value: 'model-b',
-    });
-    assert.strictEqual(updated.configOptions[0]?.currentValue, 'model-b');
+    const updated = await driver.setConfigOption(created.sessionId, 'model', 'model-b');
+    assert.strictEqual(updated?.[0]?.current, 'model-b');
   });
 
   test('Routes session updates and answers permission requests during a prompt', async () => {
-    const response = await info.connection.agent.request(methods.agent.session.prompt, {
-      sessionId: 'fake-session',
-      prompt: [{ type: 'text', text: 'hi' }],
-    });
-    assert.strictEqual(response.stopReason, 'end_turn');
+    await driver.prompt('fake-session', [{ kind: 'text', text: 'hi' }]);
     assert.ok(texts.includes('hello'), `updates: ${JSON.stringify(texts)}`);
     assert.ok(texts.includes('perm:allow'), `updates: ${JSON.stringify(texts)}`);
   });
 
   test('Sends cancel as a notification', async () => {
-    await info.connection.agent.notify(methods.agent.session.cancel, { sessionId: 'fake-session' });
+    await driver.cancel('fake-session');
     await waitFor(() => texts.includes('cancel-ack'));
   });
 

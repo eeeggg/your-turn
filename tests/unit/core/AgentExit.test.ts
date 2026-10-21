@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { methods } from '@agentclientprotocol/sdk';
 import { ChatViewController } from '@/core/ChatViewController';
-import { ConnectionManager } from '@/core/ConnectionManager';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
@@ -43,7 +43,7 @@ function setup() {
     post: (message) => store.dispatch(message),
     executeCommand: async (...args) => { turnInProgress.push(args[2]); },
   });
-  updates.addListener((notification) => controller.handleSessionUpdate(notification));
+  updates.addListener((sessionId, update) => controller.handleSessionUpdate(sessionId, update));
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
   manager.on('session-ended', (sessionId, reason) => controller.notifySessionEnded(sessionId, reason));
 

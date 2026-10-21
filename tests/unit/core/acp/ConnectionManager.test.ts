@@ -1,43 +1,28 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AgentContext, InitializeRequest, SessionNotification } from '@agentclientprotocol/sdk';
+import type { AgentContext, InitializeRequest } from '@agentclientprotocol/sdk';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents } from './InProcessAgents';
+import { connectedDriver, fakeAgent, InProcessAgents } from '@tests/unit/core/InProcessAgents';
 
 function handlers() {
   return {
     permissions: {
-      requestPermission: vi.fn<ClientHandlers['permissions']['requestPermission']>(async () => ({ outcome: { outcome: 'cancelled' as const } })),
+      requestPermission: vi.fn<ClientHandlers['permissions']['requestPermission']>(async () => ({ kind: 'cancelled' as const })),
     },
   } satisfies ClientHandlers;
 }
 
 /** Connect to an agent whose `session/prompt` runs `work` against the client, then ends the turn. */
 async function connectWith(work: (client: AgentContext) => Promise<void>) {
-  const agents = new InProcessAgents({
-    fake: () => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {
-      await work(client);
-      return { stopReason: 'end_turn' };
-    }),
-  });
-  const updates = new SessionUpdateHandler();
-  const received: SessionNotification[] = [];
-  updates.addListener((n) => received.push(n));
-  const handlerSets: ReturnType<typeof handlers>[] = [];
-  const manager = new ConnectionManager(updates, '0.0.0-test', () => {
-    const set = handlers();
-    handlerSets.push(set);
-    return set;
-  });
-  const agentProcess = agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} });
-  const { connection, initResponse } = await manager.connect('fake', agentProcess);
-  const prompt = () => connection.agent.request(methods.agent.session.prompt, {
-    sessionId: 's1',
-    prompt: [{ type: 'text', text: 'go' }],
-  });
-  return { agents, connection, initResponse, handlerSets, received, prompt };
+  const set = handlers();
+  const { driver, updates } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {
+    await work(client);
+    return { stopReason: 'end_turn' };
+  }), set);
+  const prompt = () => driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
+  return { handlers: set, updates, prompt };
 }
 
 describe('ConnectionManager', () => {
@@ -78,7 +63,7 @@ describe('ConnectionManager', () => {
 
   it("routes the agent's permission requests to the connection's handlers", async () => {
     const answers: unknown[] = [];
-    const { handlerSets, prompt } = await connectWith(async (client) => {
+    const { handlers: set, prompt } = await connectWith(async (client) => {
       answers.push(await client.request(methods.client.session.requestPermission, {
         sessionId: 's1',
         toolCall: { toolCallId: 'c1' },
@@ -88,12 +73,12 @@ describe('ConnectionManager', () => {
 
     await prompt();
 
-    expect(handlerSets[0]?.permissions.requestPermission).toHaveBeenCalledOnce();
+    expect(set.permissions.requestPermission).toHaveBeenCalledOnce();
     expect(answers).toEqual([{ outcome: { outcome: 'cancelled' } }]);
   });
 
   it('passes session updates to the session update handler', async () => {
-    const { received, prompt } = await connectWith(async (client) => {
+    const { updates, prompt } = await connectWith(async (client) => {
       await client.notify(methods.client.session.update, {
         sessionId: 's1',
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
@@ -102,10 +87,7 @@ describe('ConnectionManager', () => {
 
     await prompt();
 
-    expect(received).toEqual([{
-      sessionId: 's1',
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
-    }]);
+    expect(updates).toEqual([['s1', { kind: 'agentText', messageId: null, text: 'hello' }]]);
   });
 
   it('gives each connection its own handlers', async () => {

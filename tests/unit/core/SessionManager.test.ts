@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
-import type { AgentApp, AuthMethod, ResourceLink, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
+import type { AgentApp, AuthMethod as AcpAuthMethod, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
+import type { AuthMethod, ConfigOption, FileLink, SessionUpdate } from '@/core/acp/AcpDriver';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { ChatViewController } from '@/core/ChatViewController';
-import { ConnectionManager } from '@/core/ConnectionManager';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment, type SessionManagerEvents } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -43,10 +44,23 @@ function modelOption(currentValue: string): SessionConfigOption {
   };
 }
 
+/** {@link modelOption} as the session holds it. */
+function modelConfig(current: string): ConfigOption {
+  return {
+    kind: 'select',
+    id: 'model',
+    name: 'Model',
+    description: null,
+    category: 'model',
+    current,
+    groups: [{ header: null, values: [{ id: 'a', name: 'A', description: null }, { id: 'b', name: 'B', description: null }] }],
+  };
+}
+
 function setup(scripts: Record<string, AgentScript>) {
   const agents = new InProcessAgents(scripts);
   const updates = new SessionUpdateHandler();
-  let fileLink: ResourceLink | undefined;
+  let fileLink: FileLink | undefined;
   const environment: SessionEnvironment = {
     workspaceCwd: () => '/work',
     agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
@@ -59,10 +73,10 @@ function setup(scripts: Record<string, AgentScript>) {
 
   // As in the extension, the chat view applies session updates to the sessions.
   const chatView = new ChatViewController(manager, { post() {}, executeCommand: async () => {} });
-  const received: SessionNotification[] = [];
-  updates.addListener((update) => {
-    received.push(update);
-    chatView.handleSessionUpdate(update);
+  const received: [string, SessionUpdate][] = [];
+  updates.addListener((sessionId, update) => {
+    received.push([sessionId, update]);
+    chatView.handleSessionUpdate(sessionId, update);
   });
 
   const events: unknown[][] = [];
@@ -78,7 +92,7 @@ function setup(scripts: Record<string, AgentScript>) {
     authPrompt,
     received,
     events,
-    linkActiveFile(link: ResourceLink) { fileLink = link; },
+    linkActiveFile(link: FileLink) { fileLink = link; },
     /** Events emitted since the last call. */
     takeEvents(): unknown[][] { return events.splice(0); },
   };
@@ -110,7 +124,7 @@ describe('SessionManager', () => {
         agentDisplayName: 'Fake Agent',
         cwd: '/work',
         modes: null,
-        configOptions: [modelOption('a')],
+        configOptions: [modelConfig('a')],
       });
       expect(manager.getActiveSessionId()).toBe('s1');
       expect(manager.hasSession('fake')).toBe(true);
@@ -245,7 +259,9 @@ describe('SessionManager', () => {
   });
 
   describe('authentication', () => {
-    const methodsOffered: AuthMethod[] = [{ id: 'token', name: 'Token' }, { id: 'browser', name: 'Browser' }];
+    const methodsOffered: AcpAuthMethod[] = [{ id: 'token', name: 'Token' }, { id: 'browser', name: 'Browser' }];
+    /** {@link methodsOffered} as the user is offered them. */
+    const choices: AuthMethod[] = [{ id: 'token', name: 'Token', description: null }, { id: 'browser', name: 'Browser', description: null }];
 
     function authAgent() {
       const authenticated: string[] = [];
@@ -266,11 +282,11 @@ describe('SessionManager', () => {
     it('authenticates with the method the user picks, then creates the session', async () => {
       const fake = authAgent();
       const { manager, authPrompt } = setup({ fake: fake.script });
-      authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[1]);
+      authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[1]);
 
       const session = await manager.connectToAgent('fake');
 
-      expect(authPrompt.chooseAuthMethod).toHaveBeenCalledExactlyOnceWith('fake', methodsOffered);
+      expect(authPrompt.chooseAuthMethod).toHaveBeenCalledExactlyOnceWith('fake', choices);
       expect(fake.authenticated).toEqual(['browser']);
       expect(session.sessionId).toBe('s1');
     });
@@ -291,7 +307,7 @@ describe('SessionManager', () => {
           throw RequestError.authRequired();
         });
       const { agents, manager, authPrompt } = setup({ fake: script });
-      authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[0]);
+      authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[0]);
 
       await expect(manager.connectToAgent('fake')).rejects.toThrow(/^Authentication failed: .*token expired/);
       expect(agents.launched[0]?.killed).toBe(true);
@@ -304,7 +320,7 @@ describe('SessionManager', () => {
           throw RequestError.authRequired();
         });
       const { agents, manager, authPrompt } = setup({ fake: script });
-      authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[0]);
+      authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[0]);
 
       await expect(manager.connectToAgent('fake')).rejects.toThrow('Authentication required');
       expect(authPrompt.chooseAuthMethod).toHaveBeenCalledOnce();
@@ -332,7 +348,7 @@ describe('SessionManager', () => {
       it('authenticates with the method the user picks, then lists again, keeping the agent', async () => {
         const fake = listingAgent();
         const { agents, manager, authPrompt } = setup({ fake: fake.script });
-        authPrompt.chooseAuthMethod.mockResolvedValueOnce(methodsOffered[1]);
+        authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[1]);
 
         const listed = await manager.listSessions('fake');
 
@@ -369,11 +385,10 @@ describe('SessionManager', () => {
       }));
       const { manager, linkActiveFile } = setup({ fake: fake.script });
       await manager.connectToAgent('fake');
-      linkActiveFile({ type: 'resource_link', uri: 'file:///work/a.ts', name: '/work/a.ts' } as ResourceLink);
+      linkActiveFile({ uri: 'file:///work/a.ts', name: '/work/a.ts' });
 
-      const response = await manager.sendPrompt('s1', 'explain this');
+      await manager.sendPrompt('s1', 'explain this');
 
-      expect(response.stopReason).toBe('end_turn');
       expect(prompts).toEqual([[
         { type: 'resource_link', uri: 'file:///work/a.ts', name: '/work/a.ts' },
         { type: 'text', text: 'explain this' },
@@ -409,8 +424,8 @@ describe('SessionManager', () => {
 
       const options = await manager.setConfigOption('s1', 'model', 'b');
 
-      expect(options).toEqual([modelOption('b')]);
-      expect(manager.getSession('s1')?.configOptions).toEqual([modelOption('b')]);
+      expect(options).toEqual([modelConfig('b')]);
+      expect(manager.getSession('s1')?.configOptions).toEqual([modelConfig('b')]);
     });
 
     it('keeps no config options when the agent responds with null ones', async () => {
@@ -466,7 +481,7 @@ describe('SessionManager', () => {
       await manager.setMode('s1', 'code');
 
       expect(setModes).toEqual(['code']);
-      expect(manager.getSession('s1')?.modes?.currentModeId).toBe('code');
+      expect(manager.getSession('s1')?.modes?.current).toBe('code');
       expect(takeEvents()).toEqual([['mode-changed', 's1', 'code']]);
     });
 
@@ -507,8 +522,8 @@ describe('SessionManager', () => {
       await settle();
 
       expect(received).toHaveLength(3);
-      expect(session.availableCommands).toEqual([{ name: 'init', description: 'Init' }]);
-      expect(session.configOptions).toEqual([modelOption('b')]);
+      expect(session.availableCommands).toEqual([{ name: 'init', description: 'Init', takesInput: false, hint: null }]);
+      expect(session.configOptions).toEqual([modelConfig('b')]);
       expect(session.title).toBe('Early title');
     });
 
@@ -550,7 +565,7 @@ describe('SessionManager', () => {
 
       manager.applyCurrentMode('s1', 'code');
 
-      expect(manager.getSession('s1')?.modes?.currentModeId).toBe('code');
+      expect(manager.getSession('s1')?.modes?.current).toBe('code');
     });
 
     it('records only the first prompt in the session history', async () => {
@@ -683,8 +698,8 @@ describe('SessionManager', () => {
       const session = await manager.loadSession('fake', 'old');
 
       expect(activeDuringLoad).toBe('old');
-      expect(received.map((n) => n.sessionId)).toEqual(['old']);
-      expect(session.configOptions).toEqual([modelOption('b')]);
+      expect(received.map(([sessionId]) => sessionId)).toEqual(['old']);
+      expect(session.configOptions).toEqual([modelConfig('b')]);
       expect(takeEvents()).toEqual([
         ['session-added', 'old', 'fake'],
         ['active-session-changed', 'old'],
@@ -747,7 +762,7 @@ describe('SessionManager', () => {
       const session = await manager.resumeSession('fake', 'old');
 
       expect(received).toEqual([]);
-      expect(session.configOptions).toEqual([modelOption('a')]);
+      expect(session.configOptions).toEqual([modelConfig('a')]);
       expect(manager.getActiveSessionId()).toBe('old');
       expect(takeEvents()).toEqual([['session-added', 'old', 'fake'], ['active-session-changed', 'old']]);
     });
@@ -961,7 +976,7 @@ describe('SessionManager', () => {
 
       expect(manager.getActiveSessionId()).toBe('s2');
       expect(manager.hasSession('fake')).toBe(true);
-      await expect(manager.sendPrompt('s2', 'still there?')).resolves.toEqual({ stopReason: 'end_turn' });
+      await expect(manager.sendPrompt('s2', 'still there?')).resolves.toBeUndefined();
     });
 
     describe('when the command cannot start, as real processes', () => {

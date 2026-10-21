@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 import { AgentConfigurations } from '@/core/AgentConfigurations';
 import { AgentManager, findOnPath } from '@/core/AgentManager';
-import { ConnectionManager } from '@/core/ConnectionManager';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { checkPackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
@@ -78,7 +78,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
   });
-  sessionUpdateHandler.addListener((update) => chatViewController.handleSessionUpdate(update));
+  sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
     ChatWebviewProvider.viewType,
     chatWebviewProvider,

@@ -1,33 +1,33 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SessionNotification } from '@agentclientprotocol/sdk';
+import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
-function chunk(sessionId: string, text: string): SessionNotification {
-  return { sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } };
+function chunk(text: string): SessionUpdate {
+  return { kind: 'agentText', messageId: null, text };
 }
 
 describe('SessionUpdateHandler', () => {
   it('delivers each update to every listener in registration order', () => {
     const handler = new SessionUpdateHandler();
     const received: string[] = [];
-    handler.addListener((u) => received.push(`first:${u.sessionId}`));
-    handler.addListener((u) => received.push(`second:${u.sessionId}`));
+    handler.addListener((sessionId) => received.push(`first:${sessionId}`));
+    handler.addListener((sessionId) => received.push(`second:${sessionId}`));
 
-    handler.handleUpdate(chunk('s1', 'a'));
-    handler.handleUpdate(chunk('s2', 'b'));
+    handler.handleUpdate('s1', chunk('a'));
+    handler.handleUpdate('s2', chunk('b'));
 
     expect(received).toEqual(['first:s1', 'second:s1', 'first:s2', 'second:s2']);
   });
 
-  it('passes the notification through unchanged', () => {
+  it('passes the update through unchanged', () => {
     const handler = new SessionUpdateHandler();
     const listener = vi.fn();
     handler.addListener(listener);
-    const update = chunk('s1', 'hello');
+    const update = chunk('hello');
 
-    handler.handleUpdate(update);
+    handler.handleUpdate('s1', update);
 
-    expect(listener).toHaveBeenCalledExactlyOnceWith(update);
+    expect(listener).toHaveBeenCalledExactlyOnceWith('s1', update);
   });
 
   it('registers a listener once even if it is added twice', () => {
@@ -36,7 +36,7 @@ describe('SessionUpdateHandler', () => {
     handler.addListener(listener);
     handler.addListener(listener);
 
-    handler.handleUpdate(chunk('s1', 'a'));
+    handler.handleUpdate('s1', chunk('a'));
 
     expect(listener).toHaveBeenCalledTimes(1);
   });
@@ -49,7 +49,7 @@ describe('SessionUpdateHandler', () => {
     handler.addListener(kept);
 
     handler.removeListener(removed);
-    handler.handleUpdate(chunk('s1', 'a'));
+    handler.handleUpdate('s1', chunk('a'));
 
     expect(removed).not.toHaveBeenCalled();
     expect(kept).toHaveBeenCalledTimes(1);
@@ -63,19 +63,8 @@ describe('SessionUpdateHandler', () => {
     });
     handler.addListener(later);
 
-    expect(() => handler.handleUpdate(chunk('s1', 'a'))).not.toThrow();
+    expect(() => handler.handleUpdate('s1', chunk('a'))).not.toThrow();
     expect(later).toHaveBeenCalledTimes(1);
-  });
-
-  it('delivers updates without a sessionUpdate field', () => {
-    const handler = new SessionUpdateHandler();
-    const listener = vi.fn();
-    handler.addListener(listener);
-    const malformed = { sessionId: 's1', update: {} } as unknown as SessionNotification;
-
-    handler.handleUpdate(malformed);
-
-    expect(listener).toHaveBeenCalledExactlyOnceWith(malformed);
   });
 
   it('delivers nothing after dispose', () => {
@@ -84,7 +73,7 @@ describe('SessionUpdateHandler', () => {
     handler.addListener(listener);
 
     handler.dispose();
-    handler.handleUpdate(chunk('s1', 'a'));
+    handler.handleUpdate('s1', chunk('a'));
 
     expect(listener).not.toHaveBeenCalled();
   });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ContentBlock, PromptResponse, SessionConfigOption, SessionModeState, SessionNotification, SessionUpdate } from '@agentclientprotocol/sdk';
+import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
 import type { SessionInfo } from '@/core/SessionManager';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
@@ -20,13 +20,14 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-const modelOption: SessionConfigOption = {
+const modelOption: ConfigOption = {
+  kind: 'select',
   id: 'model',
   name: 'Model',
+  description: null,
   category: 'model',
-  type: 'select',
-  currentValue: 'a',
-  options: [{ value: 'a', name: 'Model A' }, { value: 'b', name: 'Model B', description: 'The big one' }],
+  current: 'a',
+  groups: [{ header: null, values: [{ id: 'a', name: 'Model A', description: null }, { id: 'b', name: 'Model B', description: 'The big one' }] }],
 };
 
 /** {@link modelOption} as the webview gets it. */
@@ -39,9 +40,9 @@ const modelPicker: Picker = {
   groups: [{ header: null, values: [{ id: 'a', name: 'Model A', description: null }, { id: 'b', name: 'Model B', description: 'The big one' }] }],
 };
 
-const modes: SessionModeState = {
-  currentModeId: 'ask',
-  availableModes: [{ id: 'ask', name: 'Ask', description: 'Asks first' }, { id: 'code', name: 'Code' }],
+const modes: Modes = {
+  current: 'ask',
+  available: [{ id: 'ask', name: 'Ask', description: 'Asks first' }, { id: 'code', name: 'Code', description: null }],
 };
 
 /** {@link modes} as the webview gets it. */
@@ -62,7 +63,6 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
     agentDisplayName: 'Fake Agent',
     cwd: '/work/project',
     createdAt: '2026-10-18T00:00:00Z',
-    initResponse: { protocolVersion: 1 },
     modes: null,
     configOptions: [modelOption],
     availableCommands: [],
@@ -74,12 +74,12 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 class FakeSessions implements ChatSessions {
   activeId: string | null = 's1';
   session: SessionInfo | undefined = sessionInfo();
-  readonly prompts: { text: string; reply: Deferred<PromptResponse> }[] = [];
+  readonly prompts: { text: string; reply: Deferred<undefined> }[] = [];
 
   getActiveSessionId = () => this.activeId;
   getSession = (sessionId: string) => (this.session?.sessionId === sessionId ? this.session : undefined);
   sendPrompt = vi.fn<ChatSessions['sendPrompt']>((_sessionId, text) => {
-    const reply = deferred<PromptResponse>();
+    const reply = deferred<undefined>();
     this.prompts.push({ text, reply });
     return reply.promise;
   });
@@ -96,10 +96,10 @@ class FakeSessions implements ChatSessions {
   });
   applyCurrentMode = vi.fn<ChatSessions['applyCurrentMode']>((sessionId, modeId) => {
     if (this.session?.sessionId === sessionId && this.session.modes) {
-      this.session.modes.currentModeId = modeId;
+      this.session.modes = { ...this.session.modes, current: modeId };
     }
   });
-  /** As ACP defines it: a null title clears it, a missing one leaves it unchanged. */
+  /** A null title clears it, a missing one leaves it unchanged. */
   applySessionInfoUpdate = vi.fn<ChatSessions['applySessionInfoUpdate']>((sessionId, update) => {
     if (this.session?.sessionId !== sessionId) { return; }
     if (update.title === null) {
@@ -109,13 +109,13 @@ class FakeSessions implements ChatSessions {
     }
   });
 
-  /** Answer the oldest prompt still in flight. */
-  answer(response: PromptResponse = { stopReason: 'end_turn' }): void {
+  /** End the turn of the oldest prompt still in flight. */
+  answer(): void {
     const prompt = this.prompts.shift();
     if (!prompt) {
       throw new Error('no prompt in flight');
     }
-    prompt.reply.resolve(response);
+    prompt.reply.resolve(undefined);
   }
 
   fail(error: unknown): void {
@@ -154,10 +154,7 @@ function sendPrompt(controller: ChatViewController, text: string): Promise<void>
   return controller.handleMessage({ type: 'sendPrompt', text });
 }
 
-const toolCall = (sessionId: string): SessionNotification => ({
-  sessionId,
-  update: { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Read' },
-});
+const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
   describe('session state', () => {
@@ -165,7 +162,10 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo({
         title: 'Fix the build',
-        availableCommands: [{ name: 'init', description: 'Init' }, { name: 'review', description: 'Review', input: { hint: 'what to review' } }],
+        availableCommands: [
+          { name: 'init', description: 'Init', takesInput: false, hint: null },
+          { name: 'review', description: 'Review', takesInput: true, hint: 'what to review' },
+        ],
       });
 
       await controller.handleMessage({ type: 'ready' });
@@ -240,56 +240,47 @@ describe('ChatViewController', () => {
     }
 
     it('shows the modes as a picker for a session without config options', () => {
-      expect(pickers(sessionInfo({ configOptions: null, modes: structuredClone(modes) }))).toEqual([modePicker]);
-      expect(pickers(sessionInfo({ configOptions: [], modes: structuredClone(modes) }))).toEqual([modePicker]);
+      expect(pickers(sessionInfo({ configOptions: null, modes }))).toEqual([modePicker]);
+      expect(pickers(sessionInfo({ configOptions: [], modes }))).toEqual([modePicker]);
     });
 
     it('shows only the config options when the session has both, as they replace modes', () => {
-      expect(pickers(sessionInfo({ configOptions: [modelOption], modes: structuredClone(modes) }))).toEqual([modelPicker]);
+      expect(pickers(sessionInfo({ configOptions: [modelOption], modes }))).toEqual([modelPicker]);
     });
 
     it('shows no picker for modes without any, or for config options other than selects with values', () => {
-      expect(pickers(sessionInfo({ configOptions: null, modes: { currentModeId: 'ask', availableModes: [] } }))).toEqual([]);
-      const unpickable: SessionConfigOption[] = [
-        { id: 'fast', name: 'Fast', type: 'boolean', currentValue: false },
-        { id: 'empty', name: 'Empty', type: 'select', currentValue: '', options: [] },
+      expect(pickers(sessionInfo({ configOptions: null, modes: { current: 'ask', available: [] } }))).toEqual([]);
+      const unpickable: ConfigOption[] = [
+        { kind: 'boolean', id: 'fast', name: 'Fast', description: null, category: 'other', current: false },
+        { kind: 'select', id: 'empty', name: 'Empty', description: null, category: 'other', current: '', groups: [] },
       ];
-      expect(pickers(sessionInfo({ configOptions: unpickable, modes: structuredClone(modes) }))).toEqual([]);
+      expect(pickers(sessionInfo({ configOptions: unpickable, modes }))).toEqual([]);
     });
 
-    it('keeps the groups of grouped values, headed by their names', () => {
-      const grouped: SessionConfigOption = {
-        id: 'model',
-        name: 'Model',
-        type: 'select',
-        currentValue: 'b',
-        options: [
-          { group: 'fast', name: 'Fast models', options: [{ value: 'a', name: 'A' }] },
-          { group: 'slow', name: '', options: [{ value: 'b', name: 'B' }] },
+    it('keeps the groups and headers of grouped values', () => {
+      const grouped: ConfigOption = {
+        ...modelOption,
+        current: 'b',
+        groups: [
+          { header: 'Fast models', values: [{ id: 'a', name: 'A', description: null }] },
+          { header: 'slow', values: [{ id: 'b', name: 'B', description: 'Slow' }] },
         ],
       };
 
-      expect(pickers(sessionInfo({ configOptions: [grouped] }))[0]?.groups).toEqual([
-        { header: 'Fast models', values: [{ id: 'a', name: 'A', description: null }] },
-        { header: 'slow', values: [{ id: 'b', name: 'B', description: null }] },
-      ]);
-    });
-
-    it.each([
-      ['mode', 'mode'],
-      ['model', 'model'],
-      ['thought_level', 'thought_level'],
-      ['model_config', 'other'],
-      [null, 'other'],
-    ] as const)('gives a config option of category %s the category %s', (category, expected) => {
-      const option: SessionConfigOption = { ...modelOption, category };
-      expect(pickers(sessionInfo({ configOptions: [option] }))[0]?.category).toBe(expected);
+      expect(pickers(sessionInfo({ configOptions: [grouped] }))).toEqual([{
+        ...modelPicker,
+        current: 'b',
+        groups: [
+          { header: 'Fast models', values: [{ id: 'a', name: 'A', description: null }] },
+          { header: 'slow', values: [{ id: 'b', name: 'B', description: 'Slow' }] },
+        ],
+      }]);
     });
   });
 
   describe('session title', () => {
-    function infoUpdate(fields: { title?: string | null; updatedAt?: string }): SessionNotification {
-      return { sessionId: 's1', update: { sessionUpdate: 'session_info_update', ...fields } };
+    function infoUpdate(fields: { title?: string | null; updatedAt?: string }): SessionUpdate {
+      return { kind: 'sessionInfo', ...fields };
     }
 
     function titles(environment: FakeEnvironment): (string | null)[] {
@@ -299,7 +290,7 @@ describe('ChatViewController', () => {
     it('shows the title the agent sets', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate(infoUpdate({ title: 'New title' }));
+      controller.handleSessionUpdate('s1', infoUpdate({ title: 'New title' }));
 
       expect(titles(environment)).toEqual(['New title']);
     });
@@ -308,7 +299,7 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo({ title: 'Fix the build' });
 
-      controller.handleSessionUpdate(infoUpdate({ updatedAt: '2026-10-18T12:00:00Z' }));
+      controller.handleSessionUpdate('s1', infoUpdate({ updatedAt: '2026-10-18T12:00:00Z' }));
 
       expect(titles(environment)).toEqual(['Fix the build']);
     });
@@ -317,7 +308,7 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo({ title: 'Fix the build' });
 
-      controller.handleSessionUpdate(infoUpdate({ title: null }));
+      controller.handleSessionUpdate('s1', infoUpdate({ title: null }));
 
       expect(titles(environment)).toEqual([null]);
     });
@@ -343,7 +334,7 @@ describe('ChatViewController', () => {
       expect(environment.take()).toEqual([{ type: 'promptStart' }]);
       expect(controller.hasTranscript).toBe(true);
 
-      sessions.answer({ stopReason: 'end_turn' });
+      sessions.answer();
       await turn;
 
       expect(sessions.touchHistory).toHaveBeenCalledExactlyOnceWith('s1');
@@ -551,7 +542,7 @@ describe('ChatViewController', () => {
 
     it("sets the mode when the session's picker stands for its modes, leaving the pickers to the session's report", async () => {
       const { sessions, environment, controller } = setup();
-      sessions.session = sessionInfo({ configOptions: null, modes: structuredClone(modes) });
+      sessions.session = sessionInfo({ configOptions: null, modes });
 
       await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' });
 
@@ -562,7 +553,7 @@ describe('ChatViewController', () => {
 
     it('reports a mode that cannot be set, and rolls the picker back', async () => {
       const { sessions, environment, controller } = setup();
-      sessions.session = sessionInfo({ configOptions: null, modes: structuredClone(modes) });
+      sessions.session = sessionInfo({ configOptions: null, modes });
       sessions.setMode.mockRejectedValueOnce(new Error('unknown mode'));
 
       await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'nope' });
@@ -576,7 +567,7 @@ describe('ChatViewController', () => {
     it('sets a config option, then re-sends the pickers from every option the agent returns', async () => {
       const { sessions, environment, controller } = setup();
       sessions.setConfigOption.mockImplementationOnce(async (sessionId, _configId, _value) => {
-        const returned: SessionConfigOption[] = [{ ...modelOption, currentValue: 'b' }];
+        const returned: ConfigOption[] = [{ ...modelOption, current: 'b' }];
         sessions.applyConfigOptions(sessionId, returned);
         return returned;
       });
@@ -617,7 +608,7 @@ describe('ChatViewController', () => {
       sessions.session = session;
       vi.useFakeTimers();
       try {
-        controller.handleSessionUpdate({ sessionId: 's1', update });
+        controller.handleSessionUpdate('s1', update);
         vi.advanceTimersByTime(16);
       } finally {
         vi.useRealTimers();
@@ -628,110 +619,50 @@ describe('ChatViewController', () => {
     it('tells the webview about updates to the active session only', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate(toolCall('s1'));
-      controller.handleSessionUpdate(toolCall('other'));
+      controller.handleSessionUpdate('s1', toolCall);
+      controller.handleSessionUpdate('other', toolCall);
 
       expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', title: 'Read' }]);
     });
 
-    it("passes on the agent's answer, thinking and replayed prompts as text, with their message IDs", () => {
-      expect(translated({ sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'Hi' } })).toEqual([
-        { type: 'agentText', messageId: 'm1', text: 'Hi' },
+    it("passes on text, tool calls, the plan and slash commands in the webview's terms", () => {
+      expect(translated({ kind: 'agentText', messageId: 'm1', text: 'Hi' })).toEqual([{ type: 'agentText', messageId: 'm1', text: 'Hi' }]);
+      expect(translated({ kind: 'thoughtText', messageId: null, text: 'Hm' })).toEqual([{ type: 'thoughtText', messageId: null, text: 'Hm' }]);
+      expect(translated({ kind: 'promptText', text: 'Fix it' })).toEqual([{ type: 'promptText', text: 'Fix it' }]);
+      expect(translated({ kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] })).toEqual([
+        { type: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] },
       ]);
-      expect(translated({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'Hm' } })).toEqual([
-        { type: 'thoughtText', messageId: null, text: 'Hm' },
+      expect(translated({ kind: 'toolCall', toolCallId: 't1' })).toEqual([{ type: 'toolCall', toolCallId: 't1' }]);
+      expect(translated({ kind: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] })).toEqual([
+        { type: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] },
       ]);
-      expect(translated({ sessionUpdate: 'user_message_chunk', messageId: 'u1', content: { type: 'text', text: 'Fix it' } })).toEqual([
-        { type: 'promptText', text: 'Fix it' },
-      ]);
-    });
-
-    it('drops text meant for the model alone, content other than text, and empty answer text', () => {
-      const forModel: ContentBlock = { type: 'text', text: 'file contents', annotations: { audience: ['assistant'] } };
-      const image: ContentBlock = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
-      for (const sessionUpdate of ['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk'] as const) {
-        expect(translated({ sessionUpdate, content: forModel }), sessionUpdate).toEqual([]);
-        expect(translated({ sessionUpdate, content: image }), sessionUpdate).toEqual([]);
-      }
-      expect(translated({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' } })).toEqual([]);
-      expect(translated({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'both', annotations: { audience: ['user', 'assistant'] } } })).toEqual([
-        { type: 'agentText', messageId: null, text: 'both' },
+      expect(translated({ kind: 'commands', commands: [{ name: 'review', description: 'Review', takesInput: true, hint: 'what' }] })).toEqual([
+        { type: 'commands', commands: [{ name: 'review', description: 'Review', takesInput: true, hint: 'what' }] },
       ]);
     });
 
-    it('reports a new tool call and its updates alike, with its status, title and text output', () => {
-      expect(translated({
-        sessionUpdate: 'tool_call',
-        toolCallId: 't1',
-        title: 'Run tests',
-        status: 'in_progress',
-        content: [
-          { type: 'content', content: { type: 'text', text: 'ok' } },
-          { type: 'diff', path: '/work/a.ts', oldText: 'a', newText: 'b' },
-          { type: 'terminal', terminalId: 'term-1' },
-          { type: 'content', content: { type: 'text', text: '' } },
-        ],
-      })).toEqual([{ type: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] }]);
-
-      expect(translated({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed' })).toEqual([
-        { type: 'toolCall', toolCallId: 't1', status: 'completed' },
-      ]);
-      expect(translated({ sessionUpdate: 'tool_call_update', toolCallId: 't1', title: null, status: 'failed', content: [] })).toEqual([
-        { type: 'toolCall', toolCallId: 't1', status: 'failed', texts: [] },
-      ]);
-      expect(translated({ sessionUpdate: 'tool_call_update', toolCallId: 't1', title: '', status: null, content: null })).toEqual([
-        { type: 'toolCall', toolCallId: 't1' },
-      ]);
-      expect(translated({ sessionUpdate: 'tool_call', toolCallId: 't2', title: '', status: 'pending' })).toEqual([
-        { type: 'toolCall', toolCallId: 't2', status: 'pending' },
-      ]);
-    });
-
-    it('reports the plan as steps', () => {
-      expect(translated({
-        sessionUpdate: 'plan',
-        entries: [
-          { content: 'Read', priority: 'high', status: 'completed' },
-          { content: 'Edit', priority: 'medium', status: 'in_progress' },
-          { content: 'Test', priority: 'low', status: 'pending' },
-        ],
-      })).toEqual([{
-        type: 'plan',
-        steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }, { text: 'Test', status: 'pending' }],
-      }]);
-    });
-
-    it('reports slash commands, and pickers from the session once it has applied the change', () => {
-      expect(translated({ sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'init', description: 'Init' }] })).toEqual([
-        { type: 'commands', commands: [{ name: 'init', description: 'Init', takesInput: false, hint: null }] },
-      ]);
-      expect(translated({ sessionUpdate: 'config_option_update', configOptions: [{ ...modelOption, currentValue: 'b' }] })).toEqual([
+    it('reports pickers from the session once it has applied the change', () => {
+      expect(translated({ kind: 'configOptions', options: [{ ...modelOption, current: 'b' }] })).toEqual([
         { type: 'pickers', pickers: [{ ...modelPicker, current: 'b' }] },
       ]);
-      expect(translated({ sessionUpdate: 'current_mode_update', currentModeId: 'code' }, sessionInfo({ configOptions: null, modes: structuredClone(modes) }))).toEqual([
+      expect(translated({ kind: 'currentMode', modeId: 'code' }, sessionInfo({ configOptions: null, modes }))).toEqual([
         { type: 'pickers', pickers: [{ ...modePicker, current: 'code' }] },
       ]);
     });
 
     it('drops the updates the chat view has no place for', () => {
-      const unshown: SessionUpdate[] = [
-        { sessionUpdate: 'usage_update', used: 1000, size: 200000 },
-        { sessionUpdate: 'session_info_update', updatedAt: '2026-10-20T00:00:00Z' },
-      ];
-      for (const update of unshown) {
-        expect(translated(update), update.sessionUpdate).toEqual([]);
-      }
+      expect(translated({ kind: 'sessionInfo', updatedAt: '2026-10-20T00:00:00Z' })).toEqual([]);
     });
 
     it('applies commands, config options, the mode and session info even before the session is active', () => {
       const { sessions, environment, controller } = setup();
       sessions.activeId = null;
-      const commands = [{ name: 'init', description: 'Init' }];
+      const commands = [{ name: 'init', description: 'Init', takesInput: false, hint: null }];
 
-      controller.handleSessionUpdate({ sessionId: 's2', update: { sessionUpdate: 'available_commands_update', availableCommands: commands } });
-      controller.handleSessionUpdate({ sessionId: 's2', update: { sessionUpdate: 'config_option_update', configOptions: [modelOption] } });
-      controller.handleSessionUpdate({ sessionId: 's2', update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } });
-      controller.handleSessionUpdate({ sessionId: 's2', update: { sessionUpdate: 'session_info_update', title: 'Title' } });
+      controller.handleSessionUpdate('s2', { kind: 'commands', commands });
+      controller.handleSessionUpdate('s2', { kind: 'configOptions', options: [modelOption] });
+      controller.handleSessionUpdate('s2', { kind: 'currentMode', modeId: 'code' });
+      controller.handleSessionUpdate('s2', { kind: 'sessionInfo', title: 'Title' });
 
       expect(sessions.applyAvailableCommands).toHaveBeenCalledExactlyOnceWith('s2', commands);
       expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith('s2', [modelOption]);
@@ -745,18 +676,14 @@ describe('ChatViewController', () => {
     beforeEach(() => vi.useFakeTimers());
     afterEach(() => vi.useRealTimers());
 
-    type ChunkKind = 'agent_message_chunk' | 'agent_thought_chunk' | 'user_message_chunk';
-    const chunk = (sessionUpdate: ChunkKind, text: string, fields: { messageId?: string; _meta?: Record<string, unknown> } = {}): SessionNotification => ({
-      sessionId: 's1',
-      update: { sessionUpdate, content: { type: 'text', text }, ...fields },
-    });
     const answer = (text: string, messageId: string | null = null): ExtensionToWebviewMessage => ({ type: 'agentText', messageId, text });
+    const answerChunk = (text: string, messageId: string | null = null): SessionUpdate => ({ kind: 'agentText', messageId, text });
 
     it('joins the text of a frame into one message', () => {
       const { environment, controller } = setup();
 
       for (const text of ['Hel', 'lo', ' world']) {
-        controller.handleSessionUpdate(chunk('agent_message_chunk', text));
+        controller.handleSessionUpdate('s1', answerChunk(text));
       }
       vi.advanceTimersByTime(15);
       expect(environment.take()).toEqual([]);
@@ -764,7 +691,7 @@ describe('ChatViewController', () => {
       vi.advanceTimersByTime(1);
       expect(environment.take()).toEqual([answer('Hello world')]);
 
-      controller.handleSessionUpdate(chunk('agent_message_chunk', '!'));
+      controller.handleSessionUpdate('s1', answerChunk('!'));
       vi.advanceTimersByTime(16);
       expect(environment.take()).toEqual([answer('!')]);
     });
@@ -774,9 +701,9 @@ describe('ChatViewController', () => {
       const turn = sendPrompt(controller, 'hello');
       environment.take();
 
-      controller.handleSessionUpdate(chunk('agent_message_chunk', 'reading'));
-      controller.handleSessionUpdate(toolCall('s1'));
-      controller.handleSessionUpdate(chunk('agent_message_chunk', 'done'));
+      controller.handleSessionUpdate('s1', answerChunk('reading'));
+      controller.handleSessionUpdate('s1', toolCall);
+      controller.handleSessionUpdate('s1', answerChunk('done'));
       sessions.answer();
       await turn;
 
@@ -793,11 +720,11 @@ describe('ChatViewController', () => {
     it('keeps text of different kinds or messages apart', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate(chunk('user_message_chunk', 'q'));
-      controller.handleSessionUpdate(chunk('agent_thought_chunk', 'hm'));
-      controller.handleSessionUpdate(chunk('agent_thought_chunk', 'm'));
-      controller.handleSessionUpdate(chunk('agent_message_chunk', 'a', { messageId: 'm1' }));
-      controller.handleSessionUpdate(chunk('agent_message_chunk', 'b', { messageId: 'm2' }));
+      controller.handleSessionUpdate('s1', { kind: 'promptText', text: 'q' });
+      controller.handleSessionUpdate('s1', { kind: 'thoughtText', messageId: null, text: 'hm' });
+      controller.handleSessionUpdate('s1', { kind: 'thoughtText', messageId: null, text: 'm' });
+      controller.handleSessionUpdate('s1', answerChunk('a', 'm1'));
+      controller.handleSessionUpdate('s1', answerChunk('b', 'm2'));
       vi.advanceTimersByTime(16);
 
       expect(environment.take()).toEqual([
@@ -805,49 +732,6 @@ describe('ChatViewController', () => {
         { type: 'thoughtText', messageId: null, text: 'hmm' },
         answer('a', 'm1'),
         answer('b', 'm2'),
-      ]);
-    });
-
-    it('joins the text around a chunk meant for the model alone, which is dropped, and chunks with metadata', () => {
-      const { environment, controller } = setup();
-      const forModel: SessionNotification = {
-        sessionId: 's1',
-        update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'file', annotations: { audience: ['assistant'] } } },
-      };
-
-      controller.handleSessionUpdate(chunk('user_message_chunk', 'q'));
-      controller.handleSessionUpdate(forModel);
-      controller.handleSessionUpdate(chunk('user_message_chunk', ' more', { _meta: { source: 'agent' } }));
-      controller.handleSessionUpdate(chunk('user_message_chunk', ' again'));
-      vi.advanceTimersByTime(16);
-
-      expect(environment.take()).toEqual([{ type: 'promptText', text: 'q more again' }]);
-    });
-
-    it('shows only what the user typed when the agent replays an attached file read into the prompt', () => {
-      const { environment, controller } = setup();
-      const forModel = (text: string): SessionNotification => ({
-        sessionId: 's1',
-        update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text, annotations: { audience: ['assistant'] } } },
-      });
-
-      for (const prompt of ['q1', 'q2']) {
-        controller.handleSessionUpdate(chunk('user_message_chunk', prompt));
-        controller.handleSessionUpdate(forModel('Called the Read tool with the following input: {"filePath":"/work/a.ts"}'));
-        controller.handleSessionUpdate(forModel('export const a = 1;'));
-        controller.handleSessionUpdate({
-          sessionId: 's1',
-          update: { sessionUpdate: 'user_message_chunk', content: { type: 'resource_link', uri: 'file:///work/a.ts', name: 'a.ts' } },
-        });
-        controller.handleSessionUpdate(chunk('agent_message_chunk', `answer to ${prompt}`));
-      }
-      vi.advanceTimersByTime(16);
-
-      expect(environment.take()).toEqual([
-        { type: 'promptText', text: 'q1' },
-        answer('answer to q1'),
-        { type: 'promptText', text: 'q2' },
-        answer('answer to q2'),
       ]);
     });
   });

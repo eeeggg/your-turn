@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
-import { ConnectionManager } from '@/core/ConnectionManager';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
