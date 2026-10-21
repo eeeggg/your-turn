@@ -84,6 +84,7 @@ export interface SessionManagerEvents {
   'clear-transcript': [];
   'mode-changed': [sessionId: string, modeId: string];
   'session-info-changed': [sessionId: string, update: { title?: string | null; updatedAt?: string | null }];
+  'turn-ended': [sessionId: string, agentName: string];
   'session-load-start': [sessionId: string, agentName: string];
   'session-load-end': [sessionId: string, agentName: string, ok: boolean];
   'session-ended': [sessionId: string, reason: string];
@@ -605,11 +606,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.historyStore.setFirstPromptIfMissing(session.agentName, sessionId, prompt);
   }
 
-  /** Bump a session's `lastActiveAt` in the history store. */
-  touchHistory(sessionId: string): void {
+  /** A turn of the session ended: bump its `lastActiveAt` in the history store, and tell the session list. */
+  recordTurnEnded(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
     this.historyStore?.touch(session.agentName, sessionId);
+    this.emit('turn-ended', sessionId, session.agentName);
   }
 
   /**

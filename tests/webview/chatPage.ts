@@ -169,8 +169,8 @@ export function thought(page: ChatPage, text: string, messageId: string | null =
 }
 
 /** A prompt the agent replays while a session loads. */
-export function replayed(page: ChatPage, text: string): void {
-  page.send({ type: 'promptText', text });
+export function replayed(page: ChatPage, text: string, messageId: string | null = null): void {
+  page.send({ type: 'promptText', messageId, text });
 }
 
 export function toolCall(page: ChatPage, report: Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>): void {

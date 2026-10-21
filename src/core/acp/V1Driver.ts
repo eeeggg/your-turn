@@ -229,7 +229,7 @@ function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
     }
     case 'user_message_chunk': {
       const text = textForUser(update.content);
-      return text === null ? null : { kind: 'promptText', text };
+      return text === null ? null : { kind: 'promptText', messageId: update.messageId ?? null, text };
     }
     case 'tool_call':
     case 'tool_call_update': {

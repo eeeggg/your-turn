@@ -62,6 +62,19 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const treeView = vscode.window.createTreeView('acp-sessions', {
     treeDataProvider: sessionTreeProvider,
   });
+  // Session ages count minutes, so the tree redraws each minute while it shows.
+  let ageTicker: ReturnType<typeof setInterval> | undefined;
+  const tickAges = (visible: boolean) => {
+    clearInterval(ageTicker);
+    ageTicker = visible ? setInterval(() => sessionTreeProvider.refresh(), 60_000) : undefined;
+  };
+  tickAges(treeView.visible);
+  const treeVisibilityChanged = treeView.onDidChangeVisibility(({ visible }) => {
+    if (visible) {
+      sessionTreeProvider.refresh();
+    }
+    tickAges(visible);
+  });
   // The Agents view's welcome is shown on this rather than on the tree being empty, which VS Code assumes until the
   // tree's first items arrive; `when` clauses cannot test the `acp.agents` object for emptiness themselves.
   const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'acp.noAgentsConfigured', getAgentNames().length === 0);
@@ -129,6 +142,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
   context.subscriptions.push(
     treeView,
+    treeVisibilityChanged,
+    { dispose: () => tickAges(false) },
     agentsChanged,
     chatViewRegistration,
     chatMessageSubscription,
@@ -145,8 +160,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.commands.registerCommand('acp.sendPrompt', focusChatView),
     vscode.commands.registerCommand('acp.showLog', () => getOutputChannel().show()),
     vscode.commands.registerCommand('acp.showTraffic', () => getTrafficChannel().show()),
-    vscode.commands.registerCommand('acp.refreshAgents', () => sessionTreeProvider.refresh()),
-    vscode.commands.registerCommand('acp.refreshSessions', (arg?: unknown) => sessionList.invalidate(agentNameOf(arg))),
+    vscode.commands.registerCommand('acp.refreshSessions', (arg?: unknown) => {
+      const agentName = agentNameOf(arg);
+      if (agentName) {
+        sessionList.invalidate(agentName);
+      }
+    }),
     vscode.commands.registerCommand('acp.loadMoreSessions', async (agentName?: string) => {
       if (agentName) {
         await sessionList.loadMore(agentName);

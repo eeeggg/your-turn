@@ -146,11 +146,13 @@ describe('SessionList', () => {
       });
     });
 
-    it('rounds ages down, shows a time ahead of ours as just now, and shows no age for an undated session', async () => {
+    it('rounds ages down, shows under a minute or a time ahead of ours as now, and shows no age for an undated session', async () => {
       const fake = listingAgent({
         '': {
           sessions: [
             session('nearly-an-hour', { updatedAt: '2026-10-18T11:00:01Z' }),
+            session('a-minute', { updatedAt: '2026-10-18T11:59:00Z' }),
+            session('nearly-a-minute', { updatedAt: '2026-10-18T11:59:01Z' }),
             session('ahead', { updatedAt: '2026-10-18T12:00:05Z' }),
             session('undated'),
           ],
@@ -160,7 +162,7 @@ describe('SessionList', () => {
 
       const shown = await listed(list, 'fake');
 
-      expect(shown.kind === 'listed' && shown.rows.map((row) => row.age)).toEqual(['59 minutes ago', 'just now', undefined]);
+      expect(shown.kind === 'listed' && shown.rows.map((row) => row.age)).toEqual(['59 minutes ago', '1 minute ago', 'now', 'now', undefined]);
     });
 
     it('lists them once, until invalidated', async () => {
@@ -173,6 +175,64 @@ describe('SessionList', () => {
       await listed(list, 'fake');
 
       expect(fake.requests).toEqual([undefined, undefined]);
+    });
+
+    describe('what becomes known after listing', () => {
+      const loadable = (sessions: SessionInfo[]) =>
+        listingAgent({ '': { sessions } }, (app) => app.onRequest(methods.agent.session.load, () => ({})));
+      const shown = async (list: SessionList) => {
+        const sessions = await listed(list, 'fake');
+        return sessions.kind === 'listed' ? sessions.rows.map(({ label, age }) => ({ label, age })) : sessions;
+      };
+
+      it('takes the title and time of last activity a session info update reports, and a cleared title', async () => {
+        const fake = loadable([session('a', { title: 'Old', updatedAt: '2026-10-18T09:00:00Z' }), session('b', { title: 'Other' })]);
+        const { manager, list } = setup({ fake: fake.script });
+        await listed(list, 'fake');
+        await manager.loadSession('fake', 'a');
+
+        manager.applySessionInfoUpdate('a', { title: 'New' });
+        expect(await shown(list)).toEqual([{ label: 'New', age: '3 hours ago' }, { label: 'Other', age: undefined }]);
+
+        manager.applySessionInfoUpdate('a', { updatedAt: '2026-10-18T11:00:00Z' });
+        expect(await shown(list)).toEqual([{ label: 'New', age: '1 hour ago' }, { label: 'Other', age: undefined }]);
+
+        manager.applySessionInfoUpdate('a', { title: null });
+        expect(await shown(list)).toEqual([{ label: 'a', age: '1 hour ago' }, { label: 'Other', age: undefined }]);
+        expect(fake.requests).toEqual([undefined]);
+      });
+
+      it('takes the end of a turn as the session\'s last activity', async () => {
+        const fake = loadable([session('a', { title: 'A', updatedAt: '2026-10-18T09:00:00Z' })]);
+        const { manager, list } = setup({ fake: fake.script });
+        await listed(list, 'fake');
+        await manager.loadSession('fake', 'a');
+        const changes = vi.fn();
+        list.on('changed', changes);
+
+        manager.recordTurnEnded('a');
+
+        expect(changes).toHaveBeenCalledOnce();
+        const sessions = await listed(list, 'fake');
+        expect(sessions.kind === 'listed' && sessions.rows[0]).toMatchObject({
+          age: 'now',
+          tooltip: expect.stringContaining('Last active: 2026-10-18T12:00:00.000Z') as unknown,
+        });
+      });
+
+      it('forgets it when invalidated, showing the agent\'s list again', async () => {
+        const fake = loadable([session('a', { title: 'Listed', updatedAt: '2026-10-18T09:00:00Z' })]);
+        const { manager, list } = setup({ fake: fake.script });
+        await listed(list, 'fake');
+        await manager.loadSession('fake', 'a');
+        manager.applySessionInfoUpdate('a', { title: 'Reported' });
+        manager.recordTurnEnded('a');
+
+        list.invalidate('fake');
+
+        expect(await shown(list)).toEqual([{ label: 'Listed', age: '3 hours ago' }]);
+        expect(fake.requests).toEqual([undefined, undefined]);
+      });
     });
 
     it('appends the next page on load more', async () => {
@@ -295,7 +355,7 @@ describe('SessionList', () => {
 
       expect(sessions).toMatchObject({ kind: 'listed', source: 'history', more: { kind: 'none' } });
       expect(sessions.kind === 'listed' && sessions.rows.map(({ sessionId, label, age }) => ({ sessionId, label, age }))).toEqual([
-        { sessionId: 'titled', label: 'A title', age: '30 seconds ago' },
+        { sessionId: 'titled', label: 'A title', age: 'now' },
         { sessionId: 'prompted', label: `${'p'.repeat(59)}…`, age: '30 minutes ago' },
         { sessionId: 'untitled-session-id', label: 'untitled…n-id', age: '1 hour ago' },
       ]);
@@ -344,13 +404,13 @@ describe('SessionList', () => {
 
   it('stops listening to sessions and session history when disposed', () => {
     const { manager, history, list } = setup({});
-    const events = ['session-added', 'session-removed', 'active-session-changed', 'session-info-changed'];
-    expect(events.map((event) => manager.listenerCount(event))).toEqual([1, 1, 1, 1]);
+    const events = ['session-added', 'session-removed', 'active-session-changed', 'session-info-changed', 'turn-ended'];
+    expect(events.map((event) => manager.listenerCount(event))).toEqual([1, 1, 1, 1, 1]);
     expect(history.listenerCount('changed')).toBe(1);
 
     list.dispose();
 
-    expect(events.map((event) => manager.listenerCount(event))).toEqual([0, 0, 0, 0]);
+    expect(events.map((event) => manager.listenerCount(event))).toEqual([0, 0, 0, 0, 0]);
     expect(history.listenerCount('changed')).toBe(0);
   });
 });

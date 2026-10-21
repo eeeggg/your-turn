@@ -87,7 +87,7 @@ class FakeSessions implements ChatSessions {
   setMode = vi.fn<ChatSessions['setMode']>(async () => {});
   setConfigOption = vi.fn<ChatSessions['setConfigOption']>(async () => null);
   recordFirstPrompt = vi.fn<ChatSessions['recordFirstPrompt']>();
-  touchHistory = vi.fn<ChatSessions['touchHistory']>();
+  recordTurnEnded = vi.fn<ChatSessions['recordTurnEnded']>();
   applyAvailableCommands = vi.fn<ChatSessions['applyAvailableCommands']>();
   applyConfigOptions = vi.fn<ChatSessions['applyConfigOptions']>((sessionId, options) => {
     if (this.session?.sessionId === sessionId) {
@@ -337,7 +337,7 @@ describe('ChatViewController', () => {
       sessions.answer();
       await turn;
 
-      expect(sessions.touchHistory).toHaveBeenCalledExactlyOnceWith('s1');
+      expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith('s1');
       expect(environment.take()).toStrictEqual([{ type: 'promptEnd' }]);
     });
 
@@ -348,7 +348,7 @@ describe('ChatViewController', () => {
       sessions.fail(new Error('agent crashed'));
       await turn;
 
-      expect(sessions.touchHistory).not.toHaveBeenCalled();
+      expect(sessions.recordTurnEnded).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([
         { type: 'promptStart' },
         { type: 'error', message: 'agent crashed' },
@@ -628,7 +628,7 @@ describe('ChatViewController', () => {
     it("passes on text, tool calls, the plan and slash commands in the webview's terms", () => {
       expect(translated({ kind: 'agentText', messageId: 'm1', text: 'Hi' })).toEqual([{ type: 'agentText', messageId: 'm1', text: 'Hi' }]);
       expect(translated({ kind: 'thoughtText', messageId: null, text: 'Hm' })).toEqual([{ type: 'thoughtText', messageId: null, text: 'Hm' }]);
-      expect(translated({ kind: 'promptText', text: 'Fix it' })).toEqual([{ type: 'promptText', text: 'Fix it' }]);
+      expect(translated({ kind: 'promptText', messageId: 'u1', text: 'Fix it' })).toEqual([{ type: 'promptText', messageId: 'u1', text: 'Fix it' }]);
       expect(translated({ kind: 'agentMessage', messageId: 'm1', text: 'Hi all' })).toEqual([{ type: 'agentMessage', messageId: 'm1', text: 'Hi all' }]);
       expect(translated({ kind: 'thoughtMessage', messageId: 'r1', text: 'Hmm' })).toEqual([{ type: 'thoughtMessage', messageId: 'r1', text: 'Hmm' }]);
       expect(translated({ kind: 'promptMessage', messageId: 'u1', text: 'Fix' })).toEqual([{ type: 'promptMessage', messageId: 'u1', text: 'Fix' }]);
@@ -735,7 +735,8 @@ describe('ChatViewController', () => {
     it('keeps text of different kinds or messages apart', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate('s1', { kind: 'promptText', text: 'q' });
+      controller.handleSessionUpdate('s1', { kind: 'promptText', messageId: 'u1', text: 'q' });
+      controller.handleSessionUpdate('s1', { kind: 'promptText', messageId: 'u2', text: 'r' });
       controller.handleSessionUpdate('s1', { kind: 'thoughtText', messageId: null, text: 'hm' });
       controller.handleSessionUpdate('s1', { kind: 'thoughtText', messageId: null, text: 'm' });
       controller.handleSessionUpdate('s1', answerChunk('a', 'm1'));
@@ -743,7 +744,8 @@ describe('ChatViewController', () => {
       vi.advanceTimersByTime(16);
 
       expect(environment.take()).toEqual([
-        { type: 'promptText', text: 'q' },
+        { type: 'promptText', messageId: 'u1', text: 'q' },
+        { type: 'promptText', messageId: 'u2', text: 'r' },
         { type: 'thoughtText', messageId: null, text: 'hmm' },
         answer('a', 'm1'),
         answer('b', 'm2'),

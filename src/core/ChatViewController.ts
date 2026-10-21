@@ -21,7 +21,7 @@ export type ChatSessions = Pick<
   | 'setMode'
   | 'setConfigOption'
   | 'recordFirstPrompt'
-  | 'touchHistory'
+  | 'recordTurnEnded'
   | 'applyAvailableCommands'
   | 'applyConfigOptions'
   | 'applyCurrentMode'
@@ -187,7 +187,7 @@ export class ChatViewController {
 
     try {
       await this.sessions.sendPrompt(activeId, text);
-      this.sessions.touchHistory(activeId);
+      this.sessions.recordTurnEnded(activeId);
     } catch (e) {
       logError('Prompt failed', e);
       if (activeId === this.sessions.getActiveSessionId()) {
@@ -287,7 +287,7 @@ export class ChatViewController {
       case 'thoughtText':
         return { type: 'thoughtText', messageId: update.messageId, text: update.text };
       case 'promptText':
-        return { type: 'promptText', text: update.text };
+        return { type: 'promptText', messageId: update.messageId, text: update.text };
       case 'agentMessage':
         return { type: 'agentMessage', messageId: update.messageId, text: update.text };
       case 'thoughtMessage':
@@ -340,11 +340,7 @@ function isText(message: ExtensionToWebviewMessage): message is TextMessage {
 }
 
 function sameText(a: TextMessage, b: TextMessage): boolean {
-  return a.type === b.type && messageIdOf(a) === messageIdOf(b);
-}
-
-function messageIdOf(message: TextMessage): string | null {
-  return message.type === 'promptText' ? null : message.messageId;
+  return a.type === b.type && a.messageId === b.messageId;
 }
 
 function planStep(step: PlanStep): WebviewPlanStep {

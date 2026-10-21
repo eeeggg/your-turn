@@ -68,7 +68,7 @@ describe('V1Driver', () => {
       )).toEqual([
         { kind: 'agentText', messageId: 'm1', text: 'Hi' },
         { kind: 'thoughtText', messageId: null, text: 'Hm' },
-        { kind: 'promptText', text: 'Fix it' },
+        { kind: 'promptText', messageId: 'u1', text: 'Fix it' },
       ]);
     });
 
@@ -99,7 +99,7 @@ describe('V1Driver', () => {
         { sessionUpdate: 'user_message_chunk', content: { type: 'resource_link', uri: 'file:///work/a.ts', name: 'a.ts' } },
         { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer to q1' } },
       )).toEqual([
-        { kind: 'promptText', text: 'q1' },
+        { kind: 'promptText', messageId: null, text: 'q1' },
         { kind: 'agentText', messageId: null, text: 'answer to q1' },
       ]);
     });

@@ -121,7 +121,7 @@ export type SessionUpdate =
   | { kind: 'agentText'; messageId: string | null; text: string }
   | { kind: 'thoughtText'; messageId: string | null; text: string }
   /** More of a prompt that a load replays. */
-  | { kind: 'promptText'; text: string }
+  | { kind: 'promptText'; messageId: string | null; text: string }
   /** The whole text of the agent message with this ID, replacing what it had. */
   | { kind: 'agentMessage'; messageId: string; text: string }
   /** As for an agent message. */

@@ -128,11 +128,6 @@
         "icon": "$(attach)"
       },
       {
-        "command": "acp.refreshAgents",
-        "title": "Refresh",
-        "icon": "$(refresh)"
-      },
-      {
         "command": "acp.refreshSessions",
         "title": "ACP: Refresh Sessions"
       },
@@ -161,6 +156,10 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "acp.refreshSessions",
+          "when": "false"
+        },
+        {
           "command": "acp.openSession",
           "when": "false"
         },
@@ -182,11 +181,6 @@
           "command": "acp.addAgent",
           "when": "view == acp-sessions",
           "group": "navigation@1"
-        },
-        {
-          "command": "acp.refreshAgents",
-          "when": "view == acp-sessions",
-          "group": "navigation@2"
         },
         {
           "command": "acp.newSession",

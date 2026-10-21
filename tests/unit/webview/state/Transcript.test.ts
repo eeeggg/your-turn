@@ -60,7 +60,7 @@ function chatView() {
     },
     answer: (text: string, messageId: string | null = null) => store.dispatch({ type: 'agentText', messageId, text }),
     thought: (text: string, messageId: string | null = null) => store.dispatch({ type: 'thoughtText', messageId, text }),
-    replayed: (text: string) => store.dispatch({ type: 'promptText', text }),
+    replayed: (text: string, messageId: string | null = null) => store.dispatch({ type: 'promptText', messageId, text }),
     wholeAnswer: (text: string, messageId: string) => store.dispatch({ type: 'agentMessage', messageId, text }),
     wholeThought: (text: string, messageId: string) => store.dispatch({ type: 'thoughtMessage', messageId, text }),
     wholePrompt: (text: string, messageId: string) => store.dispatch({ type: 'promptMessage', messageId, text }),
@@ -792,6 +792,35 @@ describe('loading a session', () => {
     view.answer('a3');
 
     expect(view.summary()).toEqual(['prompt: Fix the build', 'turn: a1 more', 'prompt: q2 now', 'prompt: q3', 'turn: a3']);
+  });
+
+  it('keeps replayed prompts with different IDs apart, with nothing between them, joining the text of each', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+
+    view.replayed('he', 'u1');
+    view.replayed('llo', 'u1');
+    view.replayed('q2', 'u2');
+    view.replayed(' now', null);
+
+    expect(view.summary()).toEqual(['prompt: hello', 'prompt: q2 now']);
+  });
+
+  it('adds nothing for an empty whole prompt it has not seen, leaving the chunks after it to replay the prompt', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+
+    view.wholePrompt('', 'u1');
+    view.replayed('Hello', 'u1');
+    view.wholeAnswer('', 'a1');
+    view.answer('Hi!', 'a1');
+    view.wholePrompt('', 'u2');
+    view.wholePrompt('', 'u3');
+    view.replayed('q3', 'u3');
+
+    expect(view.summary()).toEqual(['prompt: Hello', 'turn: Hi!', 'prompt: q3']);
   });
 
   it('ends each replayed turn as a live one ends', () => {

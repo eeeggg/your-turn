@@ -451,7 +451,7 @@ describe('V2Driver', () => {
 
       const replay: [string, SessionUpdate][] = [
         ['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }],
-        ['s1', { kind: 'promptText', text: ' now' }],
+        ['s1', { kind: 'promptText', messageId: 'u0', text: ' now' }],
       ];
       expect(updates).toEqual([...replay, ['s1', { kind: 'agentText', messageId: 'a1', text: 'Done' }], ...replay]);
     });

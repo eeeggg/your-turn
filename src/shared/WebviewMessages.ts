@@ -70,8 +70,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'agentText'; messageId: string | null; text: string }
   /** More of the agent's thinking, as for `agentText`. */
   | { type: 'thoughtText'; messageId: string | null; text: string }
-  /** More of a prompt that a load replays. */
-  | { type: 'promptText'; text: string }
+  /** More of a prompt that a load replays, as for `agentText`. */
+  | { type: 'promptText'; messageId: string | null; text: string }
   /** The whole text of the agent's answer with this `messageId`, replacing what the latest one had; without one, a new answer. */
   | { type: 'agentMessage'; messageId: string; text: string }
   /** The whole text of the agent's thinking, as for `agentMessage`. */

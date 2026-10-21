@@ -15,7 +15,7 @@ export type EntryId = number;
 interface Prompt {
   readonly kind: 'prompt';
   readonly id: EntryId;
-  /** The agent's ID for a prompt a load replays whole; a later replay with that ID replaces its text. */
+  /** The agent's ID for a prompt a load replays; text with another ID is another prompt, and a whole one with this ID replaces its text. */
   readonly messageId?: string;
   readonly text: string;
 }
@@ -219,7 +219,7 @@ export function updateTranscript(
     case 'thoughtText':
       return stateOnly(withAgentText(transcript, action, now));
     case 'promptText':
-      return stateOnly(withReplayedPrompt(transcript, action.text, now));
+      return stateOnly(withReplayedPrompt(transcript, action, now));
     case 'agentMessage':
     case 'thoughtMessage':
       return stateOnly(withMessageReplaced(transcript, action, now));
@@ -320,12 +320,16 @@ function withAgentText(
 }
 
 /** Only a load replays prompts; each one ends the turn before it. */
-function withReplayedPrompt(transcript: TranscriptState, text: string, now: number): TranscriptState {
+function withReplayedPrompt(
+  transcript: TranscriptState,
+  { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptText' }>,
+  now: number,
+): TranscriptState {
   const ended = endTurn(transcript, now);
   const last = ended.entries.at(-1);
-  return last?.kind === 'prompt'
+  return last?.kind === 'prompt' && sameMessage(last.messageId ?? null, messageId)
     ? replaced(ended, { ...last, text: last.text + text })
-    : appended(ended, (id) => ({ kind: 'prompt', id, text }));
+    : appended(ended, (id) => ({ kind: 'prompt', id, ...(messageId !== null ? { messageId } : {}), text }));
 }
 
 /**
@@ -353,7 +357,7 @@ function withMessageReplaced(
   return text ? withAgentText(transcript, { type: kind === 'message' ? 'agentText' : 'thoughtText', messageId, text }, now) : transcript;
 }
 
-/** The latest prompt with the ID takes the whole text; without one, the prompt is replayed as a new one. */
+/** The latest prompt with the ID takes the whole text; without one, the prompt is replayed as a new one, unless it is empty, as for a message. */
 function withPromptReplaced(
   transcript: TranscriptState,
   { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptMessage' }>,
@@ -365,7 +369,7 @@ function withPromptReplaced(
       return entry.text === text ? transcript : replaced(transcript, { ...entry, text });
     }
   }
-  return appended(endTurn(transcript, now), (id) => ({ kind: 'prompt', id, messageId, text }));
+  return text ? appended(endTurn(transcript, now), (id) => ({ kind: 'prompt', id, messageId, text })) : transcript;
 }
 
 function lastPartIndex(turn: Turn, matches: (part: TurnPart) => boolean): PartIndex {

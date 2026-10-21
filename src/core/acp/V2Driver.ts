@@ -258,7 +258,7 @@ class Translator {
     }
     if (updates.isUserMessageChunk(update)) {
       const text = this.prompting.has(sessionId) ? null : textForUser(update.content);
-      return text === null ? null : { kind: 'promptText', text };
+      return text === null ? null : { kind: 'promptText', messageId: update.messageId, text };
     }
     if (updates.isAgentMessage(update)) {
       return update.content === undefined ? null : { kind: 'agentMessage', messageId: update.messageId, text: messageText(update.content) };
