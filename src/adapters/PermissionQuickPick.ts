@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import type { PermissionOption } from '@/core/acp/AcpDriver';
 import type { PermissionChooser } from '@/core/PermissionRequests';
 
 export const permissionQuickPick: PermissionChooser = {
@@ -7,17 +8,25 @@ export const permissionQuickPick: PermissionChooser = {
     return setting === 'allowAll' ? 'allowAll' : 'ask';
   },
 
-  async choose(title, options) {
+  async choose({ title, detail }, options) {
     const items = options.map((option) => ({
-      label: `${option.kind.startsWith('allow') ? '$(check)' : '$(x)'} ${option.name}`,
-      description: option.kind,
-      optionId: option.optionId,
+      label: `${kindIcon(option)}${option.name}`,
+      ...(option.kind === 'other' ? {} : { description: option.kind }),
+      optionId: option.id,
     }));
     const selection = await vscode.window.showQuickPick(items, {
       placeHolder: title,
+      ...(detail ? { prompt: detail } : {}),
       title: 'ACP Agent Permission Request',
       ignoreFocusOut: true,
     });
     return selection?.optionId;
   },
 };
+
+function kindIcon(option: PermissionOption): string {
+  if (option.kind === 'other') {
+    return '';
+  }
+  return option.kind.startsWith('allow') ? '$(check) ' : '$(x) ';
+}

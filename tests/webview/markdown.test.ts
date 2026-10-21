@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
+import { answer as agentText, connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -29,7 +29,7 @@ function bold(): string[] {
 function answer(...chunks: string[]): void {
   page.send({ type: 'promptStart' });
   for (const chunk of chunks) {
-    update(page, 'agent_message_chunk', textChunk(chunk));
+    agentText(page, chunk);
   }
 }
 
@@ -38,14 +38,14 @@ describe('markdown while it streams', () => {
     answer('Some **bo');
     expect(bold()).toEqual(['bo']);
 
-    update(page, 'agent_message_chunk', textChunk('ld** and `code`'));
+    agentText(page, 'ld** and `code`');
     expect(bold()).toEqual(['bold']);
     expect(message().querySelector('code')?.textContent).toBe('code');
   });
 
   it('asks the extension for nothing when the turn ends', () => {
     answer('**bold**');
-    page.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    page.send({ type: 'promptEnd' });
 
     expect(page.takePosted()).toEqual([]);
     expect(bold()).toEqual(['bold']);
@@ -56,7 +56,7 @@ describe('markdown while it streams', () => {
     const copy = () => message().querySelector<HTMLButtonElement>('[data-streamdown="code-block-copy-button"]');
     expect(copy()?.disabled).toBe(true);
 
-    page.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    page.send({ type: 'promptEnd' });
     expect(copy()?.disabled).toBe(false);
   });
 });

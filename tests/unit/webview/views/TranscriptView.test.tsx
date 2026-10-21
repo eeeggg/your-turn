@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
-import type { SessionUpdate } from '@agentclientprotocol/sdk';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
-import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
@@ -41,7 +40,7 @@ vi.mock('use-stick-to-bottom', async () => {
   };
 });
 
-type SessionUpdateKind = SessionUpdate['sessionUpdate'];
+type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>;
 
 function renderChatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -73,15 +72,14 @@ function renderChatView() {
       send({
         type: 'state',
         activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', modes: null, configOptions: null, availableCommands: [] },
+        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] },
       }),
-    update: <K extends SessionUpdateKind>(sessionUpdate: K, fields: Omit<Extract<SessionUpdate, { sessionUpdate: K }>, 'sessionUpdate'>) =>
-      send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate, ...fields } as SessionUpdate }),
+    answer: (text: string) => send({ type: 'agentText', messageId: null, text }),
+    thought: (text: string) => send({ type: 'thoughtText', messageId: null, text }),
+    toolCall: (report: ToolCallReport) => send({ type: 'toolCall', ...report }),
     takePosted: () => posted.splice(0),
   };
 }
-
-const text = (value: string) => ({ content: { type: 'text' as const, text: value } });
 
 /** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
 async function toggle(details: HTMLDetailsElement): Promise<void> {
@@ -111,7 +109,7 @@ describe('the chat view', () => {
     view.connect();
     stickToBottom.scrollToBottom.mockClear();
 
-    view.update('agent_message_chunk', text('streaming'));
+    view.answer('streaming');
     expect(stickToBottom.scrollToBottom).not.toHaveBeenCalled();
 
     view.send({ type: 'promptEdited', text: 'question' }, { type: 'promptSent' });
@@ -188,11 +186,11 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'promptEnd' });
     expect(queued(view).map(([, value]) => value)).toEqual(['third']);
     expect(userMessages(view)).toEqual(['first', 'second']);
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'promptEnd' });
     expect(queue(view)).toBeNull();
     expect(userMessages(view)).toEqual(['first', 'second', 'third']);
   });
@@ -225,7 +223,7 @@ describe('the jump to the end', () => {
     view.send({ type: 'promptStart' });
     act(() => stickToBottom.setAtBottom(false));
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'promptEnd' });
     expect(jumpToEnd(view)).not.toBeNull();
 
     act(() => stickToBottom.setAtBottom(true));
@@ -263,11 +261,12 @@ describe('transcript entries', () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'promptEdited', text: 'question' }, { type: 'promptSent' }, { type: 'promptStart' });
-    view.update('agent_message_chunk', text('answer'));
-    view.update('plan', {
-      entries: [
-        { content: 'done', status: 'completed', priority: 'high' },
-        { content: '<b>next</b>', status: 'pending', priority: 'low' },
+    view.answer('answer');
+    view.send({
+      type: 'plan',
+      steps: [
+        { text: 'done', status: 'completed' },
+        { text: '<b>next</b>', status: 'pending' },
       ],
     });
     view.send({ type: 'error', message: 'boom' });
@@ -287,7 +286,7 @@ describe('transcript entries', () => {
     const view = renderChatView();
     view.connect();
 
-    view.update('agent_message_chunk', text('\n '));
+    view.answer('\n ');
 
     expect(view.all('.turn')).toEqual([]);
   });
@@ -297,9 +296,9 @@ describe('a turn', () => {
   it('shows its parts in the order they arrived', () => {
     const view = renderChatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
-    view.update('agent_message_chunk', text('answer'));
-    view.update('agent_thought_chunk', text('hmm'));
+    view.toolCall({ toolCallId: 't1', title: 'Read' });
+    view.answer('answer');
+    view.thought('hmm');
 
     expect([...view.part('.turn').children].map((child) => hookClasses(child))).toEqual([
       'turn-tools',
@@ -312,8 +311,8 @@ describe('a turn', () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('*x* and '));
-    view.update('agent_message_chunk', text('**y**'));
+    view.answer('*x* and ');
+    view.answer('**y**');
 
     const message = view.part('.message.agent');
     expect(hookClasses(message)).toBe('message agent');
@@ -326,7 +325,7 @@ describe('a thought', () => {
     const view = renderChatView();
     view.connect();
     view.at(1_000);
-    view.update('agent_thought_chunk', text('let me think'));
+    view.thought('let me think');
     const thought = view.part<HTMLDetailsElement>('.thought-block');
     expect(hookClasses(thought)).toBe('thought-block streaming');
     expect(thought.open).toBe(true);
@@ -335,7 +334,7 @@ describe('a thought', () => {
     expect(thought.querySelector('.thought-content')?.textContent).toBe('let me think');
 
     view.at(3_000);
-    view.update('agent_message_chunk', text('answer'));
+    view.answer('answer');
 
     expect(hookClasses(thought)).toBe('thought-block');
     expect(thought.open).toBe(false);
@@ -345,7 +344,7 @@ describe('a thought', () => {
   it('tells the store when the user opens or closes it', async () => {
     const view = renderChatView();
     view.connect();
-    view.update('agent_thought_chunk', text('hmm'));
+    view.thought('hmm');
     const thought = view.part<HTMLDetailsElement>('.thought-block');
 
     await toggle(thought);
@@ -359,16 +358,8 @@ describe('tool calls', () => {
   it('shows the status, the title and the text content of each tool call', () => {
     const view = renderChatView();
     view.connect();
-    view.update('tool_call', {
-      toolCallId: 't1',
-      title: 'Run',
-      status: 'in_progress',
-      content: [
-        { type: 'content', content: { type: 'text', text: 'one' } },
-        { type: 'content', content: { type: 'text', text: 'two' } },
-      ],
-    });
-    view.update('tool_call', { toolCallId: 't2', title: '' });
+    view.toolCall({ toolCallId: 't1', title: 'Run', status: 'running', texts: ['one', 'two'] });
+    view.toolCall({ toolCallId: 't2' });
 
     const [run, untitled] = view.all('.tool-call-inline');
     assert.exists(run);
@@ -388,11 +379,7 @@ describe('tool calls', () => {
     const view = renderChatView();
     view.connect();
 
-    view.update('tool_call', {
-      toolCallId: 't1',
-      title: 'Run',
-      content: [{ type: 'content', content: { type: 'text', text: 'x'.repeat(25_000) } }],
-    });
+    view.toolCall({ toolCallId: 't1', title: 'Run', texts: ['x'.repeat(25_000)] });
 
     expect(view.part('.tc-body-block').textContent).toHaveLength(20_000);
     expect(view.part('.tc-body-truncated').textContent).toBe('... (output truncated)');
@@ -401,7 +388,7 @@ describe('tool calls', () => {
   it('opens a failed tool call, and tells the store when the user closes it', async () => {
     const view = renderChatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 't1', title: 'Run', status: 'failed' });
+    view.toolCall({ toolCallId: 't1', title: 'Run', status: 'failed' });
     const call = view.part<HTMLDetailsElement>('#tc-t1');
     expect(call.open).toBe(true);
 
@@ -415,15 +402,15 @@ describe('tool calls', () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'promptStart' });
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
+    view.toolCall({ toolCallId: 't1', title: 'Read' });
     const summary = view.part('.turn-tools-summary');
     const list = view.part('.turn-tools-list');
     expect(summary.textContent).toBe('▾ 1 tool call');
 
     for (const id of ['t2', 't3', 't4']) {
-      view.update('tool_call', { toolCallId: id, title: 'Read' });
+      view.toolCall({ toolCallId: id, title: 'Read' });
     }
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'promptEnd' });
     expect(summary.textContent).toBe('▸ 4 tool calls');
     expect(hookClasses(list)).toBe('turn-tools-list collapsed');
 

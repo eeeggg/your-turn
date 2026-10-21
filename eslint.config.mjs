@@ -31,6 +31,34 @@ const webviewState = {
   message: "The extension owns session state and replays it on `ready`; webview state lives in the store.",
 };
 
+const coreLayers = {
+  group: ["@/adapters/*", "@/webview/*"],
+  message: "Core and shared code depend on neither adapters nor the webview; declare an interface for adapters to implement.",
+};
+
+const acpSdkPackage = ["@agentclientprotocol/sdk", "@agentclientprotocol/sdk/*"];
+
+const acpSdk = {
+  group: acpSdkPackage,
+  message: "The webview speaks the chat view's contract in @/shared/WebviewMessages, into which ChatViewController translates ACP.",
+};
+
+const acpSdkInCore = {
+  group: acpSdkPackage,
+  message: "Only the ACP drivers in src/core/acp speak ACP; the rest of core uses their interface in @/core/acp/AcpDriver.",
+};
+
+// The drivers' types and the contract's are alike today; each is the other's to never reuse, so either can change alone.
+const contract = {
+  group: ["@/shared/*"],
+  message: "Only ChatViewController translates into the webview's contract; the rest of core, drivers included, never sees it.",
+};
+
+const coreInContract = {
+  group: ["@/core/*"],
+  message: "The contract is the chat view's own; it reuses no core type, not even the ACP drivers' alike ones.",
+};
+
 // Flat config replaces a rule's options rather than merging them, so every
 // layer's rule repeats the parent-import ban.
 /**
@@ -102,14 +130,20 @@ export default defineConfig(
     },
   },
   {
-    files: ["src/core/**/*.ts", "src/shared/**/*.ts"],
-    rules: restrictImports({
-      paths: [vscodeApi],
-      patterns: [{
-        group: ["@/adapters/*", "@/webview/*"],
-        message: "Core and shared code depend on neither adapters nor the webview; declare an interface for adapters to implement.",
-      }],
-    }),
+    files: ["src/core/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract] }),
+  },
+  {
+    files: ["src/core/ChatViewController.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore] }),
+  },
+  {
+    files: ["src/core/acp/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, contract] }),
+  },
+  {
+    files: ["src/shared/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, coreInContract, acpSdk] }),
   },
   {
     files: ["src/adapters/**/*.ts"],
@@ -123,7 +157,7 @@ export default defineConfig(
   {
     files: ["src/webview/**/*.{ts,tsx}"],
     rules: {
-      ...restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers] }),
+      ...restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, acpSdk] }),
       "no-restricted-globals": ["error", {
         name: "acquireVsCodeApi",
         message: "VS Code allows one call per page; import from @/webview/VsCodeApi instead.",
@@ -137,15 +171,15 @@ export default defineConfig(
   },
   {
     files: ["src/webview/**/*.ts"],
-    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, react] }),
+    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, acpSdk, react] }),
   },
   {
     files: ["src/webview/state/**/*.ts"],
-    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, react, views] }),
+    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, acpSdk, react, views] }),
   },
   {
     files: ["src/webview/Main.tsx"],
-    rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers] }),
+    rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers, acpSdk] }),
   },
   {
     files: ["src/webview/VsCodeApi.ts"],

@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
-import type { SessionConfigOption, SessionModeState } from '@agentclientprotocol/sdk';
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { Picker, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { InputToolbar } from '@/webview/views/InputToolbar';
 import { createStore } from '@/webview/state/Store';
@@ -13,26 +12,30 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const modes: SessionModeState = {
-  availableModes: [
-    { id: 'ask', name: 'Ask', description: 'Questions only' },
-    { id: 'code', name: 'Code' },
-  ],
-  currentModeId: 'ask',
+const modePicker: Picker = {
+  id: 'mode',
+  category: 'mode',
+  name: 'Mode',
+  description: null,
+  current: 'ask',
+  groups: [{ header: null, values: [{ id: 'ask', name: 'Ask', description: 'Questions only' }, { id: 'code', name: 'Code', description: null }] }],
 };
 
-const modelOption = {
+const modelPicker: Picker = {
   id: 'model',
-  name: 'Model',
   category: 'model',
-  type: 'select',
-  currentValue: 'a',
-  options: [
-    { value: 'a', name: 'Model A', description: 'Fast' },
-    { value: 'b', name: 'Model B', description: 'Smart' },
-    { value: 'c', name: '' },
-  ],
-} satisfies SessionConfigOption;
+  name: 'Model',
+  description: null,
+  current: 'a',
+  groups: [{
+    header: null,
+    values: [
+      { id: 'a', name: 'Model A', description: 'Fast' },
+      { id: 'b', name: 'Model B', description: 'Smart' },
+      { id: 'c', name: '', description: null },
+    ],
+  }],
+};
 
 function renderToolbar(session: Partial<SessionSnapshot>) {
   const posted: WebviewToExtensionMessage[] = [];
@@ -46,7 +49,7 @@ function renderToolbar(session: Partial<SessionSnapshot>) {
   send({
     type: 'state',
     activeSessionId: 's1',
-    session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', modes: null, configOptions: null, availableCommands: [], ...session },
+    session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [], ...session },
   });
   return { container, send, takePosted: () => posted.splice(0) };
 }
@@ -79,31 +82,45 @@ it('refuses to render outside a StoreContext', () => {
   expect(() => render(<InputToolbar />)).toThrow('Chat view components must render inside a StoreContext.');
 });
 
-describe('config option pickers', () => {
-  it("shows the current value's name and description, and the category's icon", () => {
-    const { container } = renderToolbar({ configOptions: [modelOption] });
+describe('pickers', () => {
+  it("shows the session's pickers in order, and none for a session without any", () => {
+    const pickerIds = (container: HTMLElement) =>
+      [...element(container, '#pickers').querySelectorAll<HTMLElement>('[data-picker-id]')].map((el) => el.dataset['pickerId']);
 
-    const button = element(container, '[data-config-id="model"] .picker-btn');
-    expect(button.title).toBe('Fast');
-    expect(element(button, '.picker-icon').textContent).toBe('🧠');
-    expect(element(button, '.picker-label').textContent).toBe('Model A');
+    expect(pickerIds(renderToolbar({ pickers: [modePicker, modelPicker] }).container)).toEqual(['mode', 'model']);
+    cleanup();
+    expect(pickerIds(renderToolbar({}).container)).toEqual([]);
   });
 
-  it("falls back to the option's description, then its name, when the value has none", () => {
-    const { container, send } = renderToolbar({ configOptions: [{ ...modelOption, currentValue: 'c', description: 'Which model' }] });
+  it("shows the current value's name and description, and the category's icon", () => {
+    const { container } = renderToolbar({ pickers: [modePicker, modelPicker] });
+
+    const model = element(container, '[data-picker-id="model"] .picker-btn');
+    expect(model.title).toBe('Fast');
+    expect(element(model, '.picker-icon').textContent).toBe('🧠');
+    expect(element(model, '.picker-label').textContent).toBe('Model A');
+
+    const mode = element(container, '[data-picker-id="mode"] .picker-btn');
+    expect(mode.title).toBe('Questions only');
+    expect(element(mode, '.picker-icon').textContent).toBe('⚡');
+    expect(element(mode, '.picker-label').textContent).toBe('Ask');
+  });
+
+  it("falls back to the picker's description, then its name, when the value has none", () => {
+    const { container, send } = renderToolbar({ pickers: [{ ...modelPicker, current: 'c', description: 'Which model' }] });
     expect(element(container, '.picker-btn').title).toBe('Which model');
     expect(element(container, '.picker-label').textContent).toBe('Model');
 
-    send({ type: 'configOptionsUpdate', configOptions: [{ ...modelOption, currentValue: 'c', category: 'other' }] });
+    send({ type: 'pickers', pickers: [{ ...modelPicker, current: 'c', category: 'other' }] });
     expect(element(container, '.picker-btn').title).toBe('Model');
     expect(element(container, '.picker-icon').textContent).toBe('⚙');
 
-    send({ type: 'configOptionsUpdate', configOptions: [{ ...modelOption, currentValue: 'c', name: '' }] });
+    send({ type: 'pickers', pickers: [{ ...modelPicker, current: 'c', name: '' }] });
     expect(element(container, '.picker-label').textContent).toBe('Option');
   });
 
   it('marks the current value and labels a nameless value by its ID', () => {
-    const { container } = renderToolbar({ configOptions: [modelOption] });
+    const { container } = renderToolbar({ pickers: [modelPicker] });
 
     const items = [...container.querySelectorAll<HTMLElement>('.picker-dropdown-item')];
     expect(items.map((el) => [el.dataset['value'], el.textContent, el.classList.contains('selected')])).toEqual([
@@ -116,15 +133,13 @@ describe('config option pickers', () => {
 
   it('shows group headers above their values', () => {
     const { container } = renderToolbar({
-      configOptions: [
-        {
-          ...modelOption,
-          options: [
-            { group: 'fast', name: 'Fast models', options: [{ value: 'a', name: 'Model A' }] },
-            { group: 'smart', name: 'Smart models', options: [{ value: 'b', name: 'Model B' }] },
-          ],
-        },
-      ],
+      pickers: [{
+        ...modelPicker,
+        groups: [
+          { header: 'Fast models', values: [{ id: 'a', name: 'Model A', description: null }] },
+          { header: 'Smart models', values: [{ id: 'b', name: 'Model B', description: null }] },
+        ],
+      }],
     });
 
     const dropdown = element(container, '.picker-dropdown');
@@ -132,7 +147,7 @@ describe('config option pickers', () => {
   });
 
   it('opens from its button without the click reaching the document, and posts the chosen value', () => {
-    const { container, takePosted } = renderToolbar({ configOptions: [modelOption] });
+    const { container, takePosted } = renderToolbar({ pickers: [modelPicker] });
     const reachedDocument = vi.fn();
     document.addEventListener('click', reachedDocument);
     takePosted();
@@ -143,46 +158,15 @@ describe('config option pickers', () => {
 
     document.removeEventListener('click', reachedDocument);
     expect(reachedDocument).not.toHaveBeenCalled();
-    expect(takePosted()).toEqual([{ type: 'setConfigOption', configId: 'model', value: 'b' }]);
+    expect(takePosted()).toEqual([{ type: 'pickerValueChosen', pickerId: 'model', value: 'b' }]);
     expect(element(container, '.picker-label').textContent).toBe('Model B');
     expect(element(container, '.picker-dropdown').classList.contains('open')).toBe(false);
   });
 });
 
-describe('the mode picker', () => {
-  it('is rendered hidden for an agent without modes', () => {
-    renderToolbar({});
-
-    expect(document.getElementById('modePickerWrap')?.classList.contains('hidden')).toBe(true);
-    expect(document.getElementById('modePickerLabel')?.textContent).toBe('Mode');
-  });
-
-  it("shows the current mode's name, with its description on the label", () => {
-    const { send } = renderToolbar({ modes });
-    const label = screen.getByText('Ask', { selector: '#modePickerLabel' });
-    expect(label.title).toBe('Questions only');
-
-    send({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } });
-    expect(label.textContent).toBe('Code');
-    expect(label.hasAttribute('title')).toBe(false);
-  });
-
-  it('posts setMode for the chosen mode', () => {
-    const { container, takePosted } = renderToolbar({ modes });
-    takePosted();
-
-    fireEvent.click(element(container, '#modePickerBtn'));
-    expect(element(container, '#modeDropdown').classList.contains('open')).toBe(true);
-    fireEvent.click(item(container, 'Code'));
-
-    expect(takePosted()).toEqual([{ type: 'setMode', modeId: 'code' }]);
-    expect(element(container, '#modeDropdown').classList.contains('open')).toBe(false);
-  });
-});
-
 describe('the tooltip', () => {
   function hoverable() {
-    const toolbar = renderToolbar({ configOptions: [modelOption] });
+    const toolbar = renderToolbar({ pickers: [modelPicker] });
     fireEvent.click(element(toolbar.container, '.picker-btn'));
     const tooltip = element(toolbar.container, '#pickerTooltip');
     return { ...toolbar, tooltip };

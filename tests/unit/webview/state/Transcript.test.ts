@@ -1,14 +1,11 @@
-import type { AvailableCommand, SessionUpdate } from '@agentclientprotocol/sdk';
 import { assert, describe, expect, it } from 'vitest';
-import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import {
-  contentTexts,
-  planEntryIcon,
+  planStepIcon,
   showsEmptyState,
   shownContent,
-  statusClass,
   statusGlyph,
   thoughtSummary,
   TOOL_CALL_CONTENT_LIMIT,
@@ -17,10 +14,10 @@ import {
   type TurnPart,
 } from '@/webview/state/Transcript';
 
-const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
-const review: AvailableCommand = { name: 'review', description: 'Review changes', input: { hint: 'What to review' } };
+const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
+const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
 
-type SessionUpdateKind = SessionUpdate['sessionUpdate'];
+type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type' | 'toolCallId'>;
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -58,11 +55,17 @@ function chatView() {
     store,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
     connect: (session: Partial<SessionSnapshot> = {}) => {
-      const full = { sessionId: 's1', agentName: 'Fake', cwd: '/work', modes: null, configOptions: null, availableCommands: [init, review], ...session };
+      const full = { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session };
       store.dispatch({ type: 'state', activeSessionId: full.sessionId, session: full });
     },
-    update: <K extends SessionUpdateKind>(sessionUpdate: K, fields: Omit<Extract<SessionUpdate, { sessionUpdate: K }>, 'sessionUpdate'>) =>
-      store.dispatch({ type: 'sessionUpdate', sessionId: 's1', update: { sessionUpdate, ...fields } as SessionUpdate }),
+    answer: (text: string, messageId: string | null = null) => store.dispatch({ type: 'agentText', messageId, text }),
+    thought: (text: string, messageId: string | null = null) => store.dispatch({ type: 'thoughtText', messageId, text }),
+    replayed: (text: string, messageId: string | null = null) => store.dispatch({ type: 'promptText', messageId, text }),
+    wholeAnswer: (text: string, messageId: string) => store.dispatch({ type: 'agentMessage', messageId, text }),
+    wholeThought: (text: string, messageId: string) => store.dispatch({ type: 'thoughtMessage', messageId, text }),
+    wholePrompt: (text: string, messageId: string) => store.dispatch({ type: 'promptMessage', messageId, text }),
+    toolCall: (toolCallId: string, report: ToolCallReport = {}) => store.dispatch({ type: 'toolCall', toolCallId, ...report }),
+    plan: (...steps: PlanStep[]) => store.dispatch({ type: 'plan', steps }),
     prompt: (text: string) => {
       store.dispatch({ type: 'promptEdited', text });
       store.dispatch({ type: 'promptSent' });
@@ -80,13 +83,11 @@ function partSummary(part: TurnPart): string {
     case 'toolCalls':
       return `tools ${part.toolCalls.map((call) => call.toolCallId).join(', ')}`;
     case 'plan':
-      return `plan ${part.entries.map((entry) => entry.content).join(', ')}`;
+      return `plan ${part.steps.map((step) => step.text).join(', ')}`;
   }
 }
 
-const text = (value: string) => ({ content: { type: 'text' as const, text: value } });
-const forAgentOnly = (value: string) => ({ content: { type: 'text' as const, text: value, annotations: { audience: ['assistant' as const] } } });
-const textContent = (value: string) => ({ type: 'content' as const, content: { type: 'text' as const, text: value } });
+const promptEnd: Action = { type: 'promptEnd' };
 
 describe('the transcript and its session', () => {
   it('leaves room for the empty state only without a session and an empty transcript', () => {
@@ -152,13 +153,13 @@ describe('the transcript and its session', () => {
     const view = chatView();
     view.connect({ sessionId: 's1' });
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('old'));
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.answer('old');
+    view.send(promptEnd);
     const oldId = view.lastTurn().id;
 
     view.connect({ sessionId: 's2' });
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('new'));
+    view.answer('new');
 
     expect(view.lastTurn().id).not.toBe(oldId);
   });
@@ -173,7 +174,7 @@ describe('a session whose agent exited', () => {
     view.connect();
     view.prompt('first');
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('working'));
+    view.answer('working');
     view.prompt('second');
     view.takePosted();
     return view;
@@ -196,7 +197,7 @@ describe('a session whose agent exited', () => {
     const view = midTurn();
     view.send(ended, noSession);
 
-    view.send({ type: 'promptEnd', stopReason: 'error' });
+    view.send(promptEnd);
 
     expect(view.takePosted()).toEqual([]);
   });
@@ -262,11 +263,11 @@ describe('the queue', () => {
     view.connect();
     view.prompt('first');
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('working'));
+    view.answer('working');
     view.takePosted();
 
     view.prompt('also this');
-    view.update('agent_message_chunk', text(' still'));
+    view.answer(' still');
 
     expect(view.takePosted()).toEqual([]);
     expect(view.transcript().queued).toEqual(['also this']);
@@ -289,23 +290,23 @@ describe('the queue', () => {
     view.connect();
     view.prompt('first');
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('one'));
+    view.answer('one');
     view.prompt('second');
     view.prompt('third');
     view.takePosted();
 
-    view.send({ type: 'promptEnd', stopReason: 'cancelled' });
+    view.send(promptEnd);
     expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }]);
     expect(view.transcript().queued).toEqual(['third']);
     expect(view.store.getSnapshot().activeSession?.turnRunning).toBe(true);
 
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('two'));
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.answer('two');
+    view.send(promptEnd);
     expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'third' }]);
     expect(view.transcript().queued).toEqual([]);
 
-    view.send({ type: 'promptStart' }, { type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'promptStart' }, promptEnd);
     expect(view.takePosted()).toEqual([]);
     expect(view.summary()).toEqual(['prompt: first', 'turn: one', 'prompt: second', 'turn: two', 'prompt: third']);
   });
@@ -325,7 +326,7 @@ describe('the queue', () => {
     expect(view.transcript().queued).toEqual(['second', 'third']);
     expect(view.transcript().followRequests).toBe(before + 2);
 
-    view.send({ type: 'promptEnd', stopReason: 'cancelled' });
+    view.send(promptEnd);
     expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }]);
   });
 
@@ -356,7 +357,7 @@ describe('the queue', () => {
       view.takePosted();
 
       clear(view);
-      view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+      view.send(promptEnd);
 
       expect(view.transcript().queued, name).toEqual([]);
       expect(view.takePosted(), name).toEqual([]);
@@ -365,14 +366,14 @@ describe('the queue', () => {
 });
 
 describe('agent messages', () => {
-  it('collects the chunks of a turn into one message, and starts a turn per prompt', () => {
+  it('collects the text of a turn into one message, and starts a turn per prompt', () => {
     const view = chatView();
     view.connect();
     for (const answer of ['hello ', 'world']) {
-      view.update('agent_message_chunk', text(answer));
+      view.answer(answer);
     }
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('again'));
+    view.answer('again');
 
     expect(view.summary()).toEqual(['turn: hello world', 'turn: again']);
   });
@@ -380,10 +381,10 @@ describe('agent messages', () => {
   it('draws a turn only once it has more than whitespace', () => {
     const view = chatView();
     view.connect();
-    view.update('agent_message_chunk', text('\n  '));
+    view.answer('\n  ');
     expect(turnShown(view.lastTurn())).toBe(false);
 
-    view.update('agent_message_chunk', text('hi'));
+    view.answer('hi');
     expect(turnShown(view.lastTurn())).toBe(true);
     expect(view.lastTurn().parts).toEqual([{ kind: 'message', messageId: null, text: '\n  hi' }]);
   });
@@ -392,64 +393,74 @@ describe('agent messages', () => {
     const view = chatView();
     view.connect();
 
-    view.update('agent_message_chunk', { ...text('one'), messageId: 'm1' });
-    view.update('agent_message_chunk', text(' and'));
-    view.update('agent_message_chunk', { ...text(' more'), messageId: 'm1' });
-    view.update('agent_message_chunk', { ...text('two'), messageId: 'm2' });
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
-    view.update('agent_message_chunk', { ...text('three'), messageId: 'm2' });
-    view.update('plan', { entries: [{ content: 'a', status: 'pending', priority: 'high' }] });
-    view.update('agent_message_chunk', text('four'));
-    view.update('agent_thought_chunk', text('hmm'));
-    view.update('agent_message_chunk', text('five'));
+    view.answer('one', 'm1');
+    view.answer(' and');
+    view.answer(' more', 'm1');
+    view.answer('two', 'm2');
+    view.toolCall('t1', { title: 'Read' });
+    view.answer('three', 'm2');
+    view.plan({ text: 'a', status: 'pending' });
+    view.answer('four');
+    view.thought('hmm');
+    view.answer('five');
 
     expect(view.summary()).toEqual(['turn: one and more | two | tools t1 | three | plan a | four | thought hmm | five']);
   });
 
-  it('ignores chunks without text', () => {
+  it('gives the latest message with the ID its whole text, in whichever turn, and adds a message for an ID it has not seen', () => {
     const view = chatView();
     view.connect();
+    view.answer('one', 'm1');
+    view.toolCall('t1');
+    view.answer('draft', 'm1');
+    view.send(promptEnd);
+    view.answer('two', 'm2');
 
-    view.update('agent_message_chunk', text(''));
-    view.update('agent_message_chunk', { content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
+    view.wholeAnswer('final', 'm1');
+    view.wholeAnswer('three', 'm3');
+    view.answer(' more', 'm3');
 
-    expect(view.summary()).toEqual([]);
+    expect(view.summary()).toEqual(['turn: one | tools t1 | final', 'turn: two | three more']);
   });
 
-  it('leaves out text meant only for the agent', () => {
+  it('clears the text of a message given none, and adds nothing for an ID it has not seen', () => {
     const view = chatView();
     view.connect();
+    view.answer('oops', 'm1');
+    const before = view.transcript().entries;
 
-    view.update('agent_message_chunk', text('shown'));
-    view.update('agent_message_chunk', forAgentOnly(' hidden'));
-    view.update('agent_message_chunk', { content: { type: 'text', text: ' also shown', annotations: { audience: ['user', 'assistant'] } } });
+    view.wholeAnswer('', 'm1');
+    view.wholeAnswer('', 'm2');
+    view.wholeThought('', 'r1');
 
-    expect(view.summary()).toEqual(['turn: shown also shown']);
+    expect(view.lastTurn().parts).toEqual([{ kind: 'message', messageId: 'm1', text: '' }]);
+    expect(turnShown(view.lastTurn())).toBe(false);
+    expect(view.transcript().entries).toHaveLength(before.length);
   });
 
   it('keeps the text of the answer and asks the extension for nothing when the turn ends', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'promptStart' });
-    view.update('agent_message_chunk', text('**bold**'));
+    view.answer('**bold**');
     view.takePosted();
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send(promptEnd);
 
     expect(view.takePosted()).toEqual([]);
     expect(view.summary()).toEqual(['turn: **bold**']);
   });
 
-  it('is the current turn from its first chunk until the prompt ends', () => {
+  it('is the current turn from its first text until the prompt ends', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'promptStart' });
     expect(view.transcript().currentTurn).toBeNull();
 
-    view.update('agent_message_chunk', text('answer'));
+    view.answer('answer');
     expect(view.transcript().currentTurn).toBe(view.lastTurn().id);
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send(promptEnd);
     expect(view.transcript().currentTurn).toBeNull();
   });
 });
@@ -460,15 +471,15 @@ describe('thoughts', () => {
     view.connect();
     view.send({ type: 'promptStart' });
     view.at(10_000);
-    view.update('agent_thought_chunk', text('let me '));
+    view.thought('let me ');
     view.at(11_000);
-    view.update('agent_thought_chunk', text('think'));
+    view.thought('think');
     expect(view.thoughts()).toEqual([{ kind: 'thought', messageId: null, text: 'let me think', startedAt: 10_000, endedAt: null, open: true }]);
 
     view.at(13_000);
-    view.update('agent_message_chunk', text('\n'));
+    view.answer('\n');
     expect(view.thoughts()[0]).toMatchObject({ endedAt: null, open: true });
-    view.update('agent_message_chunk', text('answer'));
+    view.answer('answer');
 
     const [thought] = view.thoughts();
     expect(thought).toMatchObject({ text: 'let me think', startedAt: 10_000, endedAt: 13_000, open: false });
@@ -480,14 +491,14 @@ describe('thoughts', () => {
     const view = chatView();
     view.connect();
     view.at(1_000);
-    view.update('agent_thought_chunk', { ...text('a'), messageId: 'r1' });
+    view.thought('a', 'r1');
     view.at(2_000);
-    view.update('agent_thought_chunk', { ...text('b'), messageId: 'r2' });
+    view.thought('b', 'r2');
     view.at(3_000);
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
-    view.update('agent_thought_chunk', text('c'));
+    view.toolCall('t1', { title: 'Read' });
+    view.thought('c');
     view.at(4_000);
-    view.update('plan', { entries: [] });
+    view.plan();
 
     expect(view.thoughts().map(({ text, endedAt, open }) => ({ text, endedAt, open }))).toEqual([
       { text: 'a', endedAt: 2_000, open: false },
@@ -501,10 +512,10 @@ describe('thoughts', () => {
     view.connect();
     view.send({ type: 'promptStart' });
     view.at(1_000);
-    view.update('agent_thought_chunk', text('hmm'));
+    view.thought('hmm');
     view.at(1_400);
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send(promptEnd);
 
     const [thought] = view.thoughts();
     expect(thought).toMatchObject({ endedAt: 1_400, open: true });
@@ -515,11 +526,11 @@ describe('thoughts', () => {
   it('leaves a thought as the user set it while the answer streams', () => {
     const view = chatView();
     view.connect();
-    view.update('agent_thought_chunk', text('hmm'));
-    view.update('agent_message_chunk', text('answer'));
+    view.thought('hmm');
+    view.answer('answer');
 
     view.send({ type: 'thoughtToggled', turnId: view.lastTurn().id, part: 0, open: true });
-    view.update('agent_message_chunk', text(' continues'));
+    view.answer(' continues');
 
     expect(view.thoughts()[0]?.open).toBe(true);
   });
@@ -528,13 +539,13 @@ describe('thoughts', () => {
     const view = chatView();
     view.connect();
     view.at(1_000);
-    view.update('agent_thought_chunk', text('a'));
+    view.thought('a');
     view.at(2_000);
-    view.update('agent_message_chunk', text('answer'));
+    view.answer('answer');
     view.at(9_000);
-    view.update('agent_thought_chunk', text('b'));
+    view.thought('b');
     view.at(10_000);
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send(promptEnd);
 
     expect(view.summary()).toEqual(['turn: thought a | answer | thought b']);
     expect(view.thoughts().map(({ startedAt, endedAt }) => [startedAt, endedAt])).toEqual([
@@ -543,11 +554,30 @@ describe('thoughts', () => {
     ]);
   });
 
+  it('gives a thought its whole text where it is, keeping its time and how the user set it, and starts one for an ID it has not seen', () => {
+    const view = chatView();
+    view.connect();
+    view.at(1_000);
+    view.thought('a', 'r1');
+    view.at(2_000);
+    view.answer('answer', 'm1');
+    view.send({ type: 'thoughtToggled', turnId: view.lastTurn().id, part: 0, open: true });
+    view.at(3_000);
+
+    view.wholeThought('all of a', 'r1');
+    view.wholeThought('b', 'r2');
+
+    expect(view.thoughts().map(({ messageId, text, startedAt, endedAt, open }) => ({ messageId, text, startedAt, endedAt, open }))).toEqual([
+      { messageId: 'r1', text: 'all of a', startedAt: 1_000, endedAt: 2_000, open: true },
+      { messageId: 'r2', text: 'b', startedAt: 3_000, endedAt: null, open: true },
+    ]);
+  });
+
   it('changes nothing when a toggle matches the thought, or names a part that is not a thought', () => {
     const view = chatView();
     view.connect();
-    view.update('agent_thought_chunk', text('hmm'));
-    view.update('agent_message_chunk', text('answer'));
+    view.thought('hmm');
+    view.answer('answer');
     const turnId = view.lastTurn().id;
     const before = view.transcript();
 
@@ -557,24 +587,6 @@ describe('thoughts', () => {
 
     expect(view.transcript()).toBe(before);
   });
-
-  it('ignores thought chunks without text', () => {
-    const view = chatView();
-    view.connect();
-
-    view.update('agent_thought_chunk', { content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
-
-    expect(view.summary()).toEqual([]);
-  });
-
-  it('leaves out thought text meant only for the agent', () => {
-    const view = chatView();
-    view.connect();
-
-    view.update('agent_thought_chunk', forAgentOnly('hidden'));
-
-    expect(view.summary()).toEqual([]);
-  });
 });
 
 describe('tool calls', () => {
@@ -583,7 +595,7 @@ describe('tool calls', () => {
     view.connect();
     view.send({ type: 'promptStart' });
 
-    view.update('tool_call', { toolCallId: 't1', title: 'Read', content: [textContent('body')] });
+    view.toolCall('t1', { title: 'Read', texts: ['body'] });
 
     expect(view.toolCalls()).toEqual([{ toolCallId: 't1', title: 'Read', status: 'pending', texts: ['body'], open: false }]);
   });
@@ -592,10 +604,10 @@ describe('tool calls', () => {
     const view = chatView();
     view.connect();
 
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
-    view.update('tool_call', { toolCallId: 't2', title: 'Read' });
-    view.update('agent_message_chunk', text('found it'));
-    view.update('tool_call', { toolCallId: 't3', title: 'Edit' });
+    view.toolCall('t1', { title: 'Read' });
+    view.toolCall('t2', { title: 'Read' });
+    view.answer('found it');
+    view.toolCall('t3', { title: 'Edit' });
 
     expect(view.summary()).toEqual(['turn: tools t1, t2 | found it | tools t3']);
   });
@@ -603,35 +615,34 @@ describe('tool calls', () => {
   it('opens a tool call that fails, whether from the start or by an update, and only when it becomes failed', () => {
     const view = chatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 'early', title: 'A', status: 'failed' });
-    view.update('tool_call', { toolCallId: 'late', title: 'B', status: 'in_progress' });
+    view.toolCall('early', { title: 'A', status: 'failed' });
+    view.toolCall('late', { title: 'B', status: 'running' });
     const turnId = view.lastTurn().id;
 
-    view.update('tool_call_update', { toolCallId: 'late', status: 'failed' });
+    view.toolCall('late', { status: 'failed' });
     expect(view.toolCalls().map((call) => call.open)).toEqual([true, true]);
 
     view.send({ type: 'toolCallToggled', turnId, toolCallId: 'late', open: false });
-    view.update('tool_call_update', { toolCallId: 'late', status: 'failed', title: 'B again' });
+    view.toolCall('late', { status: 'failed', title: 'B again' });
     expect(view.toolCalls()[1]).toMatchObject({ title: 'B again', open: false });
   });
 
-  it('keeps what an update leaves out', () => {
+  it('keeps what a report leaves out', () => {
     const view = chatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 't1', title: 'Run', status: 'in_progress', content: [textContent('out')] });
+    view.toolCall('t1', { title: 'Run', status: 'running', texts: ['out'] });
 
-    view.update('tool_call_update', { toolCallId: 't1' });
-    view.update('tool_call_update', { toolCallId: 't1', title: '', status: null, content: null });
+    view.toolCall('t1');
 
-    expect(view.toolCalls()[0]).toMatchObject({ title: 'Run', status: 'in_progress', texts: ['out'] });
+    expect(view.toolCalls()[0]).toMatchObject({ title: 'Run', status: 'running', texts: ['out'] });
   });
 
-  it('replaces the content and the title an update carries', () => {
+  it('replaces the text and the title a report carries', () => {
     const view = chatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 't1', title: 'Edit', content: [textContent('old')] });
+    view.toolCall('t1', { title: 'Edit', texts: ['old'] });
 
-    view.update('tool_call_update', { toolCallId: 't1', title: 'Edit foo.ts', content: [textContent('new')] });
+    view.toolCall('t1', { title: 'Edit foo.ts', texts: ['new'] });
 
     expect(view.toolCalls()[0]).toMatchObject({ title: 'Edit foo.ts', texts: ['new'] });
   });
@@ -639,14 +650,14 @@ describe('tool calls', () => {
   it('revises a tool call the agent reports again, wherever it is', () => {
     const view = chatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 't0', title: 'List' });
-    view.update('agent_message_chunk', text('then'));
-    view.update('tool_call', { toolCallId: 't1', title: 'Read', status: 'pending' });
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' }, { type: 'promptStart' });
-    view.update('agent_message_chunk', text('next turn'));
+    view.toolCall('t0', { title: 'List' });
+    view.answer('then');
+    view.toolCall('t1', { title: 'Read', status: 'pending' });
+    view.send(promptEnd, { type: 'promptStart' });
+    view.answer('next turn');
 
-    view.update('tool_call', { toolCallId: 't1', title: 'Read foo.ts', status: 'completed' });
-    view.update('tool_call_update', { toolCallId: 't1', content: [textContent('body')] });
+    view.toolCall('t1', { title: 'Read foo.ts', status: 'completed' });
+    view.toolCall('t1', { texts: ['body'] });
 
     expect(view.summary()).toEqual(['turn: tools t0 | then | tools t1', 'turn: next turn']);
     const first = view.turns()[0];
@@ -658,13 +669,23 @@ describe('tool calls', () => {
     });
   });
 
-  it('ignores an update for a tool call it never saw', () => {
+  it('shows a tool call first reported without a title, and takes the title once the agent gives one', () => {
     const view = chatView();
     view.connect();
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
+
+    view.toolCall('t1', { status: 'running' });
+    expect(view.toolCalls()).toEqual([{ toolCallId: 't1', title: '', status: 'running', texts: [], open: false }]);
+
+    view.toolCall('t1', { title: 'Read foo.ts' });
+    expect(view.toolCalls()[0]?.title).toBe('Read foo.ts');
+  });
+
+  it('changes nothing when a toggle names a tool call it never saw, or matches the tool call', () => {
+    const view = chatView();
+    view.connect();
+    view.toolCall('t1', { title: 'Read' });
     const before = view.transcript();
 
-    view.update('tool_call_update', { toolCallId: 'unknown', status: 'completed' });
     view.send({ type: 'toolCallToggled', turnId: view.lastTurn().id, toolCallId: 'unknown', open: true });
     view.send({ type: 'toolCallToggled', turnId: view.lastTurn().id, toolCallId: 't1', open: false });
 
@@ -677,13 +698,13 @@ describe('tool calls', () => {
     view.send({ type: 'promptStart' });
     for (const count of [3, 4]) {
       for (let index = 0; index < count; index++) {
-        view.update('tool_call', { toolCallId: `${count}-${index}`, title: 'Read', status: 'completed' });
+        view.toolCall(`${count}-${index}`, { title: 'Read', status: 'completed' });
       }
-      view.update('agent_message_chunk', text(`after ${count}`));
+      view.answer(`after ${count}`);
     }
     expect(view.groups().map((group) => group.collapsed)).toEqual([false, false]);
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send(promptEnd);
     expect(view.groups().map((group) => group.collapsed)).toEqual([false, true]);
 
     view.send({ type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 2 });
@@ -694,9 +715,9 @@ describe('tool calls', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'promptStart' });
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
+    view.toolCall('t1', { title: 'Read' });
 
-    view.send({ type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 0 }, { type: 'promptEnd', stopReason: 'end_turn' });
+    view.send({ type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 0 }, promptEnd);
 
     expect(view.groups()[0]?.collapsed).toBe(true);
   });
@@ -704,7 +725,7 @@ describe('tool calls', () => {
   it('changes nothing when a group toggle names a part that is not a group', () => {
     const view = chatView();
     view.connect();
-    view.update('agent_message_chunk', text('answer'));
+    view.answer('answer');
     const before = view.transcript();
 
     view.send({ type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 0 }, { type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 1 });
@@ -717,13 +738,13 @@ describe('plans', () => {
   it("replaces the turn's plan with each update where it was first reported, and starts another in the next turn", () => {
     const view = chatView();
     view.connect();
-    view.update('plan', { entries: [{ content: 'a', status: 'pending', priority: 'high' }] });
-    view.update('agent_message_chunk', text('working'));
-    view.update('plan', { entries: [{ content: 'a', status: 'completed', priority: 'high' }, { content: 'b', status: 'pending', priority: 'low' }] });
+    view.plan({ text: 'a', status: 'pending' });
+    view.answer('working');
+    view.plan({ text: 'a', status: 'completed' }, { text: 'b', status: 'pending' });
     expect(view.summary()).toEqual(['turn: plan a, b | working']);
 
     view.send({ type: 'promptStart' });
-    view.update('plan', { entries: [{ content: 'c', status: 'pending', priority: 'low' }] });
+    view.plan({ text: 'c', status: 'pending' });
 
     expect(view.summary()).toEqual(['turn: plan a, b | working', 'turn: plan c']);
   });
@@ -731,53 +752,75 @@ describe('plans', () => {
   it('starts another plan when the turn it was in was cleared', () => {
     const view = chatView();
     view.connect();
-    view.update('plan', { entries: [{ content: 'a', status: 'pending', priority: 'high' }] });
+    view.plan({ text: 'a', status: 'pending' });
     view.send({ type: 'loadSessionStart' });
 
-    view.update('plan', { entries: [{ content: 'b', status: 'pending', priority: 'high' }] });
+    view.plan({ text: 'b', status: 'pending' });
 
     expect(view.summary()).toEqual(['turn: plan b']);
   });
 });
 
 describe('loading a session', () => {
-  it('splits the replay into turns at each prompt and joins the chunks of one prompt', () => {
+  it('splits the replay into turns at each prompt and joins the text of one prompt', () => {
     const view = chatView();
     view.connect();
     view.prompt('before the load');
     view.send({ type: 'loadSessionStart' });
 
-    view.update('user_message_chunk', text('he'));
-    view.update('user_message_chunk', text('llo'));
-    view.update('agent_message_chunk', text('a1'));
-    view.update('user_message_chunk', text('q2'));
-    view.update('agent_message_chunk', text('a2'));
+    view.replayed('he');
+    view.replayed('llo');
+    view.answer('a1');
+    view.replayed('q2');
+    view.answer('a2');
 
     expect(view.summary()).toEqual(['prompt: hello', 'turn: a1', 'prompt: q2', 'turn: a2']);
   });
 
-  it('ignores replayed prompt chunks without text', () => {
-    const view = chatView();
-    view.connect();
-    view.update('agent_message_chunk', text('answer'));
-    const before = view.transcript();
-
-    view.update('user_message_chunk', { content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
-
-    expect(view.transcript()).toBe(before);
-  });
-
-  it('leaves out replayed prompt text meant only for the agent, such as an attached file read into the prompt', () => {
+  it('gives a replayed prompt with an ID its whole text where it is, and starts another prompt for an ID it has not seen', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'loadSessionStart' });
 
-    view.update('user_message_chunk', text('q1'));
-    view.update('user_message_chunk', forAgentOnly('Called the Read tool'));
-    view.update('user_message_chunk', forAgentOnly('the file'));
-    view.update('agent_message_chunk', text('a1'));
+    view.wholePrompt('Fix', 'u0');
+    view.answer('a1');
+    view.wholePrompt('Fix the build', 'u0');
+    view.answer(' more');
+    view.wholePrompt('q2', 'u1');
+    view.replayed(' now');
+    view.wholePrompt('q3', 'u2');
+    view.answer('a3');
 
-    expect(view.summary()).toEqual(['prompt: q1', 'turn: a1']);
+    expect(view.summary()).toEqual(['prompt: Fix the build', 'turn: a1 more', 'prompt: q2 now', 'prompt: q3', 'turn: a3']);
+  });
+
+  it('keeps replayed prompts with different IDs apart, with nothing between them, joining the text of each', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+
+    view.replayed('he', 'u1');
+    view.replayed('llo', 'u1');
+    view.replayed('q2', 'u2');
+    view.replayed(' now', null);
+
+    expect(view.summary()).toEqual(['prompt: hello', 'prompt: q2 now']);
+  });
+
+  it('adds nothing for an empty whole prompt it has not seen, leaving the chunks after it to replay the prompt', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+
+    view.wholePrompt('', 'u1');
+    view.replayed('Hello', 'u1');
+    view.wholeAnswer('', 'a1');
+    view.answer('Hi!', 'a1');
+    view.wholePrompt('', 'u2');
+    view.wholePrompt('', 'u3');
+    view.replayed('q3', 'u3');
+
+    expect(view.summary()).toEqual(['prompt: Hello', 'turn: Hi!', 'prompt: q3']);
   });
 
   it('ends each replayed turn as a live one ends', () => {
@@ -785,11 +828,11 @@ describe('loading a session', () => {
     view.connect();
     view.send({ type: 'loadSessionStart' });
     for (const prompt of ['q1', 'q2']) {
-      view.update('user_message_chunk', text(prompt));
+      view.replayed(prompt);
       for (const id of ['1', '2', '3', '4']) {
-        view.update('tool_call', { toolCallId: `${prompt}-${id}`, title: id, status: 'completed' });
+        view.toolCall(`${prompt}-${id}`, { title: id, status: 'completed' });
       }
-      view.update('agent_thought_chunk', text('hmm'));
+      view.thought('hmm');
     }
     view.send({ type: 'loadSessionEnd', ok: true });
 
@@ -805,10 +848,10 @@ describe('loading a session', () => {
     const view = chatView();
     view.connect();
     view.send({ type: 'loadSessionStart' });
-    view.update('user_message_chunk', text('q1'));
-    view.update('agent_message_chunk', text('a1'));
-    view.update('user_message_chunk', text('q2'));
-    view.update('agent_message_chunk', text('a2'));
+    view.replayed('q1');
+    view.answer('a1');
+    view.replayed('q2');
+    view.answer('a2');
     view.takePosted();
 
     view.send({ type: 'loadSessionEnd', ok: true });
@@ -850,7 +893,7 @@ describe('following the stream', () => {
     view.takePosted();
     const before = view.transcript().followRequests;
 
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.send(promptEnd);
 
     expect(view.takePosted()).toContainEqual({ type: 'sendPrompt', text: 'queued' });
     expect(view.transcript().followRequests).toBe(before);
@@ -882,17 +925,17 @@ describe('following the stream', () => {
     view.send({ type: 'promptStart' });
     const live = view.transcript().followRequests;
 
-    view.update('agent_message_chunk', text('answer'));
-    view.update('tool_call', { toolCallId: 't1', title: 'Read' });
-    view.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    view.answer('answer');
+    view.toolCall('t1', { title: 'Read' });
+    view.send(promptEnd);
     view.connect({ title: 'Renamed' });
     expect(view.transcript().followRequests).toBe(live);
 
     view.send({ type: 'loadSessionStart' });
     const loading = view.transcript().followRequests;
-    view.update('user_message_chunk', text('q1'));
-    view.update('agent_message_chunk', text('a1'));
-    view.update('user_message_chunk', text('q2'));
+    view.replayed('q1');
+    view.answer('a1');
+    view.replayed('q2');
     view.send({ type: 'loadSessionEnd', ok: true });
     expect(view.transcript().followRequests).toBe(loading);
   });
@@ -908,19 +951,6 @@ describe('errors', () => {
 });
 
 describe('what is shown', () => {
-  it('keeps the text of content blocks, skipping other content and empty text', () => {
-    expect(
-      contentTexts([
-        textContent('first'),
-        { type: 'diff', path: '/work/a.ts', oldText: 'a', newText: 'b' },
-        { type: 'terminal', terminalId: 'term-1' },
-        { type: 'content', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
-        textContent(''),
-        textContent('second'),
-      ]),
-    ).toEqual(['first', 'second']);
-  });
-
   it('truncates tool call content past the limit, across blocks', () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
@@ -929,19 +959,12 @@ describe('what is shown', () => {
     expect(shownContent([half, half, 'c'])).toEqual({ blocks: [half, half], truncated: true });
   });
 
-  it('marks each tool call status with a glyph and a class', () => {
-    const statuses = ['pending', 'in_progress', 'completed', 'failed'] as const;
-
-    expect(statuses.map((status) => `${statusClass(status)} ${statusGlyph(status)}`)).toEqual([
-      'pending …',
-      'running ⟳',
-      'completed ✓',
-      'failed ✗',
-    ]);
+  it('marks each tool call status with a glyph', () => {
+    expect((['pending', 'running', 'completed', 'failed'] as const).map(statusGlyph)).toEqual(['…', '⟳', '✓', '✗']);
   });
 
-  it('marks each plan entry status with an icon', () => {
-    expect((['pending', 'in_progress', 'completed'] as const).map(planEntryIcon)).toEqual(['⬜', '🔄', '✅']);
+  it('marks each plan step status with an icon', () => {
+    expect((['pending', 'running', 'completed'] as const).map(planStepIcon)).toEqual(['⬜', '🔄', '✅']);
   });
 
   it('rounds the thought duration to whole seconds', () => {

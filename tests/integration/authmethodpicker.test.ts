@@ -1,12 +1,12 @@
 import * as assert from 'assert';
 import { suite, test } from 'mocha';
 import * as vscode from 'vscode';
-import type { AuthMethod } from '@agentclientprotocol/sdk';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
+import type { AuthMethod } from '@/core/acp/AcpDriver';
 
 const offered: AuthMethod[] = [
   { id: 'token', name: 'Token', description: 'Paste an API token' },
-  { id: 'browser', name: 'Browser' },
+  { id: 'browser', name: 'Browser', description: null },
 ];
 
 /** The extension API cannot see a quick pick, so this gives it time to open before the workbench's commands drive it. */

@@ -1,5 +1,10 @@
-import type { ContentBlock, PlanEntry, PlanEntryStatus, SessionUpdate, ToolCallContent, ToolCallStatus } from '@agentclientprotocol/sdk';
-import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type {
+  ExtensionToWebviewMessage,
+  PlanStep,
+  PlanStepStatus,
+  ToolCallStatus,
+  WebviewToExtensionMessage,
+} from '@/shared/WebviewMessages';
 import type { ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
@@ -10,6 +15,8 @@ export type EntryId = number;
 interface Prompt {
   readonly kind: 'prompt';
   readonly id: EntryId;
+  /** The agent's ID for a prompt a load replays; text with another ID is another prompt, and a whole one with this ID replaces its text. */
+  readonly messageId?: string;
   readonly text: string;
 }
 
@@ -56,7 +63,6 @@ export interface ToolCall {
   readonly toolCallId: string;
   readonly title: string;
   readonly status: ToolCallStatus;
-  /** The text of its content; diffs and terminals are not shown yet. */
   readonly texts: readonly string[];
   readonly open: boolean;
 }
@@ -64,7 +70,7 @@ export interface ToolCall {
 /** The agent's latest plan in a turn, which replaces the earlier ones of that turn where the first one was. */
 export interface Plan {
   readonly kind: 'plan';
-  readonly entries: readonly PlanEntry[];
+  readonly steps: readonly PlanStep[];
 }
 
 interface TranscriptError {
@@ -132,7 +138,7 @@ export function thoughtSummary(thought: Pick<Thought, 'startedAt' | 'endedAt'>):
 
 export function statusGlyph(status: ToolCallStatus): string {
   switch (status) {
-    case 'in_progress':
+    case 'running':
       return '⟳';
     case 'completed':
       return '✓';
@@ -143,15 +149,11 @@ export function statusGlyph(status: ToolCallStatus): string {
   }
 }
 
-export function statusClass(status: ToolCallStatus): string {
-  return status === 'in_progress' ? 'running' : status;
-}
-
-export function planEntryIcon(status: PlanEntryStatus): string {
+export function planStepIcon(status: PlanStepStatus): string {
   switch (status) {
     case 'completed':
       return '✅';
-    case 'in_progress':
+    case 'running':
       return '🔄';
     default:
       return '⬜';
@@ -174,11 +176,6 @@ export function shownContent(texts: readonly string[]): { blocks: string[]; trun
     }
   }
   return { blocks, truncated: false };
-}
-
-/** The non-empty text blocks of a tool call's content. */
-export function contentTexts(content: readonly ToolCallContent[]): string[] {
-  return content.flatMap((block) => (block.type === 'content' && block.content.type === 'text' && block.content.text ? [block.content.text] : []));
 }
 
 export function updateTranscript(
@@ -218,8 +215,20 @@ export function updateTranscript(
     }
     case 'error':
       return stateOnly(appended(transcript, (id) => ({ kind: 'error', id, text: action.message || 'An error occurred' })));
-    case 'sessionUpdate':
-      return stateOnly(applySessionUpdate(transcript, action.update, now));
+    case 'agentText':
+    case 'thoughtText':
+      return stateOnly(withAgentText(transcript, action, now));
+    case 'promptText':
+      return stateOnly(withReplayedPrompt(transcript, action, now));
+    case 'agentMessage':
+    case 'thoughtMessage':
+      return stateOnly(withMessageReplaced(transcript, action, now));
+    case 'promptMessage':
+      return stateOnly(withPromptReplaced(transcript, action, now));
+    case 'toolCall':
+      return stateOnly(withToolCallReported(transcript, action, now));
+    case 'plan':
+      return stateOnly(withPlan(transcript, { kind: 'plan', steps: action.steps }, now));
     case 'thoughtToggled':
       return stateOnly(
         withTurn(transcript, action.turnId, (turn) =>
@@ -289,107 +298,120 @@ function withPrompt(transcript: TranscriptState, text: string): TranscriptState 
   return appended(transcript, (id) => ({ kind: 'prompt', id, text }));
 }
 
-/** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
-function textForUser(content: ContentBlock): string | null {
-  if (content.type !== 'text') {
-    return null;
+function withAgentText(
+  transcript: TranscriptState,
+  { type, messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'agentText' | 'thoughtText' }>,
+  now: number,
+): TranscriptState {
+  // A thought starts on its first text, even an empty one; a message is drawn only once it has something to show.
+  if (type === 'agentText' && !text) {
+    return transcript;
   }
-  const audience = content.annotations?.audience;
-  return audience && !audience.includes('user') ? null : content.text;
+  const kind = type === 'agentText' ? 'message' : 'thought';
+  return inCurrentTurn(transcript, (turn) => {
+    const last = turn.parts.at(-1);
+    if ((last?.kind === 'message' || last?.kind === 'thought') && last.kind === kind && sameMessage(last.messageId, messageId)) {
+      return withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now);
+    }
+    const part: TurnPart =
+      kind === 'message' ? { kind, messageId, text } : { kind, messageId, text, startedAt: now, endedAt: null, open: true };
+    return withLastPart(turn, part, 'adding', now);
+  });
 }
 
-function applySessionUpdate(transcript: TranscriptState, update: SessionUpdate, now: number): TranscriptState {
-  switch (update.sessionUpdate) {
-    case 'agent_message_chunk': {
-      const text = textForUser(update.content);
-      if (!text) {
-        return transcript;
-      }
-      const messageId = update.messageId ?? null;
-      return inCurrentTurn(transcript, (turn) => {
-        const last = turn.parts.at(-1);
-        return last?.kind === 'message' && sameMessage(last.messageId, messageId)
-          ? withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now)
-          : withLastPart(turn, { kind: 'message', messageId, text }, 'adding', now);
-      });
+/** Only a load replays prompts; each one ends the turn before it. */
+function withReplayedPrompt(
+  transcript: TranscriptState,
+  { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptText' }>,
+  now: number,
+): TranscriptState {
+  const ended = endTurn(transcript, now);
+  const last = ended.entries.at(-1);
+  return last?.kind === 'prompt' && sameMessage(last.messageId ?? null, messageId)
+    ? replaced(ended, { ...last, text: last.text + text })
+    : appended(ended, (id) => ({ kind: 'prompt', id, ...(messageId !== null ? { messageId } : {}), text }));
+}
+
+/**
+ * The latest part of the kind with the ID takes the whole text, in whichever turn. Without one, the text goes into the
+ * current turn as streamed text would, unless it is empty, as there is nothing to clear.
+ */
+function withMessageReplaced(
+  transcript: TranscriptState,
+  { type, messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'agentMessage' | 'thoughtMessage' }>,
+  now: number,
+): TranscriptState {
+  const kind = type === 'agentMessage' ? 'message' : 'thought';
+  for (let at = transcript.entries.length - 1; at >= 0; at--) {
+    const entry = transcript.entries[at];
+    if (entry?.kind !== 'turn') {
+      continue;
     }
-    case 'agent_thought_chunk': {
-      const text = textForUser(update.content);
-      if (text === null) {
-        return transcript;
-      }
-      const messageId = update.messageId ?? null;
-      return inCurrentTurn(transcript, (turn) => {
-        const last = turn.parts.at(-1);
-        return last?.kind === 'thought' && sameMessage(last.messageId, messageId)
-          ? withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now)
-          : withLastPart(turn, { kind: 'thought', messageId, text, startedAt: now, endedAt: null, open: true }, 'adding', now);
-      });
+    const index = lastPartIndex(entry, (part) => (part.kind === 'message' || part.kind === 'thought') && part.kind === kind && part.messageId === messageId);
+    if (index !== -1) {
+      return withTurn(transcript, entry.id, (turn) =>
+        withPart(turn, index, (part) => ((part.kind === 'message' || part.kind === 'thought') && part.text !== text ? { ...part, text } : part)),
+      );
     }
-    case 'user_message_chunk': {
-      // Only a load replays prompts; each one ends the turn before it.
-      const text = textForUser(update.content);
-      if (text === null) {
-        return transcript;
-      }
-      const ended = endTurn(transcript, now);
-      const last = ended.entries.at(-1);
-      return last?.kind === 'prompt'
-        ? replaced(ended, { ...last, text: last.text + text })
-        : appended(ended, (id) => ({ kind: 'prompt', id, text }));
-    }
-    case 'tool_call': {
-      const reported = {
-        title: update.title,
-        status: update.status ?? null,
-        texts: update.content ? contentTexts(update.content) : null,
-      };
-      const holder = turnWithToolCall(transcript, update.toolCallId);
-      if (holder) {
-        return withTurn(transcript, holder.id, (turn) => withToolCall(turn, update.toolCallId, (call) => revised(call, reported)));
-      }
-      const status = reported.status ?? 'pending';
-      const call = { toolCallId: update.toolCallId, title: update.title, status, texts: reported.texts ?? [], open: status === 'failed' };
-      return inCurrentTurn(transcript, (turn) => {
-        const last = turn.parts.at(-1);
-        return last?.kind === 'toolCalls'
-          ? withLastPart(turn, { ...last, toolCalls: [...last.toolCalls, call] }, 'replacing', now)
-          : withLastPart(turn, { kind: 'toolCalls', toolCalls: [call], collapsed: false }, 'adding', now);
-      });
-    }
-    case 'tool_call_update': {
-      const holder = turnWithToolCall(transcript, update.toolCallId);
-      if (!holder) {
-        return transcript;
-      }
-      const reported = {
-        title: update.title ?? '',
-        status: update.status ?? null,
-        texts: update.content ? contentTexts(update.content) : null,
-      };
-      return withTurn(transcript, holder.id, (turn) => withToolCall(turn, update.toolCallId, (call) => revised(call, reported)));
-    }
-    case 'plan': {
-      const plan: Plan = { kind: 'plan', entries: update.entries };
-      return inCurrentTurn(transcript, (turn) => {
-        const index = turn.parts.findIndex((part) => part.kind === 'plan');
-        return index === -1 ? withLastPart(turn, plan, 'adding', now) : withPart(turn, index, () => plan);
-      });
-    }
-    default:
-      return transcript;
   }
+  return text ? withAgentText(transcript, { type: kind === 'message' ? 'agentText' : 'thoughtText', messageId, text }, now) : transcript;
 }
 
-/** What a repeated `tool_call` or a `tool_call_update` reports; null and empty fields leave the tool call as it was. */
-interface ReportedToolCall {
-  title: string;
-  status: ToolCallStatus | null;
-  texts: string[] | null;
+/** The latest prompt with the ID takes the whole text; without one, the prompt is replayed as a new one, unless it is empty, as for a message. */
+function withPromptReplaced(
+  transcript: TranscriptState,
+  { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptMessage' }>,
+  now: number,
+): TranscriptState {
+  for (let at = transcript.entries.length - 1; at >= 0; at--) {
+    const entry = transcript.entries[at];
+    if (entry?.kind === 'prompt' && entry.messageId === messageId) {
+      return entry.text === text ? transcript : replaced(transcript, { ...entry, text });
+    }
+  }
+  return text ? appended(endTurn(transcript, now), (id) => ({ kind: 'prompt', id, messageId, text })) : transcript;
 }
 
-/** A tool call opens when it fails, once; closing it again is up to the user. */
-function revised(call: ToolCall, reported: ReportedToolCall): ToolCall {
+function lastPartIndex(turn: Turn, matches: (part: TurnPart) => boolean): PartIndex {
+  for (let at = turn.parts.length - 1; at >= 0; at--) {
+    const part = turn.parts[at];
+    if (part && matches(part)) {
+      return at;
+    }
+  }
+  return -1;
+}
+
+/** A tool call already shown is revised where it is, in whichever turn; a new one goes into the current turn. */
+function withToolCallReported(
+  transcript: TranscriptState,
+  reported: Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>,
+  now: number,
+): TranscriptState {
+  const { toolCallId } = reported;
+  const holder = turnWithToolCall(transcript, toolCallId);
+  if (holder) {
+    return withTurn(transcript, holder.id, (turn) => withToolCall(turn, toolCallId, (call) => revised(call, reported)));
+  }
+  const status = reported.status ?? 'pending';
+  const call: ToolCall = { toolCallId, title: reported.title ?? '', status, texts: reported.texts ?? [], open: status === 'failed' };
+  return inCurrentTurn(transcript, (turn) => {
+    const last = turn.parts.at(-1);
+    return last?.kind === 'toolCalls'
+      ? withLastPart(turn, { ...last, toolCalls: [...last.toolCalls, call] }, 'replacing', now)
+      : withLastPart(turn, { kind: 'toolCalls', toolCalls: [call], collapsed: false }, 'adding', now);
+  });
+}
+
+function withPlan(transcript: TranscriptState, plan: Plan, now: number): TranscriptState {
+  return inCurrentTurn(transcript, (turn) => {
+    const index = turn.parts.findIndex((part) => part.kind === 'plan');
+    return index === -1 ? withLastPart(turn, plan, 'adding', now) : withPart(turn, index, () => plan);
+  });
+}
+
+/** What the report leaves out, or gives as empty text, stays as it was. A tool call opens when it fails, once; closing it again is up to the user. */
+function revised(call: ToolCall, reported: Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>): ToolCall {
   const status = reported.status ?? call.status;
   return {
     ...call,
@@ -467,7 +489,6 @@ function findTurn(transcript: TranscriptState, id: EntryId): Turn | undefined {
   return entry?.kind === 'turn' ? entry : undefined;
 }
 
-/** Updates go wherever the tool call is, not only to the current turn; a repeated `tool_call` revises it there, so there is one. */
 function turnWithToolCall(transcript: TranscriptState, toolCallId: string): Turn | undefined {
   return transcript.entries.find(
     (entry): entry is Turn => entry.kind === 'turn' && groupIndex(entry, toolCallId) !== -1,

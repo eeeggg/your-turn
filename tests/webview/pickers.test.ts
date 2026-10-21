@@ -1,6 +1,6 @@
-import type { SessionConfigOption, SessionModeState } from '@agentclientprotocol/sdk';
 import { afterEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, sessionSnapshot, update, type ChatPage } from './chatPage';
+import type { Picker } from '@/shared/WebviewMessages';
+import { connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -9,34 +9,36 @@ afterEach(() => {
   page.close();
 });
 
-const modelOption = {
+const modelPicker: Picker = {
   id: 'model',
-  name: 'Model',
   category: 'model',
-  type: 'select',
-  currentValue: 'a',
-  options: [
-    { value: 'a', name: 'Model A', description: 'Fast' },
-    { value: 'b', name: 'Model B' },
-  ],
-} satisfies SessionConfigOption;
+  name: 'Model',
+  description: null,
+  current: 'a',
+  groups: [{ header: null, values: [{ id: 'a', name: 'Model A', description: 'Fast' }, { id: 'b', name: 'Model B', description: null }] }],
+};
 
-const legacyModes = {
-  availableModes: [
-    { id: 'ask', name: 'Ask', description: 'Questions only' },
-    { id: 'code', name: 'Code' },
-  ],
-  currentModeId: 'ask',
-} satisfies SessionModeState;
+const modePicker: Picker = {
+  id: 'mode',
+  category: 'mode',
+  name: 'Mode',
+  description: null,
+  current: 'ask',
+  groups: [{ header: null, values: [{ id: 'ask', name: 'Ask', description: 'Questions only' }, { id: 'code', name: 'Code', description: null }] }],
+};
 
 function pickers(): HTMLElement[] {
-  return [...page.byId('configOptionsContainer').querySelectorAll<HTMLElement>('.picker-wrap')];
+  return [...page.byId('pickers').querySelectorAll<HTMLElement>('.picker-wrap')];
 }
 
-function picker(configId: string): HTMLElement {
-  const wrap = pickers().find((el) => el.dataset['configId'] === configId);
+function pickerIds(): (string | undefined)[] {
+  return pickers().map((el) => el.dataset['pickerId']);
+}
+
+function picker(pickerId: string): HTMLElement {
+  const wrap = pickers().find((el) => el.dataset['pickerId'] === pickerId);
   if (!wrap) {
-    throw new Error(`no picker for ${configId}`);
+    throw new Error(`no picker ${pickerId}`);
   }
   return wrap;
 }
@@ -45,49 +47,33 @@ function label(wrap: HTMLElement): string | null | undefined {
   return wrap.querySelector('.picker-btn .picker-label')?.textContent;
 }
 
-function item(dropdown: Element, value: string): HTMLElement {
-  const el = [...dropdown.querySelectorAll<HTMLElement>('.picker-dropdown-item')].find(
-    (candidate) => candidate.dataset['value'] === value || candidate.textContent.includes(value),
-  );
+function item(wrap: HTMLElement, value: string): HTMLElement {
+  const el = [...wrap.querySelectorAll<HTMLElement>('.picker-dropdown-item')].find((candidate) => candidate.dataset['value'] === value);
   if (!el) {
     throw new Error(`no item ${value}`);
   }
   return el;
 }
 
-describe('session config option pickers', () => {
-  it('renders a picker for each select option and skips the rest', () => {
+describe('pickers', () => {
+  it("renders the session's pickers in order, each with its current value, icon and description", () => {
     page = loadChatPage();
-    page.sendUnchecked({
-      type: 'state',
-      activeSessionId: 's1',
-      session: {
-        ...sessionSnapshot(),
-        configOptions: [
-          modelOption,
-          { id: 'flag', name: 'Flag', type: 'boolean', currentValue: true },
-          { id: 'empty', name: 'Empty', type: 'select', currentValue: null, options: [] },
-        ],
-      },
-    });
+    connect(page, { pickers: [modePicker, modelPicker] });
 
-    expect(pickers().map((el) => el.dataset['configId'])).toEqual(['model']);
-    const wrap = picker('model');
-    expect(label(wrap)).toBe('Model A');
-    expect(wrap.querySelector('.picker-icon')?.textContent).toBe('🧠');
-    expect(wrap.querySelector<HTMLButtonElement>('.picker-btn')?.title).toBe('Fast');
-  });
-
-  it('hides the legacy mode picker when config options are present', () => {
-    page = loadChatPage();
-    connect(page, { configOptions: [modelOption], modes: legacyModes });
-
-    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
+    expect(pickerIds()).toEqual(['mode', 'model']);
+    const model = picker('model');
+    expect(label(model)).toBe('Model A');
+    expect(model.querySelector('.picker-icon')?.textContent).toBe('🧠');
+    expect(model.querySelector<HTMLButtonElement>('.picker-btn')?.title).toBe('Fast');
+    const mode = picker('mode');
+    expect(label(mode)).toBe('Ask');
+    expect(mode.querySelector('.picker-icon')?.textContent).toBe('⚡');
+    expect(mode.querySelector<HTMLButtonElement>('.picker-btn')?.title).toBe('Questions only');
   });
 
   it('opens and closes the dropdown from its button and closes on outside clicks', () => {
     page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
+    connect(page, { pickers: [modelPicker] });
     const wrap = picker('model');
     const button = wrap.querySelector<HTMLElement>('.picker-btn');
     const dropdown = wrap.querySelector('.picker-dropdown');
@@ -102,24 +88,23 @@ describe('session config option pickers', () => {
     expect(dropdown?.classList.contains('open')).toBe(false);
   });
 
-  it('posts setConfigOption and updates the label when a new value is chosen', () => {
+  it('posts the chosen value and updates the label when a new value is chosen', () => {
     page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
+    connect(page, { pickers: [modePicker, modelPicker] });
     page.takePosted();
-    const wrap = picker('model');
-    wrap.querySelector<HTMLElement>('.picker-btn')?.click();
+    picker('mode').querySelector<HTMLElement>('.picker-btn')?.click();
 
-    item(wrap, 'b').click();
+    item(picker('mode'), 'code').click();
 
-    expect(page.takePosted()).toEqual([{ type: 'setConfigOption', configId: 'model', value: 'b' }]);
-    expect(label(picker('model'))).toBe('Model B');
-    expect(item(picker('model'), 'b').classList.contains('selected')).toBe(true);
-    expect(picker('model').querySelector('.picker-dropdown')?.classList.contains('open')).toBe(false);
+    expect(page.takePosted()).toEqual([{ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' }]);
+    expect(label(picker('mode'))).toBe('Code');
+    expect(item(picker('mode'), 'code').classList.contains('selected')).toBe(true);
+    expect(picker('mode').querySelector('.picker-dropdown')?.classList.contains('open')).toBe(false);
   });
 
   it('posts nothing when the current value is chosen again', () => {
     page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
+    connect(page, { pickers: [modelPicker] });
     page.takePosted();
 
     item(picker('model'), 'a').click();
@@ -127,19 +112,17 @@ describe('session config option pickers', () => {
     expect(page.takePosted()).toEqual([]);
   });
 
-  it('renders grouped options under group headers', () => {
+  it('renders grouped values under group headers', () => {
     page = loadChatPage();
     connect(page, {
-      configOptions: [
-        {
-          ...modelOption,
-          currentValue: 'c',
-          options: [
-            { group: 'fast', name: 'Fast models', options: [{ value: 'a', name: 'Model A' }] },
-            { group: 'smart', name: 'Smart models', options: [{ value: 'c', name: 'Model C' }] },
-          ],
-        },
-      ],
+      pickers: [{
+        ...modelPicker,
+        current: 'c',
+        groups: [
+          { header: 'Fast models', values: [{ id: 'a', name: 'Model A', description: null }] },
+          { header: 'Smart models', values: [{ id: 'c', name: 'Model C', description: null }] },
+        ],
+      }],
     });
 
     const headers = [...picker('model').querySelectorAll('.picker-dropdown-group-header')];
@@ -147,20 +130,20 @@ describe('session config option pickers', () => {
     expect(label(picker('model'))).toBe('Model C');
   });
 
-  it('replaces the pickers on configOptionsUpdate and config_option_update', () => {
+  it('replaces the pickers with the ones the extension sends', () => {
     page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
+    connect(page, { pickers: [modelPicker] });
 
-    page.send({ type: 'configOptionsUpdate', configOptions: [{ ...modelOption, currentValue: 'b' }] });
+    page.send({ type: 'pickers', pickers: [{ ...modelPicker, current: 'b' }] });
     expect(label(picker('model'))).toBe('Model B');
 
-    update(page, 'config_option_update', { configOptions: [{ ...modelOption, id: 'other', name: 'Other' }] });
-    expect(pickers().map((el) => el.dataset['configId'])).toEqual(['other']);
+    page.send({ type: 'pickers', pickers: [modePicker] });
+    expect(pickerIds()).toEqual(['mode']);
   });
 
   it('shows the description of a hovered item in the tooltip', () => {
     page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
+    connect(page, { pickers: [modelPicker] });
     const wrap = picker('model');
     wrap.querySelector<HTMLElement>('.picker-btn')?.click();
 
@@ -172,77 +155,24 @@ describe('session config option pickers', () => {
   });
 });
 
-describe('legacy mode picker', () => {
-  it('is shown when the agent has modes but no config options', () => {
-    page = loadChatPage();
-    connect(page, { modes: legacyModes });
-
-    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(false);
-    expect(page.byId('modePickerLabel').textContent).toBe('Ask');
-    expect(page.byId('modePickerLabel').title).toBe('Questions only');
-  });
-
-  it('posts setMode when a different mode is chosen', () => {
-    page = loadChatPage();
-    connect(page, { modes: legacyModes });
-    page.takePosted();
-
-    page.byId('modePickerBtn').click();
-    expect(page.byId('modeDropdown').classList.contains('open')).toBe(true);
-    item(page.byId('modeDropdown'), 'Code').click();
-
-    expect(page.takePosted()).toEqual([{ type: 'setMode', modeId: 'code' }]);
-    expect(page.byId('modePickerLabel').textContent).toBe('Code');
-    expect(page.byId('modeDropdown').classList.contains('open')).toBe(false);
-  });
-
-  it('follows current_mode_update from the agent', () => {
-    page = loadChatPage();
-    connect(page, { modes: legacyModes });
-
-    update(page, 'current_mode_update', { currentModeId: 'code' });
-
-    expect(page.byId('modePickerLabel').textContent).toBe('Code');
-  });
-
-  it('is hidden again when modesUpdate carries no modes', () => {
-    page = loadChatPage();
-    connect(page, { modes: legacyModes });
-
-    page.send({ type: 'modesUpdate', modes: null });
-
-    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
-  });
-
-  it("is hidden when the next session's agent has no modes", () => {
-    page = loadChatPage();
-    connect(page, { modes: legacyModes });
-
-    connect(page, { sessionId: 's2', agentName: 'Other Agent' });
-
-    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
-  });
-
-  it('stays hidden when modesUpdate arrives for an agent with config options', () => {
-    page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
-
-    page.send({ type: 'modesUpdate', modes: legacyModes });
-
-    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
-    expect(pickers().map((el) => el.dataset['configId'])).toEqual(['model']);
-  });
-});
-
 describe('without a session', () => {
   it('shows no pickers once the session ends or the transcript is cleared', () => {
     page = loadChatPage();
-    connect(page, { configOptions: [modelOption] });
+    connect(page, { pickers: [modelPicker] });
     page.send({ type: 'state', activeSessionId: null, session: null });
     expect(pickers()).toEqual([]);
 
-    connect(page, { modes: legacyModes });
+    connect(page, { pickers: [modePicker] });
     page.send({ type: 'clearTranscript' });
-    expect(page.byId('modePickerWrap').classList.contains('hidden')).toBe(true);
+    expect(pickers()).toEqual([]);
+  });
+
+  it("shows none when the next session's agent has none", () => {
+    page = loadChatPage();
+    connect(page, { pickers: [modePicker] });
+
+    connect(page, { sessionId: 's2', agentName: 'Other Agent' });
+
+    expect(pickers()).toEqual([]);
   });
 });

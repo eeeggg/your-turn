@@ -1,5 +1,4 @@
-import type { AvailableCommand } from '@agentclientprotocol/sdk';
-import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
 
 /** The session the chat view shows, whether a turn is running in it, and whether it is still loading. */
@@ -8,7 +7,7 @@ export interface ActiveSession {
   readonly agentName: string;
   readonly title: string | null;
   readonly cwd: string;
-  readonly availableCommands: readonly AvailableCommand[];
+  readonly commands: readonly SlashCommand[];
   /** From the webview posting a prompt, or the extension's `promptStart`, to `promptEnd`. */
   readonly turnRunning: boolean;
   /** From `loadSessionStart` to `loadSessionEnd`, while the agent replays the transcript. */
@@ -41,7 +40,7 @@ export function updateActiveSession(
         agentName: next.agentName,
         title: next.title ?? null,
         cwd: next.cwd,
-        availableCommands: next.availableCommands,
+        commands: next.commands,
         turnRunning: same && session.turnRunning,
         loading: same && session.loading,
       };
@@ -51,10 +50,8 @@ export function updateActiveSession(
       return null;
     case 'sessionInfoUpdate':
       return session && { ...session, title: action.title };
-    case 'sessionUpdate':
-      return action.update.sessionUpdate === 'available_commands_update'
-        ? session && { ...session, availableCommands: action.update.availableCommands }
-        : session;
+    case 'commands':
+      return session && { ...session, commands: action.commands };
     case 'promptStart':
       return withChanges(session, { turnRunning: true });
     case 'promptEnd':

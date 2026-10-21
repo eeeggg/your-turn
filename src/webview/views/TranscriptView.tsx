@@ -1,14 +1,13 @@
-import type { ToolCallStatus } from '@agentclientprotocol/sdk';
 import { memo, useLayoutEffect, useState } from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
+import type { ToolCallStatus } from '@/shared/WebviewMessages';
 import { Markdown } from '@/webview/views/Markdown';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
   partShown,
-  planEntryIcon,
+  planStepIcon,
   showsEmptyState,
   shownContent,
-  statusClass,
   statusGlyph,
   thoughtSummary,
   turnShown,
@@ -222,7 +221,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
       }
     >
       <summary className="tc-summary flex cursor-pointer items-center gap-1.5 select-none">
-        <span className={`tc-icon ${statusClass(call.status)} w-3.5 flex-none text-center ${statusColor[call.status]}`}>
+        <span className={`tc-icon ${call.status} w-3.5 flex-none text-center ${statusColor[call.status]}`}>
           {statusGlyph(call.status)}
         </span>
         <span className="tc-title flex-1 truncate">{call.title || 'Tool Call'}</span>
@@ -243,7 +242,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
 
 const statusColor: Record<ToolCallStatus, string> = {
   pending: 'text-pending',
-  in_progress: 'text-progress',
+  running: 'text-progress',
   completed: 'text-success',
   failed: 'text-failure',
 };
@@ -252,12 +251,12 @@ function PlanView({ plan }: { plan: Plan }) {
   return (
     <div className="plan rounded-lg border border-border bg-muted px-3 py-2">
       <div className="plan-title mb-1.5 font-semibold">Plan</div>
-      {plan.entries.map((entry, index) => (
+      {plan.steps.map((step, index) => (
         <div
           key={index}
-          className={`plan-entry flex items-center gap-1.5 py-0.5 ${entry.status === 'completed' ? 'completed text-muted-foreground line-through' : ''}`}
+          className={`plan-entry flex items-center gap-1.5 py-0.5 ${step.status === 'completed' ? 'completed text-muted-foreground line-through' : ''}`}
         >
-          {`${planEntryIcon(entry.status)} ${entry.content}`}
+          {`${planStepIcon(step.status)} ${step.text}`}
         </div>
       ))}
     </div>

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, textChunk, update, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, plan, thought, toolCall, type ChatPage } from './chatPage';
 
 const pages: ChatPage[] = [];
 
@@ -23,17 +23,12 @@ function runTurn(page: ChatPage): void {
   page.pressKey('Enter');
   page.window.Date.now = () => 1_000;
   page.send({ type: 'promptStart' });
-  update(page, 'agent_thought_chunk', textChunk('thinking'));
-  update(page, 'tool_call', {
-    toolCallId: 't1',
-    title: 'Read file',
-    status: 'pending',
-    content: [{ type: 'content', content: { type: 'text', text: 'file body' } }],
-  });
+  thought(page, 'thinking');
+  toolCall(page, { toolCallId: 't1', title: 'Read file', status: 'pending', texts: ['file body'] });
   page.window.Date.now = () => 3_000;
-  update(page, 'agent_message_chunk', textChunk('answer'));
-  update(page, 'plan', { entries: [{ content: 'step', status: 'pending', priority: 'low' }] });
-  page.send({ type: 'promptEnd', stopReason: 'end_turn' });
+  answer(page, 'answer');
+  plan(page, { text: 'step', status: 'pending' });
+  page.send({ type: 'promptEnd' });
 }
 
 /** What an earlier build saved: a transcript the page cannot tie to any session. */

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { connect, loadChatPage, update, type ChatPage } from './chatPage';
+import type { SlashCommand } from '@/shared/WebviewMessages';
+import { connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -8,9 +9,9 @@ afterEach(() => {
   page.close();
 });
 
-const commands = [
-  { name: 'init', description: 'Initialize the project' },
-  { name: 'review', description: 'Review changes', input: { hint: 'What to review' } },
+const commands: SlashCommand[] = [
+  { name: 'init', description: 'Initialize the project', takesInput: false, hint: null },
+  { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' },
 ];
 
 function promptInput(): HTMLTextAreaElement {
@@ -104,7 +105,7 @@ describe('sending prompts', () => {
     expect(page.takePosted()).toEqual([]);
     expect(promptInput().value).toBe('');
 
-    page.send({ type: 'promptEnd', stopReason: 'cancelled' });
+    page.send({ type: 'promptEnd' });
     expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }]);
     expect(userMessages()).toEqual(['follow-up']);
   });
@@ -153,13 +154,13 @@ describe('slash commands', () => {
     connect(page);
     expect(promptInput().placeholder).toBe('Type a message...');
 
-    update(page, 'available_commands_update', { availableCommands: commands });
+    page.send({ type: 'commands', commands });
     expect(promptInput().placeholder).toBe('Type a message or / for commands...');
   });
 
   it('shows matching commands while the command name is typed', () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
 
     page.typePrompt('/');
     expect(popupOpen()).toBe(true);
@@ -187,7 +188,7 @@ describe('slash commands', () => {
 
   it('moves the selection with the arrow keys', () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
     page.typePrompt('/');
     const active = (): boolean[] => popupItems().map((el) => el.classList.contains('active'));
 
@@ -201,7 +202,7 @@ describe('slash commands', () => {
 
   it('sends a command without input immediately on Enter', () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
     page.takePosted();
 
     page.typePrompt('/in');
@@ -213,7 +214,7 @@ describe('slash commands', () => {
 
   it('inserts a command that takes input, leaving the prompt box focused for it', () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
     page.takePosted();
 
     page.typePrompt('/re');
@@ -227,7 +228,7 @@ describe('slash commands', () => {
 
   it("shows a command's input hint beside its name, since the placeholder is hidden once the name is inserted", () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
 
     page.typePrompt('/');
     expect(popupItems().map((el) => el.querySelector('.cmd-hint')?.textContent ?? null)).toEqual([null, 'What to review']);
@@ -239,7 +240,7 @@ describe('slash commands', () => {
 
   it('selects a command by clicking it', () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
     page.takePosted();
 
     page.typePrompt('/');
@@ -250,7 +251,7 @@ describe('slash commands', () => {
 
   it('closes on Escape without sending', () => {
     page = loadChatPage();
-    connect(page, { availableCommands: commands });
+    connect(page, { commands });
     page.takePosted();
 
     page.typePrompt('/');

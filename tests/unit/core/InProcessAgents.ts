@@ -1,10 +1,14 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
-import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
+import type { AgentApp, AgentConnector, InitializeResponse } from '@agentclientprotocol/sdk';
+import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
+import type { AcpDriver, SessionUpdate } from '@/core/acp/AcpDriver';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
-/** Builds the agent a launch talks to; called once per launch. */
-export type AgentScript = () => AgentApp;
+/** Builds the agent a launch talks to, an SDK agent of either version or a router; called once per launch. */
+export type AgentScript = () => AgentConnector;
 
 const unused = (): never => {
   throw new Error('not used by these tests');
@@ -98,4 +102,31 @@ export class InProcessAgents implements AgentLauncher {
   running(name: string): LaunchedAgent[] {
     return this.launched.filter((l) => l.name === name && !l.exited);
   }
+}
+
+/**
+ * A driver connected to the agent `script` builds, of the version they negotiate; the session updates it passes up,
+ * as session ID and update; and `exit`, which ends the agent as its process's death would.
+ */
+export async function connectedDriver(
+  script: AgentScript,
+  handlers: ClientHandlers = unusedHandlers,
+): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; exit: () => void }> {
+  const agents = new InProcessAgents({ fake: script });
+  const sessionUpdates = new SessionUpdateHandler();
+  const updates: [string, SessionUpdate][] = [];
+  sessionUpdates.addListener((sessionId, update) => updates.push([sessionId, update]));
+  const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
+  const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+  return { driver, updates, exit: () => agents.launched[0]?.crash() };
+}
+
+/** An ACP v2 SDK agent with sessions that answers `initialize`; add the requests a test needs. */
+export function fakeV2Agent(init: Partial<V2.InitializeResponse> = {}): V2.AgentApp {
+  return V2.agent({ name: 'fake-agent' }).onRequest(V2.methods.agent.initialize, () => ({
+    protocolVersion: V2.PROTOCOL_VERSION,
+    info: { name: 'fake-agent', title: 'Fake Agent', version: '0.0.1' },
+    capabilities: { session: {} },
+    ...init,
+  }));
 }

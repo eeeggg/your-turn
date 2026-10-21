@@ -68,6 +68,14 @@ _Avoid_: tool, package manager, installer
 The live ACP link to one running agent, established by the initialize handshake.
 _Avoid_: agent instance, link
 
+**Negotiation**:
+Agreeing on the ACP version for a connection during the initialize handshake: the extension asks for the newest version it speaks, and the agent's answer chooses the ACP driver.
+_Avoid_: version detection, probing
+
+**ACP driver**:
+The part of core that speaks one version of ACP over a connection, behind an interface the extension defines: commands go down to the agent, and session updates and the agent's requests come up. There is one per ACP version, each speaking its version in full and translating it into the interface's terms.
+_Avoid_: adapter (an Adapter, or an ACP adapter such as `claude-agent-acp`), protocol layer, client
+
 ### Sessions
 
 **Session**:

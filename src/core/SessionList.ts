@@ -1,9 +1,9 @@
 import { EventEmitter } from 'node:events';
-import type { SessionInfo as ListedSession } from '@agentclientprotocol/sdk';
 import { formatDistanceStrict } from 'date-fns';
+import type { AgentCapabilities, ListedSession } from '@/core/acp/AcpDriver';
 import { logError, messageOf } from './Log';
 import type { SessionHistoryStore } from './SessionHistoryStore';
-import { AuthenticationCancelled, type AgentCapabilitySummary, type SessionManager } from './SessionManager';
+import { AuthenticationCancelled, type SessionManager } from './SessionManager';
 
 export interface AgentEntry {
   readonly name: string;
@@ -41,8 +41,14 @@ type Listing =
   | Failure
   | { readonly kind: 'listed'; readonly sessions: readonly ListedSession[]; readonly nextCursor: string | undefined; readonly more: MoreSessions };
 
+/** What became known about a listed session after the agent listed it. */
+interface SinceListed {
+  readonly title?: string | null;
+  readonly updatedAt?: string | null;
+}
+
 const NO_MORE: MoreSessions = { kind: 'none' };
-const SESSION_EVENTS = ['session-added', 'session-removed', 'active-session-changed', 'session-info-changed'] as const;
+const SESSION_EVENTS = ['session-added', 'session-removed', 'active-session-changed'] as const;
 
 /**
  * The past sessions shown under each agent. An agent that can list its
@@ -50,11 +56,24 @@ const SESSION_EVENTS = ['session-added', 'session-removed', 'active-session-chan
  * that can load or resume them.
  *
  * An agent's list is requested once and kept, including a failure, until
- * {@link invalidate}. Emits `'changed'` whenever what it would show changes.
+ * {@link invalidate}. Meanwhile a listed session takes the title and time of
+ * last activity its session info updates report, and the end of each turn as
+ * its last activity. Emits `'changed'` whenever what it would show changes.
  */
 export class SessionList extends EventEmitter<{ changed: [] }> {
   private readonly listings = new Map<string, Listing>();
+  /** By agent name, then session ID. */
+  private readonly sinceListed = new Map<string, Map<string, SinceListed>>();
   private readonly announce = () => this.emit('changed');
+  private readonly infoChanged = (sessionId: string, update: SinceListed) => {
+    const agentName = this.sessions.getSession(sessionId)?.agentName;
+    if (agentName) {
+      this.learn(agentName, sessionId, update);
+    }
+  };
+  private readonly turnEnded = (sessionId: string, agentName: string) => {
+    this.learn(agentName, sessionId, { updatedAt: new Date(this.now()).toISOString() });
+  };
 
   constructor(
     private readonly sessions: SessionManager,
@@ -67,6 +86,8 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     for (const event of SESSION_EVENTS) {
       sessions.on(event, this.announce);
     }
+    sessions.on('session-info-changed', this.infoChanged);
+    sessions.on('turn-ended', this.turnEnded);
     history.on('changed', this.announce);
   }
 
@@ -84,7 +105,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
 
   /** Starts the agent first if its capabilities are not known yet. */
   async sessionsOf(agentName: string): Promise<AgentSessions> {
-    let caps: AgentCapabilitySummary;
+    let caps: AgentCapabilities;
     try {
       caps = this.sessions.getCachedCapabilities(agentName) ?? await this.sessions.ensureConnected(agentName);
     } catch (e) {
@@ -126,13 +147,10 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     }
   }
 
-  /** Forget the lists of one agent, or of all, so they are requested again. */
-  invalidate(agentName?: string): void {
-    if (agentName) {
-      this.listings.delete(agentName);
-    } else {
-      this.listings.clear();
-    }
+  /** Forget an agent's list, and what became known since, so it is requested again. */
+  invalidate(agentName: string): void {
+    this.listings.delete(agentName);
+    this.sinceListed.delete(agentName);
     this.announce();
   }
 
@@ -140,6 +158,8 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     for (const event of SESSION_EVENTS) {
       this.sessions.off(event, this.announce);
     }
+    this.sessions.off('session-info-changed', this.infoChanged);
+    this.sessions.off('turn-ended', this.turnEnded);
     this.history.off('changed', this.announce);
     this.removeAllListeners();
   }
@@ -150,13 +170,24 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       return listing;
     }
     const activeId = this.sessions.getActiveSessionId();
-    const rows = listing.sessions.map((info) => this.row(agentName, {
-      sessionId: info.sessionId,
-      label: info.title?.trim() || shortSessionId(info.sessionId),
-      cwd: info.cwd,
-      lastActiveAt: info.updatedAt ?? undefined,
-    }, 'agent', activeId));
+    const known = this.sinceListed.get(agentName);
+    const rows = listing.sessions.map((listed) => {
+      const info = { ...listed, ...known?.get(listed.sessionId) };
+      return this.row(agentName, {
+        sessionId: info.sessionId,
+        label: info.title?.trim() || shortSessionId(info.sessionId),
+        cwd: info.cwd,
+        lastActiveAt: info.updatedAt ?? undefined,
+      }, 'agent', activeId);
+    });
     return { kind: 'listed', source: 'agent', rows, more: listing.more };
+  }
+
+  private learn(agentName: string, sessionId: string, update: SinceListed): void {
+    const known = this.sinceListed.get(agentName) ?? new Map<string, SinceListed>();
+    known.set(sessionId, { ...known.get(sessionId), ...update });
+    this.sinceListed.set(agentName, known);
+    this.announce();
   }
 
   private requestList(agentName: string): Listing {
@@ -228,9 +259,9 @@ function relativeTime(iso: string | undefined, now: number): string | undefined 
   if (Number.isNaN(time)) {
     return undefined;
   }
-  // An agent's clock can be ahead of ours.
-  if (time > now) {
-    return 'just now';
+  // Including a time ahead of ours, as an agent's clock can be.
+  if (now - time < 60_000) {
+    return 'now';
   }
   return formatDistanceStrict(time, now, { addSuffix: true, roundingMethod: 'floor' });
 }

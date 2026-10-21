@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentConfigEntry } from '@/core/AgentManager';
 import { AgentConfigurations } from '@/core/AgentConfigurations';
-import { ConnectionManager } from '@/core/ConnectionManager';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { PackageRunner, PackageRunnerCheck } from '@/core/PackageRunners';
 import type { RegistryAgent } from '@/core/RegistryClient';
 import { SessionManager } from '@/core/SessionManager';

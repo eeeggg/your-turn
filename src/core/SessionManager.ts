@@ -1,25 +1,22 @@
 import { EventEmitter } from 'node:events';
 
-import type {
-  ClientConnection,
-  PromptResponse,
-  InitializeResponse,
-  ContentBlock,
-  SessionModeState,
-  AvailableCommand,
-  SessionConfigOption,
-  SessionInfo as ProtocolSessionInfo,
-  AgentCapabilities,
-  AuthMethod,
-  ResourceLink,
-  NewSessionResponse,
-  ListSessionsRequest,
-  ListSessionsResponse,
-} from '@agentclientprotocol/sdk';
-import { methods } from '@agentclientprotocol/sdk';
-
+import {
+  AuthRequired,
+  UnknownSession,
+  type AcpDriver,
+  type AgentCapabilities,
+  type AuthMethod,
+  type ConfigOption,
+  type FileLink,
+  type Modes,
+  type NewSession,
+  type PromptPart,
+  type SessionPage,
+  type SessionState,
+  type SlashCommand,
+} from '@/core/acp/AcpDriver';
+import type { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { commandNotFound, type AgentConfigEntry, type AgentLauncher, type AgentProcess, type LaunchError } from './AgentManager';
-import type { ConnectionManager } from './ConnectionManager';
 import type { SessionHistoryStore } from './SessionHistoryStore';
 import { log, logError, messageOf } from './Log';
 
@@ -29,7 +26,7 @@ export interface SessionEnvironment {
   workspaceCwd(): string;
   agentConfigs(): Record<string, AgentConfigEntry>;
   /** The file to link at the start of each prompt, or undefined when none applies. */
-  activeFileLink(): ResourceLink | undefined;
+  activeFileLink(): FileLink | undefined;
 }
 
 export interface AuthPrompt {
@@ -45,53 +42,27 @@ export interface SessionInfo {
   agentDisplayName: string;
   cwd: string;
   createdAt: string;
-  initResponse: InitializeResponse;
-  modes: SessionModeState | null;
+  modes: Modes | null;
   /**
-   * Generic session config options (ACP "Session Config Options" — supersedes
-   * `modes`, and is the only source of model selection). `null` means the
-   * agent did not provide this field.
-   * Per spec, when both `configOptions` and `modes` are present, clients
-   * should use `configOptions` exclusively.
+   * Supersede `modes`, and are the only source of model selection. `null` means the agent did not provide them.
+   * Per spec, when both `configOptions` and `modes` are present, clients should use `configOptions` exclusively.
    */
-  configOptions: SessionConfigOption[] | null;
-  availableCommands: AvailableCommand[];
-  /** Latest title supplied via `session_info_update`, if any. */
+  configOptions: ConfigOption[] | null;
+  availableCommands: SlashCommand[];
+  /** Latest title supplied by a session update, if any. */
   title?: string;
 }
 
-/**
- * Discovery flags for an agent, derived from `initialize.agentCapabilities`.
- * Populated when the agent is first launched.
- */
-export interface AgentCapabilitySummary {
-  list: boolean;
-  load: boolean;
-  resume: boolean;
-}
-
-/** An agent process this manager launched, and its initialized ACP connection. */
+/** An agent process this manager launched, and the ACP driver of its initialized connection. */
 interface RunningAgent {
   name: string;
   process: AgentProcess;
-  connection: ClientConnection;
-  initResponse: InitializeResponse;
+  driver: AcpDriver;
   /** Settles once the process's exit has been handled. */
   exited: Promise<void>;
 }
 
-interface SessionState {
-  modes?: SessionModeState | null | undefined;
-  configOptions?: SessionConfigOption[] | null | undefined;
-}
-
-function summarizeCapabilities(caps: AgentCapabilities | undefined): AgentCapabilitySummary {
-  return {
-    list: !!caps?.sessionCapabilities?.list,
-    load: !!caps?.loadSession,
-    resume: !!caps?.sessionCapabilities?.resume,
-  };
-}
+const NO_SESSION_STATE: SessionState = { modes: null, configOptions: null, commands: null };
 
 /** The user dismissed the choice of authentication method; the agent has been stopped. */
 export class AuthenticationCancelled extends Error {
@@ -105,20 +76,6 @@ function exitReason(agentDisplayName: string, code: number | null): string {
   return code === null ? `${agentDisplayName} exited unexpectedly.` : `${agentDisplayName} exited unexpectedly (code ${code}).`;
 }
 
-/** True if a thrown error denotes ACP "auth required" (-32000). */
-function isAuthRequiredError(e: unknown): boolean {
-  if (typeof e !== 'object' || e === null) { return false; }
-  return ('code' in e && e.code === -32000)
-    || ('message' in e && typeof e.message === 'string' && /auth.?required/i.test(e.message));
-}
-
-/** True if the agent rejected a session because it no longer knows it. */
-function isUnknownSessionError(e: unknown): boolean {
-  return typeof e === 'object' && e !== null
-    && 'message' in e && typeof e.message === 'string'
-    && /not found|no such|unknown session/i.test(e.message);
-}
-
 /** The events a {@link SessionManager} emits, with the arguments each passes its listeners. */
 export interface SessionManagerEvents {
   'session-added': [sessionId: string, agentName: string];
@@ -127,6 +84,7 @@ export interface SessionManagerEvents {
   'clear-transcript': [];
   'mode-changed': [sessionId: string, modeId: string];
   'session-info-changed': [sessionId: string, update: { title?: string | null; updatedAt?: string | null }];
+  'turn-ended': [sessionId: string, agentName: string];
   'session-load-start': [sessionId: string, agentName: string];
   'session-load-end': [sessionId: string, agentName: string, ok: boolean];
   'session-ended': [sessionId: string, reason: string];
@@ -161,15 +119,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * registered. This closes a microtask race between the resolution of
    * `newSession` and the SDK's async notification dispatch.
    */
-  private pendingAvailableCommands = new Map<string, AvailableCommand[]>();
-  private pendingConfigOptions = new Map<string, SessionConfigOption[]>();
+  private pendingAvailableCommands = new Map<string, SlashCommand[]>();
+  private pendingConfigOptions = new Map<string, ConfigOption[]>();
   private pendingTitles = new Map<string, string>();
 
   /**
-   * Cache of `initialize.agentCapabilities` per agent so the tree can render
+   * Cache of each agent's capabilities, so the tree can render
    * without paying the connect cost on every render.
    */
-  private capabilities = new Map<string, AgentCapabilitySummary>();
+  private capabilities = new Map<string, AgentCapabilities>();
 
   /** Client-side session history (optional — only used for tier-2 tree). */
   private historyStore: SessionHistoryStore | null = null;
@@ -193,7 +151,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * has never been launched — callers can call {@link ensureConnected}
    * first to populate.
    */
-  getCachedCapabilities(agentName: string): AgentCapabilitySummary | undefined {
+  getCachedCapabilities(agentName: string): AgentCapabilities | undefined {
     return this.capabilities.get(agentName);
   }
 
@@ -267,9 +225,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    *
    * This never disconnects the agent that owns the active session.
    */
-  async ensureConnected(agentName: string): Promise<AgentCapabilitySummary> {
+  async ensureConnected(agentName: string): Promise<AgentCapabilities> {
     const agent = await this.ensureAgent(agentName);
-    return summarizeCapabilities(agent.initResponse.agentCapabilities);
+    return agent.driver.agent.capabilities;
   }
 
   private ensureAgent(agentName: string): Promise<RunningAgent> {
@@ -304,10 +262,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       },
     });
 
-    let connection: ClientConnection;
-    let initResponse: InitializeResponse;
+    let driver: AcpDriver;
     try {
-      ({ connection, initResponse } = await this.connectionManager.connect(agentName, agentProcess));
+      driver = await this.connectionManager.connect(agentName, agentProcess);
     } catch (e) {
       agentProcess.kill();
       // The connection can fail before the launcher reports why the process ended, which says more than a closed connection.
@@ -324,9 +281,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       throw e;
     }
 
-    const agent: RunningAgent = { name: agentName, process: agentProcess, connection, initResponse, exited };
+    const agent: RunningAgent = { name: agentName, process: agentProcess, driver, exited };
     this.agents.set(agentName, agent);
-    this.capabilities.set(agentName, summarizeCapabilities(initResponse.agentCapabilities));
+    this.capabilities.set(agentName, driver.agent.capabilities);
     return agent;
   }
 
@@ -360,13 +317,13 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /** Create the ACP session, authenticating first if the agent requires it. */
   private async createAcpSession(agent: RunningAgent, cwd: string): Promise<SessionInfo> {
-    const requestSession = () => agent.connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [] });
+    const requestSession = () => agent.driver.newSession(cwd);
 
-    let response: NewSessionResponse;
+    let response: NewSession;
     try {
       response = await requestSession();
     } catch (e) {
-      if (!isAuthRequiredError(e)) {
+      if (!(e instanceof AuthRequired)) {
         logError('Failed to create session', e);
         this.stopAgent(agent);
         throw e;
@@ -391,20 +348,19 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * notifications that arrive before the caller's continuation runs can be
    * applied to it instead of dropped.
    */
-  private registerSession(agent: RunningAgent, sessionId: string, cwd: string, state: SessionState = {}): SessionInfo {
+  private registerSession(agent: RunningAgent, sessionId: string, cwd: string, state: SessionState = NO_SESSION_STATE): SessionInfo {
     // Known for a session reopened from the tree; updates drained below override it.
     const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? this.historyStore?.get(agent.name, sessionId)?.title;
     const sessionInfo: SessionInfo = {
       sessionId,
       agentId: agent.process.id,
       agentName: agent.name,
-      agentDisplayName: agent.initResponse.agentInfo?.title || agent.initResponse.agentInfo?.name || agent.name,
+      agentDisplayName: agent.driver.agent.displayName || agent.name,
       cwd,
       createdAt: new Date().toISOString(),
-      initResponse: agent.initResponse,
-      modes: state.modes ?? null,
-      configOptions: state.configOptions ?? null,
-      availableCommands: [],
+      modes: state.modes,
+      configOptions: state.configOptions,
+      availableCommands: state.commands ?? [],
       ...(title ? { title } : {}),
     };
     this.sessions.set(sessionId, sessionInfo);
@@ -417,8 +373,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * Stops the agent and throws if the user cancels or auth fails.
    */
   private async runAuthFlow(agent: RunningAgent): Promise<void> {
-    const authMethods = agent.initResponse.authMethods;
-    if (!authMethods || authMethods.length === 0) {
+    const { authMethods } = agent.driver.agent;
+    if (authMethods.length === 0) {
       this.stopAgent(agent);
       throw new Error(
         `Agent "${agent.name}" requires authentication but did not advertise any auth methods.`,
@@ -435,7 +391,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     try {
       log(`Authenticating with method: ${selectedMethod.name} (${selectedMethod.id})`);
-      await agent.connection.agent.request(methods.agent.authenticate, { methodId: selectedMethod.id });
+      await agent.driver.authenticate(selectedMethod.id);
       log('Authentication successful');
     } catch (authErr) {
       logError('Authentication failed', authErr);
@@ -463,15 +419,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
   }
 
-  /** The connection a session runs on, or undefined once its agent has stopped. */
-  private connectionFor(session: SessionInfo): ClientConnection | undefined {
-    return this.agents.get(session.agentName)?.connection;
+  /** The driver of the connection a session runs on, or undefined once its agent has stopped. */
+  private driverFor(session: SessionInfo): AcpDriver | undefined {
+    return this.agents.get(session.agentName)?.driver;
   }
 
   /**
-   * Send a prompt to the active session.
+   * Send a prompt to the active session; resolves when the turn ends.
    */
-  async sendPrompt(sessionId: string, text: string): Promise<PromptResponse> {
+  async sendPrompt(sessionId: string, text: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       throw new Error(`Session not found: ${sessionId}`);
@@ -484,30 +440,26 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     log(`sendPrompt: session=${sessionId}, text="${text.substring(0, 50)}..."`);
 
-    const prompt: ContentBlock[] = [
-      { type: 'text', text },
+    const prompt: PromptPart[] = [
+      { kind: 'text', text },
     ];
 
     const fileLink = this.environment.activeFileLink();
     if (fileLink) {
       log(`sendPrompt: attaching active file context: ${fileLink.name}`);
-      prompt.unshift({ type: 'resource_link', ...fileLink });
+      prompt.unshift({ kind: 'fileLink', ...fileLink });
     }
 
-    let response: PromptResponse;
     try {
-      response = await agent.connection.agent.request(methods.agent.session.prompt, { sessionId, prompt });
+      await agent.driver.prompt(sessionId, prompt);
     } catch (e) {
       // The connection can close before the process's exit is reported; the exit ends the session and says why,
       // so the prompt fails after it.
-      if (agent.connection.signal.aborted) {
+      if (agent.driver.closed) {
         await agent.exited;
       }
       throw e;
     }
-
-    log(`Prompt response: stopReason=${response.stopReason}`);
-    return response;
   }
 
   /**
@@ -517,11 +469,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
 
-    const connection = this.connectionFor(session);
-    if (!connection) { return; }
+    const driver = this.driverFor(session);
+    if (!driver) { return; }
 
     log(`Cancelling turn for session ${sessionId}`);
-    await connection.agent.notify(methods.agent.session.cancel, { sessionId });
+    await driver.cancel(sessionId);
   }
 
   /**
@@ -544,14 +496,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       return;
     }
 
-    const connection = this.connectionFor(session);
-    if (!connection) { return; }
+    const driver = this.driverFor(session);
+    if (!driver) { return; }
 
-    await connection.agent.request(methods.agent.session.setMode, { sessionId, modeId });
+    await driver.setMode(sessionId, modeId);
 
-    if (session.modes) {
-      session.modes.currentModeId = modeId;
-    }
+    this.applyCurrentMode(sessionId, modeId);
     this.emit('mode-changed', sessionId, modeId);
   }
 
@@ -571,36 +521,27 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   /**
-   * Set a generic session config option (ACP "Session Config Options").
-   * The agent's response contains the full configOptions array — we
-   * replace our local copy so that cascading changes (e.g. changing the
-   * model adjusts thought-level options) are reflected.
+   * Set a session config option. The agent answers with the full set of
+   * config options, which replaces ours so that cascading changes (e.g.
+   * changing the model adjusts thought-level options) are reflected.
    */
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<SessionConfigOption[] | null> {
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null> {
     const session = this.sessions.get(sessionId);
     if (!session) { return null; }
 
-    const connection = this.connectionFor(session);
-    if (!connection) { return null; }
+    const driver = this.driverFor(session);
+    if (!driver) { return null; }
 
-    const response = await connection.agent.request(methods.agent.session.setConfigOption, {
-      sessionId,
-      configId,
-      value,
-    });
-
-    // The SDK validates an agent's requests and notifications but not its
-    // responses, so this arrives as the agent sent it, whatever its type says.
-    const options = Array.isArray(response.configOptions) ? response.configOptions : null;
+    const options = await driver.setConfigOption(sessionId, configId, value);
     this.applyConfigOptions(sessionId, options);
     return options;
   }
 
   /**
    * Replace a session's configOptions in place. Used by both the setter
-   * response and the `config_option_update` notification.
+   * response and the session update.
    */
-  applyConfigOptions(sessionId: string, options: SessionConfigOption[] | null): void {
+  applyConfigOptions(sessionId: string, options: ConfigOption[] | null): void {
     const session = this.sessions.get(sessionId);
     if (!session) {
       // Buffer until the session is registered (handles the race where a
@@ -611,11 +552,19 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     session.configOptions = options;
   }
 
+  /** Record the session's mode, as set here or switched by the agent itself. */
+  applyCurrentMode(sessionId: string, modeId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session?.modes) {
+      session.modes = { ...session.modes, current: modeId };
+    }
+  }
+
   /**
    * Replace a session's availableCommands. Buffers the value if the session
    * isn't registered yet (race during creation).
    */
-  applyAvailableCommands(sessionId: string, commands: AvailableCommand[]): void {
+  applyAvailableCommands(sessionId: string, commands: SlashCommand[]): void {
     const session = this.sessions.get(sessionId);
     if (!session) {
       this.pendingAvailableCommands.set(sessionId, commands);
@@ -625,7 +574,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   /**
-   * Apply a `session_info_update` notification: patches title / updatedAt on
+   * Apply a session info update: patches title / updatedAt on
    * the in-memory session and on the persistent history store.
    */
   applySessionInfoUpdate(sessionId: string, update: { title?: string | null; updatedAt?: string | null }): void {
@@ -657,34 +606,31 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.historyStore.setFirstPromptIfMissing(session.agentName, sessionId, prompt);
   }
 
-  /** Bump a session's `lastActiveAt` in the history store. */
-  touchHistory(sessionId: string): void {
+  /** A turn of the session ended: bump its `lastActiveAt` in the history store, and tell the session list. */
+  recordTurnEnded(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
     this.historyStore?.touch(session.agentName, sessionId);
+    this.emit('turn-ended', sessionId, session.agentName);
   }
 
   /**
-   * List sessions known to an agent (ACP `session/list`).
+   * List sessions known to an agent.
    * Throws if the agent doesn't advertise the capability.
    */
-  async listSessions(agentName: string, opts: { cwd?: string | undefined; cursor?: string | undefined } = {}): Promise<{ sessions: ProtocolSessionInfo[]; nextCursor?: string }> {
+  async listSessions(agentName: string, opts: { cwd?: string | undefined; cursor?: string | undefined } = {}): Promise<SessionPage> {
     const agent = await this.ensureAgent(agentName);
     if (!this.capabilities.get(agentName)?.list) {
       throw new Error(`Agent "${agentName}" does not support session/list.`);
     }
 
-    const params: ListSessionsRequest = {
-      ...(opts.cwd ? { cwd: opts.cwd } : {}),
-      ...(opts.cursor ? { cursor: opts.cursor } : {}),
-    };
-    const requestList = () => agent.connection.agent.request(methods.agent.session.list, params);
+    const requestList = () => agent.driver.listSessions(opts);
 
-    let response: ListSessionsResponse;
+    let response: SessionPage;
     try {
       response = await requestList();
     } catch (e) {
-      if (!isAuthRequiredError(e)) {
+      if (!(e instanceof AuthRequired)) {
         throw e;
       }
       await this.runAuthFlow(agent);
@@ -709,7 +655,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         new Set(sessions.map(s => s.sessionId)),
       );
     }
-    return { sessions, ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}) };
+    return response;
   }
 
   /**
@@ -741,14 +687,14 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.emit('session-load-start', sessionId, agentName);
 
     try {
-      const response = await agent.connection.agent.request(methods.agent.session.load, {
-        sessionId,
-        cwd,
-        mcpServers: [],
-      });
-      // The response carries the latest modes/configOptions snapshot.
-      session.modes = response.modes ?? null;
-      session.configOptions = response.configOptions ?? null;
+      // The response carries the latest snapshot of the session's state; a v1
+      // response has no commands, which only the replayed updates report.
+      const state = await agent.driver.loadSession(sessionId, cwd);
+      session.modes = state.modes;
+      session.configOptions = state.configOptions;
+      if (state.commands) {
+        session.availableCommands = state.commands;
+      }
     } catch (e) {
       this.removeSession(session);
       this.emit('session-load-end', sessionId, agentName, /*ok=*/false);
@@ -776,13 +722,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.dropActiveSessionUnless(sessionId);
 
     const cwd = this.environment.workspaceCwd();
-    let response;
+    let response: SessionState;
     try {
-      response = await agent.connection.agent.request(methods.agent.session.resume, {
-        sessionId,
-        cwd,
-        mcpServers: [],
-      });
+      response = await agent.driver.resumeSession(sessionId, cwd);
     } catch (e) {
       this.forgetIfUnknown(agentName, sessionId, e);
       throw e;
@@ -833,7 +775,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /** Prune a session the agent no longer knows from local history, so it doesn't reappear. */
   private forgetIfUnknown(agentName: string, sessionId: string, e: unknown): void {
-    if (isUnknownSessionError(e)) {
+    if (e instanceof UnknownSession) {
       this.historyStore?.forget(agentName, sessionId);
     }
   }

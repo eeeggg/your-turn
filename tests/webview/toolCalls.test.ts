@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, update, type ChatPage } from './chatPage';
+import { connect, loadChatPage, toolCall, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -15,19 +15,19 @@ afterEach(() => {
   page.close();
 });
 
-function toolCall(id: string): HTMLDetailsElement {
+function shown(id: string): HTMLDetailsElement {
   return page.byId<HTMLDetailsElement>(`tc-${id}`);
 }
 
 function blocks(id: string): string[] {
-  return [...toolCall(id).querySelectorAll('.tc-body-block')].map((el) => el.textContent);
+  return [...shown(id).querySelectorAll('.tc-body-block')].map((el) => el.textContent);
 }
 
 describe('tool calls', () => {
   it('adds a tool call to the current turn with its title and status', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Read file', kind: 'read', status: 'pending' });
+    toolCall(page, { toolCallId: 't1', title: 'Read file', status: 'pending' });
 
-    const el = toolCall('t1');
+    const el = shown('t1');
     expect(el.closest('.turn .turn-tools-list')).not.toBeNull();
     expect(el.querySelector('.tc-title')?.textContent).toBe('Read file');
     expect(hookClasses(el.querySelector('.tc-icon'))).toBe('tc-icon pending');
@@ -36,121 +36,107 @@ describe('tool calls', () => {
   });
 
   it('shows a tool call as pending when the agent omits the status', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run' });
+    toolCall(page, { toolCallId: 't1', title: 'Run' });
 
-    expect(hookClasses(toolCall('t1').querySelector('.tc-icon'))).toBe('tc-icon pending');
+    expect(hookClasses(shown('t1').querySelector('.tc-icon'))).toBe('tc-icon pending');
+  });
+
+  it('shows a tool call first reported without a title as "Tool Call" until the agent names it', () => {
+    toolCall(page, { toolCallId: 't1', status: 'running' });
+    expect(shown('t1').querySelector('.tc-title')?.textContent).toBe('Tool Call');
+    expect(hookClasses(shown('t1').querySelector('.tc-icon'))).toBe('tc-icon running');
+
+    toolCall(page, { toolCallId: 't1', title: 'Read foo.ts' });
+    expect(shown('t1').querySelector('.tc-title')?.textContent).toBe('Read foo.ts');
   });
 
   it('reflects status updates in the icon', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'pending' });
-    const icon = (): Element | null => toolCall('t1').querySelector('.tc-icon');
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
+    const icon = (): Element | null => shown('t1').querySelector('.tc-icon');
 
-    update(page, 'tool_call_update', { toolCallId: 't1', status: 'in_progress' });
+    toolCall(page, { toolCallId: 't1', status: 'running' });
     expect(hookClasses(icon())).toBe('tc-icon running');
     expect(icon()?.textContent).toBe('⟳');
 
-    update(page, 'tool_call_update', { toolCallId: 't1', status: 'completed' });
+    toolCall(page, { toolCallId: 't1', status: 'completed' });
     expect(hookClasses(icon())).toBe('tc-icon completed');
     expect(icon()?.textContent).toBe('✓');
-    expect(toolCall('t1').open).toBe(false);
+    expect(shown('t1').open).toBe(false);
   });
 
   it('expands a failed tool call', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'pending' });
-    update(page, 'tool_call_update', { toolCallId: 't1', status: 'failed' });
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
+    toolCall(page, { toolCallId: 't1', status: 'failed' });
 
-    expect(toolCall('t1').querySelector('.tc-icon')?.textContent).toBe('✗');
-    expect(toolCall('t1').open).toBe(true);
+    expect(shown('t1').querySelector('.tc-icon')?.textContent).toBe('✗');
+    expect(shown('t1').open).toBe(true);
   });
 
   it('expands a tool call the agent reports as failed from the start', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'failed' });
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'failed' });
 
-    expect(toolCall('t1').open).toBe(true);
+    expect(shown('t1').open).toBe(true);
   });
 
-  it('keeps the status when an update carries none', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'in_progress' });
-    update(page, 'tool_call_update', {
-      toolCallId: 't1',
-      content: [{ type: 'content', content: { type: 'text', text: 'partial output' } }],
-    });
+  it('keeps the status when a report carries none', () => {
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running' });
+    toolCall(page, { toolCallId: 't1', texts: ['partial output'] });
 
-    expect(hookClasses(toolCall('t1').querySelector('.tc-icon'))).toBe('tc-icon running');
+    expect(hookClasses(shown('t1').querySelector('.tc-icon'))).toBe('tc-icon running');
     expect(blocks('t1')).toEqual(['partial output']);
   });
 
   it('updates a tool call the agent reports again instead of adding a second one', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Read', status: 'pending' });
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Read foo.ts', status: 'completed' });
+    toolCall(page, { toolCallId: 't1', title: 'Read', status: 'pending' });
+    toolCall(page, { toolCallId: 't1', title: 'Read foo.ts', status: 'completed' });
 
     expect(page.document.querySelectorAll('.tool-call-inline')).toHaveLength(1);
-    expect(toolCall('t1').querySelector('.tc-title')?.textContent).toBe('Read foo.ts');
-    expect(hookClasses(toolCall('t1').querySelector('.tc-icon'))).toBe('tc-icon completed');
+    expect(shown('t1').querySelector('.tc-title')?.textContent).toBe('Read foo.ts');
+    expect(hookClasses(shown('t1').querySelector('.tc-icon'))).toBe('tc-icon completed');
     expect(page.document.querySelector('.turn-tools-summary')?.textContent).toBe('▾ 1 tool call');
   });
 
-  it('updates the title when the update carries one', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Edit', status: 'pending' });
-    update(page, 'tool_call_update', { toolCallId: 't1', status: 'in_progress', title: 'Edit foo.ts' });
+  it('updates the title when the report carries one', () => {
+    toolCall(page, { toolCallId: 't1', title: 'Edit', status: 'pending' });
+    toolCall(page, { toolCallId: 't1', status: 'running', title: 'Edit foo.ts' });
 
-    expect(toolCall('t1').querySelector('.tc-title')?.textContent).toBe('Edit foo.ts');
+    expect(shown('t1').querySelector('.tc-title')?.textContent).toBe('Edit foo.ts');
   });
 
-  it('shows text content and does not render diff content', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Edit foo.ts', kind: 'edit', status: 'pending' });
-    update(page, 'tool_call_update', {
-      toolCallId: 't1',
-      status: 'completed',
-      content: [
-        { type: 'content', content: { type: 'text', text: 'first' } },
-        { type: 'diff', path: '/work/project/foo.ts', oldText: 'a', newText: 'b' },
-        { type: 'content', content: { type: 'text', text: 'second' } },
-      ],
-    });
+  it('shows the text output in blocks', () => {
+    toolCall(page, { toolCallId: 't1', title: 'Edit foo.ts', status: 'pending' });
+    toolCall(page, { toolCallId: 't1', status: 'completed', texts: ['first', 'second'] });
 
     expect(blocks('t1')).toEqual(['first', 'second']);
-    expect(toolCall('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
+    expect(shown('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
   });
 
-  it('keeps existing content when an update has none', () => {
-    update(page, 'tool_call', {
-      toolCallId: 't1',
-      title: 'Run',
-      status: 'in_progress',
-      content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
-    });
-    update(page, 'tool_call_update', { toolCallId: 't1', status: 'completed' });
+  it('keeps existing output when a report has none', () => {
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running', texts: ['output'] });
+    toolCall(page, { toolCallId: 't1', status: 'completed' });
 
     expect(blocks('t1')).toEqual(['output']);
   });
 
-  it('hides the body when there is no text content', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'pending' });
+  it('hides the body when there is no text output', () => {
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
 
-    expect(toolCall('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
+    expect(shown('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
   });
 
-  it('truncates content beyond 20,000 characters', () => {
-    update(page, 'tool_call', { toolCallId: 't1', title: 'Run', status: 'pending' });
-    update(page, 'tool_call_update', {
-      toolCallId: 't1',
-      status: 'completed',
-      content: [
-        { type: 'content', content: { type: 'text', text: 'a'.repeat(15_000) } },
-        { type: 'content', content: { type: 'text', text: 'b'.repeat(10_000) } },
-      ],
-    });
+  it('truncates output beyond 20,000 characters', () => {
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
+    toolCall(page, { toolCallId: 't1', status: 'completed', texts: ['a'.repeat(15_000), 'b'.repeat(10_000)] });
 
     expect(blocks('t1').join('')).toHaveLength(20_000);
-    expect(toolCall('t1').querySelector('.tc-body-truncated')?.textContent).toBe('... (output truncated)');
+    expect(shown('t1').querySelector('.tc-body-truncated')?.textContent).toBe('... (output truncated)');
   });
 
   it('collapses more than three tool calls when the turn ends, and toggles on click', () => {
     for (const id of ['t1', 't2', 't3', 't4']) {
-      update(page, 'tool_call', { toolCallId: id, title: id, status: 'completed' });
+      toolCall(page, { toolCallId: id, title: id, status: 'completed' });
     }
-    page.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    page.send({ type: 'promptEnd' });
 
     const summary = page.document.querySelector<HTMLElement>('.turn-tools-summary');
     const list = page.document.querySelector('.turn-tools-list');
@@ -164,9 +150,9 @@ describe('tool calls', () => {
 
   it('leaves three or fewer tool calls expanded when the turn ends', () => {
     for (const id of ['t1', 't2', 't3']) {
-      update(page, 'tool_call', { toolCallId: id, title: id, status: 'completed' });
+      toolCall(page, { toolCallId: id, title: id, status: 'completed' });
     }
-    page.send({ type: 'promptEnd', stopReason: 'end_turn' });
+    page.send({ type: 'promptEnd' });
 
     expect(page.document.querySelector('.turn-tools-summary')?.textContent).toBe('▾ 3 tool calls');
     expect(page.document.querySelector('.turn-tools-list')?.classList.contains('collapsed')).toBe(false);

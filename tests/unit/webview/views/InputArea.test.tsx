@@ -1,16 +1,15 @@
 // @vitest-environment jsdom
-import type { AvailableCommand } from '@agentclientprotocol/sdk';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { SessionSnapshot, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { InputArea } from '@/webview/views/InputArea';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
 
-const init: AvailableCommand = { name: 'init', description: 'Initialize the project' };
-const review: AvailableCommand = { name: 'review', description: 'Review changes', input: { hint: 'What to review' } };
+const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
+const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
 
 let scrolledIntoView: Element[];
 
@@ -55,7 +54,7 @@ function renderInputArea() {
       send({
         type: 'state',
         activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', modes: null, configOptions: null, availableCommands: [init, review], ...session },
+        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session },
       }),
     type: (text: string) => fireEvent.change(prompt(), { target: { value: text } }),
     press: (key: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(prompt(), { key, ...init }),
@@ -114,7 +113,7 @@ describe('input area', () => {
     fireEvent.click(view.button());
     expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
 
-    view.send({ type: 'promptEnd', stopReason: 'cancelled' });
+    view.send({ type: 'promptEnd' });
     expect([hookClasses(view.button()), view.button().textContent]).toEqual(['send-stop-btn send', 'Send']);
     fireEvent.click(view.button());
     expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
