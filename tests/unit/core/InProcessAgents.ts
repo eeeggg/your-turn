@@ -133,10 +133,15 @@ export function fakeV2Agent(init: Partial<V2.InitializeResponse> = {}): V2.Agent
 }
 
 /**
- * A v2 driver connected to the agent `script` builds, over in-memory newline-delimited streams, and `exit`, which
- * closes both streams as the agent's exit would.
+ * A v2 driver connected to the agent `script` builds, over in-memory newline-delimited streams; the session updates it
+ * passes up, as session ID and update; and `exit`, which closes both streams as the agent's exit would.
  */
-export async function connectedV2Driver(script: V2AgentScript): Promise<{ driver: AcpDriver; exit: () => void }> {
+export async function connectedV2Driver(
+  script: V2AgentScript,
+): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; exit: () => void }> {
+  const sessionUpdates = new SessionUpdateHandler();
+  const updates: [string, SessionUpdate][] = [];
+  sessionUpdates.addListener((sessionId, update) => updates.push([sessionId, update]));
   const closers: (() => void)[] = [];
   const pipe = () => new TransformStream<Uint8Array, Uint8Array>({
     start: (controller) => { closers.push(() => controller.terminate()); },
@@ -144,6 +149,6 @@ export async function connectedV2Driver(script: V2AgentScript): Promise<{ driver
   const toAgent = pipe();
   const toClient = pipe();
   script().connect(V2.ndJsonStream(toClient.writable, toAgent.readable));
-  const driver = await V2Driver.connect('fake', V2.ndJsonStream(toAgent.writable, toClient.readable), '0.0.0-test');
-  return { driver, exit: () => { for (const close of closers) { close(); } } };
+  const driver = await V2Driver.connect('fake', V2.ndJsonStream(toAgent.writable, toClient.readable), '0.0.0-test', sessionUpdates);
+  return { driver, updates, exit: () => { for (const close of closers) { close(); } } };
 }

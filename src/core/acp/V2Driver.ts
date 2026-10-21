@@ -1,6 +1,7 @@
 import * as Acp from '@agentclientprotocol/sdk/experimental/v2';
 
 import { log } from '@/core/Log';
+import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import {
   AuthRequired,
   type AcpDriver,
@@ -12,17 +13,22 @@ import {
   type ConfigValueGroup,
   type ListedSession,
   type NewSession,
+  type PlanStepStatus,
   type PromptPart,
   type SessionPage,
   type SessionState,
+  type SessionUpdate,
+  type SlashCommand,
+  type ToolCallStatus,
 } from './AcpDriver';
 import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
 
 /** Speaks ACP v2 over a connection, through the SDK's stable v2 client. */
 export class V2Driver implements AcpDriver {
   /** Connect the SDK's v2 client to the stream and initialize the connection. */
-  static async connect(agentName: string, stream: Acp.Stream, clientVersion: string): Promise<V2Driver> {
+  static async connect(agentName: string, stream: Acp.Stream, clientVersion: string, updates: SessionUpdateHandler): Promise<V2Driver> {
     const foreground = new Foreground();
+    const translator = new Translator();
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = Acp.client({ name: 'vscode-acp-client' })
@@ -30,6 +36,11 @@ export class V2Driver implements AcpDriver {
         log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
           foreground.report(params.sessionId, params.update);
+          return;
+        }
+        const update = translator.translate(params.sessionId, params.update);
+        if (update) {
+          updates.handleUpdate(params.sessionId, update);
         }
       });
     const connection = app.connect(stream);
@@ -44,13 +55,14 @@ export class V2Driver implements AcpDriver {
     });
     log(`V2Driver: initialized. Agent: ${initResponse.info.name} v${initResponse.info.version}`);
 
-    return new V2Driver(connection, agentDescription(initResponse), foreground);
+    return new V2Driver(connection, agentDescription(initResponse), foreground, translator);
   }
 
   private constructor(
     private readonly connection: Acp.ClientConnection,
     readonly agent: AgentDescription,
     private readonly foreground: Foreground,
+    private readonly translator: Translator,
   ) {}
 
   get closed(): boolean {
@@ -94,16 +106,21 @@ export class V2Driver implements AcpDriver {
   /** The agent answers once it has taken the prompt in, and reports the end of the turn it starts as the session going idle. */
   async prompt(sessionId: string, prompt: PromptPart[]): Promise<void> {
     const turn = this.foreground.begin(sessionId);
-    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.prompt, {
-      sessionId,
-      prompt: prompt.map(contentBlock),
-    }));
-    log(`Prompt accepted: messageId=${response.messageId}`);
-    const idle = await turn.end();
-    if (Acp.IdleStateUpdate.isError(idle)) {
-      throw turnFailure(idle.error);
+    this.translator.prompting.add(sessionId);
+    try {
+      const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.prompt, {
+        sessionId,
+        prompt: prompt.map(contentBlock),
+      }));
+      log(`Prompt accepted: messageId=${response.messageId}`);
+      const idle = await turn.end();
+      if (Acp.IdleStateUpdate.isError(idle)) {
+        throw turnFailure(idle.error);
+      }
+      log(`Turn ended: stopReason=${idle.stopReason ?? 'none'}`);
+    } finally {
+      this.translator.prompting.delete(sessionId);
     }
-    log(`Turn ended: stopReason=${idle.stopReason ?? 'none'}`);
   }
 
   async cancel(sessionId: string): Promise<void> {
@@ -202,6 +219,148 @@ function turnFailure(error: Acp.Error | null | undefined): Error {
   return isAuthRequired(error) ? new AuthRequired(message) : new Error(message);
 }
 
+/**
+ * Translates v2's session updates, keeping what v2 leaves to the client: each tool call's texts, which chunks append
+ * to and an upsert's content replaces, and the sessions running a prompt's turn, during which the agent reports the
+ * prompt back as a user message the chat view already shows.
+ */
+class Translator {
+  readonly prompting = new Set<string>();
+  private readonly toolCallTexts = new Map<string, Map<string, string[]>>();
+
+  /** The session update for v2's, or null when the interface has no place for it. */
+  translate(sessionId: string, update: Acp.SessionUpdate): SessionUpdate | null {
+    const updates = Acp.SessionUpdate;
+    if (updates.isAgentMessageChunk(update)) {
+      const text = textForUser(update.content);
+      return text ? { kind: 'agentText', messageId: update.messageId, text } : null;
+    }
+    if (updates.isAgentThoughtChunk(update)) {
+      const text = textForUser(update.content);
+      return text === null ? null : { kind: 'thoughtText', messageId: update.messageId, text };
+    }
+    if (updates.isUserMessageChunk(update)) {
+      const text = this.prompting.has(sessionId) ? null : textForUser(update.content);
+      return text === null ? null : { kind: 'promptText', text };
+    }
+    if (updates.isAgentMessage(update)) {
+      return update.content === undefined ? null : { kind: 'agentMessage', messageId: update.messageId, text: messageText(update.content) };
+    }
+    if (updates.isAgentThought(update)) {
+      return update.content === undefined ? null : { kind: 'thoughtMessage', messageId: update.messageId, text: messageText(update.content) };
+    }
+    if (updates.isUserMessage(update)) {
+      return update.content === undefined || this.prompting.has(sessionId)
+        ? null
+        : { kind: 'promptMessage', messageId: update.messageId, text: messageText(update.content) };
+    }
+    if (updates.isToolCallUpdate(update)) {
+      const status = update.status ? toolCallStatus(update.status) : null;
+      const texts = update.content === undefined ? null : contentTexts(update.content ?? []);
+      if (texts) {
+        this.textsIn(sessionId).set(update.toolCallId, texts);
+      }
+      return {
+        kind: 'toolCall',
+        toolCallId: update.toolCallId,
+        ...(update.title ? { title: update.title } : {}),
+        ...(status ? { status } : {}),
+        ...(texts ? { texts } : {}),
+      };
+    }
+    if (updates.isToolCallContentChunk(update)) {
+      const added = contentTexts([update.content]);
+      if (added.length === 0) {
+        return null;
+      }
+      const calls = this.textsIn(sessionId);
+      const texts = [...calls.get(update.toolCallId) ?? [], ...added];
+      calls.set(update.toolCallId, texts);
+      return { kind: 'toolCall', toolCallId: update.toolCallId, texts };
+    }
+    if (updates.isPlanUpdate(update)) {
+      return Acp.PlanUpdateContent.isItems(update.plan)
+        ? { kind: 'plan', steps: update.plan.entries.map((entry) => ({ text: entry.content, status: planStepStatus(entry.status) })) }
+        : null;
+    }
+    if (updates.isAvailableCommandsUpdate(update)) {
+      return { kind: 'commands', commands: update.availableCommands.map(slashCommand) };
+    }
+    if (updates.isConfigOptionUpdate(update)) {
+      return { kind: 'configOptions', options: configOptions(update.configOptions) };
+    }
+    if (updates.isSessionInfoUpdate(update)) {
+      return {
+        kind: 'sessionInfo',
+        ...(update.title !== undefined ? { title: update.title } : {}),
+        ...(update.updatedAt !== undefined ? { updatedAt: update.updatedAt } : {}),
+      };
+    }
+    return null;
+  }
+
+  private textsIn(sessionId: string): Map<string, string[]> {
+    let calls = this.toolCallTexts.get(sessionId);
+    if (!calls) {
+      calls = new Map();
+      this.toolCallTexts.set(sessionId, calls);
+    }
+    return calls;
+  }
+}
+
+/** A block's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
+function textForUser(block: Acp.ContentBlock): string | null {
+  if (!Acp.ContentBlock.isText(block)) {
+    return null;
+  }
+  const audience = block.annotations?.audience;
+  return audience && !audience.includes('user') ? null : block.text;
+}
+
+/** A whole message's text; null content clears it. */
+function messageText(content: Acp.ContentBlock[] | null): string {
+  return (content ?? []).flatMap((block) => textForUser(block) ?? []).join('');
+}
+
+/** The non-empty text blocks of a tool call's content; diffs and terminals have no place in the interface. */
+function contentTexts(content: readonly Acp.ToolCallContent[]): string[] {
+  return content.flatMap((item) => (Acp.ToolCallContent.isContent(item) && Acp.ContentBlock.isText(item.content) && item.content.text ? [item.content.text] : []));
+}
+
+/** A cancelled call shows as failed, as v1 agents report one; an unknown status leaves the call's as it was. */
+function toolCallStatus(status: Acp.ToolCallStatus): ToolCallStatus | null {
+  switch (status) {
+    case 'pending':
+    case 'completed':
+    case 'failed':
+      return status;
+    case 'in_progress':
+      return 'running';
+    case 'cancelled':
+      return 'failed';
+    default:
+      return null;
+  }
+}
+
+/** A cancelled or unknown step shows as not done. */
+function planStepStatus(status: Acp.PlanEntryStatus): PlanStepStatus {
+  switch (status) {
+    case 'completed':
+      return 'completed';
+    case 'in_progress':
+      return 'running';
+    default:
+      return 'pending';
+  }
+}
+
+function slashCommand(command: Acp.AvailableCommand): SlashCommand {
+  const hint = command.input && Acp.AvailableCommandInput.isText(command.input) ? command.input.hint : null;
+  return { name: command.name, description: command.description, takesInput: !!command.input, hint: hint || null };
+}
+
 function agentDescription(response: Acp.InitializeResponse): AgentDescription {
   // Session capabilities, even {}, promise the baseline session methods, `session/list` and `session/resume` among them.
   const sessions = !!response.capabilities?.session;
@@ -217,8 +376,12 @@ function authMethod(method: Acp.AuthMethod): AuthMethod[] {
   return Acp.AuthMethod.isAgent(method) ? [{ id: method.methodId, name: method.name, description: method.description ?? null }] : [];
 }
 
-function sessionState(response: { configOptions?: Acp.SessionConfigOption[] }): SessionState {
-  return { modes: null, configOptions: response.configOptions ? configOptions(response.configOptions) : null };
+function sessionState(response: { configOptions?: Acp.SessionConfigOption[]; availableCommands?: Acp.AvailableCommand[] }): SessionState {
+  return {
+    modes: null,
+    configOptions: response.configOptions ? configOptions(response.configOptions) : null,
+    commands: response.availableCommands ? response.availableCommands.map(slashCommand) : null,
+  };
 }
 
 /** An option of a type the interface has no place for is dropped. */

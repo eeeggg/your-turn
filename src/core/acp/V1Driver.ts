@@ -145,6 +145,7 @@ function sessionState(response: { modes?: Acp.SessionModeState | null; configOpt
   return {
     modes: response.modes ? modes(response.modes) : null,
     configOptions: response.configOptions ? response.configOptions.map(configOption) : null,
+    commands: null,
   };
 }
 

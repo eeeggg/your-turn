@@ -1,9 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { AuthRequired, UnknownSession, type ConfigOption, type PromptPart } from '@/core/acp/AcpDriver';
+import { AuthRequired, UnknownSession, type ConfigOption, type PromptPart, type SessionUpdate } from '@/core/acp/AcpDriver';
 import { connectedV2Driver, fakeV2Agent, type V2AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const go: PromptPart[] = [{ kind: 'text', text: 'go' }];
+
+function text(value: string, audience?: V2.Role[]): V2.ContentBlock {
+  return { type: 'text', text: value, ...(audience ? { annotations: { audience } } : {}) };
+}
+
+function notify(client: V2.AgentContext, update: V2.SessionUpdate, sessionId = 's1'): Promise<void> {
+  return client.notify(V2.methods.client.session.update, { sessionId, update });
+}
+
+/** The session updates the driver passes up, by session, for those the agent sends, by session, while creating a session. */
+async function passedUp(...sent: [string, V2.SessionUpdate][]): Promise<[string, SessionUpdate][]> {
+  const { driver, updates } = await connectedV2Driver(() => fakeV2Agent()
+    .onRequest(V2.methods.agent.session.new, async ({ client }) => {
+      for (const [sessionId, update] of sent) {
+        await notify(client, update, sessionId);
+      }
+      return { sessionId: 's1' };
+    })
+    .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+  await driver.newSession('/work');
+  // A round trip after the answer, by which time the driver has taken in the updates sent before it.
+  await driver.listSessions({});
+  return updates;
+}
+
+/** The session updates the driver passes up for those the agent sends for one session. */
+async function updatesFor(...sent: V2.SessionUpdate[]): Promise<SessionUpdate[]> {
+  return (await passedUp(...sent.map((update): [string, V2.SessionUpdate] => ['s1', update]))).map(([, update]) => update);
+}
 
 const running: V2.StateUpdate = { state: 'running' };
 const blocked: V2.StateUpdate = { state: 'requires_action' };
@@ -98,15 +127,32 @@ describe('V2Driver', () => {
   });
 
   describe('sessions', () => {
-    it('creates a session in the directory given, with no modes, and no config options when it has none', async () => {
+    it('creates a session in the directory given, with no modes, and no config options or commands when it has none', async () => {
       const received: V2.NewSessionRequest[] = [];
       const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, ({ params }) => {
         received.push(params);
         return { sessionId: 's1' };
       }));
 
-      expect(await driver.newSession('/work')).toEqual({ sessionId: 's1', modes: null, configOptions: null });
+      expect(await driver.newSession('/work')).toEqual({ sessionId: 's1', modes: null, configOptions: null, commands: null });
       expect(received).toEqual([{ cwd: '/work' }]);
+    });
+
+    it('gives a session the commands the agent starts it with, with the hint a text input has', async () => {
+      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({
+        sessionId: 's1',
+        availableCommands: [
+          { name: 'web', description: 'Search the web', input: { type: 'text', hint: 'query' } },
+          { name: 'pick', description: 'Pick a file', input: { type: '_vendor_file' } },
+          { name: 'plan', description: 'Make a plan' },
+        ],
+      })));
+
+      expect((await driver.newSession('/work')).commands).toEqual([
+        { name: 'web', description: 'Search the web', takesInput: true, hint: 'query' },
+        { name: 'pick', description: 'Pick a file', takesInput: true, hint: null },
+        { name: 'plan', description: 'Make a plan', takesInput: false, hint: null },
+      ]);
     });
 
     it('lists sessions with their titles and times, null where the agent gives none, asking only for what is given', async () => {
@@ -344,6 +390,159 @@ describe('V2Driver', () => {
 
       expect(refused).toHaveProperty('message', expect.stringContaining('Too many prompts'));
       expect(driver.closed).toBe(true);
+    });
+  });
+
+  describe('session updates', () => {
+    it("passes up the agent's answer and thinking, streamed and whole, leaving out what is not for the user", async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'agent_thought_chunk', messageId: 't1', content: text('') },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('Hello') },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('') },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('Internal note', ['assistant']) },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { sessionUpdate: 'agent_message', messageId: 'a1', content: [text('Hello, '), text('note', ['assistant']), text('world', ['user'])] },
+        { sessionUpdate: 'agent_thought', messageId: 't1', content: [text('Pondering')] },
+      )).toEqual([
+        { kind: 'thoughtText', messageId: 't1', text: '' },
+        { kind: 'agentText', messageId: 'a1', text: 'Hello' },
+        { kind: 'agentMessage', messageId: 'a1', text: 'Hello, world' },
+        { kind: 'thoughtMessage', messageId: 't1', text: 'Pondering' },
+      ]);
+    });
+
+    it('clears a whole message the agent gives no content, and leaves one alone the agent gives none at all', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'agent_message', messageId: 'a1', content: null },
+        { sessionUpdate: 'agent_thought', messageId: 't1', content: [] },
+        { sessionUpdate: 'agent_message', messageId: 'a1' },
+        { sessionUpdate: 'agent_thought', messageId: 't1' },
+      )).toEqual([
+        { kind: 'agentMessage', messageId: 'a1', text: '' },
+        { kind: 'thoughtMessage', messageId: 't1', text: '' },
+      ]);
+    });
+
+    it("passes up the prompts a load replays, before a turn and after it, but not the agent's report of the prompt it is answering", async () => {
+      const { driver, updates } = await connectedV2Driver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.resume, async ({ client }) => {
+          await notify(client, { sessionUpdate: 'user_message', messageId: 'u0', content: [text('Fix the build')] });
+          await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'u0', content: text(' now') });
+          await notify(client, { sessionUpdate: 'user_message', messageId: 'u0' });
+          return {};
+        })
+        .onRequest(V2.methods.agent.session.prompt, async ({ client }) => {
+          await notify(client, { sessionUpdate: 'user_message', messageId: 'u1', content: [text('go')] });
+          await reportState(client, running);
+          await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'u1', content: text('!') });
+          await notify(client, { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('Done') });
+          await reportState(client, idle);
+          return { messageId: 'u1' };
+        })
+        .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+
+      await driver.loadSession('s1', '/work');
+      // As the user's prompt does, this one comes after the driver has taken in the replay.
+      await driver.listSessions({});
+      await driver.prompt('s1', go);
+      await driver.loadSession('s1', '/work');
+      await driver.listSessions({});
+
+      const replay: [string, SessionUpdate][] = [
+        ['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }],
+        ['s1', { kind: 'promptText', text: ' now' }],
+      ];
+      expect(updates).toEqual([...replay, ['s1', { kind: 'agentText', messageId: 'a1', text: 'Done' }], ...replay]);
+    });
+
+    it('passes up the prompts a load replays after a prompt the agent refused', async () => {
+      const { driver, updates } = await connectedV2Driver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.prompt, () => {
+          throw V2.RequestError.internalError(undefined, 'Too many prompts');
+        })
+        .onRequest(V2.methods.agent.session.resume, async ({ client }) => {
+          await notify(client, { sessionUpdate: 'user_message', messageId: 'u0', content: [text('Fix the build')] });
+          return {};
+        })
+        .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+
+      await driver.prompt('s1', go).catch(() => {});
+      await driver.loadSession('s1', '/work');
+      await driver.listSessions({});
+
+      expect(updates).toEqual([['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }]]);
+    });
+
+    it("keeps each tool call's texts, which an update's content replaces and a chunk adds to, and leaves alone what an update leaves out", async () => {
+      expect(await passedUp(
+        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: 'Read a.ts', status: 'in_progress', content: [
+          { type: 'content', content: text('first') },
+          { type: 'diff', changes: [] },
+          { type: 'content', content: text('') },
+        ] }],
+        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('second') } }],
+        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'terminal', terminalId: 'term' } }],
+        ['s2', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('elsewhere') } }],
+        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: null, status: 'completed' }],
+        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [{ type: 'content', content: text('replaced') }] }],
+        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('more') } }],
+        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: null }],
+        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('again') } }],
+      )).toEqual([
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', title: 'Read a.ts', status: 'running', texts: ['first'] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['first', 'second'] }],
+        ['s2', { kind: 'toolCall', toolCallId: 'c1', texts: ['elsewhere'] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', status: 'completed' }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['replaced'] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['replaced', 'more'] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: [] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['again'] }],
+      ]);
+    });
+
+    it.each([
+      ['pending', 'pending'],
+      ['in_progress', 'running'],
+      ['completed', 'completed'],
+      ['failed', 'failed'],
+      ['cancelled', 'failed'],
+      ['_vendor_paused', undefined],
+    ] as const)('shows a tool call reported %s as %s', async (status, expected) => {
+      const [update] = await updatesFor({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status });
+      expect(update).toEqual({ kind: 'toolCall', toolCallId: 'c1', ...(expected ? { status: expected } : {}) });
+    });
+
+    it('passes up a plan of items, showing a cancelled or unknown step as not done, and drops plans of another type', async () => {
+      const entry = (content: string, status: V2.PlanEntryStatus): V2.PlanEntry => ({ content, priority: 'medium', status });
+      expect(await updatesFor(
+        { sessionUpdate: 'plan_update', plan: { type: 'items', planId: 'p1', entries: [
+          entry('Read', 'completed'), entry('Fix', 'in_progress'), entry('Test', 'pending'), entry('Ship', 'cancelled'), entry('Party', '_vendor_later'),
+        ] } },
+        { sessionUpdate: 'plan_update', plan: { type: '_vendor_graph', planId: 'p2' } },
+      )).toEqual([
+        { kind: 'plan', steps: [
+          { text: 'Read', status: 'completed' },
+          { text: 'Fix', status: 'running' },
+          { text: 'Test', status: 'pending' },
+          { text: 'Ship', status: 'pending' },
+          { text: 'Party', status: 'pending' },
+        ] },
+      ]);
+    });
+
+    it("passes up the session's commands, config options and info, and drops the updates the interface has no place for", async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'web', description: 'Search the web', input: { type: 'text', hint: '' } }] },
+        { sessionUpdate: 'config_option_update', configOptions: [modelOption] },
+        { sessionUpdate: 'session_info_update', title: 'Fix the build', updatedAt: null },
+        { sessionUpdate: 'session_info_update' },
+        { sessionUpdate: '_vendor_usage', tokens: 3 },
+      )).toEqual([
+        { kind: 'commands', commands: [{ name: 'web', description: 'Search the web', takesInput: true, hint: null }] },
+        { kind: 'configOptions', options: [expect.objectContaining({ id: 'model', current: 'a' })] },
+        { kind: 'sessionInfo', title: 'Fix the build', updatedAt: null },
+        { kind: 'sessionInfo' },
+      ]);
     });
   });
 

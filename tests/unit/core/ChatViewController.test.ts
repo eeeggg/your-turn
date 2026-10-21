@@ -629,6 +629,9 @@ describe('ChatViewController', () => {
       expect(translated({ kind: 'agentText', messageId: 'm1', text: 'Hi' })).toEqual([{ type: 'agentText', messageId: 'm1', text: 'Hi' }]);
       expect(translated({ kind: 'thoughtText', messageId: null, text: 'Hm' })).toEqual([{ type: 'thoughtText', messageId: null, text: 'Hm' }]);
       expect(translated({ kind: 'promptText', text: 'Fix it' })).toEqual([{ type: 'promptText', text: 'Fix it' }]);
+      expect(translated({ kind: 'agentMessage', messageId: 'm1', text: 'Hi all' })).toEqual([{ type: 'agentMessage', messageId: 'm1', text: 'Hi all' }]);
+      expect(translated({ kind: 'thoughtMessage', messageId: 'r1', text: 'Hmm' })).toEqual([{ type: 'thoughtMessage', messageId: 'r1', text: 'Hmm' }]);
+      expect(translated({ kind: 'promptMessage', messageId: 'u1', text: 'Fix' })).toEqual([{ type: 'promptMessage', messageId: 'u1', text: 'Fix' }]);
       expect(translated({ kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] })).toEqual([
         { type: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] },
       ]);
@@ -715,6 +718,18 @@ describe('ChatViewController', () => {
       ]);
       vi.advanceTimersByTime(16);
       expect(environment.take()).toEqual([]);
+    });
+
+    it("sends a message's whole text without waiting, after the text before it, and joins none of it", () => {
+      const { environment, controller } = setup();
+
+      controller.handleSessionUpdate('s1', answerChunk('Hel', 'm1'));
+      controller.handleSessionUpdate('s1', { kind: 'agentMessage', messageId: 'm1', text: 'Hello' });
+      controller.handleSessionUpdate('s1', answerChunk('!', 'm1'));
+
+      expect(environment.take()).toEqual([answer('Hel', 'm1'), { type: 'agentMessage', messageId: 'm1', text: 'Hello' }]);
+      vi.advanceTimersByTime(16);
+      expect(environment.take()).toEqual([answer('!', 'm1')]);
     });
 
     it('keeps text of different kinds or messages apart', () => {

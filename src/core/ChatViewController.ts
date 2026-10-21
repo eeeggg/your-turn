@@ -288,6 +288,12 @@ export class ChatViewController {
         return { type: 'thoughtText', messageId: update.messageId, text: update.text };
       case 'promptText':
         return { type: 'promptText', text: update.text };
+      case 'agentMessage':
+        return { type: 'agentMessage', messageId: update.messageId, text: update.text };
+      case 'thoughtMessage':
+        return { type: 'thoughtMessage', messageId: update.messageId, text: update.text };
+      case 'promptMessage':
+        return { type: 'promptMessage', messageId: update.messageId, text: update.text };
       case 'toolCall':
         return {
           type: 'toolCall',

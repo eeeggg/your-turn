@@ -15,6 +15,8 @@ export type EntryId = number;
 interface Prompt {
   readonly kind: 'prompt';
   readonly id: EntryId;
+  /** The agent's ID for a prompt a load replays whole; a later replay with that ID replaces its text. */
+  readonly messageId?: string;
   readonly text: string;
 }
 
@@ -218,6 +220,11 @@ export function updateTranscript(
       return stateOnly(withAgentText(transcript, action, now));
     case 'promptText':
       return stateOnly(withReplayedPrompt(transcript, action.text, now));
+    case 'agentMessage':
+    case 'thoughtMessage':
+      return stateOnly(withMessageReplaced(transcript, action, now));
+    case 'promptMessage':
+      return stateOnly(withPromptReplaced(transcript, action, now));
     case 'toolCall':
       return stateOnly(withToolCallReported(transcript, action, now));
     case 'plan':
@@ -319,6 +326,56 @@ function withReplayedPrompt(transcript: TranscriptState, text: string, now: numb
   return last?.kind === 'prompt'
     ? replaced(ended, { ...last, text: last.text + text })
     : appended(ended, (id) => ({ kind: 'prompt', id, text }));
+}
+
+/**
+ * The latest part of the kind with the ID takes the whole text, in whichever turn. Without one, the text goes into the
+ * current turn as streamed text would, unless it is empty, as there is nothing to clear.
+ */
+function withMessageReplaced(
+  transcript: TranscriptState,
+  { type, messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'agentMessage' | 'thoughtMessage' }>,
+  now: number,
+): TranscriptState {
+  const kind = type === 'agentMessage' ? 'message' : 'thought';
+  for (let at = transcript.entries.length - 1; at >= 0; at--) {
+    const entry = transcript.entries[at];
+    if (entry?.kind !== 'turn') {
+      continue;
+    }
+    const index = lastPartIndex(entry, (part) => (part.kind === 'message' || part.kind === 'thought') && part.kind === kind && part.messageId === messageId);
+    if (index !== -1) {
+      return withTurn(transcript, entry.id, (turn) =>
+        withPart(turn, index, (part) => ((part.kind === 'message' || part.kind === 'thought') && part.text !== text ? { ...part, text } : part)),
+      );
+    }
+  }
+  return text ? withAgentText(transcript, { type: kind === 'message' ? 'agentText' : 'thoughtText', messageId, text }, now) : transcript;
+}
+
+/** The latest prompt with the ID takes the whole text; without one, the prompt is replayed as a new one. */
+function withPromptReplaced(
+  transcript: TranscriptState,
+  { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptMessage' }>,
+  now: number,
+): TranscriptState {
+  for (let at = transcript.entries.length - 1; at >= 0; at--) {
+    const entry = transcript.entries[at];
+    if (entry?.kind === 'prompt' && entry.messageId === messageId) {
+      return entry.text === text ? transcript : replaced(transcript, { ...entry, text });
+    }
+  }
+  return appended(endTurn(transcript, now), (id) => ({ kind: 'prompt', id, messageId, text }));
+}
+
+function lastPartIndex(turn: Turn, matches: (part: TurnPart) => boolean): PartIndex {
+  for (let at = turn.parts.length - 1; at >= 0; at--) {
+    const part = turn.parts[at];
+    if (part && matches(part)) {
+      return at;
+    }
+  }
+  return -1;
 }
 
 /** A tool call already shown is revised where it is, in whichever turn; a new one goes into the current turn. */

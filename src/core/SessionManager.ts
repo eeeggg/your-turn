@@ -62,7 +62,7 @@ interface RunningAgent {
   exited: Promise<void>;
 }
 
-const NO_SESSION_STATE: SessionState = { modes: null, configOptions: null };
+const NO_SESSION_STATE: SessionState = { modes: null, configOptions: null, commands: null };
 
 /** The user dismissed the choice of authentication method; the agent has been stopped. */
 export class AuthenticationCancelled extends Error {
@@ -359,7 +359,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       createdAt: new Date().toISOString(),
       modes: state.modes,
       configOptions: state.configOptions,
-      availableCommands: [],
+      availableCommands: state.commands ?? [],
       ...(title ? { title } : {}),
     };
     this.sessions.set(sessionId, sessionInfo);
@@ -685,10 +685,14 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.emit('session-load-start', sessionId, agentName);
 
     try {
-      // The response carries the latest modes/configOptions snapshot.
+      // The response carries the latest snapshot of the session's state; a v1
+      // response has no commands, which only the replayed updates report.
       const state = await agent.driver.loadSession(sessionId, cwd);
       session.modes = state.modes;
       session.configOptions = state.configOptions;
+      if (state.commands) {
+        session.availableCommands = state.commands;
+      }
     } catch (e) {
       this.removeSession(session);
       this.emit('session-load-end', sessionId, agentName, /*ok=*/false);

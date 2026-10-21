@@ -217,7 +217,7 @@ describe('V1Driver', () => {
   });
 
   describe('sessions', () => {
-    it('reports the modes of a new session, and no config options when it has none', async () => {
+    it('reports the modes of a new session, no config options when it has none, and no commands, which only its updates report', async () => {
       const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.new, () => ({
         sessionId: 's1',
         modes: { availableModes: [{ id: 'ask', name: 'Ask', description: 'Asks first' }, { id: 'code', name: 'Code' }], currentModeId: 'ask' },
@@ -227,6 +227,7 @@ describe('V1Driver', () => {
         sessionId: 's1',
         modes: { current: 'ask', available: [{ id: 'ask', name: 'Ask', description: 'Asks first' }, { id: 'code', name: 'Code', description: null }] },
         configOptions: null,
+        commands: null,
       });
     });
 

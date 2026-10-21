@@ -72,6 +72,12 @@ export type ExtensionToWebviewMessage =
   | { type: 'thoughtText'; messageId: string | null; text: string }
   /** More of a prompt that a load replays. */
   | { type: 'promptText'; text: string }
+  /** The whole text of the agent's answer with this `messageId`, replacing what the latest one had; without one, a new answer. */
+  | { type: 'agentMessage'; messageId: string; text: string }
+  /** The whole text of the agent's thinking, as for `agentMessage`. */
+  | { type: 'thoughtMessage'; messageId: string; text: string }
+  /** The whole text of a prompt that a load replays, as for `agentMessage`. */
+  | { type: 'promptMessage'; messageId: string; text: string }
   /** A tool call, new or changed; what it leaves out stays as it was. */
   | { type: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; texts?: string[] }
   /** The agent's plan, replacing the turn's earlier one. */

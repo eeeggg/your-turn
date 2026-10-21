@@ -67,6 +67,7 @@ export type ConfigOption =
 export interface SessionState {
   modes: Modes | null;
   configOptions: ConfigOption[] | null;
+  commands: SlashCommand[] | null;
 }
 
 export interface NewSession extends SessionState {
@@ -121,6 +122,12 @@ export type SessionUpdate =
   | { kind: 'thoughtText'; messageId: string | null; text: string }
   /** More of a prompt that a load replays. */
   | { kind: 'promptText'; text: string }
+  /** The whole text of the agent message with this ID, replacing what it had. */
+  | { kind: 'agentMessage'; messageId: string; text: string }
+  /** As for an agent message. */
+  | { kind: 'thoughtMessage'; messageId: string; text: string }
+  /** The whole text of a prompt that a load replays, replacing what the prompt with this ID had. */
+  | { kind: 'promptMessage'; messageId: string; text: string }
   /** A tool call, new or changed; what it leaves out stays as it was. */
   | { kind: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; texts?: string[] }
   /** Replaces the turn's earlier plan. */
