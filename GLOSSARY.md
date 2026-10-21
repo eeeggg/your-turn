@@ -73,7 +73,7 @@ Agreeing on the ACP version for a connection during the initialize handshake: th
 _Avoid_: version detection, probing
 
 **ACP driver**:
-The part of core that speaks one version of ACP over a connection, behind an interface the extension defines: commands go down to the agent, and session updates and the agent's requests come up. There is one per ACP version, and each says which of the interface's capabilities its version has.
+The part of core that speaks one version of ACP over a connection, behind an interface the extension defines: commands go down to the agent, and session updates and the agent's requests come up. There is one per ACP version, each speaking its version in full and translating it into the interface's terms.
 _Avoid_: adapter (an Adapter, or an ACP adapter such as `claude-agent-acp`), protocol layer, client
 
 ### Sessions

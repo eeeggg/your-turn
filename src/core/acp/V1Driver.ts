@@ -2,30 +2,29 @@ import { client as createClientApp, methods, PROTOCOL_VERSION } from '@agentclie
 import type * as Acp from '@agentclientprotocol/sdk';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { log, messageOf } from '@/core/Log';
+import { log } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import {
-  AuthRequired,
-  UnknownSession,
-  type AcpDriver,
-  type AgentDescription,
-  type ConfigCategory,
-  type ConfigOption,
-  type ConfigValue,
-  type ConfigValueGroup,
-  type ListedSession,
-  type Modes,
-  type NewSession,
-  type PermissionOutcome,
-  type PermissionRequest,
-  type PlanStepStatus,
-  type PromptPart,
-  type SessionPage,
-  type SessionState,
-  type SessionUpdate,
-  type SlashCommand,
-  type ToolCallStatus,
+import type {
+  AcpDriver,
+  AgentDescription,
+  ConfigCategory,
+  ConfigOption,
+  ConfigValue,
+  ConfigValueGroup,
+  ListedSession,
+  Modes,
+  NewSession,
+  PermissionOutcome,
+  PermissionRequest,
+  PlanStepStatus,
+  PromptPart,
+  SessionPage,
+  SessionState,
+  SessionUpdate,
+  SlashCommand,
+  ToolCallStatus,
 } from './AcpDriver';
+import { authChecked, sessionChecked } from './RequestErrors';
 
 /** Speaks ACP v1 over a connection, through the SDK's stable v1 client. */
 export class V1Driver implements AcpDriver {
@@ -126,36 +125,6 @@ export class V1Driver implements AcpDriver {
 
   async authenticate(methodId: string): Promise<void> {
     await authChecked(this.connection.agent.request(methods.agent.authenticate, { methodId }));
-  }
-}
-
-/** ACP's "auth required" (-32000), which some agents report only in the message. */
-function isAuthRequired(e: unknown): boolean {
-  if (typeof e !== 'object' || e === null) { return false; }
-  return ('code' in e && e.code === -32000)
-    || ('message' in e && typeof e.message === 'string' && /auth.?required/i.test(e.message));
-}
-
-function isUnknownSession(e: unknown): boolean {
-  return typeof e === 'object' && e !== null
-    && 'message' in e && typeof e.message === 'string'
-    && /not found|no such|unknown session/i.test(e.message);
-}
-
-async function authChecked<T>(request: Promise<T>): Promise<T> {
-  try {
-    return await request;
-  } catch (e) {
-    throw isAuthRequired(e) ? new AuthRequired(messageOf(e), { cause: e }) : e;
-  }
-}
-
-/** For a request naming a session the agent may no longer know. */
-async function sessionChecked<T>(request: Promise<T>): Promise<T> {
-  try {
-    return await authChecked(request);
-  } catch (e) {
-    throw !(e instanceof AuthRequired) && isUnknownSession(e) ? new UnknownSession(messageOf(e), { cause: e }) : e;
   }
 }
 

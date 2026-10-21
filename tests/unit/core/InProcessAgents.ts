@@ -1,7 +1,9 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
+import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import type { AcpDriver, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
+import { V2Driver } from '@/core/acp/V2Driver';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -115,4 +117,33 @@ export async function connectedDriver(
   const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
   const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
   return { driver, updates };
+}
+
+/** Builds the ACP v2 agent a test talks to. */
+export type V2AgentScript = () => V2.AgentApp;
+
+/** An ACP v2 SDK agent with sessions that answers `initialize`; add the requests a test needs. */
+export function fakeV2Agent(init: Partial<V2.InitializeResponse> = {}): V2.AgentApp {
+  return V2.agent({ name: 'fake-agent' }).onRequest(V2.methods.agent.initialize, () => ({
+    protocolVersion: V2.PROTOCOL_VERSION,
+    info: { name: 'fake-agent', title: 'Fake Agent', version: '0.0.1' },
+    capabilities: { session: {} },
+    ...init,
+  }));
+}
+
+/**
+ * A v2 driver connected to the agent `script` builds, over in-memory newline-delimited streams, and `exit`, which
+ * closes both streams as the agent's exit would.
+ */
+export async function connectedV2Driver(script: V2AgentScript): Promise<{ driver: AcpDriver; exit: () => void }> {
+  const closers: (() => void)[] = [];
+  const pipe = () => new TransformStream<Uint8Array, Uint8Array>({
+    start: (controller) => { closers.push(() => controller.terminate()); },
+  });
+  const toAgent = pipe();
+  const toClient = pipe();
+  script().connect(V2.ndJsonStream(toClient.writable, toAgent.readable));
+  const driver = await V2Driver.connect('fake', V2.ndJsonStream(toAgent.writable, toClient.readable), '0.0.0-test');
+  return { driver, exit: () => { for (const close of closers) { close(); } } };
 }
