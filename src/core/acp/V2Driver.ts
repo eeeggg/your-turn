@@ -1,5 +1,6 @@
 import * as Acp from '@agentclientprotocol/sdk/experimental/v2';
 
+import type { ClientHandlers } from '@/core/ClientHandlers';
 import { log } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import {
@@ -13,6 +14,9 @@ import {
   type ConfigValueGroup,
   type ListedSession,
   type NewSession,
+  type PermissionOption,
+  type PermissionOutcome,
+  type PermissionRequest,
   type PlanStepStatus,
   type PromptPart,
   type SessionPage,
@@ -26,12 +30,20 @@ import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
 /** Speaks ACP v2 over a connection, through the SDK's stable v2 client. */
 export class V2Driver implements AcpDriver {
   /** Connect the SDK's v2 client to the stream and initialize the connection. */
-  static async connect(agentName: string, stream: Acp.Stream, clientVersion: string, updates: SessionUpdateHandler): Promise<V2Driver> {
+  static async connect(
+    agentName: string,
+    stream: Acp.Stream,
+    clientVersion: string,
+    updates: SessionUpdateHandler,
+    { permissions }: ClientHandlers,
+  ): Promise<V2Driver> {
     const foreground = new Foreground();
     const translator = new Translator();
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = Acp.client({ name: 'vscode-acp-client' })
+      .onRequest(Acp.methods.client.session.requestPermission, async ({ params }) =>
+        permissionResponse(await permissions.requestPermission(permissionRequest(params))))
       .onNotification(Acp.methods.client.session.update, ({ params }) => {
         log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
@@ -359,6 +371,45 @@ function planStepStatus(status: Acp.PlanEntryStatus): PlanStepStatus {
 function slashCommand(command: Acp.AvailableCommand): SlashCommand {
   const hint = command.input && Acp.AvailableCommandInput.isText(command.input) ? command.input.hint : null;
   return { name: command.name, description: command.description, takesInput: !!command.input, hint: hint || null };
+}
+
+function permissionRequest(params: Acp.RequestPermissionRequest): PermissionRequest {
+  return {
+    sessionId: params.sessionId,
+    title: params.title || null,
+    description: params.description || null,
+    subject: params.subject ? permissionSubject(params.subject) : null,
+    options: params.options.map(permissionOption),
+  };
+}
+
+/** A tool call's subject is a patch of the call, so it may leave out the title the transcript shows. */
+function permissionSubject(subject: Acp.RequestPermissionSubject): string | null {
+  if (Acp.RequestPermissionSubject.isToolCall(subject)) {
+    return subject.toolCall.title || null;
+  }
+  if (Acp.RequestPermissionSubject.isCommand(subject)) {
+    return `${subject.command} in ${subject.cwd}`;
+  }
+  return null;
+}
+
+function permissionOption(option: Acp.PermissionOption): PermissionOption {
+  switch (option.kind) {
+    case 'allow_once':
+    case 'allow_always':
+    case 'reject_once':
+    case 'reject_always':
+      return { id: option.optionId, name: option.name, kind: option.kind };
+    default:
+      return { id: option.optionId, name: option.name, kind: 'other' };
+  }
+}
+
+function permissionResponse(outcome: PermissionOutcome): Acp.RequestPermissionResponse {
+  return outcome.kind === 'selected'
+    ? { outcome: { outcome: 'selected', optionId: outcome.optionId } }
+    : { outcome: { outcome: 'cancelled' } };
 }
 
 function agentDescription(response: Acp.InitializeResponse): AgentDescription {

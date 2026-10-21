@@ -140,7 +140,8 @@ export type SessionUpdate =
   /** A null title clears the session's title; a missing one leaves it unchanged. */
   | { kind: 'sessionInfo'; title?: string | null; updatedAt?: string | null };
 
-type PermissionOptionKind = 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
+/** `other` is a kind the agent added, which neither allows nor rejects as far as the extension knows. */
+type PermissionOptionKind = 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always' | 'other';
 
 export interface PermissionOption {
   id: string;
@@ -152,6 +153,10 @@ export interface PermissionRequest {
   sessionId: string;
   /** Null when the agent gave none. */
   title: string | null;
+  /** Why the agent asks; null when it gave no reason. */
+  description: string | null;
+  /** What the request is about, in one line: the tool call's title, or a command and its directory; null when the agent named nothing the interface can show. */
+  subject: string | null;
   options: PermissionOption[];
 }
 

@@ -138,6 +138,7 @@ export function fakeV2Agent(init: Partial<V2.InitializeResponse> = {}): V2.Agent
  */
 export async function connectedV2Driver(
   script: V2AgentScript,
+  handlers: ClientHandlers = unusedHandlers,
 ): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; exit: () => void }> {
   const sessionUpdates = new SessionUpdateHandler();
   const updates: [string, SessionUpdate][] = [];
@@ -149,6 +150,6 @@ export async function connectedV2Driver(
   const toAgent = pipe();
   const toClient = pipe();
   script().connect(V2.ndJsonStream(toClient.writable, toAgent.readable));
-  const driver = await V2Driver.connect('fake', V2.ndJsonStream(toAgent.writable, toClient.readable), '0.0.0-test', sessionUpdates);
+  const driver = await V2Driver.connect('fake', V2.ndJsonStream(toAgent.writable, toClient.readable), '0.0.0-test', sessionUpdates, handlers);
   return { driver, updates, exit: () => { for (const close of closers) { close(); } } };
 }

@@ -5,11 +5,17 @@ import { log, logError } from './Log';
 /** The `acp.autoApprovePermissions` setting. */
 export type AutoApprove = 'ask' | 'allowAll';
 
+/** What the user is asked: the request's title, and what it is about and why, when the agent says. */
+export interface PermissionPrompt {
+  title: string;
+  detail: string | null;
+}
+
 export interface PermissionChooser {
   /** Read for every permission request, so a changed setting applies to the next one. */
   autoApprove(): AutoApprove;
   /** Ask the user to choose one of the options; undefined when they dismiss the choice. */
-  choose(title: string, options: readonly PermissionOption[]): Promise<string | undefined>;
+  choose(prompt: PermissionPrompt, options: readonly PermissionOption[]): Promise<string | undefined>;
 }
 
 const CANCELLED: PermissionOutcome = { kind: 'cancelled' };
@@ -44,7 +50,8 @@ export class PermissionRequests implements Permissions {
       }
     }
 
-    const optionId = await this.chooser.choose(title, request.options);
+    const detail = [request.subject, request.description].filter((part) => !!part).join(' — ');
+    const optionId = await this.chooser.choose({ title, detail: detail || null }, request.options);
     if (optionId === undefined) {
       log('Permission cancelled by user');
       return CANCELLED;

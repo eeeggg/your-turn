@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { AuthRequired, UnknownSession, type ConfigOption, type PromptPart, type SessionUpdate } from '@/core/acp/AcpDriver';
+import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionUpdate } from '@/core/acp/AcpDriver';
+import type { ClientHandlers } from '@/core/ClientHandlers';
 import { connectedV2Driver, fakeV2Agent, type V2AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const go: PromptPart[] = [{ kind: 'text', text: 'go' }];
@@ -543,6 +544,71 @@ describe('V2Driver', () => {
         { kind: 'sessionInfo', title: 'Fix the build', updatedAt: null },
         { kind: 'sessionInfo' },
       ]);
+    });
+  });
+
+  describe('permission requests', () => {
+    const allow: V2.PermissionOption = { optionId: 'allow', name: 'Allow', kind: 'allow_once' };
+    const reject: V2.PermissionOption = { optionId: 'reject', name: 'Reject', kind: 'reject_always' };
+
+    /** The requests the driver asks the user, and the agent's answers, for those the agent sends while creating a session. */
+    async function asked(answers: PermissionOutcome[], ...sent: Omit<V2.RequestPermissionRequest, 'sessionId'>[]) {
+      const requestPermission = vi.fn<ClientHandlers['permissions']['requestPermission']>();
+      for (const answer of answers) {
+        requestPermission.mockResolvedValueOnce(answer);
+      }
+      const received: V2.RequestPermissionResponse[] = [];
+      const { driver } = await connectedV2Driver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
+        for (const request of sent) {
+          received.push(await client.request(V2.methods.client.session.requestPermission, { sessionId: 's1', ...request }));
+        }
+        return { sessionId: 's1' };
+      }), { permissions: { requestPermission } });
+      await driver.newSession('/work');
+      return { requests: requestPermission.mock.calls.map(([request]) => request), received };
+    }
+
+    it('asks with the title, what the request is about, why and the options offered, and answers with the choice', async () => {
+      const { requests, received } = await asked(
+        [{ kind: 'selected', optionId: 'allow' }, { kind: 'cancelled' }],
+        {
+          title: 'Make edits?',
+          description: 'To fix the build',
+          subject: { type: 'tool_call', toolCall: { toolCallId: 'c1', title: 'Edit a.ts' } },
+          options: [allow, reject],
+        },
+        { title: 'Continue with elevated permissions?', options: [allow] },
+      );
+
+      expect(requests).toEqual([
+        {
+          sessionId: 's1',
+          title: 'Make edits?',
+          description: 'To fix the build',
+          subject: 'Edit a.ts',
+          options: [{ id: 'allow', name: 'Allow', kind: 'allow_once' }, { id: 'reject', name: 'Reject', kind: 'reject_always' }],
+        },
+        { sessionId: 's1', title: 'Continue with elevated permissions?', description: null, subject: null, options: [{ id: 'allow', name: 'Allow', kind: 'allow_once' }] },
+      ]);
+      expect(received).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow' } }, { outcome: { outcome: 'cancelled' } }]);
+    });
+
+    it.each([
+      ['a tool call', 'Run npm test', { type: 'tool_call', toolCall: { toolCallId: 'c1', title: 'Run npm test' } }],
+      ['a tool call without a title', null, { type: 'tool_call', toolCall: { toolCallId: 'c1' } }],
+      ['a command', 'npm test in /work/project', { type: 'command', command: 'npm test', cwd: '/work/project', toolCallId: 'c1' }],
+      ['a subject of a type it added', null, { type: '_vendor_network', host: 'example.com' }],
+    ] as const)('names %s as %s', async (_, expected, subject) => {
+      const { requests } = await asked([{ kind: 'cancelled' }], { title: 'Run command?', subject, options: [allow] });
+      expect(requests[0]?.subject).toBe(expected);
+    });
+
+    it('offers an option of a kind the agent added as neither allowing nor rejecting', async () => {
+      const { requests } = await asked([{ kind: 'cancelled' }], {
+        title: 'Run command?',
+        options: [allow, { optionId: 'sandbox', name: 'Run in the sandbox', kind: '_vendor_sandboxed' }],
+      });
+      expect(requests[0]?.options).toEqual([{ id: 'allow', name: 'Allow', kind: 'allow_once' }, { id: 'sandbox', name: 'Run in the sandbox', kind: 'other' }]);
     });
   });
 

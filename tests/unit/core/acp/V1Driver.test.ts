@@ -248,7 +248,7 @@ describe('V1Driver', () => {
   });
 
   describe('permission requests', () => {
-    it("asks with the tool call's title and the options offered, and answers with the choice", async () => {
+    it("asks with the tool call's title and the options offered, saying nothing of what it is about or why, and answers with the choice", async () => {
       const requestPermission = vi.fn<ClientHandlers['permissions']['requestPermission']>(async () => ({ kind: 'selected', optionId: 'allow' }));
       const answers: Acp.RequestPermissionResponse[] = [];
       const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {
@@ -266,8 +266,8 @@ describe('V1Driver', () => {
 
       const options = [{ id: 'allow', name: 'Allow', kind: 'allow_once' }, { id: 'reject', name: 'Reject', kind: 'reject_always' }];
       expect(requestPermission.mock.calls).toEqual([
-        [{ sessionId: 's1', title: 'Edit a.ts', options }],
-        [{ sessionId: 's1', title: null, options }],
+        [{ sessionId: 's1', title: 'Edit a.ts', description: null, subject: null, options }],
+        [{ sessionId: 's1', title: null, description: null, subject: null, options }],
       ]);
       expect(answers).toEqual([
         { outcome: { outcome: 'selected', optionId: 'allow' } },

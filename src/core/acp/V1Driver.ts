@@ -202,6 +202,8 @@ function permissionRequest(params: Acp.RequestPermissionRequest): PermissionRequ
   return {
     sessionId: params.sessionId,
     title: params.toolCall.title ?? null,
+    description: null,
+    subject: null,
     options: params.options.map((option) => ({ id: option.optionId, name: option.name, kind: option.kind })),
   };
 }
