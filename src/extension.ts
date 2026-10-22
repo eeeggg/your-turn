@@ -10,6 +10,8 @@ import { SessionHistoryStore } from '@/core/SessionHistoryStore';
 import { SessionList } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
+import { ReviewControls } from '@/core/review/ReviewControls';
+import { Reviews } from '@/core/review/Reviews';
 import { ChatViewController } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
 import { log, setLogSink } from '@/core/Log';
@@ -18,6 +20,8 @@ import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
 import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
 import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
+import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
+import { ReviewPresenters, vscodeReviewEditors } from '@/adapters/review/ReviewPresenters';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
@@ -39,6 +43,8 @@ export interface ExtensionTestApi {
   readonly chatViewReady: Promise<void>;
   /** Handle a message as if the chat view's webview sent it, as a test cannot type into the webview. */
   sendChatMessage(message: WebviewToExtensionMessage): Promise<void>;
+  /** The paths under review in the shown review, as its presenters show them but VS Code cannot read back. */
+  reviewedFiles(): string[];
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -112,8 +118,13 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   });
   sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
   sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
+  const reviews = new Reviews(workspaceFiles);
+  sessionUpdateHandler.addListener((sessionId, update) => { void reviews.handleSessionUpdate(sessionId, update); });
+  const reviewControls = new ReviewControls(reviews, vscodeReviewEditors);
+  const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
   sessionManager.on('session-removed', (sessionId) => {
     agentTerminals.endSession(sessionId);
+    reviews.sessionRemoved(sessionId);
     chatViewController.notifySessionRemoved(sessionId);
   });
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
@@ -124,7 +135,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
-  sessionManager.on('active-session-changed', () => {
+  sessionManager.on('active-session-changed', (sessionId) => {
+    reviews.activeSessionChanged(sessionId);
     chatViewController.notifyActiveSessionChanged();
   });
   sessionManager.on('session-ended', (sessionId, reason) => {
@@ -139,9 +151,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionManager.on('session-load-start', (sessionId) => {
     // The load replays the terminals' updates, which would add their chunks to what is kept again.
     agentTerminals.forgetSession(sessionId);
+    reviews.loadStarted(sessionId);
     chatViewController.notifyLoadSessionStart();
   });
-  sessionManager.on('session-load-end', (_sessionId, _agentName, ok) => {
+  sessionManager.on('session-load-end', (sessionId, _agentName, ok) => {
+    reviews.loadEnded(sessionId);
     chatViewController.notifyLoadSessionEnd(ok);
     if (ok) {
       // The loadSession response carries modes/configOptions for the
@@ -152,7 +166,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
 
-  const sessionCommands = new SessionCommands(sessionManager, chatViewController, vscode.window, vscode.commands, getAgentNames);
+  const sessionCommands = new SessionCommands(sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames);
   const agentConfigurations = new AgentConfigurations(
     () => vscode.workspace.getConfiguration('acp'),
     sessionManager,
@@ -181,6 +195,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatMessageSubscription,
     reportedFileEditor,
     statusBarManager,
+    reviewPresenters,
     vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.newSession', () => sessionCommands.newSession()),
     vscode.commands.registerCommand('acp.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
@@ -225,6 +240,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
         log(`No output kept for ${output.name}`);
       }
     }),
+    vscode.commands.registerCommand('acp.previousReviewFile', (arg?: unknown) => reviewControls.previous(reviewPathOf(arg))),
+    vscode.commands.registerCommand('acp.nextReviewFile', (arg?: unknown) => reviewControls.next(reviewPathOf(arg))),
+    vscode.commands.registerCommand('acp.undoFile', (arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg))),
+    vscode.commands.registerCommand('acp.keepFile', (arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg))),
+    vscode.commands.registerCommand('acp.keepAllFiles', () => reviewControls.keepAll()),
     vscode.commands.registerCommand('acp.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
@@ -240,6 +260,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
         sessionManager.dispose();
         sessionUpdateHandler.dispose();
         agentTerminals.dispose();
+        reviews.dispose();
         chatWebviewProvider.dispose();
         sessionTreeProvider.dispose();
         sessionList.dispose();
@@ -257,6 +278,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatPosts: chatWebviewProvider.onDidPost,
     chatViewReady,
     sendChatMessage: (message) => chatViewController.handleMessage(message),
+    reviewedFiles: () => reviewControls.reviewedPaths(),
   };
 }
 
@@ -285,6 +307,11 @@ function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileC
   const toolCallId = context?.acpToolCallId;
   const file = context?.acpDiffFile;
   return typeof toolCallId === 'string' && typeof file === 'number' ? { toolCallId, file, open } : undefined;
+}
+
+/** The title area passes its editor's URI; the status bar passes nothing, and so means the active editor's file. */
+function reviewPathOf(arg: unknown): string | undefined {
+  return arg instanceof vscode.Uri && arg.scheme === 'file' ? arg.fsPath : undefined;
 }
 
 /** The context menu on a command's output passes the `data-vscode-context` the chat view gave it. */

@@ -182,6 +182,28 @@ _Avoid_: profile, persona
 A command the agent advertises, invoked by typing `/` in the prompt box.
 _Avoid_: command (unqualified), action
 
+### Review
+
+**Review**:
+A session's files whose net change the human has yet to keep or undo, each from its baseline to what it holds now, whoever changed it since. Only evidence of an agent's change puts a file under review.
+_Avoid_: diff (a tool call's, which is history), changeset, pending changes
+
+**Baseline**:
+What a file under review held when the review first saw it change; nothing, for a file the agent created. A file back at its baseline leaves the review.
+_Avoid_: original, before
+
+**Evidence**:
+A report, trusted by a guard, that a path held one content and now holds another.
+_Avoid_: event, edit
+
+**Keep**:
+Accepting a file's net change: what it holds becomes its baseline, so it leaves the review.
+_Avoid_: accept, approve
+
+**Undo**:
+Dropping a file's net change by restoring its baseline, then letting it leave the review.
+_Avoid_: reject, revert, discard
+
 ### Observability
 
 **Traffic**:

@@ -102,11 +102,11 @@ describe('sending prompts', () => {
     expect(page.takePosted()).toEqual([{ type: 'cancelTurn' }]);
 
     page.pressKey('Enter');
-    expect(page.takePosted()).toEqual([]);
+    expect(page.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
     expect(promptInput().value).toBe('');
 
     page.send({ type: 'promptEnd' });
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }, { type: 'queuedPrompts', count: 0 }]);
     expect(userMessages()).toEqual(['follow-up']);
   });
 });
