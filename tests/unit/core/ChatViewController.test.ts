@@ -351,13 +351,14 @@ describe('ChatViewController', () => {
       expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(sessions.recordFirstPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(environment.take()).toEqual([{ type: 'promptStart' }]);
-      expect(controller.hasTranscript).toBe(true);
+      expect(controller.hasRunningTurn).toBe(true);
 
       sessions.answer();
       await turn;
 
       expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith('s1');
       expect(environment.take()).toStrictEqual([{ type: 'promptEnd' }]);
+      expect(controller.hasRunningTurn).toBe(false);
     });
 
     it('reports a failed prompt as an error that ends the turn', async () => {
@@ -367,6 +368,7 @@ describe('ChatViewController', () => {
       sessions.fail(new Error('agent crashed'));
       await turn;
 
+      expect(controller.hasRunningTurn).toBe(false);
       expect(sessions.recordTurnEnded).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([
         { type: 'promptStart' },
@@ -464,6 +466,16 @@ describe('ChatViewController', () => {
 
         expect(environment.take().map((message) => message.type)).toEqual(['state', 'promptStart']);
       });
+
+      it("says no turn is running while another session is active, and the left session's turn is again on return", () => {
+        const { sessions, controller } = setup();
+        void sendPrompt(controller, 'hello');
+
+        switchTo(sessions, controller, 's2');
+        expect(controller.hasRunningTurn).toBe(false);
+        switchTo(sessions, controller, 's1');
+        expect(controller.hasRunningTurn).toBe(true);
+      });
     });
 
     it('does not tell the chat view again that a turn is running when the same session is reported again', async () => {
@@ -514,6 +526,7 @@ describe('ChatViewController', () => {
         await controller.handleMessage({ type: 'ready' });
 
         expect(environment.take().map((message) => message.type)).toEqual(['state']);
+        expect(controller.hasRunningTurn).toBe(false);
       });
 
       it('does not tell the chat view about a session it does not show', async () => {
@@ -527,14 +540,23 @@ describe('ChatViewController', () => {
       });
     });
 
-    it('forgets that a prompt was sent when the transcript is cleared', () => {
+    it('knows how many prompts the chat view holds, none once a chat view opens anew', async () => {
+      const { controller } = setup();
+      expect(controller.queuedPrompts).toBe(0);
+
+      await controller.handleMessage({ type: 'queuedPrompts', count: 2 });
+      expect(controller.queuedPrompts).toBe(2);
+
+      await controller.handleMessage({ type: 'ready' });
+      expect(controller.queuedPrompts).toBe(0);
+    });
+
+    it('tells the chat view to clear the transcript', () => {
       const { environment, controller } = setup();
-      void sendPrompt(controller, 'hello');
 
       controller.clearTranscript();
 
-      expect(controller.hasTranscript).toBe(false);
-      expect(environment.take()).toContainEqual({ type: 'clearTranscript' });
+      expect(environment.take()).toEqual([{ type: 'clearTranscript' }]);
     });
   });
 

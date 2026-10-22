@@ -19,6 +19,7 @@ vitest.config.mts
 vsc-extension-quickstart.md
 .github/**
 Makefile
+tools/**
 .nvmrc
 CHANGELOG.md
 GLOSSARY.md

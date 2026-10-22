@@ -102,6 +102,7 @@ function partSummary(part: TurnPart): string {
 }
 
 const promptEnd: Action = { type: 'promptEnd' };
+const queuedPrompts = (count: number): WebviewToExtensionMessage => ({ type: 'queuedPrompts', count });
 
 describe('the transcript and its session', () => {
   it('leaves room for the empty state only without a session and an empty transcript', () => {
@@ -202,7 +203,7 @@ describe('a session whose agent exited', () => {
     expect(view.summary()).toEqual(['prompt: first', 'turn: working', 'error: Fake exited unexpectedly (code 1).']);
     expect(view.transcript().currentTurn).toBeNull();
     expect(view.transcript().queued).toEqual([]);
-    expect(view.takePosted()).toEqual([]);
+    expect(view.takePosted()).toEqual([queuedPrompts(0)]);
     expect(view.store.getSnapshot().activeSession).toBeNull();
     expect(view.emptyState()).toBe(false);
   });
@@ -210,6 +211,7 @@ describe('a session whose agent exited', () => {
   it('sends nothing when a late promptEnd arrives', () => {
     const view = midTurn();
     view.send(ended, noSession);
+    view.takePosted();
 
     view.send(promptEnd);
 
@@ -283,7 +285,7 @@ describe('the queue', () => {
     view.prompt('also this');
     view.answer(' still');
 
-    expect(view.takePosted()).toEqual([]);
+    expect(view.takePosted()).toEqual([queuedPrompts(1)]);
     expect(view.transcript().queued).toEqual(['also this']);
     expect(view.summary()).toEqual(['prompt: first', 'turn: working still']);
   });
@@ -295,7 +297,7 @@ describe('the queue', () => {
     view.prompt('first');
     view.prompt('second');
 
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'first' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'first' }, queuedPrompts(1)]);
     expect(view.transcript().queued).toEqual(['second']);
   });
 
@@ -310,14 +312,14 @@ describe('the queue', () => {
     view.takePosted();
 
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, queuedPrompts(1)]);
     expect(view.transcript().queued).toEqual(['third']);
     expect(view.store.getSnapshot().activeSession?.turnRunning).toBe(true);
 
     view.send({ type: 'promptStart' });
     view.answer('two');
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'third' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'third' }, queuedPrompts(0)]);
     expect(view.transcript().queued).toEqual([]);
 
     view.send({ type: 'promptStart' }, promptEnd);
@@ -341,7 +343,7 @@ describe('the queue', () => {
     expect(view.transcript().followRequests).toBe(before + 2);
 
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, queuedPrompts(1)]);
   });
 
   it('does not cancel the turn to send now when nothing is queued', () => {
@@ -374,8 +376,23 @@ describe('the queue', () => {
       view.send(promptEnd);
 
       expect(view.transcript().queued, name).toEqual([]);
-      expect(view.takePosted(), name).toEqual([]);
+      expect(view.takePosted(), name).toEqual([queuedPrompts(0)]);
     }
+  });
+
+  it('tells the extension how many prompts are queued each time that changes, so a switch can say what it discards', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.prompt('second');
+    view.prompt('third');
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'first' }, queuedPrompts(1), queuedPrompts(2)]);
+
+    view.answer('working');
+    expect(view.takePosted()).toEqual([]);
+
+    view.send({ type: 'promptStart' }, promptEnd);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, queuedPrompts(1)]);
   });
 });
 

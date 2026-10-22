@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -163,6 +163,36 @@
       {
         "command": "acp.openCommandOutput",
         "title": "Open in Terminal"
+      },
+      {
+        "command": "acp.previousReviewFile",
+        "title": "Previous File Under Review",
+        "icon": "$(arrow-up)",
+        "enablement": "acp.reviewHasFiles"
+      },
+      {
+        "command": "acp.nextReviewFile",
+        "title": "Next File Under Review",
+        "icon": "$(arrow-down)",
+        "enablement": "acp.reviewHasFiles"
+      },
+      {
+        "command": "acp.undoFile",
+        "title": "Undo File",
+        "icon": "$(discard)",
+        "enablement": "resource in acp.reviewedFiles"
+      },
+      {
+        "command": "acp.keepFile",
+        "title": "Keep File",
+        "icon": "$(check)",
+        "enablement": "resource in acp.reviewedFiles"
+      },
+      {
+        "command": "acp.keepAllFiles",
+        "title": "Keep All",
+        "icon": "$(check-all)",
+        "enablement": "acp.reviewHasFiles"
       }
     ],
     "menus": {
@@ -198,6 +228,53 @@
         {
           "command": "acp.openCommandOutput",
           "when": "false"
+        },
+        {
+          "command": "acp.previousReviewFile",
+          "when": "false"
+        },
+        {
+          "command": "acp.nextReviewFile",
+          "when": "false"
+        },
+        {
+          "command": "acp.undoFile",
+          "when": "false"
+        },
+        {
+          "command": "acp.keepFile",
+          "when": "false"
+        },
+        {
+          "command": "acp.keepAllFiles",
+          "when": "false"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "acp.previousReviewFile",
+          "when": "acp.reviewShown",
+          "group": "navigation@1"
+        },
+        {
+          "command": "acp.nextReviewFile",
+          "when": "acp.reviewShown",
+          "group": "navigation@2"
+        },
+        {
+          "command": "acp.undoFile",
+          "when": "acp.reviewShown",
+          "group": "navigation@3"
+        },
+        {
+          "command": "acp.keepFile",
+          "when": "acp.reviewShown",
+          "group": "navigation@4"
+        },
+        {
+          "command": "acp.keepAllFiles",
+          "when": "acp.reviewShown",
+          "group": "navigation@5"
         }
       ],
       "webview/context": [

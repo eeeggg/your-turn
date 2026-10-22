@@ -64,7 +64,6 @@ export interface ChatViewEnvironment extends Commands {
  * The webview sends one prompt at a time and queues the rest.
  */
 export class ChatViewController {
-  private _hasTranscript = false;
   /**
    * Sessions with a prompt in flight. The chat view hears of a turn only while its session is shown, and is told
    * it is running when it opens or shows that session again, so it holds its next prompt.
@@ -74,6 +73,7 @@ export class ChatViewController {
   private shownSessionId: string | null = null;
   /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
   private shownSessionEnded = false;
+  private _queuedPrompts = 0;
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
   private readonly commandOutput: CommandOutputFeed;
@@ -98,24 +98,32 @@ export class ChatViewController {
     });
   }
 
-  /** Whether a prompt has been sent since the transcript was last cleared. */
-  get hasTranscript(): boolean {
-    return this._hasTranscript;
+  /** Whether the active session has a prompt in flight. */
+  get hasRunningTurn(): boolean {
+    return this.isRunning(this.sessions.getActiveSessionId());
+  }
+
+  /** The prompts the chat view holds until the turn ends, which a switch of session discards. */
+  get queuedPrompts(): number {
+    return this._queuedPrompts;
   }
 
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     switch (message.type) {
       case 'sendPrompt':
-        this._hasTranscript = true;
         await this.sendPrompt(message.text);
         break;
       case 'cancelTurn':
         await this.cancelTurn();
         break;
+      case 'queuedPrompts':
+        this._queuedPrompts = message.count;
+        break;
       case 'pickerValueChosen':
         await this.choosePickerValue(message.pickerId, message.value);
         break;
       case 'ready':
+        this._queuedPrompts = 0;
         this.sendCurrentState();
         this.sendRunningTurn();
         break;
@@ -227,7 +235,6 @@ export class ChatViewController {
 
   /** Clear the transcript, as when a new session starts. */
   clearTranscript(): void {
-    this._hasTranscript = false;
     this.terminals.forgetEndedSessions();
     this.post({ type: 'clearTranscript' });
   }

@@ -160,6 +160,8 @@ export type WebviewToExtensionMessage =
   | { type: 'ready' }
   | { type: 'sendPrompt'; text: string }
   | { type: 'cancelTurn' }
+  /** How many prompts the chat view holds until the turn ends, each time that changes; only the chat view holds them. */
+  | { type: 'queuedPrompts'; count: number }
   | { type: 'pickerValueChosen'; pickerId: string; value: string }
   | { type: 'openFile'; file: ReportedFile }
   /** Only for a file with lines. */

@@ -35,7 +35,9 @@ export function update(state: RootState, action: Action, now: number): Transitio
   const promptBox = updatePromptBox(state.promptBox, action, updatedSession);
   const transcript = updateTranscript(state.transcript, action, now);
   const sent = withSentPrompts(transcript.state, promptBox.outgoing, updatedSession?.turnRunning ?? false);
-  const outgoing = [...pickers.outgoing, ...sent.outgoing, ...transcript.outgoing];
+  const queued = sent.state.queued.length;
+  const outgoing: WebviewToExtensionMessage[] = [...pickers.outgoing, ...sent.outgoing, ...transcript.outgoing];
+  if (queued !== state.transcript.queued.length) { outgoing.push({ type: 'queuedPrompts', count: queued }); }
   const activeSession = withPromptsPosted(updatedSession, outgoing);
   const changed =
     activeSession !== state.activeSession ||

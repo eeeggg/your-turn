@@ -51,14 +51,24 @@ function setup(scripts: Record<string, AgentScript>) {
     },
     { chooseAuthMethod: async () => undefined },
   );
-  const transcript = {
-    hasTranscript: false,
-    clearTranscript: vi.fn(() => { transcript.hasTranscript = false; }),
+  const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn() };
+  /** The session each Keep All was made in. */
+  const keptIn: (string | null)[] = [];
+  const review = {
+    paths: [] as string[],
+    reviewedPaths: () => review.paths,
+    keepAll: () => {
+      keptIn.push(manager.getActiveSessionId());
+      review.paths = [];
+    },
   };
   const user = new ScriptedUser();
-  const commands = new SessionCommands(manager, transcript, user, user, () => Object.keys(scripts));
-  return { agents, manager, transcript, user, commands };
+  const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts));
+  return { agents, manager, transcript, review, keptIn, user, commands };
 }
+
+const underReview = (count: string) => `${count} still under review, kept until this session is opened again in this window.`;
+const asked = (message: string, ...items: string[]): Call => ({ call: 'showWarningMessage', message, options: { modal: true }, items });
 
 describe('SessionCommands', () => {
   describe('connect', () => {
@@ -104,23 +114,29 @@ describe('SessionCommands', () => {
       ]);
     });
 
-    it('asks before switching agents while there is a transcript, and clears it', async () => {
+    it('switches agents without asking when nothing would be lost, and clears the transcript', async () => {
       const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
       await manager.connectToAgent('one');
-      transcript.hasTranscript = true;
-      user.answer('Switch Agent');
 
       await commands.connect('two');
 
       expect(manager.getActiveSessionId()).toBe('two-1');
       expect(manager.hasSession('one')).toBe(false);
       expect(transcript.clearTranscript).toHaveBeenCalledOnce();
+      expect(user.take()).toEqual([progress('Connecting to two...')]);
+    });
+
+    it('asks before switching agents while a turn is running, as it stops the agent', async () => {
+      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+      await manager.connectToAgent('one');
+      transcript.hasRunningTurn = true;
+      user.answer('Switch Agent');
+
+      await commands.connect('two');
+
+      expect(manager.getActiveSessionId()).toBe('two-1');
       expect(user.take()).toEqual([
-        {
-          call: 'showWarningMessage',
-          message: 'Switch to two? This will disconnect one and clear the transcript.',
-          items: ['Switch Agent', 'Cancel'],
-        },
+        asked('Switch to two? This stops the turn in progress.', 'Switch Agent'),
         progress('Connecting to two...'),
       ]);
     });
@@ -128,8 +144,8 @@ describe('SessionCommands', () => {
     it('keeps the session and the transcript when the user declines to switch', async () => {
       const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
       await manager.connectToAgent('one');
-      transcript.hasTranscript = true;
-      user.answer('Cancel');
+      transcript.hasRunningTurn = true;
+      user.answer(undefined);
 
       await commands.connect('two');
 
@@ -137,10 +153,28 @@ describe('SessionCommands', () => {
       expect(transcript.clearTranscript).not.toHaveBeenCalled();
     });
 
-    it('does not ask when connecting the agent that already has the active session', async () => {
-      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script });
+    it('asks while files are under review, and with Keep All keeps them before switching', async () => {
+      const { manager, review, keptIn, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
       await manager.connectToAgent('one');
-      transcript.hasTranscript = true;
+      review.paths = ['/w/a.ts', '/w/b.ts'];
+      user.answer('Keep All and Switch');
+
+      await commands.connect('two');
+
+      expect(keptIn).toEqual(['one-1']);
+      expect(manager.getActiveSessionId()).toBe('two-1');
+      expect(user.take()).toEqual([
+        asked(`Switch to two? ${underReview('2 files are')}`, 'Switch Agent', 'Keep All and Switch'),
+        progress('Connecting to two...'),
+      ]);
+    });
+
+    it('does not ask when connecting the agent that already has the active session', async () => {
+      const { manager, transcript, review, user, commands } = setup({ one: sessionAgent('one').script });
+      await manager.connectToAgent('one');
+      transcript.hasRunningTurn = true;
+      transcript.queuedPrompts = 1;
+      review.paths = ['/w/a.ts'];
 
       await commands.connect('one');
 
@@ -175,18 +209,38 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([progress('Starting new session with Fake Agent...')]);
     });
 
-    it('asks first while there is a transcript', async () => {
+    it('asks first while a turn is running', async () => {
       const { agents, manager, transcript, user, commands } = setup({ one: sessionAgent('one').script });
       await manager.connectToAgent('one');
-      transcript.hasTranscript = true;
-      user.answer('Cancel');
+      transcript.hasRunningTurn = true;
+      user.answer(undefined);
 
       await commands.newSession();
 
       expect(agents.launched).toHaveLength(1);
       expect(manager.getActiveSessionId()).toBe('one-1');
+      expect(user.take()).toEqual([asked('Start a new session? This stops the turn in progress.', 'New Session')]);
+    });
+
+    it('names everything it would lose, and keeps every file when asked', async () => {
+      const { manager, transcript, review, keptIn, user, commands } = setup({ one: sessionAgent('one').script });
+      await manager.connectToAgent('one');
+      transcript.hasRunningTurn = true;
+      transcript.queuedPrompts = 1;
+      review.paths = ['/w/a.ts'];
+      user.answer('Keep All and Start');
+
+      await commands.newSession();
+
+      expect(keptIn).toEqual(['one-1']);
+      expect(manager.getActiveSessionId()).toBe('one-2');
       expect(user.take()).toEqual([
-        { call: 'showWarningMessage', message: 'Start a new session? This will clear the current transcript.', items: ['New Session', 'Cancel'] },
+        asked(
+          `Start a new session? This stops the turn in progress and discards 1 queued prompt. ${underReview('1 file is')}`,
+          'New Session',
+          'Keep All and Start',
+        ),
+        progress('Starting new session with Fake Agent...'),
       ]);
     });
 
@@ -413,7 +467,7 @@ describe('SessionCommands', () => {
       const one = sessionAgent('one', loads);
       const { manager, transcript, user, commands } = setup({ one: one.script });
       await manager.loadSession('one', 'old');
-      transcript.hasTranscript = true;
+      transcript.hasRunningTurn = true;
 
       await commands.open('one', 'old');
 
@@ -421,19 +475,63 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([focusChatView]);
     });
 
-    it('asks first while there is a transcript, and stays when declined', async () => {
+    it("opens another of the agent's sessions without asking while a turn is running, as the turn goes on", async () => {
       const one = sessionAgent('one', loads);
       const { manager, transcript, user, commands } = setup({ one: one.script });
       await manager.connectToAgent('one');
-      transcript.hasTranscript = true;
-      user.answer('Cancel');
+      transcript.hasRunningTurn = true;
 
       await commands.open('one', 'old');
 
-      expect(manager.getActiveSessionId()).toBe('one-1');
-      expect(one.requests).toEqual([]);
+      expect(manager.getActiveSessionId()).toBe('old');
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
+    });
+
+    it("asks before opening another of the agent's sessions while prompts are queued, as they are discarded", async () => {
+      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one', loads).script });
+      await manager.connectToAgent('one');
+      transcript.hasRunningTurn = true;
+      transcript.queuedPrompts = 2;
+      user.answer('Open Session');
+
+      await commands.open('one', 'old');
+
+      expect(manager.getActiveSessionId()).toBe('old');
       expect(user.take()).toEqual([
-        { call: 'showWarningMessage', message: 'Open a different session? This will replace the current transcript.', items: ['Open Session', 'Cancel'] },
+        asked('Open a different session? This discards 2 queued prompts.', 'Open Session'),
+        focusChatView,
+        progress('Loading session…'),
+      ]);
+    });
+
+    it("asks before opening another agent's session while a turn is running, and stays when declined", async () => {
+      const two = sessionAgent('two', loads);
+      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: two.script });
+      await manager.connectToAgent('one');
+      transcript.hasRunningTurn = true;
+      user.answer(undefined);
+
+      await commands.open('two', 'old');
+
+      expect(manager.getActiveSessionId()).toBe('one-1');
+      expect(two.requests).toEqual([]);
+      expect(user.take()).toEqual([asked('Open a different session? This stops the turn in progress.', 'Open Session')]);
+    });
+
+    it('asks while files are under review, and with Keep All keeps them before opening', async () => {
+      const { manager, review, keptIn, user, commands } = setup({ one: sessionAgent('one', loads).script });
+      await manager.connectToAgent('one');
+      review.paths = ['/w/a.ts'];
+      user.answer('Keep All and Open');
+
+      await commands.open('one', 'old');
+
+      expect(keptIn).toEqual(['one-1']);
+      expect(manager.getActiveSessionId()).toBe('old');
+      expect(user.take()).toEqual([
+        asked(`Open a different session? ${underReview('1 file is')}`, 'Open Session', 'Keep All and Open'),
+        focusChatView,
+        progress('Loading session…'),
       ]);
     });
 
