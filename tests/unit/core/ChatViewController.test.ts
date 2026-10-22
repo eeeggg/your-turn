@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
+import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
 import { setLogSink } from '@/core/Log';
 import type { FileEditor } from '@/core/ReportedFiles';
@@ -163,8 +164,9 @@ function setup() {
   const sessions = new FakeSessions();
   const environment = new FakeEnvironment();
   const editor = new FakeEditor();
-  const controller = new ChatViewController(sessions, environment, editor);
-  return { sessions, environment, editor, controller };
+  const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
+  const controller = new ChatViewController(sessions, environment, editor, terminals);
+  return { sessions, environment, editor, terminals, controller };
 }
 
 function sendPrompt(controller: ChatViewController, text: string): Promise<void> {
@@ -722,6 +724,119 @@ describe('ChatViewController', () => {
         ] },
         { type: 'toolCall', toolCallId: 't1', content: [{ kind: 'text', text: 'edited' }] },
       ]);
+    });
+
+    it("passes on a tool call's terminals by ID, and tells the webview of each terminal once its changes settle, for the active session only", async () => {
+      vi.useFakeTimers();
+      try {
+        const { sessions, environment, terminals, controller } = setup();
+        sessions.session = sessionInfo();
+        const feed = (sessionId: string, update: SessionUpdate) => {
+          controller.handleSessionUpdate(sessionId, update);
+          terminals.handleSessionUpdate(sessionId, update);
+        };
+
+        feed('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'terminal', terminalId: 'term' }] });
+        feed('s1', { kind: 'terminal', terminalId: 'term', command: 'npm test' });
+        feed('s1', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('\x1b[31mfailed\x1b[0m\n') });
+        feed('other', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('elsewhere') });
+        feed('s1', { kind: 'terminal', terminalId: 'term', exitStatus: { exitCode: 1, signal: null } });
+        await vi.advanceTimersByTimeAsync(300);
+
+        expect(environment.take()).toEqual([
+          { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'terminal', terminalId: 'term' }] },
+          { type: 'terminal', terminalId: 'term', text: 'failed', truncated: false, exitStatus: { exitCode: 1, signal: null } },
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("posts an execute tool call's title and status at once, and its text once cleaned, as command output", async () => {
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
+
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
+        { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
+      ] });
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(environment.take()).toEqual([
+        { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }] },
+      ]);
+    });
+
+    it("drops an execute tool call's cleaned text once its session is no longer shown", async () => {
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
+
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
+      sessions.activeId = null;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1' }]);
+    });
+
+    describe("the output of a session that ended, which goes once the chat view clears the session's transcript", () => {
+      function shown() {
+        const { sessions, terminals, controller } = setup();
+        for (const sessionId of ['s1', 's2']) {
+          terminals.handleSessionUpdate(sessionId, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('out') });
+        }
+        controller.notifyActiveSessionChanged();
+        /** The session is removed, as the session manager removes it, and no session is shown. */
+        const removed = (sessionId: string) => {
+          terminals.endSession(sessionId);
+          sessions.activeId = null;
+          controller.notifyActiveSessionChanged();
+        };
+        return { sessions, terminals, controller, removed };
+      }
+
+      it('stays while the chat view keeps the transcript of a session whose agent exited, and goes once it shows another', () => {
+        const { sessions, terminals, controller, removed } = shown();
+
+        controller.notifySessionEnded('s1', 'Fake exited unexpectedly (code 1).');
+        removed('s1');
+        expect(terminals.info('s1', 't1')).toBeDefined();
+
+        sessions.activeId = 's2';
+        controller.notifyActiveSessionChanged();
+        expect(terminals.info('s1', 't1')).toBeUndefined();
+        expect(terminals.info('s2', 't1')).toBeDefined();
+      });
+
+      it('goes when the user disconnects, as the chat view then shows nothing', () => {
+        const { terminals, removed } = shown();
+
+        removed('s1');
+
+        expect(terminals.info('s1', 't1')).toBeUndefined();
+        expect(terminals.info('s2', 't1')).toBeDefined();
+      });
+
+      it('goes when the transcript is cleared', () => {
+        const { terminals, controller, removed } = shown();
+        controller.notifySessionEnded('s1', 'Fake exited unexpectedly (code 1).');
+        removed('s1');
+
+        controller.clearTranscript();
+
+        expect(terminals.info('s1', 't1')).toBeUndefined();
+      });
+    });
+
+    it("forgets a removed session's commands", () => {
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute' });
+
+      controller.notifySessionRemoved('s1');
+      environment.take();
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] });
+
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] }]);
     });
 
     it('reports pickers from the session once it has applied the change', () => {

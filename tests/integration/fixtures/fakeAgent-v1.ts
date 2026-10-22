@@ -11,7 +11,8 @@ import { Readable, Writable } from 'node:stream';
  * A prompt streams "hello", requests permission, then streams
  * "perm:<optionId>". A cancel notification streams "cancel-ack".
  * A prompt of "edit <dir>" instead edits `a.ts` in that directory, creates `new.ts` there and reports both as one
- * tool call's whole-file diffs.
+ * tool call's whole-file diffs. A prompt of "run" reports a command it ran, as an `execute` tool call with its output
+ * as text, as a v1 agent does: `commandoutput.test.ts` expects the same output as `fakeAgent-v2.ts`'s terminal.
  */
 
 const SESSION_ID = 'fake-session';
@@ -53,6 +54,20 @@ async function edit(client: AgentContext, sessionId: string, dir: string): Promi
   });
 }
 
+function run(client: AgentContext, sessionId: string): Promise<void> {
+  return client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'run-1',
+      title: 'npm test',
+      kind: 'execute',
+      status: 'completed',
+      content: [{ type: 'content', content: { type: 'text', text: '\x1b[32mPASS\x1b[0m a.test.ts\nDownloading 5%\rDownloading done\ncafé\n' } }],
+    },
+  });
+}
+
 agent({ name: 'fake-agent' })
   .onRequest(methods.agent.initialize, () => ({
     protocolVersion: PROTOCOL_VERSION,
@@ -71,6 +86,10 @@ agent({ name: 'fake-agent' })
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
     if (text.startsWith('edit ')) {
       await edit(client, params.sessionId, text.slice('edit '.length));
+      return { stopReason: 'end_turn' };
+    }
+    if (text === 'run') {
+      await run(client, params.sessionId);
       return { stopReason: 'end_turn' };
     }
     const say = (text: string) => client.notify(methods.client.session.update, {

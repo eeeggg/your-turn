@@ -16,6 +16,7 @@ import {
   type EntryId,
   type PartIndex,
   type Plan,
+  type ShownBlock,
   type Thought,
   type ToolCall,
   type ToolCallGroup,
@@ -213,7 +214,16 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
 const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: EntryId; call: ToolCall }) {
   const dispatch = useDispatch();
   const cwd = useSelector((state) => state.activeSession?.cwd ?? null);
-  const { blocks, truncated } = useMemo(() => shownContent(call.content, cwd, call.open), [call.content, cwd, call.open]);  return (
+  const terminals = useSelector((state) => state.transcript.terminals);
+  const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
+  const sessionId = useSelector((state) => state.transcript.sessionId);
+  const title = call.title || 'Tool Call';
+  const { blocks, truncated, running } = useMemo(
+    () => shownContent(call.content, { cwd, terminals, sessionEnded }, call.open),
+    [call.content, cwd, terminals, sessionEnded, call.open],
+  );
+  const command = blocks.find((block): block is CommandBlock => block.kind === 'command');
+  return (
     <details
       className="tool-call-inline rounded-sm bg-muted px-1.5 py-0.75 text-sm opacity-85 open:opacity-100"
       id={`tc-${call.toolCallId}`}
@@ -222,29 +232,75 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
         dispatch({ type: 'toolCallToggled', turnId, toolCallId: call.toolCallId, open: event.currentTarget.open })
       }
     >
-      <summary className="tc-summary flex cursor-pointer items-center gap-1.5 select-none">
+      <summary
+        className="tc-summary flex cursor-pointer items-center gap-1.5 select-none"
+        data-vscode-context={command && commandOutputContext(command, sessionId, call.toolCallId, title)}
+      >
         <span className={`tc-icon ${call.status} w-3.5 flex-none text-center ${statusColor[call.status]}`}>
           {statusGlyph(call.status)}
         </span>
-        <span className="tc-title flex-1 truncate">{call.title || 'Tool Call'}</span>
+        <span className="tc-title flex-1 truncate">{title}</span>
+        {running && (
+          <span
+            className="tc-running spinner inline-block size-3 flex-none animate-spin rounded-full border-2 border-foreground border-t-transparent opacity-60"
+            title="Command running"
+          />
+        )}
       </summary>
       <div className="tc-body mt-1 border-t border-border pt-1" style={blocks.length === 0 ? { display: 'none' } : undefined}>
         <div className="tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90">
-          {blocks.map((block, index) =>
-            block.kind === 'text' ? (
-              <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
-                {block.text}
-              </div>
-            ) : (
-              <ToolCallDiffView key={index} files={block.files} toolCallId={call.toolCallId} firstFile={block.firstFile} />
-            ),
-          )}
+          {blocks.map((block, index) => {
+            switch (block.kind) {
+              case 'text':
+                return (
+                  <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
+                    {block.text}
+                  </div>
+                );
+              case 'command':
+                return <CommandOutputView key={index} block={block} sessionId={sessionId} toolCallId={call.toolCallId} title={title} />;
+              case 'diff':
+                return <ToolCallDiffView key={index} files={block.files} toolCallId={call.toolCallId} firstFile={block.firstFile} />;
+            }
+          })}
           {truncated && <div className="tc-body-truncated mt-1 text-muted-foreground italic">... (output truncated)</div>}
         </div>
       </div>
     </details>
   );
 });
+
+type CommandBlock = Extract<ShownBlock, { kind: 'command' }>;
+
+/**
+ * What Open in Terminal reads, which `package.json` contributes to `webview/context` for a right-click on the command's
+ * output or its tool call's title; VS Code's own items stay, so the output can be copied.
+ */
+function commandOutputContext(block: CommandBlock, sessionId: string | null, toolCallId: string, title: string): string | undefined {
+  if (sessionId === null) {
+    return undefined;
+  }
+  const source = block.terminalId !== null ? { acpTerminalId: block.terminalId } : { acpToolCallId: toolCallId };
+  return JSON.stringify({ webviewSection: 'commandOutput', acpSessionId: sessionId, acpTitle: title, ...source });
+}
+
+function CommandOutputView({ block, sessionId, toolCallId, title }: {
+  block: CommandBlock;
+  sessionId: string | null;
+  toolCallId: string;
+  title: string;
+}) {
+  return (
+    <div className="tc-command mb-1 last:mb-0" data-vscode-context={commandOutputContext(block, sessionId, toolCallId, title)}>
+      {block.truncated && <div className="tc-command-cut mb-1 text-muted-foreground italic">Earlier output not shown</div>}
+      {block.text && <div className={`tc-command-text ${plainText}`}>{block.text}</div>}
+      {block.status === 'disconnected' && (
+        <div className="tc-command-disconnected mt-1 text-muted-foreground italic">The agent disconnected before the command finished.</div>
+      )}
+      {block.failure && <div className="tc-command-failure mt-1 text-failure">{block.failure}</div>}
+    </div>
+  );
+}
 
 const statusColor: Record<ToolCallStatus, string> = {
   pending: 'text-pending',

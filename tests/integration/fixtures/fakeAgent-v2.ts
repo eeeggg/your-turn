@@ -1,5 +1,5 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk/experimental/v2';
-import type { AgentContext, ContentBlock, SessionConfigOption, StateUpdate } from '@agentclientprotocol/sdk/experimental/v2';
+import type { AgentContext, ContentBlock, SessionConfigOption, SessionUpdate, StateUpdate } from '@agentclientprotocol/sdk/experimental/v2';
 import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -12,7 +12,8 @@ import { Readable, Writable } from 'node:stream';
  * permission, streams "perm:<optionId>" and goes idle. A cancel notification
  * streams "cancel-ack".
  * A prompt of "edit <dir>" instead edits `a.ts` in that directory and deletes `gone.ts`, reporting both as one tool
- * call's diff: its `changes` and a `git_patch` in ACP's form, with absolute paths and no `a/` or `b/`.
+ * call's diff: its `changes` and a `git_patch` in ACP's form, with absolute paths and no `a/` or `b/`. A prompt of "run"
+ * reports a command it runs in a terminal of its own, as `run` describes.
  */
 
 const SESSION_ID = 'fake-session';
@@ -106,6 +107,32 @@ async function edit(client: AgentContext, sessionId: string, dir: string): Promi
   });
 }
 
+/**
+ * A command's terminal, reported as ACP allows: a chunk before any tool call names the terminal, a snapshot replacing
+ * it, a character split between two chunks, and the exit status last, after its tool call was marked completed, as
+ * Codex does. Its output ends up as `fakeAgent-v1.ts` reports its command's.
+ */
+async function run(client: AgentContext, sessionId: string): Promise<void> {
+  const update = (sessionUpdate: SessionUpdate) => client.notify(methods.client.session.update, { sessionId, update: sessionUpdate });
+  const base64 = (data: string | Uint8Array) => Buffer.from(data).toString('base64');
+  const chunk = (data: string | Uint8Array) => update({ sessionUpdate: 'terminal_output_chunk', terminalId: 'term-1', data: base64(data) });
+  const e = Buffer.from('é');
+
+  await chunk('replaced by the snapshot\n');
+  await update({
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'run-1',
+    title: 'npm test',
+    kind: 'execute',
+    status: 'completed',
+    content: [{ type: 'terminal', terminalId: 'term-1' }],
+  });
+  await update({ sessionUpdate: 'terminal_update', terminalId: 'term-1', command: 'npm test', cwd: process.cwd(), output: { data: base64('\x1b[32mPASS\x1b[0m a.test.ts\n') } });
+  await chunk(Buffer.concat([Buffer.from('Downloading 5%\rDownloading done\ncaf'), e.subarray(0, 1)]));
+  await chunk(Buffer.concat([e.subarray(1), Buffer.from('\n')]));
+  await update({ sessionUpdate: 'terminal_update', terminalId: 'term-1', exitStatus: { exitCode: 1 } });
+}
+
 function promptText(prompt: ContentBlock[]): string {
   return prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
 }
@@ -130,6 +157,12 @@ agent({ name: 'fake-agent' })
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         await edit(client, params.sessionId, text.slice('edit '.length));
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text === 'run') {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await run(client, params.sessionId);
         await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
       })();
     } else {

@@ -26,8 +26,10 @@ import {
   type SessionState,
   type SessionUpdate,
   type SlashCommand,
+  type TerminalExitStatus,
   type ToolCallContent,
   type ToolCallStatus,
+  type ToolKind,
 } from './AcpDriver';
 import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
 
@@ -285,6 +287,7 @@ class Translator {
         kind: 'toolCall',
         toolCallId: update.toolCallId,
         ...(update.title ? { title: update.title } : {}),
+        ...(update.kind !== undefined ? { toolKind: toolKind(update.kind) } : {}),
         ...(status ? { status } : {}),
         ...(content ? { content } : {}),
       };
@@ -298,6 +301,19 @@ class Translator {
       const content = [...calls.get(update.toolCallId) ?? [], ...added];
       calls.set(update.toolCallId, content);
       return { kind: 'toolCall', toolCallId: update.toolCallId, content };
+    }
+    if (updates.isTerminalUpdate(update)) {
+      return {
+        kind: 'terminal',
+        terminalId: update.terminalId,
+        ...(update.command !== undefined ? { command: update.command } : {}),
+        ...(update.cwd !== undefined ? { cwd: update.cwd } : {}),
+        ...(update.output !== undefined ? { output: update.output === null ? null : bytes(update.output.data) } : {}),
+        ...(update.exitStatus !== undefined ? { exitStatus: update.exitStatus === null ? null : exitStatus(update.exitStatus) } : {}),
+      };
+    }
+    if (updates.isTerminalOutputChunk(update)) {
+      return { kind: 'terminalOutput', terminalId: update.terminalId, data: bytes(update.data) };
     }
     if (updates.isPlanUpdate(update)) {
       return Acp.PlanUpdateContent.isItems(update.plan)
@@ -345,13 +361,16 @@ function messageText(content: Acp.ContentBlock[] | null): string {
 }
 
 /**
- * A tool call's non-empty text blocks and its diffs, but not a diff with no change the interface can hold, which says
- * nothing about any file; terminals have no place in the interface yet.
+ * A tool call's non-empty text blocks, its diffs and its terminals, but not a diff with no change the interface can
+ * hold, which says nothing about any file.
  */
 function toolCallContent(content: readonly Acp.ToolCallContent[], toolCallId: string): ToolCallContent[] {
   return content.flatMap((item): ToolCallContent[] => {
     if (Acp.ToolCallContent.isContent(item)) {
       return Acp.ContentBlock.isText(item.content) && item.content.text ? [{ kind: 'text', text: item.content.text }] : [];
+    }
+    if (Acp.ToolCallContent.isTerminal(item)) {
+      return [{ kind: 'terminal', terminalId: item.terminalId }];
     }
     if (Acp.ToolCallContent.isDiff(item)) {
       const changes = item.changes.flatMap(fileChange);
@@ -488,6 +507,33 @@ function fileType(type: Acp.DiffFileType | null | undefined): FileChange['fileTy
     case null:
     case undefined:
       return null;
+    default:
+      return 'other';
+  }
+}
+
+/** Terminal bytes, which ACP sends in base64, as a plain Uint8Array: a Buffer's slice shares its bytes rather than copying them. */
+function bytes(base64: string): Uint8Array {
+  return new Uint8Array(Buffer.from(base64, 'base64'));
+}
+
+function exitStatus(status: Acp.TerminalExitStatus): TerminalExitStatus {
+  return { exitCode: status.exitCode ?? null, signal: status.signal ?? null };
+}
+
+/** A custom or future kind is `other`, as is a kind cleared with null, which leaves ACP's default. */
+function toolKind(kind: Acp.ToolKind | null): ToolKind {
+  switch (kind) {
+    case 'read':
+    case 'edit':
+    case 'delete':
+    case 'move':
+    case 'search':
+    case 'execute':
+    case 'think':
+    case 'fetch':
+    case 'switch_mode':
+      return kind;
     default:
       return 'other';
   }

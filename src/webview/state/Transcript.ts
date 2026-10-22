@@ -1,4 +1,5 @@
 import type {
+  ExitStatus,
   ExtensionToWebviewMessage,
   PlanStep,
   PlanStepStatus,
@@ -84,12 +85,21 @@ interface TranscriptError {
 
 export type TranscriptEntry = Prompt | Turn | TranscriptError;
 
+/** An agent's terminal as last reported; its command runs while `exitStatus` is null. */
+interface Terminal {
+  readonly text: string;
+  readonly truncated: boolean;
+  readonly exitStatus: ExitStatus | null;
+}
+
 export interface TranscriptState {
   /** The session the entries belong to; a `state` for any other session clears them, unless {@link sessionEnded}. */
   readonly sessionId: string | null;
   /** Its agent exited, ending the session; the entries stay through the sessionless `state` that follows, until another session replaces them. */
   readonly sessionEnded: boolean;
   readonly entries: readonly TranscriptEntry[];
+  /** The session's terminals by ID, which its tool calls show, whichever was reported first. */
+  readonly terminals: ReadonlyMap<string, Terminal>;
   readonly nextId: EntryId;
   /** The turn the agent's work goes into, until the turn ends. */
   readonly currentTurn: EntryId | null;
@@ -109,6 +119,7 @@ export const initialTranscript: TranscriptState = {
   sessionId: null,
   sessionEnded: false,
   entries: [],
+  terminals: new Map(),
   nextId: 1,
   currentTurn: null,
   queued: [],
@@ -163,27 +174,71 @@ export function planStepIcon(status: PlanStepStatus): string {
   }
 }
 
+/** A command runs until its terminal says how it ended, or until its session ends first. */
+type CommandStatus = 'running' | 'disconnected' | 'ended';
+
 export type ShownBlock =
   | { readonly kind: 'text'; readonly text: string }
   /** `firstFile` is the place of its first file across the tool call's diffs, which `diffFileChosen` names. */
-  | { readonly kind: 'diff'; readonly files: readonly DiffFile[]; readonly firstFile: number };
+  | { readonly kind: 'diff'; readonly files: readonly DiffFile[]; readonly firstFile: number }
+  /**
+   * The end of a command's output, `truncated` when earlier output is not in it; `failure` says how it failed. Its
+   * terminal, or null for the tool call's own text, is what Open in Terminal opens.
+   */
+  | {
+    readonly kind: 'command';
+    readonly text: string;
+    readonly truncated: boolean;
+    readonly status: CommandStatus;
+    readonly failure: string | null;
+    readonly terminalId: string | null;
+  };
+
+/** Where a tool call's content is shown: the session's terminals, and whether the session ended. */
+export interface ContentContext {
+  readonly cwd: string | null;
+  readonly terminals: ReadonlyMap<string, Terminal>;
+  readonly sessionEnded: boolean;
+}
 
 /**
  * The tool call's content as shown, in the order reported: at most `TOOL_CALL_CONTENT_LIMIT` characters of text across
- * its blocks, `truncated` when there was more; and, only `withDiffs`, its diffs' files, at most
- * `TOOL_CALL_DIFF_LINE_LIMIT` lines across them.
+ * its blocks, `truncated` when there was more; commands' output, each cut already, and its terminals once reported;
+ * and, only `withDiffs`, its diffs' files, at most `TOOL_CALL_DIFF_LINE_LIMIT` lines across them. `running` while a
+ * command of its terminals runs.
  */
 export function shownContent(
   content: readonly ToolCallContent[],
-  cwd: string | null,
+  { cwd, terminals, sessionEnded }: ContentContext,
   withDiffs: boolean,
-): { blocks: ShownBlock[]; truncated: boolean } {
+): { blocks: ShownBlock[]; truncated: boolean; running: boolean } {
   const blocks: ShownBlock[] = [];
   let textRoom = TOOL_CALL_CONTENT_LIMIT;
   let lineRoom = TOOL_CALL_DIFF_LINE_LIMIT;
   let fileCount = 0;
   let truncated = false;
+  let running = false;
   for (const item of content) {
+    if (item.kind === 'commandOutput') {
+      blocks.push({ kind: 'command', text: item.text, truncated: item.truncated, status: 'ended', failure: null, terminalId: null });
+      continue;
+    }
+    if (item.kind === 'terminal') {
+      const terminal = terminals.get(item.terminalId);
+      if (terminal) {
+        const status = commandStatus(terminal, sessionEnded);
+        blocks.push({
+          kind: 'command',
+          text: terminal.text,
+          truncated: terminal.truncated,
+          status,
+          failure: failure(terminal.exitStatus),
+          terminalId: item.terminalId,
+        });
+        running ||= status === 'running';
+      }
+      continue;
+    }
     if (item.kind === 'diff') {
       if (withDiffs) {
         const { files, shown } = withinLineLimit(diffFiles(item.diff, cwd), lineRoom);
@@ -202,7 +257,23 @@ export function shownContent(
     textRoom -= text.length;
     truncated ||= text.length < item.text.length;
   }
-  return { blocks, truncated };
+  return { blocks, truncated, running };
+}
+
+function commandStatus(terminal: Terminal, sessionEnded: boolean): CommandStatus {
+  if (terminal.exitStatus !== null) {
+    return 'ended';
+  }
+  return sessionEnded ? 'disconnected' : 'running';
+}
+
+/** Only a failure is worth saying; a command that exited 0, or whose end the agent did not explain, says nothing. */
+function failure(exitStatus: ExitStatus | null): string | null {
+  if (exitStatus?.signal) {
+    return `Ended by ${exitStatus.signal}`;
+  }
+  const code = exitStatus?.exitCode ?? 0;
+  return code === 0 ? null : `Exit code ${code}`;
 }
 
 export function updateTranscript(
@@ -254,6 +325,10 @@ export function updateTranscript(
       return stateOnly(withPromptReplaced(transcript, action, now));
     case 'toolCall':
       return stateOnly(withToolCallReported(transcript, action, now));
+    case 'terminal': {
+      const { text, truncated, exitStatus } = action;
+      return stateOnly({ ...transcript, terminals: new Map(transcript.terminals).set(action.terminalId, { text, truncated, exitStatus }) });
+    }
     case 'plan':
       return stateOnly(withPlan(transcript, { kind: 'plan', steps: action.steps }, now));
     case 'thoughtToggled':
@@ -496,10 +571,20 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 }
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
-  const empty = transcript.entries.length === 0 && transcript.currentTurn === null && transcript.queued.length === 0;
+  const empty =
+    transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.currentTurn === null && transcript.queued.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
-    : { ...transcript, sessionId, sessionEnded: false, entries: [], currentTurn: null, queued: [], followRequests: transcript.followRequests + 1 };
+    : {
+      ...transcript,
+      sessionId,
+      sessionEnded: false,
+      entries: [],
+      terminals: new Map(),
+      currentTurn: null,
+      queued: [],
+      followRequests: transcript.followRequests + 1,
+    };
 }
 
 function withCurrent(transcript: TranscriptState, currentTurn: EntryId | null): TranscriptState {

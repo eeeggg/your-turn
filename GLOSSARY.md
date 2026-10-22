@@ -148,6 +148,14 @@ _Avoid_: thinking, reasoning
 An action the agent reports taking, such as editing a file or running a command, with its status.
 _Avoid_: tool use, action, step
 
+**Command output**:
+What a command the agent ran wrote: an agent terminal's output, or the text of an `execute` tool call. The tool call shows its end, cleaned of control sequences; Open in Terminal shows all of it that was kept, in a read-only VS Code terminal.
+_Avoid_: logs, console output
+
+**Agent terminal**:
+A terminal the agent owns and reports by ID (ACP v2), for display only: the extension shows its output and has no control over it.
+_Avoid_: client terminal (ACP v1's, which the client creates; the extension offers none), shell
+
 **Plan**:
 The agent's list of intended steps and their statuses.
 _Avoid_: todo list, tasks

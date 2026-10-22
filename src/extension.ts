@@ -9,6 +9,7 @@ import { SessionManager } from '@/core/SessionManager';
 import { SessionHistoryStore } from '@/core/SessionHistoryStore';
 import { SessionList } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
 import { log, setLogSink } from '@/core/Log';
@@ -16,6 +17,7 @@ import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
 import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
+import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
@@ -95,7 +97,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
   const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri);
   const reportedFileEditor = new ReportedFileEditor();
-  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor);
+  const agentTerminals = new AgentTerminals(pseudoterminalDisplays);
+  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals);
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
   });
@@ -108,6 +111,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     });
   });
   sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
+  sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
+  sessionManager.on('session-removed', (sessionId) => {
+    agentTerminals.endSession(sessionId);
+    chatViewController.notifySessionRemoved(sessionId);
+  });
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
     ChatWebviewProvider.viewType,
     chatWebviewProvider,
@@ -128,7 +136,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionManager.on('mode-changed', () => {
     chatViewController.notifyPickersChanged();
   });
-  sessionManager.on('session-load-start', () => {
+  sessionManager.on('session-load-start', (sessionId) => {
+    // The load replays the terminals' updates, which would add their chunks to what is kept again.
+    agentTerminals.forgetSession(sessionId);
     chatViewController.notifyLoadSessionStart();
   });
   sessionManager.on('session-load-end', (_sessionId, _agentName, ok) => {
@@ -209,6 +219,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.commands.registerCommand('acp.removeAgent', (arg?: unknown) => agentConfigurations.remove(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.openToolCallFile', (arg?: unknown) => chooseDiffFile(arg, 'file')),
     vscode.commands.registerCommand('acp.openToolCallChanges', (arg?: unknown) => chooseDiffFile(arg, 'changes')),
+    vscode.commands.registerCommand('acp.openCommandOutput', (arg?: unknown) => {
+      const output = commandOutputOf(arg);
+      if (output && !agentTerminals.open(output.sessionId, output.source, output.name)) {
+        log(`No output kept for ${output.name}`);
+      }
+    }),
     vscode.commands.registerCommand('acp.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
@@ -223,6 +239,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       dispose: () => {
         sessionManager.dispose();
         sessionUpdateHandler.dispose();
+        agentTerminals.dispose();
         chatWebviewProvider.dispose();
         sessionTreeProvider.dispose();
         sessionList.dispose();
@@ -268,4 +285,13 @@ function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileC
   const toolCallId = context?.acpToolCallId;
   const file = context?.acpDiffFile;
   return typeof toolCallId === 'string' && typeof file === 'number' ? { toolCallId, file, open } : undefined;
+}
+
+/** The context menu on a command's output passes the `data-vscode-context` the chat view gave it. */
+function commandOutputOf(arg: unknown): { sessionId: string; source: CommandSource; name: string } | undefined {
+  const context = arg as { acpSessionId?: unknown; acpToolCallId?: unknown; acpTerminalId?: unknown; acpTitle?: unknown } | undefined;
+  const { acpSessionId: sessionId, acpToolCallId: toolCallId, acpTerminalId: terminalId, acpTitle: name } = context ?? {};
+  if (typeof sessionId !== 'string' || typeof name !== 'string') { return undefined; }
+  if (typeof terminalId === 'string') { return { sessionId, source: { kind: 'terminal', terminalId }, name }; }
+  return typeof toolCallId === 'string' ? { sessionId, source: { kind: 'toolCall', toolCallId }, name } : undefined;
 }

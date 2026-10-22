@@ -494,6 +494,7 @@ describe('V2Driver', () => {
       )).toEqual([
         ['s1', { kind: 'toolCall', toolCallId: 'c1', title: 'Read a.ts', status: 'running', content: texts('first') }],
         ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('first', 'second') }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [...texts('first', 'second'), { kind: 'terminal', terminalId: 'term' }] }],
         ['s2', { kind: 'toolCall', toolCallId: 'c1', content: texts('elsewhere') }],
         ['s1', { kind: 'toolCall', toolCallId: 'c1', status: 'completed' }],
         ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced') }],
@@ -541,6 +542,48 @@ describe('V2Driver', () => {
             { operation: 'modify', path: '/work/b.ts', fileType: null, mimeType: null },
           ], patch: { format: 'other', text: '@@ -1 +1 @@' } } },
         ] }],
+      ]);
+    });
+
+    it("keeps a tool call's terminals among its content, by ID, in the order reported", async () => {
+      expect(await updatesFor({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+        { type: 'terminal', terminalId: 'build' },
+        { type: 'content', content: text('between') },
+        { type: 'terminal', terminalId: 'test' },
+      ] })).toEqual([{ kind: 'toolCall', toolCallId: 'c1', content: [
+        { kind: 'terminal', terminalId: 'build' },
+        { kind: 'text', text: 'between' },
+        { kind: 'terminal', terminalId: 'test' },
+      ] }]);
+    });
+
+    it("passes on a terminal's updates as reported, a field left out, cleared or given, its output decoded from base64", async () => {
+      const output = Buffer.from('café\r\n');
+      expect(await updatesFor(
+        { sessionUpdate: 'terminal_update', terminalId: 't1', command: 'npm test', cwd: '/work', output: { data: output.toString('base64') } },
+        { sessionUpdate: 'terminal_update', terminalId: 't1', exitStatus: { exitCode: 1 } },
+        { sessionUpdate: 'terminal_update', terminalId: 't2' },
+        { sessionUpdate: 'terminal_update', terminalId: 't2', command: null, cwd: null, output: null, exitStatus: null },
+        { sessionUpdate: 'terminal_update', terminalId: 't2', exitStatus: { signal: 'SIGTERM' } },
+        { sessionUpdate: 'terminal_update', terminalId: 't2', exitStatus: {} },
+      )).toEqual([
+        { kind: 'terminal', terminalId: 't1', command: 'npm test', cwd: '/work', output: new Uint8Array(output) },
+        { kind: 'terminal', terminalId: 't1', exitStatus: { exitCode: 1, signal: null } },
+        { kind: 'terminal', terminalId: 't2' },
+        { kind: 'terminal', terminalId: 't2', command: null, cwd: null, output: null, exitStatus: null },
+        { kind: 'terminal', terminalId: 't2', exitStatus: { exitCode: null, signal: 'SIGTERM' } },
+        { kind: 'terminal', terminalId: 't2', exitStatus: { exitCode: null, signal: null } },
+      ]);
+    });
+
+    it("passes on a terminal's output chunks as their bytes, each decoded alone, even with a character split between them", async () => {
+      const [first, second] = [Buffer.from('caf\xc3', 'latin1'), Buffer.from('\xa9\n', 'latin1')];
+      expect(await passedUp(
+        ['s1', { sessionUpdate: 'terminal_output_chunk', terminalId: 't1', data: first.toString('base64') }],
+        ['s2', { sessionUpdate: 'terminal_output_chunk', terminalId: 't1', data: second.toString('base64') }],
+      )).toEqual([
+        ['s1', { kind: 'terminalOutput', terminalId: 't1', data: new Uint8Array(first) }],
+        ['s2', { kind: 'terminalOutput', terminalId: 't1', data: new Uint8Array(second) }],
       ]);
     });
 
@@ -699,6 +742,19 @@ describe('V2Driver', () => {
     ] as const)('shows a tool call reported %s as %s', async (status, expected) => {
       const [update] = await updatesFor({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', status });
       expect(update).toEqual({ kind: 'toolCall', toolCallId: 'c1', ...(expected ? { status: expected } : {}) });
+    });
+
+    it.each([
+      ['execute', 'execute'],
+      ['read', 'read'],
+      ['switch_mode', 'switch_mode'],
+      ['other', 'other'],
+      ['_vendor_deploy', 'other'],
+      [null, 'other'],
+      [undefined, undefined],
+    ] as const)("passes on a tool call's kind %s as %s", async (kind, expected) => {
+      const [update] = await updatesFor({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', ...(kind !== undefined ? { kind } : {}) });
+      expect(update).toEqual({ kind: 'toolCall', toolCallId: 'c1', ...(expected ? { toolKind: expected } : {}) });
     });
 
     it('passes up a plan of items, showing a cancelled or unknown step as not done, and drops plans of another type', async () => {

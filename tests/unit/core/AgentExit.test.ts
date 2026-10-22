@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { methods } from '@agentclientprotocol/sdk';
+import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionManager } from '@/core/SessionManager';
@@ -39,12 +40,18 @@ function setup() {
   const turnInProgress: unknown[] = [];
   const toExtension = (message: WebviewToExtensionMessage) => setImmediate(() => void controller.handleMessage(message));
   const store = createStore(initialState, update, toExtension, () => 0);
+  const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
   const controller = new ChatViewController(manager, {
     post: (message) => store.dispatch(message),
     executeCommand: async (...args) => { turnInProgress.push(args[2]); },
     showsToolCallDiffs: () => false,
-  }, unusedEditor);
+  }, unusedEditor, terminals);
   updates.addListener((sessionId, update) => controller.handleSessionUpdate(sessionId, update));
+  updates.addListener((sessionId, update) => terminals.handleSessionUpdate(sessionId, update));
+  manager.on('session-removed', (sessionId) => {
+    terminals.endSession(sessionId);
+    controller.notifySessionRemoved(sessionId);
+  });
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
   manager.on('session-ended', (sessionId, reason) => controller.notifySessionEnded(sessionId, reason));
 

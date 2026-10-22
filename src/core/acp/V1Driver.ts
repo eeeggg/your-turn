@@ -239,6 +239,7 @@ function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
         kind: 'toolCall',
         toolCallId: update.toolCallId,
         ...(update.title ? { title: update.title } : {}),
+        ...(update.kind ? { toolKind: update.kind } : {}),
         ...(status ? { status } : {}),
         ...(update.content ? { content: toolCallContent(update.content) } : {}),
       };
@@ -271,7 +272,7 @@ function textForUser(content: Acp.ContentBlock): string | null {
   return audience && !audience.includes('user') ? null : content.text;
 }
 
-/** A tool call's non-empty text blocks and its diffs; terminals have no place in the interface yet. */
+/** A tool call's non-empty text blocks and its diffs; a v1 terminal is one the client creates, and the extension offers none. */
 function toolCallContent(content: readonly Acp.ToolCallContent[]): ToolCallContent[] {
   return content.flatMap((block): ToolCallContent[] => {
     switch (block.type) {
