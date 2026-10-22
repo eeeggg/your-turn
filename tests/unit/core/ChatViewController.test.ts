@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
+import { setLogSink } from '@/core/Log';
+import type { FileEditor } from '@/core/ReportedFiles';
 import type { SessionInfo } from '@/core/SessionManager';
-import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, Picker, ReportedFile } from '@/shared/WebviewMessages';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -134,6 +136,11 @@ class FakeEnvironment implements ChatViewEnvironment {
     this.posted.push(message);
   }
   executeCommand = vi.fn<ChatViewEnvironment['executeCommand']>(async () => {});
+  showsDiffs = false;
+
+  showsToolCallDiffs(): boolean {
+    return this.showsDiffs;
+  }
 
   /** Messages posted since the last call. */
   take(): ExtensionToWebviewMessage[] {
@@ -143,11 +150,21 @@ class FakeEnvironment implements ChatViewEnvironment {
   }
 }
 
+/** A workspace with nothing in it. */
+class FakeEditor implements FileEditor {
+  exists = vi.fn<FileEditor['exists']>(async () => false);
+  readText = vi.fn<FileEditor['readText']>(async () => null);
+  open = vi.fn<FileEditor['open']>(async () => {});
+  showChanges = vi.fn<FileEditor['showChanges']>(async () => {});
+  showInformationMessage = vi.fn<FileEditor['showInformationMessage']>(async () => undefined);
+}
+
 function setup() {
   const sessions = new FakeSessions();
   const environment = new FakeEnvironment();
-  const controller = new ChatViewController(sessions, environment);
-  return { sessions, environment, controller };
+  const editor = new FakeEditor();
+  const controller = new ChatViewController(sessions, environment, editor);
+  return { sessions, environment, editor, controller };
 }
 
 function sendPrompt(controller: ChatViewController, text: string): Promise<void> {
@@ -632,15 +649,78 @@ describe('ChatViewController', () => {
       expect(translated({ kind: 'agentMessage', messageId: 'm1', text: 'Hi all' })).toEqual([{ type: 'agentMessage', messageId: 'm1', text: 'Hi all' }]);
       expect(translated({ kind: 'thoughtMessage', messageId: 'r1', text: 'Hmm' })).toEqual([{ type: 'thoughtMessage', messageId: 'r1', text: 'Hmm' }]);
       expect(translated({ kind: 'promptMessage', messageId: 'u1', text: 'Fix' })).toEqual([{ type: 'promptMessage', messageId: 'u1', text: 'Fix' }]);
-      expect(translated({ kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] })).toEqual([
-        { type: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] },
+      expect(translated({ kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', content: [
+        { kind: 'text', text: 'ok' },
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a', newText: 'b' } },
+        { kind: 'text', text: 'done' },
+      ] })).toEqual([
+        { type: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', content: [{ kind: 'text', text: 'ok' }, { kind: 'text', text: 'done' }] },
       ]);
+      expect(translated({ kind: 'toolCall', toolCallId: 't1', content: [] })).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [] }]);
       expect(translated({ kind: 'toolCall', toolCallId: 't1' })).toEqual([{ type: 'toolCall', toolCallId: 't1' }]);
       expect(translated({ kind: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] })).toEqual([
         { type: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] },
       ]);
       expect(translated({ kind: 'commands', commands: [{ name: 'review', description: 'Review', takesInput: true, hint: 'what' }] })).toEqual([
         { type: 'commands', commands: [{ name: 'review', description: 'Review', takesInput: true, hint: 'what' }] },
+      ]);
+    });
+
+    it("passes on a tool call's diffs of both kinds while acp.showToolCallDiffs is on, in the order reported among its texts", () => {
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
+      environment.showsDiffs = true;
+
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 't1', content: [
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'a' } },
+        { kind: 'text', text: 'moved' },
+        { kind: 'diff', diff: {
+          kind: 'changes',
+          changes: [
+            { operation: 'move', path: '/work/to.ts', oldPath: '/work/from.ts', fileType: 'text', mimeType: null },
+            { operation: 'delete', path: '/work/old.bin', fileType: 'binary', mimeType: 'application/octet-stream' },
+          ],
+          patch: { format: 'git_patch', text: 'diff --git /work/from.ts /work/to.ts\n' },
+        } },
+        { kind: 'diff', diff: { kind: 'changes', changes: [{ operation: 'add', path: '/work/dir', fileType: 'directory', mimeType: null }], patch: null } },
+      ] });
+
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'a' } },
+        { kind: 'text', text: 'moved' },
+        { kind: 'diff', diff: {
+          kind: 'changes',
+          changes: [
+            { operation: 'move', path: '/work/to.ts', oldPath: '/work/from.ts', fileType: 'text', mimeType: null },
+            { operation: 'delete', path: '/work/old.bin', fileType: 'binary', mimeType: 'application/octet-stream' },
+          ],
+          patch: { format: 'git_patch', text: 'diff --git /work/from.ts /work/to.ts\n' },
+        } },
+        { kind: 'diff', diff: { kind: 'changes', changes: [{ operation: 'add', path: '/work/dir', fileType: 'directory', mimeType: null }], patch: null } },
+      ] }]);
+    });
+
+    it('reads acp.showToolCallDiffs for each tool call update', () => {
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
+      const edited: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', content: [
+        { kind: 'text', text: 'edited' },
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a', newText: 'b' } },
+      ] };
+
+      controller.handleSessionUpdate('s1', edited);
+      environment.showsDiffs = true;
+      controller.handleSessionUpdate('s1', edited);
+      environment.showsDiffs = false;
+      controller.handleSessionUpdate('s1', edited);
+
+      expect(environment.take()).toEqual([
+        { type: 'toolCall', toolCallId: 't1', content: [{ kind: 'text', text: 'edited' }] },
+        { type: 'toolCall', toolCallId: 't1', content: [
+          { kind: 'text', text: 'edited' },
+          { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a', newText: 'b' } },
+        ] },
+        { type: 'toolCall', toolCallId: 't1', content: [{ kind: 'text', text: 'edited' }] },
       ]);
     });
 
@@ -750,6 +830,58 @@ describe('ChatViewController', () => {
         answer('a', 'm1'),
         answer('b', 'm2'),
       ]);
+    });
+  });
+
+  describe("a tool call's files", () => {
+    const edited: ReportedFile = { path: '/work/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } };
+
+    it('opens the file the webview names, and its changes in the diff editor', async () => {
+      const { editor, controller } = setup();
+
+      await controller.handleMessage({ type: 'openFile', file: edited });
+      await controller.handleMessage({ type: 'openChanges', file: edited });
+
+      expect(editor.open.mock.calls).toEqual([['/work/a.ts']]);
+      expect(editor.showChanges.mock.calls).toEqual([['/work/a.ts', 'a\n', 'b\n']]);
+    });
+
+    it("passes a patch's hunks on whole, to undo them on the file as it is now", async () => {
+      const { editor, controller } = setup();
+      editor.readText.mockResolvedValueOnce('b\n');
+      const patched: ReportedFile = {
+        path: '/work/a.ts',
+        operation: 'modify',
+        lines: { kind: 'hunks', hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }] },
+      };
+
+      await controller.handleMessage({ type: 'openChanges', file: patched });
+
+      expect(editor.showChanges.mock.calls).toEqual([['/work/a.ts', 'a\n', 'b\n']]);
+    });
+
+    it('logs a file the editor fails to open, as nothing else is waiting on it', async () => {
+      const { editor, controller } = setup();
+      const failure = new Error('no editor');
+      editor.open.mockRejectedValueOnce(failure);
+      const errors: unknown[][] = [];
+      setLogSink({ log() {}, warn() {}, error: (...args) => errors.push(args), traffic() {} });
+
+      try {
+        await expect(controller.handleMessage({ type: 'openFile', file: edited })).resolves.toBeUndefined();
+      } finally {
+        setLogSink(undefined);
+      }
+
+      expect(errors).toEqual([['Failed to open /work/a.ts', failure]]);
+    });
+
+    it('asks the webview for the file the user chose from the context menu, as only it knows which that is', () => {
+      const { environment, controller } = setup();
+
+      controller.chooseDiffFile({ toolCallId: 't1', file: 2, open: 'changes' });
+
+      expect(environment.take()).toEqual([{ type: 'diffFileChosen', toolCallId: 't1', file: 2, open: 'changes' }]);
     });
   });
 });

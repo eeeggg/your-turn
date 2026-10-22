@@ -97,6 +97,30 @@ export type PromptPart = { kind: 'text'; text: string } | ({ kind: 'fileLink' } 
 
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 
+/** A tool call's content, in the order the agent reported it. */
+export type ToolCallContent = { kind: 'text'; text: string } | { kind: 'diff'; diff: FileDiff };
+
+/** What a tool call reports it changed, in the form its ACP version holds it: neither form can be made the other without reading the disk. */
+export type FileDiff =
+  /** A file's whole content before and after; `oldText` is null for a new file. */
+  | { kind: 'wholeFile'; path: string; oldText: string | null; newText: string }
+  /**
+   * Which files changed and how, with patch text for some or all of them, or none. `other` is a patch format ACP added
+   * after this was written, or one an agent added.
+   */
+  | { kind: 'changes'; changes: FileChange[]; patch: { format: 'git_patch' | 'other'; text: string } | null };
+
+/** A change to one file; a custom or future operation has no place here, as ACP defines none of its fields, not even a path. */
+export interface FileChange {
+  operation: 'add' | 'delete' | 'modify' | 'move' | 'copy';
+  path: string;
+  /** Where a moved or copied file came from. */
+  oldPath?: string;
+  /** Null when the agent does not say; `other` is a file type ACP added after this was written, or one an agent added. */
+  fileType: 'text' | 'binary' | 'directory' | 'symlink' | 'other' | null;
+  mimeType: string | null;
+}
+
 export type PlanStepStatus = 'pending' | 'running' | 'completed';
 
 export interface PlanStep {
@@ -129,7 +153,7 @@ export type SessionUpdate =
   /** The whole text of a prompt that a load replays, replacing what the prompt with this ID had. */
   | { kind: 'promptMessage'; messageId: string; text: string }
   /** A tool call, new or changed; what it leaves out stays as it was. */
-  | { kind: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; texts?: string[] }
+  | { kind: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; content?: ToolCallContent[] }
   /** Replaces the turn's earlier plan. */
   | { kind: 'plan'; steps: PlanStep[] }
   | { kind: 'commands'; commands: SlashCommand[] }

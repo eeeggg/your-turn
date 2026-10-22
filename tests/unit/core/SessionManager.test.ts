@@ -9,7 +9,7 @@ import { ChatViewController } from '@/core/ChatViewController';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment, type SessionManagerEvents } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, fakeV2Agent, InProcessAgents, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
+import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
 
 /** Let pending callbacks, including agent exits, run. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -73,7 +73,7 @@ function setup(scripts: Record<string, AgentScript>) {
   manager.setHistoryStore(sessionHistory);
 
   // As in the extension, the chat view applies session updates to the sessions.
-  const chatView = new ChatViewController(manager, { post() {}, executeCommand: async () => {} });
+  const chatView = new ChatViewController(manager, { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false }, unusedEditor);
   const received: [string, SessionUpdate][] = [];
   updates.addListener((sessionId, update) => {
     received.push([sessionId, update]);

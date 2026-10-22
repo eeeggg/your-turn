@@ -104,7 +104,7 @@ describe('V1Driver', () => {
       ]);
     });
 
-    it('reports a new tool call and its updates alike, with its status, title and text output', async () => {
+    it('reports a new tool call and its updates alike, with its status, title and content', async () => {
       expect(await translated(
         {
           sessionUpdate: 'tool_call',
@@ -123,12 +123,33 @@ describe('V1Driver', () => {
         { sessionUpdate: 'tool_call_update', toolCallId: 't1', title: '', status: null, content: null },
         { sessionUpdate: 'tool_call', toolCallId: 't2', title: '', status: 'pending' },
       )).toEqual([
-        { kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', texts: ['ok'] },
+        { kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', content: [
+          { kind: 'text', text: 'ok' },
+          { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a', newText: 'b' } },
+        ] },
         { kind: 'toolCall', toolCallId: 't1', status: 'completed' },
-        { kind: 'toolCall', toolCallId: 't1', status: 'failed', texts: [] },
+        { kind: 'toolCall', toolCallId: 't1', status: 'failed', content: [] },
         { kind: 'toolCall', toolCallId: 't1' },
         { kind: 'toolCall', toolCallId: 't2', status: 'pending' },
       ]);
+    });
+
+    it("passes on a tool call's diffs as whole files, in the order reported among its texts, a new file's old text as null", async () => {
+      expect(await translated({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        content: [
+          { type: 'diff', path: '/work/new.ts', newText: 'created' },
+          { type: 'content', content: { type: 'text', text: 'between' } },
+          { type: 'diff', path: '/work/also-new.ts', oldText: null, newText: '' },
+          { type: 'diff', path: '/work/emptied.ts', oldText: 'gone', newText: '' },
+        ],
+      })).toEqual([{ kind: 'toolCall', toolCallId: 't1', content: [
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'created' } },
+        { kind: 'text', text: 'between' },
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/also-new.ts', oldText: null, newText: '' } },
+        { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/emptied.ts', oldText: 'gone', newText: '' } },
+      ] }]);
     });
 
     it('reports the plan as steps', async () => {

@@ -2,10 +2,13 @@ import type {
   ExtensionToWebviewMessage,
   PlanStep,
   PlanStepStatus,
+  ReportedFile,
+  ToolCallContent,
   ToolCallStatus,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { ActiveSession } from '@/webview/state/ActiveSession';
+import { diffFiles, TOOL_CALL_DIFF_LINE_LIMIT, withinLineLimit, type DiffFile } from '@/webview/state/ToolCallDiffs';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
 
@@ -63,7 +66,7 @@ export interface ToolCall {
   readonly toolCallId: string;
   readonly title: string;
   readonly status: ToolCallStatus;
-  readonly texts: readonly string[];
+  readonly content: readonly ToolCallContent[];
   readonly open: boolean;
 }
 
@@ -160,22 +163,46 @@ export function planStepIcon(status: PlanStepStatus): string {
   }
 }
 
-/** The tool call's text as shown: at most `TOOL_CALL_CONTENT_LIMIT` characters across its blocks. */
-export function shownContent(texts: readonly string[]): { blocks: string[]; truncated: boolean } {
-  const blocks: string[] = [];
-  let room = TOOL_CALL_CONTENT_LIMIT;
-  for (const text of texts) {
-    if (room === 0) {
-      return { blocks, truncated: true };
+export type ShownBlock =
+  | { readonly kind: 'text'; readonly text: string }
+  /** `firstFile` is the place of its first file across the tool call's diffs, which `diffFileChosen` names. */
+  | { readonly kind: 'diff'; readonly files: readonly DiffFile[]; readonly firstFile: number };
+
+/**
+ * The tool call's content as shown, in the order reported: at most `TOOL_CALL_CONTENT_LIMIT` characters of text across
+ * its blocks, `truncated` when there was more; and, only `withDiffs`, its diffs' files, at most
+ * `TOOL_CALL_DIFF_LINE_LIMIT` lines across them.
+ */
+export function shownContent(
+  content: readonly ToolCallContent[],
+  cwd: string | null,
+  withDiffs: boolean,
+): { blocks: ShownBlock[]; truncated: boolean } {
+  const blocks: ShownBlock[] = [];
+  let textRoom = TOOL_CALL_CONTENT_LIMIT;
+  let lineRoom = TOOL_CALL_DIFF_LINE_LIMIT;
+  let fileCount = 0;
+  let truncated = false;
+  for (const item of content) {
+    if (item.kind === 'diff') {
+      if (withDiffs) {
+        const { files, shown } = withinLineLimit(diffFiles(item.diff, cwd), lineRoom);
+        blocks.push({ kind: 'diff', files, firstFile: fileCount });
+        lineRoom -= shown;
+        fileCount += files.length;
+      }
+      continue;
     }
-    const shown = text.slice(0, room);
-    blocks.push(shown);
-    room -= shown.length;
-    if (shown.length < text.length) {
-      return { blocks, truncated: true };
+    if (textRoom === 0) {
+      truncated = true;
+      continue;
     }
+    const text = item.text.slice(0, textRoom);
+    blocks.push({ kind: 'text', text });
+    textRoom -= text.length;
+    truncated ||= text.length < item.text.length;
   }
-  return { blocks, truncated: false };
+  return { blocks, truncated };
 }
 
 export function updateTranscript(
@@ -247,6 +274,13 @@ export function updateTranscript(
           withPart(turn, action.part, (part) => (part.kind === 'toolCalls' ? { ...part, collapsed: !part.collapsed } : part)),
         ),
       );
+    case 'diffFileChosen': {
+      const file = reportedFile(transcript, action.toolCallId, action.file);
+      if (!file || (action.open === 'changes' && file.lines === null)) {
+        return stateOnly(transcript);
+      }
+      return { state: transcript, outgoing: [action.open === 'file' ? { type: 'openFile', file } : { type: 'openChanges', file }] };
+    }
     case 'sendNowChosen':
       // Cancelling ends the turn, which sends the top of the queue; the queue itself stays as it is until then.
       return transcript.queued.length === 0
@@ -394,7 +428,7 @@ function withToolCallReported(
     return withTurn(transcript, holder.id, (turn) => withToolCall(turn, toolCallId, (call) => revised(call, reported)));
   }
   const status = reported.status ?? 'pending';
-  const call: ToolCall = { toolCallId, title: reported.title ?? '', status, texts: reported.texts ?? [], open: status === 'failed' };
+  const call: ToolCall = { toolCallId, title: reported.title ?? '', status, content: reported.content ?? [], open: status === 'failed' };
   return inCurrentTurn(transcript, (turn) => {
     const last = turn.parts.at(-1);
     return last?.kind === 'toolCalls'
@@ -417,7 +451,7 @@ function revised(call: ToolCall, reported: Extract<ExtensionToWebviewMessage, { 
     ...call,
     title: reported.title || call.title,
     status,
-    texts: reported.texts ?? call.texts,
+    content: reported.content ?? call.content,
     open: call.open || (status === 'failed' && call.status !== 'failed'),
   };
 }
@@ -493,6 +527,15 @@ function turnWithToolCall(transcript: TranscriptState, toolCallId: string): Turn
   return transcript.entries.find(
     (entry): entry is Turn => entry.kind === 'turn' && groupIndex(entry, toolCallId) !== -1,
   );
+}
+
+/** The `index`th file across the tool call's diffs, as `shownContent` lays them out. */
+function reportedFile(transcript: TranscriptState, toolCallId: string, index: number): ReportedFile | null {
+  const call = turnWithToolCall(transcript, toolCallId)
+    ?.parts.flatMap((part) => (part.kind === 'toolCalls' ? part.toolCalls : []))
+    .find((candidate) => candidate.toolCallId === toolCallId);
+  const files = call?.content.flatMap((item) => (item.kind === 'diff' ? diffFiles(item.diff, null) : [])) ?? [];
+  return files[index]?.reported ?? null;
 }
 
 function groupIndex(turn: Turn, toolCallId: string): PartIndex {

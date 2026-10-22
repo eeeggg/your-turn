@@ -22,6 +22,10 @@ function appendLog(message: string, ...args: unknown[]): void {
   getOutputChannel().appendLine(formatted);
 }
 
+function appendWarning(message: string): void {
+  getOutputChannel().appendLine(`[${new Date().toISOString()}] WARN: ${message}`);
+}
+
 function appendError(message: string, error?: unknown): void {
   const timestamp = new Date().toISOString();
   const errMsg = error === undefined ? '' : messageOf(error);
@@ -56,6 +60,7 @@ function appendTraffic(direction: TrafficDirection, data: unknown): void {
 
 export const outputChannelSink: LogSink = {
   log: appendLog,
+  warn: appendWarning,
   error: appendError,
   traffic: appendTraffic,
 };

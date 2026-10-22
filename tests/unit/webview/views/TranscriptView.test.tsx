@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
@@ -358,7 +358,7 @@ describe('tool calls', () => {
   it('shows the status, the title and the text content of each tool call', () => {
     const view = renderChatView();
     view.connect();
-    view.toolCall({ toolCallId: 't1', title: 'Run', status: 'running', texts: ['one', 'two'] });
+    view.toolCall({ toolCallId: 't1', title: 'Run', status: 'running', content: [{ kind: 'text', text: 'one' }, { kind: 'text', text: 'two' }] });
     view.toolCall({ toolCallId: 't2' });
 
     const [run, untitled] = view.all('.tool-call-inline');
@@ -375,11 +375,84 @@ describe('tool calls', () => {
     expect(untitled.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
   });
 
+  it('draws no diffs while a tool call is closed, and once the user opens it draws each where it was reported among the texts', async () => {
+    const view = renderChatView();
+    view.connect();
+    const edit: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/src/a.ts', oldText: 'a\nb\nc\n', newText: 'a\nB\nc\n' } };
+    view.toolCall({ toolCallId: 't1', title: 'Edit', status: 'completed', content: [{ kind: 'text', text: 'before' }, edit, { kind: 'text', text: 'after' }] });
+    view.toolCall({ toolCallId: 't2', title: 'Edit', status: 'completed', content: [edit] });
+    const [call, onlyDiffs] = view.all('.tool-call-inline');
+    assert.exists(call);
+    assert.exists(onlyDiffs);
+    expect(call.querySelector('.tc-diff')).toBeNull();
+
+    await toggle(call as HTMLDetailsElement);
+    await toggle(onlyDiffs as HTMLDetailsElement);
+
+    expect([...call.querySelectorAll('.tc-body-content > *')].map((block) => block.className.split(' ')[0])).toEqual(['tc-body-block', 'tc-diff', 'tc-body-block']);
+    expect(onlyDiffs.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
+    const header = call.querySelector('.tc-diff-header');
+    expect([...(header?.children ?? [])].map((part) => part.textContent)).toEqual(['Modified', 'src/a.ts', '+1', '−1']);
+    const lineType = (cell: Element) => /diff-(?:gutter|code)-(\w+)/.exec(cell.className)?.[1] ?? '';
+    expect(
+      [...call.querySelectorAll('.tc-diff tr.diff-line')].map((row) => [...row.querySelectorAll('td')].map((cell) => `${lineType(cell)}:${cell.textContent}`)),
+    ).toEqual([
+      ['normal:1', 'normal:1', 'normal:a'],
+      ['delete:2', 'delete:', 'delete:b'],
+      ['insert:', 'insert:2', 'insert:B'],
+      ['normal:3', 'normal:3', 'normal:c'],
+    ]);
+  });
+
+  it("heads each file with its operation and paths, and notes why a file shows no lines", async () => {
+    const view = renderChatView();
+    view.connect();
+    view.toolCall({ toolCallId: 't1', title: 'Apply patch', status: 'failed', content: [
+      { kind: 'diff', diff: { kind: 'changes', changes: [
+        { operation: 'move', path: '/work/src/math.ts', oldPath: '/work/src/util.ts', fileType: 'text', mimeType: null },
+        { operation: 'delete', path: '/elsewhere/logo.png', fileType: 'binary', mimeType: 'image/png' },
+      ], patch: null } },
+      { kind: 'diff', diff: { kind: 'changes', changes: [
+        { operation: 'modify', path: '/work/src/left-out.ts', fileType: 'text', mimeType: null },
+      ], patch: { format: 'git_patch', text: '' } } },
+    ] });
+
+    expect(view.all('.tc-diff-file').map((file) => [file.querySelector('.tc-diff-header')?.textContent, file.querySelector('.tc-diff-note')?.textContent])).toEqual([
+      ['Movedsrc/util.ts → src/math.ts', 'No patch reported'],
+      ['Deleted/elsewhere/logo.png', 'No patch reported'],
+      ['Modifiedsrc/left-out.ts', "No lines in the agent's patch"],
+    ]);
+    expect(view.container.querySelector('.tc-diff table')).toBeNull();
+  });
+
+  it("makes each file's path a link that opens it, with the context VS Code's menu reads; a move's source and a directory are not links", () => {
+    const view = renderChatView();
+    view.connect();
+    view.toolCall({ toolCallId: 't1', title: 'Edit', status: 'failed', content: [
+      { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a\n', newText: 'b\n' } },
+      { kind: 'diff', diff: { kind: 'changes', changes: [
+        { operation: 'move', path: '/work/src/math.ts', oldPath: '/work/src/util.ts', fileType: 'text', mimeType: null },
+        { operation: 'add', path: '/work/dist', fileType: 'directory', mimeType: null },
+      ], patch: null } },
+    ] });
+    view.takePosted();
+
+    const links = view.all('.tc-diff-link');
+    expect(links.map((link): unknown[] => [link.textContent, JSON.parse(link.dataset['vscodeContext'] ?? 'null') as unknown])).toEqual([
+      ['a.ts', { webviewSection: 'toolCallDiffFile', acpToolCallId: 't1', acpDiffFile: 0, acpDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
+      ['src/math.ts', { webviewSection: 'toolCallDiffFile', acpToolCallId: 't1', acpDiffFile: 1, acpDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
+    ]);
+    expect(view.all('.tc-diff-path').map((path) => path.textContent)).toEqual(['a.ts', 'src/util.ts → src/math.ts', 'dist']);
+
+    fireEvent.click(view.part('.tc-diff-file:nth-child(1) .tc-diff-link'));
+    expect(view.takePosted()).toEqual([{ type: 'openFile', file: { path: '/work/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } } }]);
+  });
+
   it('notes content cut off at the limit', () => {
     const view = renderChatView();
     view.connect();
 
-    view.toolCall({ toolCallId: 't1', title: 'Run', texts: ['x'.repeat(25_000)] });
+    view.toolCall({ toolCallId: 't1', title: 'Run', content: [{ kind: 'text', text: 'x'.repeat(25_000) }] });
 
     expect(view.part('.tc-body-block').textContent).toHaveLength(20_000);
     expect(view.part('.tc-body-truncated').textContent).toBe('... (output truncated)');

@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -151,6 +151,14 @@
         "command": "acp.restartAgent",
         "title": "ACP: Restart Agent",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "acp.openToolCallFile",
+        "title": "Open File"
+      },
+      {
+        "command": "acp.openToolCallChanges",
+        "title": "Open Changes"
       }
     ],
     "menus": {
@@ -174,6 +182,26 @@
         {
           "command": "acp.forgetSession",
           "when": "false"
+        },
+        {
+          "command": "acp.openToolCallFile",
+          "when": "false"
+        },
+        {
+          "command": "acp.openToolCallChanges",
+          "when": "false"
+        }
+      ],
+      "webview/context": [
+        {
+          "command": "acp.openToolCallFile",
+          "when": "webviewId == 'acp-chat' && webviewSection == 'toolCallDiffFile'",
+          "group": "navigation@1"
+        },
+        {
+          "command": "acp.openToolCallChanges",
+          "when": "webviewId == 'acp-chat' && webviewSection == 'toolCallDiffFile' && acpDiffFileHasLines",
+          "group": "navigation@2"
         }
       ],
       "view/title": [
@@ -294,6 +322,11 @@
           "type": "boolean",
           "default": true,
           "description": "Log all ACP protocol traffic to the output channel."
+        },
+        "acp.showToolCallDiffs": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show the diffs an agent reports in its tool calls in the chat view: what the agent said each tool call changed, when it said it. Applies from the next tool call update."
         }
       }
     }
@@ -312,8 +345,10 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.0.0",
     "date-fns": "^4.4.0",
+    "diff": "^9.0.0",
     "execa": "^10.2.0",
     "react": "^19.3.1",
+    "react-diff-view": "^3.3.3",
     "react-dom": "^19.3.1",
     "streamdown": "^2.7.1",
     "use-stick-to-bottom": "^1.1.6",

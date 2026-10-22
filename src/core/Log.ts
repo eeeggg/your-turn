@@ -2,6 +2,7 @@ export type TrafficDirection = 'send' | 'recv';
 
 export interface LogSink {
   log(message: string, ...args: unknown[]): void;
+  warn(message: string): void;
   error(message: string, error?: unknown): void;
   traffic(direction: TrafficDirection, data: unknown): void;
 }
@@ -15,6 +16,10 @@ export function setLogSink(next: LogSink | undefined): void {
 
 export function log(message: string, ...args: unknown[]): void {
   sink?.log(message, ...args);
+}
+
+export function logWarning(message: string): void {
+  sink?.warn(message);
 }
 
 export function logError(message: string, error?: unknown): void {

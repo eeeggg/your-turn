@@ -48,6 +48,7 @@ for (const version of [1, 2]) {
 
       setLogSink({
         log: (message) => logs.push(message),
+        warn() {},
         error() {},
         traffic: (direction, data) => traffic.push({ direction, data }),
       });

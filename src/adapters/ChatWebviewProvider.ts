@@ -10,6 +10,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   private view: vscode.WebviewView | undefined;
   private readonly received = new vscode.EventEmitter<WebviewToExtensionMessage>();
   readonly onDidReceiveMessage = this.received.event;
+  private readonly posted = new vscode.EventEmitter<ExtensionToWebviewMessage>();
+  /** Each message delivered to the webview. */
+  readonly onDidPost = this.posted.event;
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
@@ -37,7 +40,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   }
 
   post(message: ExtensionToWebviewMessage): void {
-    this.view?.webview.postMessage(message);
+    if (this.view) {
+      void this.view.webview.postMessage(message);
+      this.posted.fire(message);
+    }
+  }
+
+  showsToolCallDiffs(): boolean {
+    return vscode.workspace.getConfiguration('acp').get<boolean>('showToolCallDiffs', false);
   }
 
   executeCommand(command: string, ...rest: unknown[]): Thenable<unknown> {
@@ -58,6 +68,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
 
   dispose(): void {
     this.received.dispose();
+    this.posted.dispose();
   }
 
   private getHtmlContent(webview: vscode.Webview): string {

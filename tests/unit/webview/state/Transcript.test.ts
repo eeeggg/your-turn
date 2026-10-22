@@ -1,5 +1,12 @@
 import { assert, describe, expect, it } from 'vitest';
-import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type {
+  ExtensionToWebviewMessage,
+  PlanStep,
+  SessionSnapshot,
+  SlashCommand,
+  ToolCallContent,
+  WebviewToExtensionMessage,
+} from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import {
@@ -13,11 +20,15 @@ import {
   type Turn,
   type TurnPart,
 } from '@/webview/state/Transcript';
+import { TOOL_CALL_DIFF_LINE_LIMIT } from '@/webview/state/ToolCallDiffs';
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
 
 type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type' | 'toolCallId'>;
+
+const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ kind: 'text', text }));
+const diff: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: null, newText: 'a' } };
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -595,9 +606,18 @@ describe('tool calls', () => {
     view.connect();
     view.send({ type: 'promptStart' });
 
-    view.toolCall('t1', { title: 'Read', texts: ['body'] });
+    view.toolCall('t1', { title: 'Read', content: texts('body') });
 
-    expect(view.toolCalls()).toEqual([{ toolCallId: 't1', title: 'Read', status: 'pending', texts: ['body'], open: false }]);
+    expect(view.toolCalls()).toEqual([{ toolCallId: 't1', title: 'Read', status: 'pending', content: texts('body'), open: false }]);
+  });
+
+  it("keeps a tool call's diffs where they were reported among its texts", () => {
+    const view = chatView();
+    view.connect();
+
+    view.toolCall('t1', { title: 'Edit', content: [...texts('before'), diff, ...texts('after')] });
+
+    expect(view.toolCalls()[0]?.content).toEqual([...texts('before'), diff, ...texts('after')]);
   });
 
   it('groups tool calls reported one after another, and starts another group after anything else', () => {
@@ -630,21 +650,21 @@ describe('tool calls', () => {
   it('keeps what a report leaves out', () => {
     const view = chatView();
     view.connect();
-    view.toolCall('t1', { title: 'Run', status: 'running', texts: ['out'] });
+    view.toolCall('t1', { title: 'Run', status: 'running', content: texts('out') });
 
     view.toolCall('t1');
 
-    expect(view.toolCalls()[0]).toMatchObject({ title: 'Run', status: 'running', texts: ['out'] });
+    expect(view.toolCalls()[0]).toMatchObject({ title: 'Run', status: 'running', content: texts('out') });
   });
 
   it('replaces the text and the title a report carries', () => {
     const view = chatView();
     view.connect();
-    view.toolCall('t1', { title: 'Edit', texts: ['old'] });
+    view.toolCall('t1', { title: 'Edit', content: [...texts('old'), diff] });
 
-    view.toolCall('t1', { title: 'Edit foo.ts', texts: ['new'] });
+    view.toolCall('t1', { title: 'Edit foo.ts', content: texts('new') });
 
-    expect(view.toolCalls()[0]).toMatchObject({ title: 'Edit foo.ts', texts: ['new'] });
+    expect(view.toolCalls()[0]).toMatchObject({ title: 'Edit foo.ts', content: texts('new') });
   });
 
   it('revises a tool call the agent reports again, wherever it is', () => {
@@ -657,14 +677,14 @@ describe('tool calls', () => {
     view.answer('next turn');
 
     view.toolCall('t1', { title: 'Read foo.ts', status: 'completed' });
-    view.toolCall('t1', { texts: ['body'] });
+    view.toolCall('t1', { content: texts('body') });
 
     expect(view.summary()).toEqual(['turn: tools t0 | then | tools t1', 'turn: next turn']);
     const first = view.turns()[0];
     assert.exists(first);
     expect(first.parts[2]).toEqual({
       kind: 'toolCalls',
-      toolCalls: [{ toolCallId: 't1', title: 'Read foo.ts', status: 'completed', texts: ['body'], open: false }],
+      toolCalls: [{ toolCallId: 't1', title: 'Read foo.ts', status: 'completed', content: texts('body'), open: false }],
       collapsed: false,
     });
   });
@@ -674,7 +694,7 @@ describe('tool calls', () => {
     view.connect();
 
     view.toolCall('t1', { status: 'running' });
-    expect(view.toolCalls()).toEqual([{ toolCallId: 't1', title: '', status: 'running', texts: [], open: false }]);
+    expect(view.toolCalls()).toEqual([{ toolCallId: 't1', title: '', status: 'running', content: [], open: false }]);
 
     view.toolCall('t1', { title: 'Read foo.ts' });
     expect(view.toolCalls()[0]?.title).toBe('Read foo.ts');
@@ -731,6 +751,60 @@ describe('tool calls', () => {
     view.send({ type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 0 }, { type: 'toolCallsToggled', turnId: view.lastTurn().id, part: 1 });
 
     expect(view.transcript()).toBe(before);
+  });
+});
+
+describe("a tool call's files", () => {
+  const edited: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a\n', newText: 'b\n' } };
+  const twoFiles: ToolCallContent = {
+    kind: 'diff',
+    diff: {
+      kind: 'changes',
+      changes: [
+        { operation: 'delete', path: '/work/b.bin', fileType: 'binary', mimeType: null },
+        { operation: 'add', path: '/work/c.ts', fileType: 'text', mimeType: null },
+      ],
+      patch: { format: 'git_patch', text: 'diff --git /work/c.ts /work/c.ts\n--- /dev/null\n+++ /work/c.ts\n@@ -0,0 +1 @@\n+c\n' },
+    },
+  };
+
+  function withFiles() {
+    const view = chatView();
+    view.connect();
+    view.toolCall('t1', { title: 'Edit', content: [edited, ...texts('done'), twoFiles] });
+    return view;
+  }
+
+  it('sends the extension the file the user chose, counted across the tool call\'s diffs, as the agent reported it', () => {
+    const view = withFiles();
+
+    view.send({ type: 'diffFileChosen', toolCallId: 't1', file: 0, open: 'file' }, { type: 'diffFileChosen', toolCallId: 't1', file: 2, open: 'changes' });
+
+    expect(view.takePosted()).toEqual([
+      { type: 'openFile', file: { path: '/work/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } } },
+      { type: 'openChanges', file: { path: '/work/c.ts', operation: 'add', lines: { kind: 'hunks', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['+c'] }] } } },
+    ]);
+  });
+
+  it('opens a file without lines but shows no changes of it, and does nothing for a file or tool call it does not have', () => {
+    const view = withFiles();
+    const before = view.transcript();
+
+    view.send(
+      { type: 'diffFileChosen', toolCallId: 't1', file: 1, open: 'changes' },
+      { type: 'diffFileChosen', toolCallId: 't1', file: 3, open: 'file' },
+      { type: 'diffFileChosen', toolCallId: 'unknown', file: 0, open: 'file' },
+      { type: 'diffFileChosen', toolCallId: 't1', file: 1, open: 'file' },
+    );
+
+    expect(view.takePosted()).toEqual([{ type: 'openFile', file: { path: '/work/b.bin', operation: 'delete', lines: null } }]);
+    expect(view.transcript()).toBe(before);
+  });
+
+  it("gives each diff shown its first file's place across the tool call's diffs", () => {
+    const { blocks } = shownContent([edited, ...texts('done'), twoFiles, edited], '/work', true);
+
+    expect(blocks.map((block) => (block.kind === 'diff' ? block.firstFile : block.text))).toEqual([0, 'done', 1, 3]);
   });
 });
 
@@ -954,9 +1028,44 @@ describe('what is shown', () => {
   it('truncates tool call content past the limit, across blocks', () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
-    expect(shownContent([half, half])).toEqual({ blocks: [half, half], truncated: false });
-    expect(shownContent([half, `${half}b`])).toEqual({ blocks: [half, half], truncated: true });
-    expect(shownContent([half, half, 'c'])).toEqual({ blocks: [half, half], truncated: true });
+    expect(shownContent(texts(half, half), null, true)).toEqual({ blocks: texts(half, half), truncated: false });
+    expect(shownContent(texts(half, `${half}b`), null, true)).toEqual({ blocks: texts(half, half), truncated: true });
+    expect(shownContent(texts(half, half, 'c'), null, true)).toEqual({ blocks: texts(half, half), truncated: true });
+  });
+
+  it("shows a tool call's diffs where they were reported among its texts, their files relative to the working directory", () => {
+    const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
+
+    const { blocks, truncated } = shownContent([diff, ...texts(half), diff, ...texts(half, 'c'), diff], '/work', true);
+
+    expect(truncated).toBe(true);
+    expect(blocks.map((block) => (block.kind === 'text' ? block.text.length : block.files.map((file) => `${file.operation} ${file.path}`)))).toEqual([
+      ['add a.ts'],
+      half.length,
+      ['add a.ts'],
+      half.length,
+      ['add a.ts'],
+    ]);
+  });
+
+  it('leaves the diffs out unless asked for them, as a closed tool call shows none', () => {
+    expect(shownContent([...texts('before'), diff, ...texts('after')], '/work', false)).toEqual({
+      blocks: texts('before', 'after'),
+      truncated: false,
+    });
+  });
+
+  it("cuts a tool call's diffs off past the line limit, across them", () => {
+    const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}\n`).join('');
+    const large: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/b.ts', oldText: null, newText: lines(TOOL_CALL_DIFF_LINE_LIMIT - 1) } };
+
+    const { blocks } = shownContent([large, diff, diff], '/work', true);
+
+    expect(blocks.map((block) => (block.kind === 'diff' ? block.files.map((file) => [file.hunks.flatMap((hunk) => hunk.lines).length, file.note]) : []))).toEqual([
+      [[TOOL_CALL_DIFF_LINE_LIMIT - 1, null]],
+      [[1, null]],
+      [[0, 'cutOff']],
+    ]);
   });
 
   it('marks each tool call status with a glyph', () => {

@@ -36,7 +36,7 @@ describe('negotiation', () => {
 
   beforeEach(() => {
     sent = [];
-    setLogSink({ log() {}, error() {}, traffic: (direction, data) => { if (direction === 'send') { sent.push(data); } } });
+    setLogSink({ log() {}, warn() {}, error() {}, traffic: (direction, data) => { if (direction === 'send') { sent.push(data); } } });
   });
 
   afterEach(() => setLogSink(undefined));

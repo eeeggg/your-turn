@@ -5,6 +5,7 @@ import type { AcpDriver, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import type { FileEditor } from '@/core/ReportedFiles';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
 /** Builds the agent a launch talks to, an SDK agent of either version or a router; called once per launch. */
@@ -17,6 +18,15 @@ const unused = (): never => {
 /** Client handlers for agents that never call them. */
 export const unusedHandlers: ClientHandlers = {
   permissions: { requestPermission: unused },
+};
+
+/** An editor for chat views that never open a tool call's files. */
+export const unusedEditor: FileEditor = {
+  exists: unused,
+  readText: unused,
+  open: unused,
+  showChanges: unused,
+  showInformationMessage: unused,
 };
 
 /** A real process's output can close before its exit is reported, or after. */
