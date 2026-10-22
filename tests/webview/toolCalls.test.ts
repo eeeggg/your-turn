@@ -132,6 +132,28 @@ describe('tool calls', () => {
     expect(shown('t1').querySelector('.tc-body-truncated')?.textContent).toBe('... (output truncated)');
   });
 
+  it("shows a command's terminal in its tool call, spinning while it runs, and how it failed once it ends", () => {
+    toolCall(page, { toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    page.send({ type: 'terminal', terminalId: 'term', text: 'running', truncated: false, exitStatus: null });
+    expect(shown('t1').querySelector('summary .tc-running')).not.toBeNull();
+
+    page.send({ type: 'terminal', terminalId: 'term', text: '1 failed', truncated: true, exitStatus: { exitCode: 1, signal: null } });
+
+    expect(shown('t1').querySelector('.tc-running')).toBeNull();
+    expect([...shown('t1').querySelectorAll('.tc-command > *')].map((part) => part.textContent)).toEqual([
+      'Earlier output not shown',
+      '1 failed',
+      'Exit code 1',
+    ]);
+    for (const selector of ['.tc-command', 'summary']) {
+      expect(JSON.parse(shown('t1').querySelector<HTMLElement>(selector)?.dataset['vscodeContext'] ?? 'null')).toMatchObject({
+        webviewSection: 'commandOutput',
+        acpTitle: 'npm test',
+        acpTerminalId: 'term',
+      });
+    }
+  });
+
   it("draws an open tool call's diffs, a section per file with its lines numbered", () => {
     const patch = [
       'diff --git /work/project/a.ts /work/project/a.ts',

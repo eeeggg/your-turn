@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.10",
+  "version": "0.3.11",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -159,6 +159,10 @@
       {
         "command": "acp.openToolCallChanges",
         "title": "Open Changes"
+      },
+      {
+        "command": "acp.openCommandOutput",
+        "title": "Open in Terminal"
       }
     ],
     "menus": {
@@ -190,6 +194,10 @@
         {
           "command": "acp.openToolCallChanges",
           "when": "false"
+        },
+        {
+          "command": "acp.openCommandOutput",
+          "when": "false"
         }
       ],
       "webview/context": [
@@ -202,6 +210,11 @@
           "command": "acp.openToolCallChanges",
           "when": "webviewId == 'acp-chat' && webviewSection == 'toolCallDiffFile' && acpDiffFileHasLines",
           "group": "navigation@2"
+        },
+        {
+          "command": "acp.openCommandOutput",
+          "when": "webviewId == 'acp-chat' && webviewSection == 'commandOutput'",
+          "group": "navigation@1"
         }
       ],
       "view/title": [
@@ -344,6 +357,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.0.0",
+    "@xterm/headless": "^6.0.0",
     "date-fns": "^4.4.0",
     "diff": "^9.0.0",
     "execa": "^10.2.0",

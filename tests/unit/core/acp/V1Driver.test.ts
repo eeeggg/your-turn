@@ -134,6 +134,20 @@ describe('V1Driver', () => {
       ]);
     });
 
+    it("passes on a tool call's kind, and leaves it as it was when an update leaves it out", async () => {
+      expect(await translated(
+        { sessionUpdate: 'tool_call', toolCallId: 't1', title: 'npm test', kind: 'execute' },
+        { sessionUpdate: 'tool_call_update', toolCallId: 't1', kind: 'other' },
+        { sessionUpdate: 'tool_call_update', toolCallId: 't1', kind: null },
+        { sessionUpdate: 'tool_call_update', toolCallId: 't1' },
+      )).toEqual([
+        { kind: 'toolCall', toolCallId: 't1', title: 'npm test', toolKind: 'execute' },
+        { kind: 'toolCall', toolCallId: 't1', toolKind: 'other' },
+        { kind: 'toolCall', toolCallId: 't1' },
+        { kind: 'toolCall', toolCallId: 't1' },
+      ]);
+    });
+
     it("passes on a tool call's diffs as whole files, in the order reported among its texts, a new file's old text as null", async () => {
       expect(await translated({
         sessionUpdate: 'tool_call_update',

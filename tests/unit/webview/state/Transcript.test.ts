@@ -17,6 +17,7 @@ import {
   thoughtSummary,
   TOOL_CALL_CONTENT_LIMIT,
   turnShown,
+  type ContentContext,
   type Turn,
   type TurnPart,
 } from '@/webview/state/Transcript';
@@ -29,6 +30,8 @@ type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall'
 
 const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ kind: 'text', text }));
 const diff: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: null, newText: 'a' } };
+/** Content shown in a session with no terminals, still going. */
+const inSession = (cwd: string | null): ContentContext => ({ cwd, terminals: new Map(), sessionEnded: false });
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -802,7 +805,7 @@ describe("a tool call's files", () => {
   });
 
   it("gives each diff shown its first file's place across the tool call's diffs", () => {
-    const { blocks } = shownContent([edited, ...texts('done'), twoFiles, edited], '/work', true);
+    const { blocks } = shownContent([edited, ...texts('done'), twoFiles, edited], inSession('/work'), true);
 
     expect(blocks.map((block) => (block.kind === 'diff' ? block.firstFile : block.text))).toEqual([0, 'done', 1, 3]);
   });
@@ -1024,22 +1027,113 @@ describe('errors', () => {
   });
 });
 
+describe('commands', () => {
+  type TerminalReport = Omit<Extract<Action, { type: 'terminal' }>, 'type' | 'terminalId'>;
+  const running: TerminalReport = { text: 'building', truncated: false, exitStatus: null };
+  const terminalIn = (terminalId: string): ToolCallContent[] => [{ kind: 'terminal', terminalId }];
+
+  /** The command blocks a tool call shows, in the session's context. */
+  function commands(view: ReturnType<typeof chatView>, toolCallId: string) {
+    const call = view.toolCalls().find((candidate) => candidate.toolCallId === toolCallId);
+    assert.exists(call);
+    const { terminals, sessionEnded } = view.transcript();
+    const shown = shownContent(call.content, { cwd: '/work', terminals, sessionEnded }, false);
+    return { blocks: shown.blocks.filter((block) => block.kind === 'command'), running: shown.running };
+  }
+
+  it("shows a terminal where its tool call reported it, whichever came first, in every tool call showing it, and nothing until it is reported", () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'promptStart' }, { type: 'terminal', terminalId: 'early', ...running });
+    view.toolCall('c1', { content: [...texts('before'), ...terminalIn('early'), ...terminalIn('late')] });
+    view.toolCall('c2', { content: terminalIn('early') });
+
+    expect(commands(view, 'c1').blocks).toEqual([
+      { kind: 'command', text: 'building', truncated: false, status: 'running', failure: null, terminalId: 'early' },
+    ]);
+    expect(commands(view, 'c2').blocks).toHaveLength(1);
+
+    view.send({ type: 'terminal', terminalId: 'late', text: '', truncated: true, exitStatus: null });
+    expect(commands(view, 'c1').blocks.map((block) => [block.terminalId, block.text, block.truncated])).toEqual([
+      ['early', 'building', false],
+      ['late', '', true],
+    ]);
+  });
+
+  it('shows a command running while its terminal has no exit status, says how it failed, and says nothing of a success', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'promptStart' });
+    const report = (terminalId: string, exitStatus: TerminalReport['exitStatus']) => {
+      view.send({ type: 'terminal', terminalId, text: 'out', truncated: false, exitStatus });
+      view.toolCall(terminalId, { content: terminalIn(terminalId) });
+      return commands(view, terminalId);
+    };
+
+    expect(report('running', null)).toMatchObject({ blocks: [{ status: 'running', failure: null }], running: true });
+    expect(report('passed', { exitCode: 0, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: null }], running: false });
+    expect(report('failed', { exitCode: 2, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: 'Exit code 2' }] });
+    expect(report('killed', { exitCode: null, signal: 'SIGTERM' })).toMatchObject({ blocks: [{ status: 'ended', failure: 'Ended by SIGTERM' }] });
+    expect(report('unknown', { exitCode: null, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: null }] });
+  });
+
+  it('says a command still running when its session ended was cut off by the disconnect, and keeps the terminals through the end', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'promptStart' }, { type: 'terminal', terminalId: 't1', ...running });
+    view.toolCall('c1', { content: terminalIn('t1') });
+
+    view.send({ type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' }, { type: 'state', activeSessionId: null, session: null });
+
+    expect(commands(view, 'c1')).toEqual({
+      blocks: [{ kind: 'command', text: 'building', truncated: false, status: 'disconnected', failure: null, terminalId: 't1' }],
+      running: false,
+    });
+  });
+
+  it('forgets the terminals when the transcript is cleared, as for another session', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'terminal', terminalId: 't1', ...running });
+
+    view.connect({ sessionId: 's2' });
+    expect(view.transcript().terminals.size).toBe(0);
+    view.send({ type: 'terminal', terminalId: 't1', ...running }, { type: 'clearTranscript' });
+    expect(view.transcript().terminals.size).toBe(0);
+  });
+
+  it("shows a command's text as the extension cleaned and cut it, outside the limit on other text", () => {
+    const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
+    const output: ToolCallContent = { kind: 'commandOutput', text: 'b'.repeat(TOOL_CALL_CONTENT_LIMIT), truncated: true };
+
+    expect(shownContent([...texts(half), output, ...texts(half)], inSession('/work'), false)).toEqual({
+      blocks: [
+        { kind: 'text', text: half },
+        { kind: 'command', text: output.text, truncated: true, status: 'ended', failure: null, terminalId: null },
+        { kind: 'text', text: half },
+      ],
+      truncated: false,
+      running: false,
+    });
+  });
+});
+
 describe('what is shown', () => {
   it('truncates tool call content past the limit, across blocks', () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
-    expect(shownContent(texts(half, half), null, true)).toEqual({ blocks: texts(half, half), truncated: false });
-    expect(shownContent(texts(half, `${half}b`), null, true)).toEqual({ blocks: texts(half, half), truncated: true });
-    expect(shownContent(texts(half, half, 'c'), null, true)).toEqual({ blocks: texts(half, half), truncated: true });
+    expect(shownContent(texts(half, half), inSession(null), true)).toEqual({ blocks: texts(half, half), truncated: false, running: false });
+    expect(shownContent(texts(half, `${half}b`), inSession(null), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
+    expect(shownContent(texts(half, half, 'c'), inSession(null), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
   });
 
   it("shows a tool call's diffs where they were reported among its texts, their files relative to the working directory", () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
-    const { blocks, truncated } = shownContent([diff, ...texts(half), diff, ...texts(half, 'c'), diff], '/work', true);
+    const { blocks, truncated } = shownContent([diff, ...texts(half), diff, ...texts(half, 'c'), diff], inSession('/work'), true);
 
     expect(truncated).toBe(true);
-    expect(blocks.map((block) => (block.kind === 'text' ? block.text.length : block.files.map((file) => `${file.operation} ${file.path}`)))).toEqual([
+    expect(blocks.map((block) => (block.kind !== 'diff' ? block.text.length : block.files.map((file) => `${file.operation} ${file.path}`)))).toEqual([
       ['add a.ts'],
       half.length,
       ['add a.ts'],
@@ -1049,9 +1143,10 @@ describe('what is shown', () => {
   });
 
   it('leaves the diffs out unless asked for them, as a closed tool call shows none', () => {
-    expect(shownContent([...texts('before'), diff, ...texts('after')], '/work', false)).toEqual({
+    expect(shownContent([...texts('before'), diff, ...texts('after')], inSession('/work'), false)).toEqual({
       blocks: texts('before', 'after'),
       truncated: false,
+      running: false,
     });
   });
 
@@ -1059,7 +1154,7 @@ describe('what is shown', () => {
     const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}\n`).join('');
     const large: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/b.ts', oldText: null, newText: lines(TOOL_CALL_DIFF_LINE_LIMIT - 1) } };
 
-    const { blocks } = shownContent([large, diff, diff], '/work', true);
+    const { blocks } = shownContent([large, diff, diff], inSession('/work'), true);
 
     expect(blocks.map((block) => (block.kind === 'diff' ? block.files.map((file) => [file.hunks.flatMap((hunk) => hunk.lines).length, file.note]) : []))).toEqual([
       [[TOOL_CALL_DIFF_LINE_LIMIT - 1, null]],

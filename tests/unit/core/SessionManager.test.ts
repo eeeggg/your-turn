@@ -5,6 +5,7 @@ import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import type { AuthMethod, ConfigOption, FileLink, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
+import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
 import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
 import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment, type SessionManagerEvents } from '@/core/SessionManager';
@@ -73,7 +74,12 @@ function setup(scripts: Record<string, AgentScript>) {
   manager.setHistoryStore(sessionHistory);
 
   // As in the extension, the chat view applies session updates to the sessions.
-  const chatView = new ChatViewController(manager, { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false }, unusedEditor);
+  const chatView = new ChatViewController(
+    manager,
+    { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false },
+    unusedEditor,
+    new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) }),
+  );
   const received: [string, SessionUpdate][] = [];
   updates.addListener((sessionId, update) => {
     received.push([sessionId, update]);

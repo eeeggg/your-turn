@@ -448,6 +448,74 @@ describe('tool calls', () => {
     expect(view.takePosted()).toEqual([{ type: 'openFile', file: { path: '/work/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } } }]);
   });
 
+  it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'terminal', terminalId: 'term', text: 'ok', truncated: false, exitStatus: null });
+    view.toolCall({ toolCallId: 'c1', title: 'npm test', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    view.toolCall({ toolCallId: 'c2', title: '', content: [{ kind: 'commandOutput', text: 'a.ts', truncated: false }] });
+    view.toolCall({ toolCallId: 'c3', title: 'Read a.ts', content: [{ kind: 'text', text: 'a' }] });
+    const contexts = (selector: string) => view.all(selector).map((element) => JSON.parse(element.dataset['vscodeContext'] ?? 'null') as unknown);
+
+    const expected = [
+      { webviewSection: 'commandOutput', acpSessionId: 's1', acpTitle: 'npm test', acpTerminalId: 'term' },
+      { webviewSection: 'commandOutput', acpSessionId: 's1', acpTitle: 'Tool Call', acpToolCallId: 'c2' },
+    ];
+    expect(contexts('.tc-command')).toEqual(expected);
+    expect(contexts('.tc-summary')).toEqual([...expected, null]);
+  });
+
+  it("spins in a tool call's summary while a command of its terminals runs, and stops once it ends", () => {
+    const view = renderChatView();
+    view.connect();
+    view.toolCall({ toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    expect(view.container.querySelector('.tc-body .tc-command')).toBeNull();
+
+    view.send({ type: 'terminal', terminalId: 'term', text: 'running tests', truncated: false, exitStatus: null });
+    expect(view.part('#tc-t1 summary .tc-running').title).toBe('Command running');
+    expect(view.part('.tc-command-text').textContent).toBe('running tests');
+
+    view.send({ type: 'terminal', terminalId: 'term', text: 'all passed', truncated: false, exitStatus: { exitCode: 0, signal: null } });
+    expect(view.container.querySelector('.tc-running')).toBeNull();
+    expect(view.part('.tc-command').textContent).toBe('all passed');
+  });
+
+  it("notes a command's earlier output not shown above its text, and how it failed below", () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'terminal', terminalId: 'term', text: 'Error: 3 tests failed', truncated: true, exitStatus: { exitCode: 1, signal: null } });
+    view.toolCall({ toolCallId: 't1', title: 'npm test', content: [{ kind: 'terminal', terminalId: 'term' }] });
+
+    expect([...view.part('.tc-command').children].map((part) => [part.className.split(' ')[0], part.textContent])).toEqual([
+      ['tc-command-cut', 'Earlier output not shown'],
+      ['tc-command-text', 'Error: 3 tests failed'],
+      ['tc-command-failure', 'Exit code 1'],
+    ]);
+    expect(view.container.querySelector('.tc-body-truncated')).toBeNull();
+  });
+
+  it("shows a command's text sent as text the same way, with no spinner", () => {
+    const view = renderChatView();
+    view.connect();
+    view.toolCall({ toolCallId: 't1', title: 'ls', status: 'running', content: [{ kind: 'commandOutput', text: 'a.ts\nb.ts', truncated: true }] });
+
+    expect(view.part('.tc-command-cut').textContent).toBe('Earlier output not shown');
+    expect(view.part('.tc-command-text').textContent).toBe('a.ts\nb.ts');
+    expect(view.container.querySelector('.tc-running')).toBeNull();
+  });
+
+  it('says the agent disconnected before a command still running finished, once its session ends', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'terminal', terminalId: 'term', text: 'watching', truncated: false, exitStatus: null });
+    view.toolCall({ toolCallId: 't1', title: 'npm run watch', content: [{ kind: 'terminal', terminalId: 'term' }] });
+
+    view.send({ type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' });
+
+    expect(view.container.querySelector('.tc-running')).toBeNull();
+    expect(view.part('.tc-command-disconnected').textContent).toBe('The agent disconnected before the command finished.');
+  });
+
   it('notes content cut off at the limit', () => {
     const view = renderChatView();
     view.connect();

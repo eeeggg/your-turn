@@ -7,7 +7,19 @@
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 
 /** A tool call's content, in the order the agent reported it; diffs only while `acp.showToolCallDiffs` is on. */
-export type ToolCallContent = { kind: 'text'; text: string } | { kind: 'diff'; diff: ToolCallDiff };
+export type ToolCallContent =
+  | { kind: 'text'; text: string }
+  | { kind: 'diff'; diff: ToolCallDiff }
+  /** A command's output the agent sent as text, cleaned as a terminal shows it; `truncated` when earlier output is not in it. */
+  | { kind: 'commandOutput'; text: string; truncated: boolean }
+  /** Where an agent's terminal shows, by ID; `terminal` messages carry it, before or after this. */
+  | { kind: 'terminal'; terminalId: string };
+
+/** How a terminal's command ended; either may be unknown. */
+export interface ExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
 
 /** What a tool call reported it changed, in the form the agent's ACP version holds it. */
 export type ToolCallDiff =
@@ -126,6 +138,11 @@ export type ExtensionToWebviewMessage =
   | { type: 'promptMessage'; messageId: string; text: string }
   /** A tool call, new or changed; what it leaves out stays as it was. */
   | { type: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; content?: ToolCallContent[] }
+  /**
+   * An agent's terminal, new or changed, whole: the end of its output, cleaned as a terminal shows it, `truncated` when
+   * earlier output is not in it; its command runs while `exitStatus` is null.
+   */
+  | { type: 'terminal'; terminalId: string; text: string; truncated: boolean; exitStatus: ExitStatus | null }
   /** The agent's plan, replacing the turn's earlier one. */
   | { type: 'plan'; steps: PlanStep[] }
   | { type: 'commands'; commands: SlashCommand[] }

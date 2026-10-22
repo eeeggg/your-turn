@@ -6,7 +6,6 @@ import type {
   PlanStep,
   SessionUpdate,
   SlashCommand,
-  ToolCallContent,
 } from '@/core/acp/AcpDriver';
 import type {
   DiffFileChoice,
@@ -22,6 +21,8 @@ import type {
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { SessionInfo, SessionManager } from './SessionManager';
+import type { AgentTerminals } from './AgentTerminals';
+import { CommandOutputFeed, type ShownContent } from './CommandOutputFeed';
 import { logError, messageOf } from './Log';
 import { openReportedChanges, openReportedFile, type FileEditor, type ReportedFile } from './ReportedFiles';
 import type { Commands } from './VsCodeApi';
@@ -71,14 +72,31 @@ export class ChatViewController {
   private readonly runningTurns = new Set<string>();
   /** The session the chat view was last told about; reporting the same one again would split its running turn. */
   private shownSessionId: string | null = null;
+  /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
+  private shownSessionEnded = false;
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
+  private readonly commandOutput: CommandOutputFeed;
 
   constructor(
     private readonly sessions: ChatSessions,
     private readonly environment: ChatViewEnvironment,
     private readonly editor: FileEditor,
-  ) {}
+    private readonly terminals: AgentTerminals,
+  ) {
+    this.commandOutput = new CommandOutputFeed(terminals, {
+      toolCallContent: (sessionId, toolCallId, content) =>
+        this.postAbout(sessionId, { type: 'toolCall', toolCallId, content: toolCallContent(content, this.environment.showsToolCallDiffs()) }),
+      terminal: (sessionId, terminalId, { text, truncated }, exitStatus) =>
+        this.postAbout(sessionId, {
+          type: 'terminal',
+          terminalId,
+          text,
+          truncated,
+          exitStatus: exitStatus && { exitCode: exitStatus.exitCode, signal: exitStatus.signal },
+        }),
+    });
+  }
 
   /** Whether a prompt has been sent since the transcript was last cleared. */
   get hasTranscript(): boolean {
@@ -161,7 +179,17 @@ export class ChatViewController {
     if (changed) {
       this.sendRunningTurn();
       this.setTurnInProgress(this.isRunning(this.shownSessionId));
+      // The chat view clears the transcript, unless it has no session to show and keeps the one whose agent exited.
+      if (this.shownSessionId !== null || !this.shownSessionEnded) {
+        this.shownSessionEnded = false;
+        this.terminals.forgetEndedSessions();
+      }
     }
+  }
+
+  /** The session is gone, whether its agent exited or the user disconnected it. */
+  notifySessionRemoved(sessionId: string): void {
+    this.commandOutput.forgetSession(sessionId);
   }
 
   /**
@@ -171,6 +199,7 @@ export class ChatViewController {
   notifySessionEnded(sessionId: string, reason: string): void {
     this.runningTurns.delete(sessionId);
     if (sessionId === this.shownSessionId) {
+      this.shownSessionEnded = true;
       this.post({ type: 'sessionEnded', message: reason });
     }
   }
@@ -199,6 +228,7 @@ export class ChatViewController {
   /** Clear the transcript, as when a new session starts. */
   clearTranscript(): void {
     this._hasTranscript = false;
+    this.terminals.forgetEndedSessions();
     this.post({ type: 'clearTranscript' });
   }
 
@@ -325,14 +355,16 @@ export class ChatViewController {
         return { type: 'thoughtMessage', messageId: update.messageId, text: update.text };
       case 'promptMessage':
         return { type: 'promptMessage', messageId: update.messageId, text: update.text };
-      case 'toolCall':
+      case 'toolCall': {
+        const content = this.commandOutput.toolCallContent(sessionId, update.toolCallId, update.toolKind, update.content);
         return {
           type: 'toolCall',
           toolCallId: update.toolCallId,
           ...(update.title !== undefined ? { title: update.title } : {}),
           ...(update.status !== undefined ? { status: update.status } : {}),
-          ...(update.content !== undefined ? { content: toolCallContent(update.content, this.environment.showsToolCallDiffs()) } : {}),
+          ...(content !== undefined ? { content: toolCallContent(content, this.environment.showsToolCallDiffs()) } : {}),
         };
+      }
       case 'plan':
         return { type: 'plan', steps: update.steps.map(planStep) };
       case 'commands':
@@ -343,6 +375,8 @@ export class ChatViewController {
         return session ? { type: 'pickers', pickers: pickersOf(session) } : null;
       }
       case 'sessionInfo':
+      case 'terminal':
+      case 'terminalOutput':
         return null;
     }
   }
@@ -350,6 +384,13 @@ export class ChatViewController {
   /** Shows the Cancel button in the chat view's title bar (the `acp.turnInProgress` `when` clause in package.json). */
   private setTurnInProgress(inProgress: boolean): void {
     void this.environment.executeCommand('setContext', 'acp.turnInProgress', inProgress);
+  }
+
+  /** Posts what came late about a session, which matters only while the chat view shows it. */
+  private postAbout(sessionId: string, message: ExtensionToWebviewMessage): void {
+    if (sessionId === this.sessions.getActiveSessionId()) {
+      this.post(message);
+    }
   }
 
   private post(message: ExtensionToWebviewMessage): void {
@@ -378,12 +419,18 @@ function planStep(step: PlanStep): WebviewPlanStep {
   return { text: step.text, status: step.status };
 }
 
-function toolCallContent(content: readonly ToolCallContent[], showsDiffs: boolean): WebviewToolCallContent[] {
+function toolCallContent(content: readonly ShownContent[], showsDiffs: boolean): WebviewToolCallContent[] {
   return content.flatMap((item): WebviewToolCallContent[] => {
-    if (item.kind === 'text') {
-      return [{ kind: 'text', text: item.text }];
+    switch (item.kind) {
+      case 'text':
+        return [{ kind: 'text', text: item.text }];
+      case 'commandOutput':
+        return [{ kind: 'commandOutput', text: item.output.text, truncated: item.output.truncated }];
+      case 'diff':
+        return showsDiffs ? [{ kind: 'diff', diff: toolCallDiff(item.diff) }] : [];
+      case 'terminal':
+        return [{ kind: 'terminal', terminalId: item.terminalId }];
     }
-    return showsDiffs ? [{ kind: 'diff', diff: toolCallDiff(item.diff) }] : [];
   });
 }
 

@@ -97,8 +97,21 @@ export type PromptPart = { kind: 'text'; text: string } | ({ kind: 'fileLink' } 
 
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 
+/** What a tool call does, as ACP names it; `other` is a kind ACP added after this was written, or one an agent added. */
+export type ToolKind = 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'switch_mode' | 'other';
+
 /** A tool call's content, in the order the agent reported it. */
-export type ToolCallContent = { kind: 'text'; text: string } | { kind: 'diff'; diff: FileDiff };
+export type ToolCallContent =
+  | { kind: 'text'; text: string }
+  | { kind: 'diff'; diff: FileDiff }
+  /** Where an agent-owned terminal shows; its state comes in its own updates, before or after this. */
+  | { kind: 'terminal'; terminalId: string };
+
+/** How an agent-owned terminal's command ended; either may be unknown. */
+export interface TerminalExitStatus {
+  exitCode: number | null;
+  signal: string | null;
+}
 
 /** What a tool call reports it changed, in the form its ACP version holds it: neither form can be made the other without reading the disk. */
 export type FileDiff =
@@ -153,7 +166,21 @@ export type SessionUpdate =
   /** The whole text of a prompt that a load replays, replacing what the prompt with this ID had. */
   | { kind: 'promptMessage'; messageId: string; text: string }
   /** A tool call, new or changed; what it leaves out stays as it was. */
-  | { kind: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; content?: ToolCallContent[] }
+  | { kind: 'toolCall'; toolCallId: string; title?: string; toolKind?: ToolKind; status?: ToolCallStatus; content?: ToolCallContent[] }
+  /**
+   * An agent-owned terminal, new or changed: a field left out stays as it was, and null clears it. `output` replaces
+   * every byte the terminal had; an exit status, even of two nulls, means its command ended.
+   */
+  | {
+    kind: 'terminal';
+    terminalId: string;
+    command?: string | null;
+    cwd?: string | null;
+    output?: Uint8Array | null;
+    exitStatus?: TerminalExitStatus | null;
+  }
+  /** Bytes added to the end of an agent-owned terminal's output. */
+  | { kind: 'terminalOutput'; terminalId: string; data: Uint8Array }
   /** Replaces the turn's earlier plan. */
   | { kind: 'plan'; steps: PlanStep[] }
   | { kind: 'commands'; commands: SlashCommand[] }
