@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionUpdate } from '@/core/acp/AcpDriver';
+import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionUpdate, type ToolCallContent } from '@/core/acp/AcpDriver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import { setLogSink } from '@/core/Log';
 import { connectedDriver, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const go: PromptPart[] = [{ kind: 'text', text: 'go' }];
@@ -474,7 +475,8 @@ describe('V2Driver', () => {
       expect(updates).toEqual([['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }]]);
     });
 
-    it("keeps each tool call's texts, which an update's content replaces and a chunk adds to, and leaves alone what an update leaves out", async () => {
+    it("keeps each tool call's content, which an update's content replaces and a chunk adds to, and leaves alone what an update leaves out", async () => {
+      const texts = (...items: string[]): ToolCallContent[] => items.map((item) => ({ kind: 'text', text: item }));
       expect(await passedUp(
         ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: 'Read a.ts', status: 'in_progress', content: [
           { type: 'content', content: text('first') },
@@ -490,15 +492,201 @@ describe('V2Driver', () => {
         ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: null }],
         ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('again') } }],
       )).toEqual([
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', title: 'Read a.ts', status: 'running', texts: ['first'] }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['first', 'second'] }],
-        ['s2', { kind: 'toolCall', toolCallId: 'c1', texts: ['elsewhere'] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', title: 'Read a.ts', status: 'running', content: texts('first') }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('first', 'second') }],
+        ['s2', { kind: 'toolCall', toolCallId: 'c1', content: texts('elsewhere') }],
         ['s1', { kind: 'toolCall', toolCallId: 'c1', status: 'completed' }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['replaced'] }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['replaced', 'more'] }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: [] }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', texts: ['again'] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced') }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced', 'more') }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [] }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('again') }],
       ]);
+    });
+
+    it("passes on a tool call's diffs as their changes and patch, in the order reported among its texts and chunks", async () => {
+      const patch = { format: 'git_patch', text: 'diff --git /work/a.ts /work/a.ts\n--- /work/a.ts\n+++ /work/a.ts\n@@ -1 +1 @@\n-a\n+b\n' };
+      const reported: ToolCallContent[] = [
+        { kind: 'diff', diff: { kind: 'changes', changes: [
+          { operation: 'modify', path: '/work/a.ts', fileType: 'text', mimeType: 'text/typescript' },
+        ], patch: { format: 'git_patch', text: patch.text } } },
+        { kind: 'text', text: 'between' },
+        { kind: 'diff', diff: { kind: 'changes', changes: [
+          { operation: 'add', path: '/work/new.ts', fileType: null, mimeType: null },
+          { operation: 'delete', path: '/work/old.ts', fileType: null, mimeType: null },
+          { operation: 'move', oldPath: '/work/from.png', path: '/work/to.png', fileType: 'binary', mimeType: 'image/png' },
+          { operation: 'copy', oldPath: '/work/src', path: '/work/dst', fileType: 'directory', mimeType: null },
+          { operation: 'modify', path: '/work/link', fileType: 'symlink', mimeType: null },
+        ], patch: null } },
+      ];
+      expect(await passedUp(
+        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+          { type: 'diff', changes: [{ operation: 'modify', path: '/work/a.ts', fileType: 'text', mimeType: 'text/typescript' }], patch },
+          { type: 'content', content: text('between') },
+          { type: 'diff', changes: [
+            { operation: 'add', path: '/work/new.ts' },
+            { operation: 'delete', path: '/work/old.ts', fileType: null },
+            { operation: 'move', oldPath: '/work/from.png', path: '/work/to.png', fileType: 'binary', mimeType: 'image/png' },
+            { operation: 'copy', oldPath: '/work/src', path: '/work/dst', fileType: 'directory' },
+            { operation: 'modify', path: '/work/link', fileType: 'symlink' },
+          ] },
+        ] }],
+        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: {
+          type: 'diff', changes: [{ operation: 'modify', path: '/work/b.ts' }], patch: { format: 'unified', text: '@@ -1 +1 @@' },
+        } }],
+      )).toEqual([
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: reported }],
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [
+          ...reported,
+          { kind: 'diff', diff: { kind: 'changes', changes: [
+            { operation: 'modify', path: '/work/b.ts', fileType: null, mimeType: null },
+          ], patch: { format: 'other', text: '@@ -1 +1 @@' } } },
+        ] }],
+      ]);
+    });
+
+    it('drops the changes ACP defines no fields for, a diff left with none, and calls a file type it does not know other', async () => {
+      const custom = { operation: '_chmod', path: '/work/run.sh' } as V2.DiffChange;
+      const future = { operation: 'truncate', path: '/work/log' } as V2.DiffChange;
+      expect(await passedUp(
+        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+          { type: 'diff', changes: [custom, { operation: 'modify', path: '/work/sock', fileType: 'socket' }] },
+          { type: 'diff', changes: [future], patch: { format: 'git_patch', text: '' } },
+        ] }],
+      )).toEqual([
+        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [
+          { kind: 'diff', diff: { kind: 'changes', changes: [{ operation: 'modify', path: '/work/sock', fileType: 'other', mimeType: null }], patch: null } },
+        ] }],
+      ]);
+    });
+
+    describe("a git_patch naming files with Git's a/ and b/ prefixes, which ACP forbids (ACP-DEV-001)", () => {
+      /** What the driver passes up as the patch of each diff sent, and the warnings it logs meanwhile. */
+      async function repaired(...patches: string[]): Promise<{ patches: unknown[]; warnings: string[] }> {
+        const warnings: string[] = [];
+        setLogSink({ log() {}, warn: (message) => warnings.push(message), error() {}, traffic() {} });
+        try {
+          const updates = await updatesFor(...patches.map((patchText, index): V2.SessionUpdate => ({
+            sessionUpdate: 'tool_call_update',
+            toolCallId: `c${index + 1}`,
+            content: [{ type: 'diff', changes: [{ operation: 'modify', path: '/work/a.ts' }], patch: { format: 'git_patch', text: patchText } }],
+          })));
+          const passed = updates.map((update) => (update.kind === 'toolCall' && update.content?.[0]?.kind === 'diff' && update.content[0].diff.kind === 'changes' ? update.content[0].diff.patch?.text : undefined));
+          return { patches: passed, warnings };
+        } finally {
+          setLogSink(undefined);
+        }
+      }
+
+      it("takes the prefixes off the names, leaving the hunks' lines that read like names, and warns each time", async () => {
+        // Codex's preview, from the live check of 0.3.10-dev.0, trimmed; the second hunk, whose counts Git leaves out as
+        // each is 1, holds lines that read like names.
+        const sent = [
+          'diff --git a/home/me/tmp/scratch2.py b/home/me/tmp/scratch2.py',
+          '--- a/home/me/tmp/scratch2.py',
+          '+++ b/home/me/tmp/scratch2.py',
+          '@@ -1 +1,3 @@',
+          '+import argparse',
+          '+',
+          ' def _validate_n(n: int) -> int:',
+          '@@ -29 +31 @@',
+          '--- a/notes.md',
+          '+++ b/notes.md',
+          '',
+        ].join('\n');
+
+        expect(await repaired(sent, sent)).toEqual({
+          patches: Array(2).fill([
+            'diff --git /home/me/tmp/scratch2.py /home/me/tmp/scratch2.py',
+            '--- /home/me/tmp/scratch2.py',
+            '+++ /home/me/tmp/scratch2.py',
+            '@@ -1 +1,3 @@',
+            '+import argparse',
+            '+',
+            ' def _validate_n(n: int) -> int:',
+            '@@ -29 +31 @@',
+            '--- a/notes.md',
+            '+++ b/notes.md',
+            '',
+          ].join('\n')),
+          warnings: ['c1', 'c2'].map(
+            (id) => `ACP-DEV-001, deviating from the ACP standard in tool call ${id}'s patch: a v2 git_patch names files with Git's a/ and b/ prefixes, which ACP forbids, as its paths must be absolute; the prefixes are removed, leaving the absolute paths`,
+          ),
+        });
+      });
+
+      it('takes them off quoted names, a deleted file, a rename, and a name holding " b/" itself', async () => {
+        const sent = [
+          'diff --git "a/work/tab\\there.ts" "b/work/tab\\there.ts"',
+          '--- "a/work/tab\\there.ts"',
+          '+++ "b/work/tab\\there.ts"',
+          '@@ -1 +1 @@',
+          '-a',
+          '+b',
+          'diff --git a/work/gone.ts b/work/gone.ts',
+          'deleted file mode 100644',
+          '--- a/work/gone.ts',
+          '+++ /dev/null',
+          '@@ -1 +0,0 @@',
+          '-bye',
+          'diff --git a/work/old.ts b/work/new.ts',
+          'similarity index 100%',
+          'rename from /work/old.ts',
+          'rename to /work/new.ts',
+          'diff --git a/work/my b/x.ts b/work/my b/x.ts',
+          '--- a/work/my b/x.ts',
+          '+++ b/work/my b/x.ts',
+          '@@ -1 +1 @@',
+          '-c',
+          '+d',
+          '',
+        ].join('\n');
+
+        const { patches } = await repaired(sent);
+
+        expect(patches).toEqual([[
+          'diff --git "/work/tab\\there.ts" "/work/tab\\there.ts"',
+          '--- "/work/tab\\there.ts"',
+          '+++ "/work/tab\\there.ts"',
+          '@@ -1 +1 @@',
+          '-a',
+          '+b',
+          'diff --git /work/gone.ts /work/gone.ts',
+          'deleted file mode 100644',
+          '--- /work/gone.ts',
+          '+++ /dev/null',
+          '@@ -1 +0,0 @@',
+          '-bye',
+          'diff --git /work/old.ts /work/new.ts',
+          'similarity index 100%',
+          'rename from /work/old.ts',
+          'rename to /work/new.ts',
+          'diff --git /work/my b/x.ts /work/my b/x.ts',
+          '--- /work/my b/x.ts',
+          '+++ /work/my b/x.ts',
+          '@@ -1 +1 @@',
+          '-c',
+          '+d',
+          '',
+        ].join('\n')]);
+      });
+
+      it('passes a patch with absolute names on as sent, warning nothing, even where a name holds " b/"', async () => {
+        const sent = [
+          'diff --git /work/my b/x.ts /work/my b/x.ts',
+          '--- /work/my b/x.ts',
+          '+++ /work/my b/x.ts',
+          '@@ -1 +1 @@',
+          '-a',
+          '+b',
+          'diff --git /work/my b/y.ts /work/z.ts',
+          'similarity index 100%',
+          'rename from /work/my b/y.ts',
+          'rename to /work/z.ts',
+          '',
+        ].join('\n');
+
+        expect(await repaired(sent)).toEqual({ patches: [sent], warnings: [] });
+      });
     });
 
     it.each([

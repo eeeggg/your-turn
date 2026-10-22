@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, toolCall, type ChatPage } from './chatPage';
+import { connect, loadChatPage, texts, toolCall, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -80,7 +80,7 @@ describe('tool calls', () => {
 
   it('keeps the status when a report carries none', () => {
     toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running' });
-    toolCall(page, { toolCallId: 't1', texts: ['partial output'] });
+    toolCall(page, { toolCallId: 't1', content: texts('partial output') });
 
     expect(hookClasses(shown('t1').querySelector('.tc-icon'))).toBe('tc-icon running');
     expect(blocks('t1')).toEqual(['partial output']);
@@ -105,14 +105,14 @@ describe('tool calls', () => {
 
   it('shows the text output in blocks', () => {
     toolCall(page, { toolCallId: 't1', title: 'Edit foo.ts', status: 'pending' });
-    toolCall(page, { toolCallId: 't1', status: 'completed', texts: ['first', 'second'] });
+    toolCall(page, { toolCallId: 't1', status: 'completed', content: texts('first', 'second') });
 
     expect(blocks('t1')).toEqual(['first', 'second']);
     expect(shown('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
   });
 
   it('keeps existing output when a report has none', () => {
-    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running', texts: ['output'] });
+    toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running', content: texts('output') });
     toolCall(page, { toolCallId: 't1', status: 'completed' });
 
     expect(blocks('t1')).toEqual(['output']);
@@ -126,10 +126,52 @@ describe('tool calls', () => {
 
   it('truncates output beyond 20,000 characters', () => {
     toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
-    toolCall(page, { toolCallId: 't1', status: 'completed', texts: ['a'.repeat(15_000), 'b'.repeat(10_000)] });
+    toolCall(page, { toolCallId: 't1', status: 'completed', content: texts('a'.repeat(15_000), 'b'.repeat(10_000)) });
 
     expect(blocks('t1').join('')).toHaveLength(20_000);
     expect(shown('t1').querySelector('.tc-body-truncated')?.textContent).toBe('... (output truncated)');
+  });
+
+  it("draws an open tool call's diffs, a section per file with its lines numbered", () => {
+    const patch = [
+      'diff --git /work/project/a.ts /work/project/a.ts',
+      '--- /work/project/a.ts',
+      '+++ /work/project/a.ts',
+      '@@ -1,2 +1,2 @@',
+      ' keep',
+      '-old',
+      '+new',
+      '@@ -10,1 +10,2 @@',
+      ' ten',
+      '+eleven',
+      'diff --git /work/project/b.ts /work/project/b.ts',
+      'new file mode 100644',
+      '--- /dev/null',
+      '+++ /work/project/b.ts',
+      '@@ -0,0 +1 @@',
+      '+b',
+      '',
+    ].join('\n');
+    toolCall(page, { toolCallId: 't1', title: 'Apply patch', status: 'failed', content: [{ kind: 'diff', diff: { kind: 'changes', changes: [
+      { operation: 'modify', path: '/work/project/a.ts', fileType: 'text', mimeType: null },
+      { operation: 'add', path: '/work/project/b.ts', fileType: 'text', mimeType: null },
+    ], patch: { format: 'git_patch', text: patch } } }] });
+
+    const files = [...shown('t1').querySelectorAll('.tc-diff-file')];
+    expect(files.map((file) => file.querySelector('.tc-diff-header')?.textContent)).toEqual(['Modifieda.ts+2−1', 'Addedb.ts+1']);
+    expect(files.map((file) => file.querySelectorAll('tbody.diff-hunk').length)).toEqual([2, 1]);
+    expect([...(files[0]?.querySelectorAll('td.diff-gutter-insert') ?? [])].map((cell) => cell.textContent).filter(Boolean)).toEqual(['2', '11']);
+  });
+
+  it('answers a click on a diff\'s path, and a choice from the context menu, with the file as the agent reported it', () => {
+    const file = { path: '/work/project/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } } as const;
+    toolCall(page, { toolCallId: 't1', title: 'Edit', status: 'failed', content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: file.path, oldText: 'a\n', newText: 'b\n' } }] });
+    page.takePosted();
+
+    shown('t1').querySelector<HTMLElement>('.tc-diff-link')?.click();
+    page.send({ type: 'diffFileChosen', toolCallId: 't1', file: 0, open: 'changes' });
+
+    expect(page.takePosted()).toEqual([{ type: 'openFile', file }, { type: 'openChanges', file }]);
   });
 
   it('collapses more than three tool calls when the turn ends, and toggles on click', () => {

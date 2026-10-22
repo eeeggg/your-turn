@@ -8,7 +8,7 @@ import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { showsEmptyState } from '@/webview/state/Transcript';
-import { fakeAgent, InProcessAgents, unusedHandlers, type ExitOrder } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedEditor, unusedHandlers, type ExitOrder } from './InProcessAgents';
 
 /** Let pending callbacks, agent exits and webview messages included, run. */
 const settle = async () => {
@@ -42,7 +42,8 @@ function setup() {
   const controller = new ChatViewController(manager, {
     post: (message) => store.dispatch(message),
     executeCommand: async (...args) => { turnInProgress.push(args[2]); },
-  });
+    showsToolCallDiffs: () => false,
+  }, unusedEditor);
   updates.addListener((sessionId, update) => controller.handleSessionUpdate(sessionId, update));
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
   manager.on('session-ended', (sessionId, reason) => controller.notifySessionEnded(sessionId, reason));

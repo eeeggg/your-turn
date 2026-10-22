@@ -76,6 +76,10 @@ _Avoid_: version detection, probing
 The part of core that speaks one version of ACP over a connection, behind an interface the extension defines: commands go down to the agent, and session updates and the agent's requests come up. There is one per ACP version, each speaking its version in full and translating it into the interface's terms.
 _Avoid_: adapter (an Adapter, or an ACP adapter such as `claude-agent-acp`), protocol layer, client
 
+**Deviation**:
+Something an agent sends against the ACP standard that the extension accepts anyway, repaired where it first reaches the extension's code and logged as a warning, every time, under a code of our own (`ACP-DEV-001`) from the catalog in `src/core/StandardDeviations.ts`. A deviation applies to every agent, not to any agent by name.
+_Avoid_: workaround, quirk, hack, compatibility shim
+
 ### Sessions
 
 **Session**:

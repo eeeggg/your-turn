@@ -22,6 +22,7 @@ import type {
   SessionState,
   SessionUpdate,
   SlashCommand,
+  ToolCallContent,
   ToolCallStatus,
 } from './AcpDriver';
 import { authChecked, sessionChecked } from './RequestErrors';
@@ -239,7 +240,7 @@ function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
         toolCallId: update.toolCallId,
         ...(update.title ? { title: update.title } : {}),
         ...(status ? { status } : {}),
-        ...(update.content ? { texts: contentTexts(update.content) } : {}),
+        ...(update.content ? { content: toolCallContent(update.content) } : {}),
       };
     }
     case 'plan':
@@ -270,9 +271,18 @@ function textForUser(content: Acp.ContentBlock): string | null {
   return audience && !audience.includes('user') ? null : content.text;
 }
 
-/** The non-empty text blocks of a tool call's content; diffs and terminals have no place in the interface yet. */
-function contentTexts(content: readonly Acp.ToolCallContent[]): string[] {
-  return content.flatMap((block) => (block.type === 'content' && block.content.type === 'text' && block.content.text ? [block.content.text] : []));
+/** A tool call's non-empty text blocks and its diffs; terminals have no place in the interface yet. */
+function toolCallContent(content: readonly Acp.ToolCallContent[]): ToolCallContent[] {
+  return content.flatMap((block): ToolCallContent[] => {
+    switch (block.type) {
+      case 'content':
+        return block.content.type === 'text' && block.content.text ? [{ kind: 'text', text: block.content.text }] : [];
+      case 'diff':
+        return [{ kind: 'diff', diff: { kind: 'wholeFile', path: block.path, oldText: block.oldText ?? null, newText: block.newText } }];
+      default:
+        return [];
+    }
+  });
 }
 
 function toolCallStatus(status: Acp.ToolCallStatus): ToolCallStatus | null {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { answer, connect, loadChatPage, plan, thought, toolCall, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, plan, texts, thought, toolCall, type ChatPage } from './chatPage';
 
 const pages: ChatPage[] = [];
 
@@ -24,7 +24,7 @@ function runTurn(page: ChatPage): void {
   page.window.Date.now = () => 1_000;
   page.send({ type: 'promptStart' });
   thought(page, 'thinking');
-  toolCall(page, { toolCallId: 't1', title: 'Read file', status: 'pending', texts: ['file body'] });
+  toolCall(page, { toolCallId: 't1', title: 'Read file', status: 'pending', content: texts('file body') });
   page.window.Date.now = () => 3_000;
   answer(page, 'answer');
   plan(page, { text: 'step', status: 'pending' });

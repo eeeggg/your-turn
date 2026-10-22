@@ -3,6 +3,7 @@ import * as Acp from '@agentclientprotocol/sdk/experimental/v2';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { log } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { logDeviation } from '@/core/StandardDeviations';
 import {
   AuthRequired,
   type AcpDriver,
@@ -12,6 +13,8 @@ import {
   type ConfigOption,
   type ConfigValue,
   type ConfigValueGroup,
+  type FileChange,
+  type FileDiff,
   type ListedSession,
   type NewSession,
   type PermissionOption,
@@ -23,6 +26,7 @@ import {
   type SessionState,
   type SessionUpdate,
   type SlashCommand,
+  type ToolCallContent,
   type ToolCallStatus,
 } from './AcpDriver';
 import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
@@ -237,13 +241,13 @@ function turnFailure(error: Acp.Error | null | undefined): Error {
 }
 
 /**
- * Translates v2's session updates, keeping what v2 leaves to the client: each tool call's texts, which chunks append
+ * Translates v2's session updates, keeping what v2 leaves to the client: each tool call's content, which chunks append
  * to and an upsert's content replaces, and the sessions running a prompt's turn, during which the agent reports the
  * prompt back as a user message the chat view already shows.
  */
 class Translator {
   readonly prompting = new Set<string>();
-  private readonly toolCallTexts = new Map<string, Map<string, string[]>>();
+  private readonly toolCallContents = new Map<string, Map<string, ToolCallContent[]>>();
 
   /** The session update for v2's, or null when the interface has no place for it. */
   translate(sessionId: string, update: Acp.SessionUpdate): SessionUpdate | null {
@@ -273,27 +277,27 @@ class Translator {
     }
     if (updates.isToolCallUpdate(update)) {
       const status = update.status ? toolCallStatus(update.status) : null;
-      const texts = update.content === undefined ? null : contentTexts(update.content ?? []);
-      if (texts) {
-        this.textsIn(sessionId).set(update.toolCallId, texts);
+      const content = update.content === undefined ? null : toolCallContent(update.content ?? [], update.toolCallId);
+      if (content) {
+        this.contentsIn(sessionId).set(update.toolCallId, content);
       }
       return {
         kind: 'toolCall',
         toolCallId: update.toolCallId,
         ...(update.title ? { title: update.title } : {}),
         ...(status ? { status } : {}),
-        ...(texts ? { texts } : {}),
+        ...(content ? { content } : {}),
       };
     }
     if (updates.isToolCallContentChunk(update)) {
-      const added = contentTexts([update.content]);
+      const added = toolCallContent([update.content], update.toolCallId);
       if (added.length === 0) {
         return null;
       }
-      const calls = this.textsIn(sessionId);
-      const texts = [...calls.get(update.toolCallId) ?? [], ...added];
-      calls.set(update.toolCallId, texts);
-      return { kind: 'toolCall', toolCallId: update.toolCallId, texts };
+      const calls = this.contentsIn(sessionId);
+      const content = [...calls.get(update.toolCallId) ?? [], ...added];
+      calls.set(update.toolCallId, content);
+      return { kind: 'toolCall', toolCallId: update.toolCallId, content };
     }
     if (updates.isPlanUpdate(update)) {
       return Acp.PlanUpdateContent.isItems(update.plan)
@@ -316,11 +320,11 @@ class Translator {
     return null;
   }
 
-  private textsIn(sessionId: string): Map<string, string[]> {
-    let calls = this.toolCallTexts.get(sessionId);
+  private contentsIn(sessionId: string): Map<string, ToolCallContent[]> {
+    let calls = this.toolCallContents.get(sessionId);
     if (!calls) {
       calls = new Map();
-      this.toolCallTexts.set(sessionId, calls);
+      this.toolCallContents.set(sessionId, calls);
     }
     return calls;
   }
@@ -340,9 +344,153 @@ function messageText(content: Acp.ContentBlock[] | null): string {
   return (content ?? []).flatMap((block) => textForUser(block) ?? []).join('');
 }
 
-/** The non-empty text blocks of a tool call's content; diffs and terminals have no place in the interface. */
-function contentTexts(content: readonly Acp.ToolCallContent[]): string[] {
-  return content.flatMap((item) => (Acp.ToolCallContent.isContent(item) && Acp.ContentBlock.isText(item.content) && item.content.text ? [item.content.text] : []));
+/**
+ * A tool call's non-empty text blocks and its diffs, but not a diff with no change the interface can hold, which says
+ * nothing about any file; terminals have no place in the interface yet.
+ */
+function toolCallContent(content: readonly Acp.ToolCallContent[], toolCallId: string): ToolCallContent[] {
+  return content.flatMap((item): ToolCallContent[] => {
+    if (Acp.ToolCallContent.isContent(item)) {
+      return Acp.ContentBlock.isText(item.content) && item.content.text ? [{ kind: 'text', text: item.content.text }] : [];
+    }
+    if (Acp.ToolCallContent.isDiff(item)) {
+      const changes = item.changes.flatMap(fileChange);
+      return changes.length > 0 ? [{ kind: 'diff', diff: { kind: 'changes', changes, patch: diffPatch(item.patch, toolCallId) } }] : [];
+    }
+    return [];
+  });
+}
+
+function diffPatch(patch: Acp.DiffPatch | null | undefined, toolCallId: string): Extract<FileDiff, { kind: 'changes' }>['patch'] {
+  if (!patch) {
+    return null;
+  }
+  if (patch.format !== 'git_patch') {
+    return { format: 'other', text: patch.text };
+  }
+  const repaired = withoutGitPrefixes(patch.text);
+  if (repaired !== null) {
+    logDeviation('ACP-DEV-001', `tool call ${toolCallId}'s patch`);
+  }
+  return { format: 'git_patch', text: repaired ?? patch.text };
+}
+
+/**
+ * ACP-DEV-001: the patch with Git's `a/` and `b/` prefixes taken off its file names, or null when it has none. Names
+ * are only outside hunks, so each hunk's lines are counted past, as a hunk's line can read like a name.
+ */
+function withoutGitPrefixes(text: string): string | null {
+  let oldLeft = 0;
+  let newLeft = 0;
+  const lines = text.split('\n').map((line) => {
+    if (oldLeft > 0 || newLeft > 0) {
+      if (line.startsWith('-')) {
+        oldLeft--;
+      } else if (line.startsWith('+')) {
+        newLeft--;
+      } else if (!line.startsWith('\\')) {
+        oldLeft--;
+        newLeft--;
+      }
+      return line;
+    }
+    const counts = hunkLineCounts(line);
+    if (counts) {
+      [oldLeft, newLeft] = counts;
+      return line;
+    }
+    return nameLineWithoutGitPrefixes(line);
+  });
+  const repaired = lines.join('\n');
+  return repaired === text ? null : repaired;
+}
+
+/** How many old and new lines a hunk header such as `@@ -29,3 +34,3 @@` says follow; a count left out is 1. */
+function hunkLineCounts(line: string): [number, number] | null {
+  if (!line.startsWith('@@ -')) {
+    return null;
+  }
+  const [oldRange = '', newRange = ''] = line.split(' ').slice(1, 3);
+  const count = (range: string) => Number(range.split(',')[1] ?? 1);
+  return [count(oldRange), count(newRange)];
+}
+
+/** Whether the name starts with the prefix, quoted as Git quotes it or not. */
+function hasPrefix(name: string, prefix: 'a/' | 'b/'): boolean {
+  return name.startsWith(prefix) || name.startsWith(`"${prefix}`);
+}
+
+/** The name without the prefix, quoted as Git quotes it or not: `a/home/x` is `/home/x`. */
+function withoutPrefix(name: string, prefix: 'a/' | 'b/'): string {
+  if (name.startsWith(prefix)) {
+    return `/${name.slice(prefix.length)}`;
+  }
+  if (name.startsWith(`"${prefix}`)) {
+    return `"/${name.slice(prefix.length + 1)}`;
+  }
+  return name;
+}
+
+function nameLineWithoutGitPrefixes(line: string): string {
+  if (line.startsWith('--- ')) {
+    return `--- ${withoutPrefix(line.slice(4), 'a/')}`;
+  }
+  if (line.startsWith('+++ ')) {
+    return `+++ ${withoutPrefix(line.slice(4), 'b/')}`;
+  }
+  const gitLine = 'diff --git ';
+  if (!line.startsWith(gitLine)) {
+    return line;
+  }
+  const names = line.slice(gitLine.length);
+  if (!hasPrefix(names, 'a/')) {
+    return line;
+  }
+  // A name may hold " b/" itself, so the split is taken only where it is the one possible, or leaves two equal names.
+  const splits = spacesBeforeNewName(names).map((at) => ({
+    old: withoutPrefix(names.slice(0, at), 'a/'),
+    next: withoutPrefix(names.slice(at + 1), 'b/'),
+  }));
+  const split = splits.length === 1 ? splits[0] : splits.find(({ old, next }) => old === next);
+  return split ? `${gitLine}${split.old} ${split.next}` : line;
+}
+
+/** Where a space could end the old name in `diff --git a/old b/new`: each space followed by `b/` or `"b/`. */
+function spacesBeforeNewName(names: string): number[] {
+  const spaces: number[] = [];
+  for (let at = names.indexOf(' '); at !== -1; at = names.indexOf(' ', at + 1)) {
+    if (hasPrefix(names.slice(at + 1), 'b/')) {
+      spaces.push(at);
+    }
+  }
+  return spaces;
+}
+
+/** None for a custom or future operation, as ACP defines none of its fields, not even a path. */
+function fileChange(change: Acp.DiffChange): FileChange[] {
+  const described = { fileType: fileType(change.fileType), mimeType: change.mimeType ?? null };
+  if (Acp.DiffChange.isAdd(change) || Acp.DiffChange.isDelete(change) || Acp.DiffChange.isModify(change)) {
+    return [{ operation: change.operation, path: change.path, ...described }];
+  }
+  if (Acp.DiffChange.isMove(change) || Acp.DiffChange.isCopy(change)) {
+    return [{ operation: change.operation, path: change.path, oldPath: change.oldPath, ...described }];
+  }
+  return [];
+}
+
+function fileType(type: Acp.DiffFileType | null | undefined): FileChange['fileType'] {
+  switch (type) {
+    case 'text':
+    case 'binary':
+    case 'directory':
+    case 'symlink':
+      return type;
+    case null:
+    case undefined:
+      return null;
+    default:
+      return 'other';
+  }
 }
 
 /** A cancelled call shows as failed, as v1 agents report one; an unknown status leaves the call's as it was. */

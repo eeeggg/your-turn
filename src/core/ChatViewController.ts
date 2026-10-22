@@ -1,14 +1,29 @@
-import type { ConfigOption, ConfigValueGroup, PlanStep, SessionUpdate, SlashCommand } from '@/core/acp/AcpDriver';
 import type {
+  ConfigOption,
+  ConfigValueGroup,
+  FileChange,
+  FileDiff,
+  PlanStep,
+  SessionUpdate,
+  SlashCommand,
+  ToolCallContent,
+} from '@/core/acp/AcpDriver';
+import type {
+  DiffFileChoice,
   ExtensionToWebviewMessage,
   Picker,
   PickerValueGroup,
   PlanStep as WebviewPlanStep,
   SlashCommand as WebviewSlashCommand,
+  FileChange as WebviewFileChange,
+  ReportedFile as WebviewReportedFile,
+  ToolCallContent as WebviewToolCallContent,
+  ToolCallDiff,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { SessionInfo, SessionManager } from './SessionManager';
 import { logError, messageOf } from './Log';
+import { openReportedChanges, openReportedFile, type FileEditor, type ReportedFile } from './ReportedFiles';
 import type { Commands } from './VsCodeApi';
 
 /** The session operations the chat view uses. */
@@ -37,6 +52,8 @@ type TextMessage = Extract<ExtensionToWebviewMessage, { type: 'agentText' | 'tho
 export interface ChatViewEnvironment extends Commands {
   /** Deliver a webview message; dropped while the chat view is not open. */
   post(message: ExtensionToWebviewMessage): void;
+  /** The `acp.showToolCallDiffs` setting, read for each tool call update. */
+  showsToolCallDiffs(): boolean;
 }
 
 /**
@@ -60,6 +77,7 @@ export class ChatViewController {
   constructor(
     private readonly sessions: ChatSessions,
     private readonly environment: ChatViewEnvironment,
+    private readonly editor: FileEditor,
   ) {}
 
   /** Whether a prompt has been sent since the transcript was last cleared. */
@@ -83,7 +101,20 @@ export class ChatViewController {
         this.sendCurrentState();
         this.sendRunningTurn();
         break;
+      case 'openFile':
+      case 'openChanges':
+        try {
+          await (message.type === 'openFile' ? openReportedFile : openReportedChanges)(reportedFile(message.file), this.editor);
+        } catch (e) {
+          logError(`Failed to open ${message.file.path}`, e);
+        }
+        break;
     }
+  }
+
+  /** The user chose Open File or Open Changes from the context menu on a diff's file; the webview knows which file. */
+  chooseDiffFile(choice: DiffFileChoice): void {
+    this.post({ type: 'diffFileChosen', ...choice });
   }
 
   handleSessionUpdate(sessionId: string, update: SessionUpdate): void {
@@ -300,7 +331,7 @@ export class ChatViewController {
           toolCallId: update.toolCallId,
           ...(update.title !== undefined ? { title: update.title } : {}),
           ...(update.status !== undefined ? { status: update.status } : {}),
-          ...(update.texts !== undefined ? { texts: [...update.texts] } : {}),
+          ...(update.content !== undefined ? { content: toolCallContent(update.content, this.environment.showsToolCallDiffs()) } : {}),
         };
       case 'plan':
         return { type: 'plan', steps: update.steps.map(planStep) };
@@ -345,6 +376,59 @@ function sameText(a: TextMessage, b: TextMessage): boolean {
 
 function planStep(step: PlanStep): WebviewPlanStep {
   return { text: step.text, status: step.status };
+}
+
+function toolCallContent(content: readonly ToolCallContent[], showsDiffs: boolean): WebviewToolCallContent[] {
+  return content.flatMap((item): WebviewToolCallContent[] => {
+    if (item.kind === 'text') {
+      return [{ kind: 'text', text: item.text }];
+    }
+    return showsDiffs ? [{ kind: 'diff', diff: toolCallDiff(item.diff) }] : [];
+  });
+}
+
+function toolCallDiff(diff: FileDiff): ToolCallDiff {
+  if (diff.kind === 'wholeFile') {
+    return { kind: 'wholeFile', path: diff.path, oldText: diff.oldText, newText: diff.newText };
+  }
+  return {
+    kind: 'changes',
+    changes: diff.changes.map(fileChange),
+    patch: diff.patch ? { format: diff.patch.format, text: diff.patch.text } : null,
+  };
+}
+
+function fileChange(change: FileChange): WebviewFileChange {
+  return {
+    operation: change.operation,
+    path: change.path,
+    ...(change.oldPath !== undefined ? { oldPath: change.oldPath } : {}),
+    fileType: change.fileType,
+    mimeType: change.mimeType,
+  };
+}
+
+function reportedFile(file: WebviewReportedFile): ReportedFile {
+  const { lines } = file;
+  return {
+    path: file.path,
+    operation: file.operation,
+    lines:
+      lines === null
+        ? null
+        : lines.kind === 'wholeFile'
+          ? { kind: 'wholeFile', oldText: lines.oldText, newText: lines.newText }
+          : {
+              kind: 'hunks',
+              hunks: lines.hunks.map((hunk) => ({
+                oldStart: hunk.oldStart,
+                oldLines: hunk.oldLines,
+                newStart: hunk.newStart,
+                newLines: hunk.newLines,
+                lines: [...hunk.lines],
+              })),
+            },
+  };
 }
 
 function slashCommand(command: SlashCommand): WebviewSlashCommand {

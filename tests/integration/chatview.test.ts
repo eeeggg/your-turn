@@ -9,17 +9,9 @@ suite('Chat View Test Suite', () => {
     assert.ok(extension);
     const api = await extension.activate();
     assert.ok(api, 'activate returns the test API in extension tests');
-    const ready = new Promise<void>((resolve) => {
-      const subscription = api.chatMessages((message) => {
-        if (message.type === 'ready') {
-          subscription.dispose();
-          resolve();
-        }
-      });
-    });
 
     await vscode.commands.executeCommand('acp-chat.focus');
 
-    await ready;
+    await api.chatViewReady;
   }).timeout(15_000);
 });

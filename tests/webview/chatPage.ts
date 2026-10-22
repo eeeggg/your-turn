@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
 import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
-import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
@@ -175,6 +175,11 @@ export function replayed(page: ChatPage, text: string, messageId: string | null 
 
 export function toolCall(page: ChatPage, report: Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>): void {
   page.send({ type: 'toolCall', ...report });
+}
+
+/** A tool call's content of text blocks only. */
+export function texts(...items: string[]): ToolCallContent[] {
+  return items.map((text) => ({ kind: 'text', text }));
 }
 
 export function plan(page: ChatPage, ...steps: PlanStep[]): void {

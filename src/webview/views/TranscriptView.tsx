@@ -1,7 +1,8 @@
-import { memo, useLayoutEffect, useState } from 'react';
+import { memo, useLayoutEffect, useMemo, useState } from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 import type { ToolCallStatus } from '@/shared/WebviewMessages';
 import { Markdown } from '@/webview/views/Markdown';
+import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
   partShown,
@@ -208,10 +209,11 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
   );
 });
 
+/** Its diffs are worked out only while it is open, as a closed one shows none and a whole file can take a while. */
 const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: EntryId; call: ToolCall }) {
   const dispatch = useDispatch();
-  const { blocks, truncated } = shownContent(call.texts);
-  return (
+  const cwd = useSelector((state) => state.activeSession?.cwd ?? null);
+  const { blocks, truncated } = useMemo(() => shownContent(call.content, cwd, call.open), [call.content, cwd, call.open]);  return (
     <details
       className="tool-call-inline rounded-sm bg-muted px-1.5 py-0.75 text-sm opacity-85 open:opacity-100"
       id={`tc-${call.toolCallId}`}
@@ -228,11 +230,15 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
       </summary>
       <div className="tc-body mt-1 border-t border-border pt-1" style={blocks.length === 0 ? { display: 'none' } : undefined}>
         <div className="tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90">
-          {blocks.map((text, index) => (
-            <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
-              {text}
-            </div>
-          ))}
+          {blocks.map((block, index) =>
+            block.kind === 'text' ? (
+              <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
+                {block.text}
+              </div>
+            ) : (
+              <ToolCallDiffView key={index} files={block.files} toolCallId={call.toolCallId} firstFile={block.firstFile} />
+            ),
+          )}
           {truncated && <div className="tc-body-truncated mt-1 text-muted-foreground italic">... (output truncated)</div>}
         </div>
       </div>

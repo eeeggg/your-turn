@@ -15,13 +15,14 @@ import { log, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
+import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
-import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { DiffFileChoice, ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 /**
  * What `activate` returns in extension tests, and only there. Each test bundles its own copies of `src/`, so it cannot
@@ -30,6 +31,12 @@ import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 export interface ExtensionTestApi {
   /** The messages the chat view's webview sends the extension. */
   readonly chatMessages: vscode.Event<WebviewToExtensionMessage>;
+  /** The messages the extension delivers to the chat view's webview. */
+  readonly chatPosts: vscode.Event<ExtensionToWebviewMessage>;
+  /** Settles once the chat view's script has loaded, which it says once however often the view is shown. */
+  readonly chatViewReady: Promise<void>;
+  /** Handle a message as if the chat view's webview sent it, as a test cannot type into the webview. */
+  sendChatMessage(message: WebviewToExtensionMessage): Promise<void>;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -87,9 +94,18 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   });
 
   const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri);
-  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider);
+  const reportedFileEditor = new ReportedFileEditor();
+  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor);
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
+  });
+  const chatViewReady = new Promise<void>((resolve) => {
+    const readiness = chatWebviewProvider.onDidReceiveMessage((message) => {
+      if (message.type === 'ready') {
+        readiness.dispose();
+        resolve();
+      }
+    });
   });
   sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
@@ -139,6 +155,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     },
   );
   const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
+  const chooseDiffFile = (arg: unknown, open: DiffFileChoice['open']) => {
+    const choice = diffFileChoiceOf(arg, open);
+    if (choice) {
+      chatViewController.chooseDiffFile(choice);
+    }
+  };
 
   context.subscriptions.push(
     treeView,
@@ -147,6 +169,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     agentsChanged,
     chatViewRegistration,
     chatMessageSubscription,
+    reportedFileEditor,
     statusBarManager,
     vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.newSession', () => sessionCommands.newSession()),
@@ -184,6 +207,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.commands.registerCommand('acp.addAgent', () => agentConfigurations.add()),
     vscode.commands.registerCommand('acp.detectAgents', () => agentConfigurations.detect()),
     vscode.commands.registerCommand('acp.removeAgent', (arg?: unknown) => agentConfigurations.remove(agentNameOf(arg))),
+    vscode.commands.registerCommand('acp.openToolCallFile', (arg?: unknown) => chooseDiffFile(arg, 'file')),
+    vscode.commands.registerCommand('acp.openToolCallChanges', (arg?: unknown) => chooseDiffFile(arg, 'changes')),
     vscode.commands.registerCommand('acp.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
@@ -207,7 +232,15 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   );
 
   log('ACP Client extension activated.');
-  return context.extensionMode === vscode.ExtensionMode.Test ? { chatMessages: chatWebviewProvider.onDidReceiveMessage } : undefined;
+  if (context.extensionMode !== vscode.ExtensionMode.Test) {
+    return undefined;
+  }
+  return {
+    chatMessages: chatWebviewProvider.onDidReceiveMessage,
+    chatPosts: chatWebviewProvider.onDidPost,
+    chatViewReady,
+    sendChatMessage: (message) => chatViewController.handleMessage(message),
+  };
 }
 
 export function deactivate(): void {
@@ -227,4 +260,12 @@ function agentNameOf(arg: unknown): string | undefined {
   }
   const agentName = (arg as { agentName?: unknown } | undefined)?.agentName;
   return typeof agentName === 'string' ? agentName : undefined;
+}
+
+/** The context menu on a diff's file passes the `data-vscode-context` the chat view gave it. */
+function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileChoice | undefined {
+  const context = arg as { acpToolCallId?: unknown; acpDiffFile?: unknown } | undefined;
+  const toolCallId = context?.acpToolCallId;
+  const file = context?.acpDiffFile;
+  return typeof toolCallId === 'string' && typeof file === 'number' ? { toolCallId, file, open } : undefined;
 }
