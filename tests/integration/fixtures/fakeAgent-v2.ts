@@ -13,7 +13,8 @@ import { Readable, Writable } from 'node:stream';
  * streams "cancel-ack".
  * A prompt of "edit <dir>" instead edits `a.ts` in that directory and deletes `gone.ts`, reporting both as one tool
  * call's diff: its `changes` and a `git_patch` in ACP's form, with absolute paths and no `a/` or `b/`. A prompt of "run"
- * reports a command it runs in a terminal of its own, as `run` describes.
+ * reports a command it runs in a terminal of its own, as `run` describes. A prompt of "review <dir>" changes files
+ * there for `review.test.ts`, as `changeForReview` describes.
  */
 
 const SESSION_ID = 'fake-session';
@@ -108,6 +109,86 @@ async function edit(client: AgentContext, sessionId: string, dir: string): Promi
 }
 
 /**
+ * Modifies `a.ts` and deletes `gone.ts`, which the test made, creates `new.ts`, and writes `mismatch.ts` other than
+ * its patch says, as `fakeAgent-v1.ts`'s twin does; then changes `nopatch.ts`, reported with no patch, and creates
+ * `image.png`, reported as binary. All are one tool call's two diffs, as ACP allows: the first's `git_patch` covering
+ * its changes, the binary one as Git writes it, with no lines.
+ */
+async function changeForReview(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const modified = join(dir, 'a.ts');
+  const created = join(dir, 'new.ts');
+  const deleted = join(dir, 'gone.ts');
+  const mismatched = join(dir, 'mismatch.ts');
+  const unpatched = join(dir, 'nopatch.ts');
+  const binary = join(dir, 'image.png');
+  if (readFileSync(modified, 'utf8') !== 'one\ntwo\n' || readFileSync(deleted, 'utf8') !== 'gone\n') {
+    throw new Error(`${dir} is not laid out as the review expects`);
+  }
+  writeFileSync(modified, 'one\nTWO\n');
+  writeFileSync(created, 'new\n');
+  unlinkSync(deleted);
+  writeFileSync(mismatched, 'on disk\n');
+  writeFileSync(unpatched, 'changed\n');
+  writeFileSync(binary, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00]));
+  const patch = [
+    `diff --git ${modified} ${modified}`,
+    `--- ${modified}`,
+    `+++ ${modified}`,
+    '@@ -1,2 +1,2 @@',
+    ' one',
+    '-two',
+    '+TWO',
+    `diff --git ${created} ${created}`,
+    'new file mode 100644',
+    '--- /dev/null',
+    `+++ ${created}`,
+    '@@ -0,0 +1 @@',
+    '+new',
+    `diff --git ${deleted} ${deleted}`,
+    'deleted file mode 100644',
+    `--- ${deleted}`,
+    '+++ /dev/null',
+    '@@ -1 +0,0 @@',
+    '-gone',
+    `diff --git ${mismatched} ${mismatched}`,
+    'new file mode 100644',
+    '--- /dev/null',
+    `+++ ${mismatched}`,
+    '@@ -0,0 +1 @@',
+    '+reported',
+    `diff --git ${binary} ${binary}`,
+    'new file mode 100644',
+    'index 0000000..d1b8a6c',
+    `Binary files /dev/null and ${binary} differ`,
+    '',
+  ].join('\n');
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'review-1',
+      title: 'Change files',
+      kind: 'edit',
+      status: 'completed',
+      content: [
+        {
+          type: 'diff',
+          changes: [
+            { operation: 'modify', path: modified, fileType: 'text' },
+            { operation: 'add', path: created, fileType: 'text' },
+            { operation: 'delete', path: deleted, fileType: 'text' },
+            { operation: 'add', path: mismatched, fileType: 'text' },
+            { operation: 'add', path: binary, fileType: 'binary', mimeType: 'image/png' },
+          ],
+          patch: { format: 'git_patch', text: patch },
+        },
+        { type: 'diff', changes: [{ operation: 'modify', path: unpatched, fileType: 'text' }] },
+      ],
+    },
+  });
+}
+
+/**
  * A command's terminal, reported as ACP allows: a chunk before any tool call names the terminal, a snapshot replacing
  * it, a character split between two chunks, and the exit status last, after its tool call was marked completed, as
  * Codex does. Its output ends up as `fakeAgent-v1.ts` reports its command's.
@@ -157,6 +238,12 @@ agent({ name: 'fake-agent' })
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         await edit(client, params.sessionId, text.slice('edit '.length));
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text.startsWith('review ')) {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await changeForReview(client, params.sessionId, text.slice('review '.length));
         await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
       })();
     } else if (text === 'run') {
