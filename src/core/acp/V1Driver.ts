@@ -56,7 +56,7 @@ export class V1Driver implements AcpDriver {
         log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
         const update = sessionUpdate(params.update);
         if (update) {
-          updates.handleUpdate(params.sessionId, update);
+          updates.handleUpdate(params.sessionId, update, 'v1');
         }
       });
     const connection = app.connect(stream);

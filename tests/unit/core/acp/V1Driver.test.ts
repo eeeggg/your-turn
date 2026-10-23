@@ -59,6 +59,16 @@ describe('V1Driver', () => {
     });
   });
 
+  it('tags every session update it passes up with its schema, v1', async () => {
+    const { driver, schemas } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {
+      await client.notify(methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } });
+      await client.notify(methods.client.session.update, { sessionId: 's2', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hi' } } });
+      return { stopReason: 'end_turn' };
+    }));
+    await driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
+    expect(schemas).toEqual(['v1', 'v1']);
+  });
+
   describe('session updates', () => {
     it("passes on the agent's answer, thinking and replayed prompts as text, with their message IDs", async () => {
       expect(await translated(

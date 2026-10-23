@@ -1,7 +1,8 @@
-import type { SessionUpdate } from '@/core/acp/AcpDriver';
+import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { FollowedFiles, type WatchFile } from './FollowedFiles';
 import { Review, type ReadFile, type RestoreFile } from './Review';
 import { V1Guard } from './V1Guard';
+import { V2Guard } from './V2Guard';
 
 /** What reviews need of the files they review. */
 export interface ReviewFiles {
@@ -15,15 +16,17 @@ export type ShownReviewListener = () => void;
 
 interface SessionReview {
   readonly review: Review;
-  readonly guard: V1Guard;
+  /** The sibling of the driver whose update came last. */
+  guard: { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard };
   readonly followed: FollowedFiles;
 }
 
 /**
  * Each session's review, the guard that feeds it and its files followed, made on its first update and kept until
  * disposed, so a session removed and opened again shows its review again; a removed session's turn may go on, so its
- * evidence is still taken. The one shown is the active session's, the one the chat view shows. A load's replay is not
- * evidence.
+ * evidence is still taken. The guard is the sibling of the driver that passed the update up, made anew, the review
+ * kept, when another driver's update comes for the session. The one shown is the active session's, the one the chat
+ * view shows. A load's replay is not evidence.
  */
 export class Reviews {
   private readonly sessions = new Map<string, SessionReview>();
@@ -47,9 +50,11 @@ export class Reviews {
   }
 
   /** Settles once the files its evidence names were read. */
-  handleSessionUpdate(sessionId: string, update: SessionUpdate): Promise<void> {
+  handleSessionUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): Promise<void> {
     if (this.loading.has(sessionId)) { return Promise.resolve(); }
-    return this.session(sessionId).guard.handleSessionUpdate(update);
+    const session = this.session(sessionId, schema);
+    if (session.guard.schema !== schema) { session.guard = this.guard(schema, session.review); }
+    return session.guard.guard.handleSessionUpdate(update);
   }
 
   loadStarted(sessionId: string): void {
@@ -76,17 +81,21 @@ export class Reviews {
     this.sessions.clear();
   }
 
-  private session(sessionId: string): SessionReview {
+  private session(sessionId: string, schema: AcpSchema): SessionReview {
     let session = this.sessions.get(sessionId);
     if (!session) {
       const review = new Review(this.files.restore);
       review.addListener(() => {
         if (sessionId === this.shownSessionId) { this.changed(); }
       });
-      session = { review, guard: new V1Guard(review, this.files.read), followed: new FollowedFiles(review, this.files.read, this.files.watch) };
+      session = { review, guard: this.guard(schema, review), followed: new FollowedFiles(review, this.files.read, this.files.watch) };
       this.sessions.set(sessionId, session);
     }
     return session;
+  }
+
+  private guard(schema: AcpSchema, review: Review): SessionReview['guard'] {
+    return { schema, guard: schema === 'v1' ? new V1Guard(review, this.files.read) : new V2Guard(review, this.files.read) };
   }
 
   private changed(): void {

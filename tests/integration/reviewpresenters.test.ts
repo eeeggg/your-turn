@@ -78,8 +78,8 @@ suite('Review presenters', () => {
     shown = record.shown;
     presenters = new ReviewPresenters(controls, reviews, record.display);
     reviews.activeSessionChanged('s1');
-    await reviews.handleSessionUpdate('s1', edited('t1', a, 'one\n', 'one\nadded\n'));
-    await reviews.handleSessionUpdate('s1', edited('t2', b, 'b\n', 'B\n'));
+    await reviews.handleSessionUpdate('s1', edited('t1', a, 'one\n', 'one\nadded\n'), 'v1');
+    await reviews.handleSessionUpdate('s1', edited('t2', b, 'b\n', 'B\n'), 'v1');
   });
 
   teardown(async () => {
@@ -143,7 +143,7 @@ suite('Review presenters', () => {
 
   test("undoes a deleted file from its editor, which says it was not found, and opens it again with its baseline", async () => {
     const gone = path.join(folder, 'gone.txt');
-    await reviews.handleSessionUpdate('s1', edited('t3', gone, 'gone\n', ''));
+    await reviews.handleSessionUpdate('s1', edited('t3', gone, 'gone\n', ''), 'v1');
     await controls.previous(a);
     await until(() => shown.position === '3 of 3', 'the deleted file to be 3 of 3');
     assert.strictEqual(activeFile(), undefined);
