@@ -1,7 +1,8 @@
-import type { SessionUpdate } from '@/core/acp/AcpDriver';
+import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { log, messageOf } from './Log';
 
-export type SessionUpdateListener = (sessionId: string, update: SessionUpdate) => void;
+/** `schema` names the driver that passed the update up. */
+export type SessionUpdateListener = (sessionId: string, update: SessionUpdate, schema: AcpSchema) => void;
 
 /**
  * Routes the session updates of every connection's ACP driver to registered listeners.
@@ -18,10 +19,10 @@ export class SessionUpdateHandler {
     this.listeners.delete(listener);
   }
 
-  handleUpdate(sessionId: string, update: SessionUpdate): void {
+  handleUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): void {
     for (const listener of this.listeners) {
       try {
-        listener(sessionId, update);
+        listener(sessionId, update, schema);
       } catch (e) {
         log(`Error in session update listener: ${messageOf(e)}`);
       }

@@ -1,7 +1,7 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentApp, AgentConnector, InitializeResponse } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import type { AcpDriver, SessionUpdate } from '@/core/acp/AcpDriver';
+import type { AcpDriver, AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
@@ -116,19 +116,24 @@ export class InProcessAgents implements AgentLauncher {
 
 /**
  * A driver connected to the agent `script` builds, of the version they negotiate; the session updates it passes up,
- * as session ID and update; and `exit`, which ends the agent as its process's death would.
+ * as session ID and update, and the schema each was tagged with; and `exit`, which ends the agent as its process's
+ * death would.
  */
 export async function connectedDriver(
   script: AgentScript,
   handlers: ClientHandlers = unusedHandlers,
-): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; exit: () => void }> {
+): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; schemas: AcpSchema[]; exit: () => void }> {
   const agents = new InProcessAgents({ fake: script });
   const sessionUpdates = new SessionUpdateHandler();
   const updates: [string, SessionUpdate][] = [];
-  sessionUpdates.addListener((sessionId, update) => updates.push([sessionId, update]));
+  const schemas: AcpSchema[] = [];
+  sessionUpdates.addListener((sessionId, update, schema) => {
+    updates.push([sessionId, update]);
+    schemas.push(schema);
+  });
   const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
   const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
-  return { driver, updates, exit: () => agents.launched[0]?.crash() };
+  return { driver, updates, schemas, exit: () => agents.launched[0]?.crash() };
 }
 
 /** An ACP v2 SDK agent with sessions that answers `initialize`; add the requests a test needs. */

@@ -13,21 +13,21 @@ describe('SessionUpdateHandler', () => {
     handler.addListener((sessionId) => received.push(`first:${sessionId}`));
     handler.addListener((sessionId) => received.push(`second:${sessionId}`));
 
-    handler.handleUpdate('s1', chunk('a'));
-    handler.handleUpdate('s2', chunk('b'));
+    handler.handleUpdate('s1', chunk('a'), 'v1');
+    handler.handleUpdate('s2', chunk('b'), 'v1');
 
     expect(received).toEqual(['first:s1', 'second:s1', 'first:s2', 'second:s2']);
   });
 
-  it('passes the update through unchanged', () => {
+  it('passes the update through unchanged, with the schema of the driver that passed it up', () => {
     const handler = new SessionUpdateHandler();
     const listener = vi.fn();
     handler.addListener(listener);
     const update = chunk('hello');
 
-    handler.handleUpdate('s1', update);
+    handler.handleUpdate('s1', update, 'v2');
 
-    expect(listener).toHaveBeenCalledExactlyOnceWith('s1', update);
+    expect(listener).toHaveBeenCalledExactlyOnceWith('s1', update, 'v2');
   });
 
   it('registers a listener once even if it is added twice', () => {
@@ -36,7 +36,7 @@ describe('SessionUpdateHandler', () => {
     handler.addListener(listener);
     handler.addListener(listener);
 
-    handler.handleUpdate('s1', chunk('a'));
+    handler.handleUpdate('s1', chunk('a'), 'v1');
 
     expect(listener).toHaveBeenCalledTimes(1);
   });
@@ -49,7 +49,7 @@ describe('SessionUpdateHandler', () => {
     handler.addListener(kept);
 
     handler.removeListener(removed);
-    handler.handleUpdate('s1', chunk('a'));
+    handler.handleUpdate('s1', chunk('a'), 'v1');
 
     expect(removed).not.toHaveBeenCalled();
     expect(kept).toHaveBeenCalledTimes(1);
@@ -63,7 +63,7 @@ describe('SessionUpdateHandler', () => {
     });
     handler.addListener(later);
 
-    expect(() => handler.handleUpdate('s1', chunk('a'))).not.toThrow();
+    expect(() => handler.handleUpdate('s1', chunk('a'), 'v1')).not.toThrow();
     expect(later).toHaveBeenCalledTimes(1);
   });
 
@@ -73,7 +73,7 @@ describe('SessionUpdateHandler', () => {
     handler.addListener(listener);
 
     handler.dispose();
-    handler.handleUpdate('s1', chunk('a'));
+    handler.handleUpdate('s1', chunk('a'), 'v1');
 
     expect(listener).not.toHaveBeenCalled();
   });

@@ -119,7 +119,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
   sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
   const reviews = new Reviews(workspaceFiles);
-  sessionUpdateHandler.addListener((sessionId, update) => { void reviews.handleSessionUpdate(sessionId, update); });
+  sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
   const reviewControls = new ReviewControls(reviews, vscodeReviewEditors);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
   sessionManager.on('session-removed', (sessionId) => {

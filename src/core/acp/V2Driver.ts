@@ -68,7 +68,7 @@ export class V2Driver implements AcpDriver {
         }
         const update = translator.translate(params.sessionId, params.update);
         if (update) {
-          updates.handleUpdate(params.sessionId, update);
+          updates.handleUpdate(params.sessionId, update, 'v2');
         }
       });
     const connection = app.connect(stream);

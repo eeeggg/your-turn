@@ -73,8 +73,12 @@ Agreeing on the ACP version for a connection during the initialize handshake: th
 _Avoid_: version detection, probing
 
 **ACP driver**:
-The part of core that speaks one version of ACP over a connection, behind an interface the extension defines: commands go down to the agent, and session updates and the agent's requests come up. There is one per ACP version, each speaking its version in full and translating it into the interface's terms.
+The part of core that speaks one version of ACP over a connection, behind an interface the extension defines: commands go down to the agent, and session updates and the agent's requests come up. There is one per ACP version, each speaking its version in full and translating it into the interface's terms. Its sibling is a guard.
 _Avoid_: adapter (an Adapter, or an ACP adapter such as `claude-agent-acp`), protocol layer, client
+
+**Guard**:
+An ACP driver's sibling in core, one for each driver. The driver speaks its schema and passes on what was reported, as reported; its guard holds that schema's rules for what the extension's features can trust and how they read it, and gives them only that, in their own terms, so no feature sees a schema's ways. Today guards serve the review, turning diffs checked against the file as it is now into evidence.
+_Avoid_: filter, validator, parser (the driver's job), deviation (which repairs what goes against the standard; a guard reads what is within it)
 
 **Deviation**:
 Something an agent sends against the ACP standard that the extension accepts anyway, repaired where it first reaches the extension's code and logged as a warning, every time, under a code of our own (`ACP-DEV-001`) from the catalog in `src/core/StandardDeviations.ts`. A deviation applies to every agent, not to any agent by name.

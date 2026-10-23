@@ -150,6 +150,9 @@ export interface SlashCommand {
   hint: string | null;
 }
 
+/** The ACP schema a driver speaks, which names the driver, as each speaks one; its session updates are tagged with it. */
+export type AcpSchema = 'v1' | 'v2';
+
 /**
  * Something new or changed in a session; what has no place here is dropped by the driver. Discriminated by `kind`,
  * not the webview messages' `type`, so an update cannot be posted to the webview as it is.

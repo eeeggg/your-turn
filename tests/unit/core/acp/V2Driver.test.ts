@@ -396,6 +396,19 @@ describe('V2Driver', () => {
   });
 
   describe('session updates', () => {
+    it('tags every session update it passes up with its schema, v2', async () => {
+      const { driver, schemas } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.new, async ({ client }) => {
+          await notify(client, { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('hi') });
+          await notify(client, { sessionUpdate: 'agent_message_chunk', messageId: 'a2', content: text('hi') }, 's2');
+          return { sessionId: 's1' };
+        })
+        .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+      await driver.newSession('/work');
+      await driver.listSessions({});
+      expect(schemas).toEqual(['v2', 'v2']);
+    });
+
     it("passes up the agent's answer and thinking, streamed and whole, leaving out what is not for the user", async () => {
       expect(await updatesFor(
         { sessionUpdate: 'agent_thought_chunk', messageId: 't1', content: text('') },

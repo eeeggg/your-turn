@@ -8,6 +8,9 @@ export interface ReviewedFile {
   readonly current: FileContent;
 }
 
+/** What is at a path now: its text, or `null` when nothing is there; rejects when it cannot be read as text. */
+export type ReadFile = (path: string) => Promise<FileContent>;
+
 /** Puts `content` at `path`, `null` deleting what is there; rejects when it could not. */
 export type RestoreFile = (path: string, content: FileContent) => Promise<void>;
 
