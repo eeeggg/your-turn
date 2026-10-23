@@ -1,6 +1,5 @@
 import { log, messageOf } from '@/core/Log';
-import type { Review } from './Review';
-import type { ReadFile } from './V1Guard';
+import type { ReadFile, Review } from './Review';
 
 /** Watches what is at `path`, calling `changed` whenever it may have changed, until disposed. */
 export type WatchFile = (path: string, changed: () => void) => { dispose(): void };

@@ -1,10 +1,7 @@
 import { isAbsolute } from 'node:path';
 import type { FileDiff, SessionUpdate, ToolCallStatus } from '@/core/acp/AcpDriver';
 import { log, messageOf } from '@/core/Log';
-import type { FileContent, Review } from './Review';
-
-/** What is at a path now: its text, or `null` when nothing is there; rejects when it cannot be read as text. */
-export type ReadFile = (path: string) => Promise<FileContent>;
+import type { FileContent, ReadFile, Review } from './Review';
 
 type WholeFile = Extract<FileDiff, { kind: 'wholeFile' }>;
 
