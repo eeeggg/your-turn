@@ -12,7 +12,7 @@ import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
-import { ChatViewController } from '@/core/ChatViewController';
+import { ChatViewController, type DiffFileChoice } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
 import { log, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
@@ -28,7 +28,7 @@ import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
-import type { DiffFileChoice, ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 /**
  * What `activate` returns in extension tests, and only there. Each test bundles its own copies of `src/`, so it cannot
@@ -152,7 +152,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     // The load replays the terminals' updates, which would add their chunks to what is kept again.
     agentTerminals.forgetSession(sessionId);
     reviews.loadStarted(sessionId);
-    chatViewController.notifyLoadSessionStart();
+    chatViewController.notifyLoadSessionStart(sessionId);
   });
   sessionManager.on('session-load-end', (sessionId, _agentName, ok) => {
     reviews.loadEnded(sessionId);
@@ -181,9 +181,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
   const chooseDiffFile = (arg: unknown, open: DiffFileChoice['open']) => {
     const choice = diffFileChoiceOf(arg, open);
-    if (choice) {
-      chatViewController.chooseDiffFile(choice);
-    }
+    return choice && chatViewController.chooseDiffFile(choice);
   };
 
   context.subscriptions.push(

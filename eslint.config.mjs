@@ -12,6 +12,11 @@ const webviewApi = {
   message: "Only Main.tsx posts to the extension; views dispatch events to the store, which posts its outgoing messages.",
 };
 
+const jsdiff = {
+  name: "diff",
+  message: "Core makes the chat view's diffs and sends their files; the webview draws the hunks it is sent.",
+};
+
 const webviewLayers = {
   group: ["@/core/*", "@/adapters/*"],
   message: "The webview reaches the extension only by webview messages; share their types through @/shared.",
@@ -52,6 +57,18 @@ const acpSdkInCore = {
 const contract = {
   group: ["@/shared/*"],
   message: "Only ChatViewController translates into the webview's contract; the rest of core, drivers included, never sees it.",
+};
+
+// A rule of its own, as every layer's rule replaces the other's options: Monaco's diff code is imported by internal paths,
+// which an upgrade can move.
+/** @type {import("eslint").Linter.RulesRecord} */
+const monacoOutsideDiff = {
+  "@typescript-eslint/no-restricted-imports": ["error", {
+    patterns: [{
+      group: ["monaco-editor", "monaco-editor/*"],
+      message: "Only src/core/diff imports monaco-editor, by its internal paths; use its line changes and hunks.",
+    }],
+  }],
 };
 
 const coreInContract = {
@@ -127,7 +144,12 @@ export default defineConfig(
       eqeqeq: ["error", "always", { null: "ignore" }],
       semi: "error",
       ...restrictImports(),
+      ...monacoOutsideDiff,
     },
+  },
+  {
+    files: ["src/core/diff/**/*.ts"],
+    rules: { "@typescript-eslint/no-restricted-imports": "off" },
   },
   {
     files: ["src/core/**/*.ts"],
@@ -157,7 +179,7 @@ export default defineConfig(
   {
     files: ["src/webview/**/*.{ts,tsx}"],
     rules: {
-      ...restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, acpSdk] }),
+      ...restrictImports({ paths: [vscodeApi, webviewApi, jsdiff], patterns: [webviewLayers, acpSdk] }),
       "no-restricted-globals": ["error", {
         name: "acquireVsCodeApi",
         message: "VS Code allows one call per page; import from @/webview/VsCodeApi instead.",
@@ -171,15 +193,15 @@ export default defineConfig(
   },
   {
     files: ["src/webview/**/*.ts"],
-    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, acpSdk, react] }),
+    rules: restrictImports({ paths: [vscodeApi, webviewApi, jsdiff], patterns: [webviewLayers, acpSdk, react] }),
   },
   {
     files: ["src/webview/state/**/*.ts"],
-    rules: restrictImports({ paths: [vscodeApi, webviewApi], patterns: [webviewLayers, acpSdk, react, views] }),
+    rules: restrictImports({ paths: [vscodeApi, webviewApi, jsdiff], patterns: [webviewLayers, acpSdk, react, views] }),
   },
   {
     files: ["src/webview/Main.tsx"],
-    rules: restrictImports({ paths: [vscodeApi], patterns: [webviewLayers, acpSdk] }),
+    rules: restrictImports({ paths: [vscodeApi, jsdiff], patterns: [webviewLayers, acpSdk] }),
   },
   {
     files: ["src/webview/VsCodeApi.ts"],

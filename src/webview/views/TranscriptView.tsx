@@ -210,17 +210,16 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
   );
 });
 
-/** Its diffs are worked out only while it is open, as a closed one shows none and a whole file can take a while. */
+/** Its diffs are drawn only while it is open, as a closed one shows none. */
 const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: EntryId; call: ToolCall }) {
   const dispatch = useDispatch();
-  const cwd = useSelector((state) => state.activeSession?.cwd ?? null);
   const terminals = useSelector((state) => state.transcript.terminals);
   const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
   const sessionId = useSelector((state) => state.transcript.sessionId);
   const title = call.title || 'Tool Call';
   const { blocks, truncated, running } = useMemo(
-    () => shownContent(call.content, { cwd, terminals, sessionEnded }, call.open),
-    [call.content, cwd, terminals, sessionEnded, call.open],
+    () => shownContent(call.content, { terminals, sessionEnded }, call.open),
+    [call.content, terminals, sessionEnded, call.open],
   );
   const command = blocks.find((block): block is CommandBlock => block.kind === 'command');
   return (

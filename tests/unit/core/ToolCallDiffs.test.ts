@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { FileChange, ToolCallDiff } from '@/shared/WebviewMessages';
-import { diffFiles, shownPath, withinLineLimit, type DiffFile } from '@/webview/state/ToolCallDiffs';
+import type { FileChange, FileDiff } from '@/core/acp/AcpDriver';
+import { diffFiles, shownPath, TOOL_CALL_DIFF_LINE_LIMIT, ToolCallDiffs, withinLineLimit, type DiffFile } from '@/core/ToolCallDiffs';
 
 /** As ACP asks: absolute paths, no `a/` or `b/`. Git writes no hunks for a binary file. */
 const gitPatch = `diff --git /work/logo.png /work/logo.png
@@ -77,7 +77,7 @@ describe('a whole file', () => {
   const before = 'a\nb\nc\nd\ne\nf\ng\nh\n';
 
   it('shows an edit as hunks with three lines of context, numbered in each file, and its lines added and removed', () => {
-    const edit: ToolCallDiff = { kind: 'wholeFile', path: '/work/src/a.ts', oldText: before, newText: 'a\nb\nc\nD\ne\nf\ng\nh\n' };
+    const edit: FileDiff = { kind: 'wholeFile', path: '/work/src/a.ts', oldText: before, newText: 'a\nb\nc\nD\ne\nf\ng\nh\n' };
 
     expect(displayed(diffFiles(edit, '/work'))).toEqual([
       shown({
@@ -91,8 +91,8 @@ describe('a whole file', () => {
   });
 
   it('shows a new file as all added and an emptied one as all removed, without Git\'s "no newline" marks', () => {
-    const created: ToolCallDiff = { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'x\ny' };
-    const emptied: ToolCallDiff = { kind: 'wholeFile', path: '/work/old.ts', oldText: 'x\n', newText: '' };
+    const created: FileDiff = { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'x\ny' };
+    const emptied: FileDiff = { kind: 'wholeFile', path: '/work/old.ts', oldText: 'x\n', newText: '' };
 
     expect(displayed(diffFiles(created, '/work'))).toEqual([
       shown({ operation: 'add', path: 'new.ts', added: 2, hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 2, lines: ['+x', '+y'] }] }),
@@ -105,7 +105,7 @@ describe('a whole file', () => {
   it('says a file is too large to show when its hunks take too long to work out', () => {
     const lines = Array.from({ length: 100_000 }, (_, index) => `line ${index}`);
     const edited = lines.map((line, index) => (index % 7 === 0 ? `${line} edited` : line));
-    const large: ToolCallDiff = { kind: 'wholeFile', path: '/work/big.ts', oldText: lines.join('\n'), newText: edited.join('\n') };
+    const large: FileDiff = { kind: 'wholeFile', path: '/work/big.ts', oldText: lines.join('\n'), newText: edited.join('\n') };
 
     expect(diffFiles(large, '/work')).toEqual([
       { ...shown({ operation: 'modify', path: 'big.ts', note: 'tooLarge' }), reported: { path: '/work/big.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: large.oldText, newText: large.newText } } },
@@ -113,7 +113,7 @@ describe('a whole file', () => {
   });
 
   it('gives the editor the whole file, before and after, at the path the agent reported', () => {
-    const created: ToolCallDiff = { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'x\n' };
+    const created: FileDiff = { kind: 'wholeFile', path: '/work/new.ts', oldText: null, newText: 'x\n' };
 
     expect(diffFiles(created, '/work').map((file) => file.reported)).toEqual([
       { path: '/work/new.ts', operation: 'add', lines: { kind: 'wholeFile', oldText: null, newText: 'x\n' } },
@@ -123,7 +123,7 @@ describe('a whole file', () => {
 
 describe('changes with a patch', () => {
   it("gives each change its file patch by the path it ends at, in the changes' order, then file patches no change names", () => {
-    const diff: ToolCallDiff = { kind: 'changes', changes, patch: { format: 'git_patch', text: gitPatch } };
+    const diff: FileDiff = { kind: 'changes', changes, patch: { format: 'git_patch', text: gitPatch } };
 
     expect(displayed(diffFiles(diff, '/work'))).toEqual([
       shown({
@@ -158,7 +158,7 @@ describe('changes with a patch', () => {
   });
 
   it('notes a directory and a symbolic link, which have no lines', () => {
-    const diff: ToolCallDiff = {
+    const diff: FileDiff = {
       kind: 'changes',
       changes: [change('add', '/work/dist', { fileType: 'directory' }), change('add', '/work/latest', { fileType: 'symlink' })],
       patch: { format: 'git_patch', text: '' },
@@ -179,7 +179,7 @@ describe('changes with a patch', () => {
       '\\ No newline at end of file',
       '',
     ].join('\n');
-    const diff: ToolCallDiff = {
+    const diff: FileDiff = {
       kind: 'changes',
       changes: [change('modify', '/work/a.ts'), change('modify', '/work/b.bin', { fileType: 'binary' }), change('add', '/work/dist', { fileType: 'directory' })],
       patch: { format: 'git_patch', text: patch },
@@ -200,6 +200,37 @@ describe('changes with a patch', () => {
   });
 });
 
+describe("a patch's hunks, diffed again", () => {
+  const patched = (...hunkLines: string[]): FileDiff => ({
+    kind: 'changes',
+    changes: [change('modify', '/work/a.ts')],
+    patch: { format: 'git_patch', text: ['--- /work/a.ts', '+++ /work/a.ts', ...hunkLines, ''].join('\n') },
+  });
+
+  it("shapes a hunk's change as a whole file's, within the agent's bounds, keeping the agent's hunks for the editor", () => {
+    // As Git aligns a function added between blank lines: VS Code's diff takes the blank before it instead.
+    const diff = patched('@@ -10,3 +10,7 @@', ' }', ' ', '+function b() {', '+  return 2;', '+}', '+', ' function c() {');
+
+    const [file] = diffFiles(diff, '/work');
+
+    expect(file?.hunks).toEqual([{ oldStart: 10, oldLines: 3, newStart: 10, newLines: 7, lines: [' }', '+', '+function b() {', '+  return 2;', '+}', ' ', ' function c() {'] }]);
+    expect([file?.added, file?.removed]).toEqual([4, 0]);
+    expect(file?.reported?.lines).toEqual({ kind: 'hunks', hunks: [{ oldStart: 10, oldLines: 3, newStart: 10, newLines: 7, lines: [' }', ' ', '+function b() {', '+  return 2;', '+}', '+', ' function c() {'] }] });
+  });
+
+  it('numbers a hunk with no lines on one side as the agent did', () => {
+    const [file] = diffFiles(patched('@@ -4,0 +5,2 @@', '+x', '+y'), '/work');
+
+    expect(file?.hunks).toEqual([{ oldStart: 5, oldLines: 0, newStart: 5, newLines: 2, lines: ['+x', '+y'] }]);
+  });
+
+  it('shows a hunk with no change in it as sent', () => {
+    const [file] = diffFiles(patched('@@ -1,2 +1,2 @@', ' a', ' b'), '/work');
+
+    expect(file?.hunks).toEqual([{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' a', ' b'] }]);
+  });
+});
+
 describe('changes without lines to show', () => {
   const twoFiles = [change('modify', '/work/a.ts'), change('delete', '/work/b.bin', { fileType: 'binary' })];
 
@@ -211,8 +242,8 @@ describe('changes without lines to show', () => {
   });
 
   it('notes a patch in another format, and a Git patch that cannot be read', () => {
-    const other: ToolCallDiff = { kind: 'changes', changes: twoFiles, patch: { format: 'other', text: gitPatch } };
-    const unreadable: ToolCallDiff = { kind: 'changes', changes: twoFiles, patch: { format: 'git_patch', text: '--- /work/a.ts\n+++ /work/a.ts\n@@ -1,2 +1,2 @@\n-a\n' } };
+    const other: FileDiff = { kind: 'changes', changes: twoFiles, patch: { format: 'other', text: gitPatch } };
+    const unreadable: FileDiff = { kind: 'changes', changes: twoFiles, patch: { format: 'git_patch', text: '--- /work/a.ts\n+++ /work/a.ts\n@@ -1,2 +1,2 @@\n-a\n' } };
 
     expect(diffFiles(other, '/work').map((file) => file.note)).toEqual(['unknownFormat', 'unknownFormat']);
     expect(diffFiles(unreadable, '/work').map((file) => file.note)).toEqual(['unreadablePatch', 'unreadablePatch']);
@@ -241,6 +272,55 @@ describe('the line limit', () => {
     });
     const oneHunk = limited({ operation: 'add', path: 'd.ts', added: 2, hunks: [hunk(['+1', '+2'])] });
     expect(withinLineLimit([oneHunk], 1)).toEqual({ files: [{ ...oneHunk, hunks: [{ ...hunk(['+1', '+2']), lines: ['+1'] }], note: 'cutOff' }], shown: 1 });
+  });
+});
+
+describe("each session's tool calls' diffs", () => {
+  const added = (path: string, text: string): FileDiff => ({ kind: 'wholeFile', path, oldText: null, newText: text });
+  const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}\n`).join('');
+  const linesShown = (diffs: readonly (readonly DiffFile[])[]) => diffs.map((files) => files.map((file) => [file.hunks.flatMap((hunk) => hunk.lines).length, file.note]));
+
+  it("gives each diff's files, cut off past the line limit across them", () => {
+    const diffs = new ToolCallDiffs();
+
+    const shown = diffs.shown('s1', 't1', [added('/work/b.ts', lines(TOOL_CALL_DIFF_LINE_LIMIT - 1)), added('/work/a.ts', 'a\n'), added('/work/c.ts', 'c\n')], '/work');
+
+    expect(linesShown(shown)).toEqual([[[TOOL_CALL_DIFF_LINE_LIMIT - 1, null]], [[1, null]], [[0, 'cutOff']]]);
+    expect(shown[1]?.[0]?.path).toBe('a.ts');
+  });
+
+  it('diffs a tool call again only when its diffs or the working directory change', () => {
+    const diffs = new ToolCallDiffs();
+    const first = diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n')], '/work');
+
+    expect(diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n')], '/work')).toBe(first);
+    expect(diffs.shown('s1', 't1', [added('/work/a.ts', 'b\n')], '/work')).not.toBe(first);
+    expect(diffs.shown('s1', 't1', [added('/work/a.ts', 'b\n')], '/')[0]?.[0]?.path).toBe('work/a.ts');
+  });
+
+  it("finds a file by its place across the tool call's diffs, in its session only, as last shown", () => {
+    const diffs = new ToolCallDiffs();
+    const twoFiles: FileDiff = { kind: 'changes', changes: [change('add', '/work/dist', { fileType: 'directory' }), change('add', '/work/b.ts')], patch: null };
+    diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n'), twoFiles], '/work');
+
+    expect([0, 1, 2, 3].map((index) => diffs.file('s1', 't1', index)?.reported?.path)).toEqual(['/work/a.ts', undefined, '/work/b.ts', undefined]);
+    expect(diffs.file('s1', 't1', 1)).toBeDefined();
+    expect(diffs.file('s2', 't1', 0)).toBeUndefined();
+    expect(diffs.file('s1', 't2', 0)).toBeUndefined();
+
+    diffs.shown('s1', 't1', [], '/work');
+    expect(diffs.file('s1', 't1', 0)).toBeUndefined();
+  });
+
+  it("forgets a session's tool calls, and only that session's", () => {
+    const diffs = new ToolCallDiffs();
+    diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n')], '/work');
+    diffs.shown('s2', 't1', [added('/work/b.ts', 'b\n')], '/work');
+
+    diffs.forgetSession('s1');
+
+    expect(diffs.file('s1', 't1', 0)).toBeUndefined();
+    expect(diffs.file('s2', 't1', 0)?.reported?.path).toBe('/work/b.ts');
   });
 });
 

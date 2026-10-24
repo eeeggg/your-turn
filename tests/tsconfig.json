@@ -9,6 +9,6 @@
       "@tests/*": ["./*"]
     }
   },
-  "include": ["./**/*.ts", "./**/*.tsx"],
+  "include": ["./**/*.ts", "./**/*.tsx", "../src/core/diff/*.d.ts"],
   "exclude": ["integration"]
 }

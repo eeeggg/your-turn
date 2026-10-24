@@ -9,7 +9,8 @@ export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 /** A tool call's content, in the order the agent reported it; diffs only while `acp.showToolCallDiffs` is on. */
 export type ToolCallContent =
   | { kind: 'text'; text: string }
-  | { kind: 'diff'; diff: ToolCallDiff }
+  /** A diff's files, each shown whole or cut to the tool call's line limit across its diffs. */
+  | { kind: 'diff'; files: DiffFile[] }
   /** A command's output the agent sent as text, cleaned as a terminal shows it; `truncated` when earlier output is not in it. */
   | { kind: 'commandOutput'; text: string; truncated: boolean }
   /** Where an agent's terminal shows, by ID; `terminal` messages carry it, before or after this. */
@@ -21,21 +22,32 @@ export interface ExitStatus {
   signal: string | null;
 }
 
-/** What a tool call reported it changed, in the form the agent's ACP version holds it. */
-export type ToolCallDiff =
-  /** A file's whole content before and after; `oldText` is null for a new file. */
-  | { kind: 'wholeFile'; path: string; oldText: string | null; newText: string }
-  /** Which files changed and how, with patch text for some or all of them, or none. */
-  | { kind: 'changes'; changes: FileChange[]; patch: { format: 'git_patch' | 'other'; text: string } | null };
+/** Why a file shows fewer lines than it changed, or none. */
+export type DiffNote =
+  | 'binary'
+  | 'directory'
+  | 'symlink'
+  | 'noPatch'
+  | 'unknownFormat'
+  | 'unreadablePatch'
+  | 'tooLarge'
+  | 'noLines'
+  | 'cutOff';
 
-export interface FileChange {
+/** One file a tool call's diff changed, as the chat view shows it. */
+export interface DiffFile {
   operation: 'add' | 'delete' | 'modify' | 'move' | 'copy';
+  /** Relative to the session's working directory when inside it. */
   path: string;
-  /** Where a moved or copied file came from. */
-  oldPath?: string;
-  /** Null when the agent does not say. */
-  fileType: 'text' | 'binary' | 'directory' | 'symlink' | 'other' | null;
-  mimeType: string | null;
+  /** Where a moved or copied file came from, shown as `path` is. */
+  oldPath: string | null;
+  /** The file's, whatever the line limit cuts. */
+  added: number;
+  removed: number;
+  hunks: DiffHunk[];
+  note: DiffNote | null;
+  /** What the editor opens of it: null for a directory; Open Changes too only when the agent reported its lines. */
+  opens: 'file' | 'fileAndChanges' | null;
 }
 
 export interface DiffHunk {
@@ -43,25 +55,8 @@ export interface DiffHunk {
   oldLines: number;
   newStart: number;
   newLines: number;
-  /** Each line with its marker: `+` added, `-` removed, ` ` unchanged, `\` Git's "no newline at end of file". */
+  /** Each line with its marker: `+` added, `-` removed, ` ` unchanged. */
   lines: string[];
-}
-
-/** One file of a tool call's diff as the agent reported it, for the editor to open. */
-export interface ReportedFile {
-  /** As the agent reported it. */
-  path: string;
-  operation: FileChange['operation'];
-  /** The lines it reported; null when it reported none. */
-  lines: { kind: 'wholeFile'; oldText: string | null; newText: string } | { kind: 'hunks'; hunks: DiffHunk[] } | null;
-}
-
-/** The user chose to open a file of a tool call's diffs: the `file`th across them, in the order they were reported. */
-export interface DiffFileChoice {
-  toolCallId: string;
-  file: number;
-  /** Open File, or Open Changes in VS Code's diff editor. */
-  open: 'file' | 'changes';
 }
 
 export type PlanStepStatus = 'pending' | 'running' | 'completed';
@@ -151,8 +146,6 @@ export type ExtensionToWebviewMessage =
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }
   | { type: 'loadSessionEnd'; ok: boolean }
-  /** Chosen from the chat view's context menu, which VS Code shows; the webview answers with `openFile` or `openChanges`. */
-  | ({ type: 'diffFileChosen' } & DiffFileChoice)
   /** The webview has no handler for this yet, so the attachment is dropped. */
   | { type: 'file-attached'; path: string; name: string };
 
@@ -163,6 +156,7 @@ export type WebviewToExtensionMessage =
   /** How many prompts the chat view holds until the turn ends, each time that changes; only the chat view holds them. */
   | { type: 'queuedPrompts'; count: number }
   | { type: 'pickerValueChosen'; pickerId: string; value: string }
-  | { type: 'openFile'; file: ReportedFile }
-  /** Only for a file with lines. */
-  | { type: 'openChanges'; file: ReportedFile };
+  /** The `file`th file across the tool call's diffs in the shown session, as their `diff` contents list them. */
+  | { type: 'openFile'; toolCallId: string; file: number }
+  /** As for `openFile`; only for a file the agent reported lines of. */
+  | { type: 'openChanges'; toolCallId: string; file: number };

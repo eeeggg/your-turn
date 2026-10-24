@@ -1,5 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import type {
+  DiffFile,
   ExtensionToWebviewMessage,
   PlanStep,
   SessionSnapshot,
@@ -21,7 +22,6 @@ import {
   type Turn,
   type TurnPart,
 } from '@/webview/state/Transcript';
-import { TOOL_CALL_DIFF_LINE_LIMIT } from '@/webview/state/ToolCallDiffs';
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
@@ -29,9 +29,20 @@ const review: SlashCommand = { name: 'review', description: 'Review changes', ta
 type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type' | 'toolCallId'>;
 
 const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ kind: 'text', text }));
-const diff: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: null, newText: 'a' } };
+/** A file as the extension sends it, added with one line. */
+const addedFile = (path: string): DiffFile => ({
+  operation: 'add',
+  path,
+  oldPath: null,
+  added: 1,
+  removed: 0,
+  hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['+a'] }],
+  note: null,
+  opens: 'fileAndChanges',
+});
+const diff: ToolCallContent = { kind: 'diff', files: [addedFile('a.ts')] };
 /** Content shown in a session with no terminals, still going. */
-const inSession = (cwd: string | null): ContentContext => ({ cwd, terminals: new Map(), sessionEnded: false });
+const inSession = (): ContentContext => ({ terminals: new Map(), sessionEnded: false });
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -775,54 +786,26 @@ describe('tool calls', () => {
 });
 
 describe("a tool call's files", () => {
-  const edited: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a\n', newText: 'b\n' } };
+  const edited: ToolCallContent = { kind: 'diff', files: [addedFile('a.ts')] };
   const twoFiles: ToolCallContent = {
     kind: 'diff',
-    diff: {
-      kind: 'changes',
-      changes: [
-        { operation: 'delete', path: '/work/b.bin', fileType: 'binary', mimeType: null },
-        { operation: 'add', path: '/work/c.ts', fileType: 'text', mimeType: null },
-      ],
-      patch: { format: 'git_patch', text: 'diff --git /work/c.ts /work/c.ts\n--- /dev/null\n+++ /work/c.ts\n@@ -0,0 +1 @@\n+c\n' },
-    },
+    files: [{ ...addedFile('b.bin'), operation: 'delete', added: 0, hunks: [], note: 'binary', opens: 'file' }, addedFile('c.ts')],
   };
 
-  function withFiles() {
+  it("asks the extension to open the file clicked, by its place across the tool call's diffs, changing nothing", () => {
     const view = chatView();
     view.connect();
     view.toolCall('t1', { title: 'Edit', content: [edited, ...texts('done'), twoFiles] });
-    return view;
-  }
-
-  it('sends the extension the file the user chose, counted across the tool call\'s diffs, as the agent reported it', () => {
-    const view = withFiles();
-
-    view.send({ type: 'diffFileChosen', toolCallId: 't1', file: 0, open: 'file' }, { type: 'diffFileChosen', toolCallId: 't1', file: 2, open: 'changes' });
-
-    expect(view.takePosted()).toEqual([
-      { type: 'openFile', file: { path: '/work/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } } },
-      { type: 'openChanges', file: { path: '/work/c.ts', operation: 'add', lines: { kind: 'hunks', hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['+c'] }] } } },
-    ]);
-  });
-
-  it('opens a file without lines but shows no changes of it, and does nothing for a file or tool call it does not have', () => {
-    const view = withFiles();
     const before = view.transcript();
 
-    view.send(
-      { type: 'diffFileChosen', toolCallId: 't1', file: 1, open: 'changes' },
-      { type: 'diffFileChosen', toolCallId: 't1', file: 3, open: 'file' },
-      { type: 'diffFileChosen', toolCallId: 'unknown', file: 0, open: 'file' },
-      { type: 'diffFileChosen', toolCallId: 't1', file: 1, open: 'file' },
-    );
+    view.send({ type: 'diffFileClicked', toolCallId: 't1', file: 2 });
 
-    expect(view.takePosted()).toEqual([{ type: 'openFile', file: { path: '/work/b.bin', operation: 'delete', lines: null } }]);
+    expect(view.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 2 }]);
     expect(view.transcript()).toBe(before);
   });
 
   it("gives each diff shown its first file's place across the tool call's diffs", () => {
-    const { blocks } = shownContent([edited, ...texts('done'), twoFiles, edited], inSession('/work'), true);
+    const { blocks } = shownContent([edited, ...texts('done'), twoFiles, edited], inSession(), true);
 
     expect(blocks.map((block) => (block.kind === 'diff' ? block.firstFile : block.text))).toEqual([0, 'done', 1, 3]);
   });
@@ -1054,7 +1037,7 @@ describe('commands', () => {
     const call = view.toolCalls().find((candidate) => candidate.toolCallId === toolCallId);
     assert.exists(call);
     const { terminals, sessionEnded } = view.transcript();
-    const shown = shownContent(call.content, { cwd: '/work', terminals, sessionEnded }, false);
+    const shown = shownContent(call.content, { terminals, sessionEnded }, false);
     return { blocks: shown.blocks.filter((block) => block.kind === 'command'), running: shown.running };
   }
 
@@ -1123,7 +1106,7 @@ describe('commands', () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
     const output: ToolCallContent = { kind: 'commandOutput', text: 'b'.repeat(TOOL_CALL_CONTENT_LIMIT), truncated: true };
 
-    expect(shownContent([...texts(half), output, ...texts(half)], inSession('/work'), false)).toEqual({
+    expect(shownContent([...texts(half), output, ...texts(half)], inSession(), false)).toEqual({
       blocks: [
         { kind: 'text', text: half },
         { kind: 'command', text: output.text, truncated: true, status: 'ended', failure: null, terminalId: null },
@@ -1139,15 +1122,15 @@ describe('what is shown', () => {
   it('truncates tool call content past the limit, across blocks', () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
-    expect(shownContent(texts(half, half), inSession(null), true)).toEqual({ blocks: texts(half, half), truncated: false, running: false });
-    expect(shownContent(texts(half, `${half}b`), inSession(null), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
-    expect(shownContent(texts(half, half, 'c'), inSession(null), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
+    expect(shownContent(texts(half, half), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: false, running: false });
+    expect(shownContent(texts(half, `${half}b`), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
+    expect(shownContent(texts(half, half, 'c'), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
   });
 
   it("shows a tool call's diffs where they were reported among its texts, their files relative to the working directory", () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
-    const { blocks, truncated } = shownContent([diff, ...texts(half), diff, ...texts(half, 'c'), diff], inSession('/work'), true);
+    const { blocks, truncated } = shownContent([diff, ...texts(half), diff, ...texts(half, 'c'), diff], inSession(), true);
 
     expect(truncated).toBe(true);
     expect(blocks.map((block) => (block.kind !== 'diff' ? block.text.length : block.files.map((file) => `${file.operation} ${file.path}`)))).toEqual([
@@ -1160,24 +1143,11 @@ describe('what is shown', () => {
   });
 
   it('leaves the diffs out unless asked for them, as a closed tool call shows none', () => {
-    expect(shownContent([...texts('before'), diff, ...texts('after')], inSession('/work'), false)).toEqual({
+    expect(shownContent([...texts('before'), diff, ...texts('after')], inSession(), false)).toEqual({
       blocks: texts('before', 'after'),
       truncated: false,
       running: false,
     });
-  });
-
-  it("cuts a tool call's diffs off past the line limit, across them", () => {
-    const lines = (count: number) => Array.from({ length: count }, (_, index) => `line ${index}\n`).join('');
-    const large: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/b.ts', oldText: null, newText: lines(TOOL_CALL_DIFF_LINE_LIMIT - 1) } };
-
-    const { blocks } = shownContent([large, diff, diff], inSession('/work'), true);
-
-    expect(blocks.map((block) => (block.kind === 'diff' ? block.files.map((file) => [file.hunks.flatMap((hunk) => hunk.lines).length, file.note]) : []))).toEqual([
-      [[TOOL_CALL_DIFF_LINE_LIMIT - 1, null]],
-      [[1, null]],
-      [[0, 'cutOff']],
-    ]);
   });
 
   it('marks each tool call status with a glyph', () => {

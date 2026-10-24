@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { setup, suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
-import type { ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
 
@@ -107,52 +107,34 @@ for (const version of [1, 2]) {
       assert.deepStrictEqual(call.content, []);
     });
 
-    test('With it on, the tool call carries the diffs as the agent reported them', async () => {
+    test("With it on, the tool call carries its diffs' files, diffed in the extension", async () => {
       await showDiffs(true);
 
       const call = await prompt();
 
-      const a = join(dir, 'a.ts');
-      const gone = join(dir, 'gone.ts');
-      const patch = [
-        `diff --git ${a} ${a}`,
-        `--- ${a}`,
-        `+++ ${a}`,
-        '@@ -1,2 +1,2 @@',
-        ' one',
-        '-two',
-        '+TWO',
-        `diff --git ${gone} ${gone}`,
-        'deleted file mode 100644',
-        `--- ${gone}`,
-        '+++ /dev/null',
-        '@@ -1 +0,0 @@',
-        '-bye',
-        '',
-      ].join('\n');
+      const a: DiffFile = {
+        operation: 'modify',
+        path: join(dir, 'a.ts'),
+        oldPath: null,
+        added: 1,
+        removed: 1,
+        hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' one', '-two', '+TWO'] }],
+        note: null,
+        opens: 'fileAndChanges',
+      };
       const expected: ToolCallContent[] =
         version === 1
           ? [
-              { kind: 'diff', diff: { kind: 'wholeFile', path: a, oldText: 'one\ntwo\n', newText: 'one\nTWO\n' } },
-              { kind: 'diff', diff: { kind: 'wholeFile', path: join(dir, 'new.ts'), oldText: null, newText: 'new\n' } },
+              { kind: 'diff', files: [a] },
+              { kind: 'diff', files: [{ ...a, operation: 'add', path: join(dir, 'new.ts'), removed: 0, hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ['+new'] }] }] },
             ]
           : [
-              {
-                kind: 'diff',
-                diff: {
-                  kind: 'changes',
-                  changes: [
-                    { operation: 'modify', path: a, fileType: 'text', mimeType: null },
-                    { operation: 'delete', path: gone, fileType: 'text', mimeType: null },
-                  ],
-                  patch: { format: 'git_patch', text: patch },
-                },
-              },
+              { kind: 'diff', files: [a, { ...a, operation: 'delete', path: join(dir, 'gone.ts'), added: 0, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 0, lines: ['-bye'] }] }] },
             ];
       assert.deepStrictEqual(call.content, expected);
     });
 
-    test("Open File and Open Changes, given a link's context, open the file and the agent's change through the chat view", async () => {
+    test("Open File and Open Changes, given a link's context, open the file and the agent's change from what the extension keeps", async () => {
       await showDiffs(true);
       await prompt();
       const a = join(dir, 'a.ts');
@@ -160,7 +142,7 @@ for (const version of [1, 2]) {
       answers.length = 0;
       await vscode.commands.executeCommand('acp.openToolCallFile', { acpToolCallId: 'edit-1', acpDiffFile: 0 });
       await shownFile(a);
-      assert.deepStrictEqual(answers.map((answer) => answer.type), ['openFile']);
+      assert.deepStrictEqual(answers, []);
 
       await vscode.commands.executeCommand('acp.openToolCallChanges', { acpToolCallId: 'edit-1', acpDiffFile: 0 });
       assert.deepStrictEqual(await shownChanges("a.ts (Agent's Change)"), { before: 'one\ntwo\n', after: 'one\nTWO\n' });
