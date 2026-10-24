@@ -12,17 +12,29 @@ const edited = (toolCallId: string, path: string, old: string | null, now: strin
   content: [{ kind: 'diff', diff: { kind: 'wholeFile', path, oldText: old, newText: now } }],
 });
 
+const lines = (...texts: string[]) => texts.map((text) => `${text}\n`).join('');
+
+/** `/w/m.ts` as the agent left it: two changes from its baseline, lines 2 and 7. */
+const twoChanges = { before: lines('1', '2', '3', '4', '5', '6', '7'), after: lines('1', 'TWO', '3', '4', '5', '6', 'SEVEN') };
+
+/** A change of line `line` (0-based) replaced by one line. */
+const lineChanged = (line: number) => ({ original: { start: line, end: line + 1 }, modified: { start: line, end: line + 1 } });
+
 /**
- * Controls over session `s1`'s review, shown, with `/w/a.ts`, `/w/b.ts` and `/w/c.ts` changed in that order, and
- * `/w/gone.ts` deleted when `deleted` is set; the editors record what they were asked, and `failing` makes restores
- * reject.
+ * Controls over session `s1`'s review, shown, with `/w/a.ts`, `/w/b.ts` and `/w/c.ts` changed in that order, then
+ * `/w/gone.ts` deleted when `deleted` is set and `/w/m.ts` changed twice when `changes` is; the editors record what
+ * they were asked, their open documents being what the disk holds, and `failing` makes restores reject.
  */
-async function controls({ deleted = false } = {}) {
-  const disk: Record<string, FileContent> = { '/w/a.ts': 'A\n', '/w/b.ts': 'B\n', '/w/c.ts': 'C\n', '/w/gone.ts': null };
+async function controls({ deleted = false, changes = false } = {}) {
+  const disk: Record<string, FileContent> = { '/w/a.ts': 'A\n', '/w/b.ts': 'B\n', '/w/c.ts': 'C\n', '/w/gone.ts': null, '/w/m.ts': twoChanges.after };
+  const documents = new Map<string, string>(Object.entries(disk).flatMap(([path, text]) => text === null ? [] : [[path, text]]));
   const restored: [string, FileContent][] = [];
   const opened: string[] = [];
   const errors: string[] = [];
+  const saved: string[] = [];
   let failing = false;
+  let failSave = false;
+  let applies = true;
   let active: string | undefined;
   const reviews = new Reviews({
     read: async (path) => disk[path] ?? null,
@@ -38,10 +50,22 @@ async function controls({ deleted = false } = {}) {
   await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
   await reviews.handleSessionUpdate('s1', edited('t3', '/w/c.ts', 'c\n', 'C\n'), 'v1');
   if (deleted) { await reviews.handleSessionUpdate('s1', edited('t4', '/w/gone.ts', 'gone\n', ''), 'v1'); }
+  if (changes) { await reviews.handleSessionUpdate('s1', edited('t5', '/w/m.ts', twoChanges.before, twoChanges.after), 'v1'); }
   const subject = new ReviewControls(reviews, {
     activePath: () => active,
     open: async (path) => { opened.push(path); },
     showError: (message) => errors.push(message),
+    text: (path) => documents.get(path),
+    applyEdit: async (path, { start, end, text }) => {
+      const document = documents.get(path);
+      if (!applies || document === undefined) { return false; }
+      documents.set(path, document.slice(0, start) + text + document.slice(end));
+      return true;
+    },
+    save: async (path) => {
+      if (failSave) { throw new Error('disk full'); }
+      saved.push(path);
+    },
   });
   return {
     controls: subject,
@@ -49,8 +73,12 @@ async function controls({ deleted = false } = {}) {
     restored,
     opened,
     errors,
+    saved,
+    documents,
     activate: (path: string | undefined) => { active = path; },
     fail: () => { failing = true; },
+    failSaves: () => { failSave = true; },
+    refuseEdits: () => { applies = false; },
   };
 }
 
@@ -61,6 +89,17 @@ describe('ReviewControls', () => {
     expect(subject.position('/w/b.ts')).toBe('2 of 3');
     expect(subject.position('/w/other.ts')).toBe('– of 3');
     expect(subject.position(undefined)).toBe('– of 3');
+  });
+
+  it("gives a file's baseline in the shown review, and none for a file not under review or another session's", async () => {
+    const { controls: subject, reviews } = await controls({ deleted: true });
+    expect(subject.baseline('/w/a.ts')).toBe('a\n');
+    expect(subject.baseline('/w/gone.ts')).toBe('gone\n');
+    expect(subject.baseline('/w/other.ts')).toBeUndefined();
+    subject.keepFile('/w/a.ts');
+    expect(subject.baseline('/w/a.ts')).toBeUndefined();
+    reviews.activeSessionChanged('s2');
+    expect(subject.baseline('/w/b.ts')).toBeUndefined();
   });
 
   it('places every file as 0 of 0 with nothing under review, a session with no review yet among them', async () => {
@@ -78,12 +117,6 @@ describe('ReviewControls', () => {
     reviews.activeSessionChanged(null);
     expect(subject.sessionShown()).toBe(false);
     expect(subject.position('/w/a.ts')).toBeUndefined();
-  });
-
-  it('finds the lines added to a file under review, and none to a file not under review', async () => {
-    const { controls: subject } = await controls();
-    expect(subject.addedLines('/w/a.ts', 'A\n')).toEqual([{ first: 0, last: 0 }]);
-    expect(subject.addedLines('/w/other.ts', 'A\n')).toEqual([]);
   });
 
   it('keeps the file it is given, or the active editor\'s, and every file with Keep All', async () => {
@@ -114,7 +147,7 @@ describe('ReviewControls', () => {
     expect(opened).toEqual(['/w/gone.ts']);
   });
 
-  it('tells the human when an undo fails, keeping the file under review and opening nothing', async () => {
+  it('tells the user when an undo fails, keeping the file under review and opening nothing', async () => {
     const { controls: subject, errors, fail, opened } = await controls({ deleted: true });
     fail();
     await subject.undoFile('/w/gone.ts');
@@ -131,6 +164,59 @@ describe('ReviewControls', () => {
     await subject.undoFile();
     expect(restored).toEqual([]);
     expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/b.ts', '/w/c.ts']);
+  });
+
+  it('keeps one change by taking it into the baseline and saving the file, the other change staying under review', async () => {
+    const { controls: subject, saved, documents } = await controls({ changes: true });
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    expect(subject.baseline('/w/m.ts')).toBe(lines('1', 'TWO', '3', '4', '5', '6', '7'));
+    expect(documents.get('/w/m.ts')).toBe(twoChanges.after);
+    expect(saved).toEqual(['/w/m.ts']);
+  });
+
+  it('lets the file go once its last change is kept', async () => {
+    const { controls: subject } = await controls({ changes: true });
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    await subject.keepChange('/w/m.ts', lineChanged(6));
+    expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/b.ts', '/w/c.ts']);
+  });
+
+  it("undoes one change by putting the baseline's lines back into the document and saving it", async () => {
+    const { controls: subject, saved, documents } = await controls({ changes: true });
+    await subject.undoChange('/w/m.ts', lineChanged(6));
+    expect(documents.get('/w/m.ts')).toBe(lines('1', 'TWO', '3', '4', '5', '6', '7'));
+    expect(subject.baseline('/w/m.ts')).toBe(twoChanges.before);
+    expect(saved).toEqual(['/w/m.ts']);
+  });
+
+  it('does nothing for a change that is no longer between the baseline and the document, as VS Code diffed before the agent wrote', async () => {
+    const { controls: subject, saved, documents } = await controls({ changes: true });
+    documents.set('/w/m.ts', lines('0', '1', 'TWO', '3', '4', '5', '6', 'SEVEN'));
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    await subject.undoChange('/w/m.ts', lineChanged(6));
+    expect(subject.baseline('/w/m.ts')).toBe(twoChanges.before);
+    expect(documents.get('/w/m.ts')).toBe(lines('0', '1', 'TWO', '3', '4', '5', '6', 'SEVEN'));
+    expect(saved).toEqual([]);
+  });
+
+  it('does nothing for a change of a file not under review, or not open', async () => {
+    const { controls: subject, saved, documents } = await controls({ changes: true });
+    documents.delete('/w/m.ts');
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    await subject.undoChange('/w/other.ts', lineChanged(0));
+    expect(subject.baseline('/w/m.ts')).toBe(twoChanges.before);
+    expect(saved).toEqual([]);
+  });
+
+  it('tells the user when an undo is not applied or a save fails, saving nothing after an undo not applied', async () => {
+    const { controls: subject, saved, errors, refuseEdits, failSaves } = await controls({ changes: true });
+    refuseEdits();
+    await subject.undoChange('/w/m.ts', lineChanged(6));
+    failSaves();
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    expect(errors).toEqual(['m.ts: the change could not be undone', 'm.ts: the change was kept but the file could not be saved: disk full']);
+    expect(saved).toEqual([]);
+    expect(subject.baseline('/w/m.ts')).toBe(lines('1', 'TWO', '3', '4', '5', '6', '7'));
   });
 
   it('opens the next and previous files, going round at either end', async () => {

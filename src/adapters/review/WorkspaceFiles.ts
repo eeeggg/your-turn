@@ -1,6 +1,7 @@
 import { basename, dirname } from 'node:path';
 import * as vscode from 'vscode';
 import type { ReviewFiles } from '@/core/review/Reviews';
+import { applyReviewEdit } from './ReviewTakeovers';
 
 const notFound = (e: unknown) => e instanceof vscode.FileSystemError && e.code === 'FileNotFound';
 
@@ -44,7 +45,7 @@ export const workspaceFiles: ReviewFiles = {
   },
 
   /**
-   * Into an open document with unsaved edits, where the human can undo it and nothing of theirs is lost; on disk
+   * Into an open document with unsaved edits, where the user can undo it and nothing of theirs is lost; on disk
    * otherwise, as an edit to a document not open would land in a hidden one. Deleting leaves an open document's
    * unsaved edits in its editor.
    */
@@ -54,7 +55,7 @@ export const workspaceFiles: ReviewFiles = {
     if (content !== null && document?.isDirty) {
       const edit = new vscode.WorkspaceEdit();
       edit.replace(uri, new vscode.Range(0, 0, document.lineCount, 0), content);
-      if (!(await vscode.workspace.applyEdit(edit))) { throw new Error(`${path} could not be restored in its editor`); }
+      if (!(await applyReviewEdit(path, edit))) { throw new Error(`${path} could not be restored in its editor`); }
     } else if (content !== null) {
       const encoding = await encodingOf(uri);
       const bytes = await (encoding === undefined

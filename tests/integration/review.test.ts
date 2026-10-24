@@ -20,6 +20,10 @@ async function until(condition: () => boolean, what: string, timeoutMs = 3000): 
 
 const activeFile = () => vscode.window.activeTextEditor?.document.uri.fsPath;
 
+/** A change as quick diff's title passes it: 1-based inclusive lines, a side with none being `[the line before, 0]`. */
+const quickDiffChange = ([originalStartLineNumber, originalEndLineNumber]: [number, number], [modifiedStartLineNumber, modifiedEndLineNumber]: [number, number]) =>
+  ({ originalStartLineNumber, originalEndLineNumber, modifiedStartLineNumber, modifiedEndLineNumber });
+
 for (const version of [1, 2]) {
   suite(`Review Test Suite, ACP v${version}`, () => {
     const agentName = `fake-review-v${version}`;
@@ -77,6 +81,14 @@ for (const version of [1, 2]) {
       await until(() => api.reviewedFiles().length === 3, 'the files to come under review');
     });
 
+    /** The baseline the review's source control gives quick diff as the file's original, through its document. */
+    async function baselineDocument(file: string): Promise<vscode.TextDocument> {
+      const original = api.reviewOriginal(vscode.Uri.file(file));
+      assert.ok(original, `${file} has an original`);
+      assert.strictEqual(original.scheme, 'review-baseline');
+      return vscode.workspace.openTextDocument(original);
+    }
+
     teardown(async () => {
       await vscode.commands.executeCommand('acp.keepAllFiles');
       await vscode.commands.executeCommand('workbench.action.files.revert');
@@ -87,6 +99,21 @@ for (const version of [1, 2]) {
     test('The files the agent changed come under review in the order reported, not one the disk does not hold as reported', () => {
       assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
       assert.strictEqual(fs.readFileSync(mismatched, 'utf8'), 'on disk\n');
+    });
+
+    test("The review's source control lists the files under review, giving quick diff each one's baseline and none for another file", async () => {
+      assert.deepStrictEqual(api.reviewListedFiles(), [modified, created, deleted]);
+      assert.strictEqual((await baselineDocument(modified)).getText(), 'one\ntwo\n');
+      assert.strictEqual((await baselineDocument(created)).getText(), '');
+      assert.strictEqual(api.reviewOriginal(vscode.Uri.file(mismatched)), undefined);
+    });
+
+    test("A baseline's document follows the review, and a file leaving it leaves the list and has no original", async () => {
+      const baseline = await baselineDocument(modified);
+      await vscode.commands.executeCommand('acp.keepFile', vscode.Uri.file(modified));
+      assert.deepStrictEqual(api.reviewListedFiles(), [created, deleted]);
+      assert.strictEqual(api.reviewOriginal(vscode.Uri.file(modified)), undefined);
+      await until(() => baseline.getText() === '', "the kept file's baseline document to be emptied");
     });
 
     test("Undo File, given the title area's URI, restores each file's baseline, and each leaves the review", async () => {
@@ -110,6 +137,91 @@ for (const version of [1, 2]) {
       assert.strictEqual(fs.existsSync(deleted), false);
     });
 
+    test("Keep Change, given a change as quick diff's title gives it, takes it into the baseline, and the file leaves once none is left", async () => {
+      await vscode.workspace.openTextDocument(modified);
+      await vscode.workspace.openTextDocument(created);
+      await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
+      // VS Code's diff takes a created file's empty baseline as one empty line, which its text replaces.
+      await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(created), [quickDiffChange([1, 1], [1, 2])], 0);
+
+      assert.deepStrictEqual(api.reviewedFiles(), [deleted]);
+      assert.strictEqual(fs.readFileSync(modified, 'utf8'), 'one\nTWO\n');
+      assert.strictEqual(fs.readFileSync(created, 'utf8'), 'new\n');
+    });
+
+    test("Undo Change puts the baseline's lines back and saves the file, which then leaves the review", async () => {
+      const document = await vscode.workspace.openTextDocument(modified);
+      await vscode.commands.executeCommand('acp.undoChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
+
+      assert.strictEqual(document.getText(), 'one\ntwo\n');
+      assert.strictEqual(document.isDirty, false);
+      assert.strictEqual(fs.readFileSync(modified, 'utf8'), 'one\ntwo\n');
+      await until(() => !api.reviewedFiles().includes(modified), 'the undone file to leave the review');
+    });
+
+    test('Keep and Undo Change do nothing given a change no longer between the baseline and the document', async () => {
+      const document = await vscode.workspace.openTextDocument(modified);
+      await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(modified), [quickDiffChange([1, 1], [1, 1])], 0);
+      await vscode.commands.executeCommand('acp.undoChange', vscode.Uri.file(modified), [quickDiffChange([1, 2], [1, 2])], 0);
+
+      assert.strictEqual(document.getText(), 'one\nTWO\n');
+      assert.strictEqual((await baselineDocument(modified)).getText(), 'one\ntwo\n');
+      assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
+    });
+
+    /** Line `line` of `file` replaced in its editor, as the user types. */
+    async function typed(file: string, line: number, text: string): Promise<vscode.TextEditor> {
+      const editor = await vscode.window.showTextDocument(vscode.Uri.file(file));
+      await editor.edit((edit) => edit.replace(editor.document.lineAt(line).range, text));
+      return editor;
+    }
+
+    test("Typing in a change takes it over: the baseline follows, and the file leaves the review once saved", async () => {
+      const baseline = await baselineDocument(modified);
+      const editor = await typed(modified, 1, 'TWO!');
+      await until(() => baseline.getText() === 'one\nTWO!\n', 'the baseline to take the typed line');
+      assert.ok(api.reviewedFiles().includes(modified), 'the file stays under review until saved');
+      await editor.document.save();
+      await until(() => !api.reviewedFiles().includes(modified), 'the saved file to leave the review');
+    });
+
+    test('Ctrl+Z and Revert File bring back the change a takeover took', async () => {
+      const baseline = await baselineDocument(modified);
+      await typed(modified, 1, 'TWO!');
+      await until(() => baseline.getText() === 'one\nTWO!\n', 'the baseline to take the typed line');
+      await vscode.commands.executeCommand('undo');
+      await until(() => baseline.getText() === 'one\ntwo\n', 'the baseline to be back after Ctrl+Z');
+
+      await typed(modified, 1, 'TWO!');
+      await until(() => baseline.getText() === 'one\nTWO!\n', 'the baseline to take the typed line again');
+      await vscode.commands.executeCommand('workbench.action.files.revert');
+      await until(() => baseline.getText() === 'one\ntwo\n', 'the baseline to be back after a revert');
+    });
+
+    test("A save's own edits go into the baseline where they touch no change, and leave a change they touch under review", async () => {
+      const baseline = await baselineDocument(modified);
+      const editor = await typed(modified, 0, 'one!');
+      const participant = vscode.workspace.onWillSaveTextDocument((event) => {
+        if (event.document !== editor.document) { return; }
+        event.waitUntil(Promise.resolve([
+          vscode.TextEdit.replace(event.document.lineAt(0).range, 'ONE'),
+          vscode.TextEdit.replace(event.document.lineAt(1).range, 'TWO;'),
+        ]));
+      });
+      try {
+        await editor.document.save();
+      } finally {
+        participant.dispose();
+      }
+      assert.strictEqual(fs.readFileSync(modified, 'utf8'), 'ONE\nTWO;\n');
+      await until(() => baseline.getText() === 'ONE\ntwo\n', "the baseline to take the save's edit outside the change only");
+      assert.ok(api.reviewedFiles().includes(modified));
+    });
+
+    test('The workbench still has closeQuickDiff, which closing the view relies on though VS Code does not document it', async () => {
+      assert.ok((await vscode.commands.getCommands()).includes('closeQuickDiff'));
+    });
+
     test('Next File Under Review opens the first file from no argument, as the status bar gives, and the next from a URI', async () => {
       await vscode.commands.executeCommand('acp.nextReviewFile');
       await until(() => activeFile() === modified, 'a.ts to be opened');
@@ -129,11 +241,16 @@ for (const version of [1, 2]) {
     });
 
     test("Disconnecting the agent keeps its session's review, shown again once its session is", async () => {
+      const baseline = await baselineDocument(modified);
       await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
       assert.deepStrictEqual(api.reviewedFiles(), []);
+      assert.deepStrictEqual(api.reviewListedFiles(), []);
+      await until(() => baseline.getText() === '', 'the baseline document to be emptied with no session shown');
       // The fake agent gives every session the same ID, so connecting again shows the same session.
       await vscode.commands.executeCommand('acp.connectAgent', agentName);
       assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
+      assert.deepStrictEqual(api.reviewListedFiles(), [modified, created, deleted]);
+      await until(() => baseline.getText() === 'one\ntwo\n', 'the baseline document to be the shown review\'s again');
     });
   });
 }

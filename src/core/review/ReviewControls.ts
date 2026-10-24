@@ -1,6 +1,8 @@
 import { basename } from 'node:path';
+import { lineChanges, splitLines } from '@/core/diff/LineChanges';
 import { messageOf } from '@/core/Log';
-import { addedLines, type LineRange } from './AddedLines';
+import { keptChange, undoneChange, type Change, type TextEdit } from './Hunks';
+import type { FileContent } from './Review';
 import type { Reviews } from './Reviews';
 
 /** The editors the review's controls act on, by a file's path. */
@@ -9,10 +11,23 @@ export interface ReviewEditors {
   activePath(): string | undefined;
   open(path: string): Promise<void>;
   showError(message: string): void;
+  /** The text of the file's open document, its unsaved edits included; undefined when it is not open. */
+  text(path: string): string | undefined;
+  /** Applies `edit` to the file's open document as an edit the user can undo; false when it was not applied. */
+  applyEdit(path: string, edit: TextEdit): Promise<boolean>;
+  /** Saves the file's open document when it has unsaved edits; rejects when it could not. */
+  save(path: string): Promise<void>;
+}
+
+/** A change quick diff showed, as it still is between a file's baseline and its document. */
+interface ShownChange {
+  readonly baseline: string;
+  readonly document: string;
+  readonly change: Change;
 }
 
 /**
- * What the human sees of the shown review and does with it, from the editor's title area and the status bar: each
+ * What the user sees of the shown review and does with it, from the editor's title area and the status bar: each
  * command acts on the file it is given, or the active editor's. Moving between files goes round from the last to the
  * first.
  */
@@ -40,10 +55,31 @@ export class ReviewControls {
     return index < 0 ? `– of ${paths.length}` : `${index + 1} of ${paths.length}`;
   }
 
-  /** The lines `text` added to the file's baseline; nothing for a file not under review. */
-  addedLines(path: string, text: string): LineRange[] {
-    const file = this.reviews.shown()?.file(path);
-    return file ? addedLines(file.baseline, text) : [];
+  /** The file's baseline in the shown review, `null` for a file the agent created; undefined for a file not under review. */
+  baseline(path: string): FileContent | undefined {
+    return this.reviews.shown()?.file(path)?.baseline;
+  }
+
+  /**
+   * Keeps one change quick diff showed: the baseline takes the document's lines, and the file is saved. Nothing when the
+   * change is no longer the document's, as the agent wrote the file since VS Code diffed it; its view shows the new one.
+   */
+  async keepChange(path: string, change: Change): Promise<void> {
+    const shown = this.shownChange(path, change);
+    if (!shown) { return; }
+    this.reviews.shown()?.setBaseline(path, keptChange(shown.baseline, shown.document, shown.change));
+    await this.save(path, 'kept');
+  }
+
+  /** Undoes one change quick diff showed: the document takes the baseline's lines, and the file is saved. */
+  async undoChange(path: string, change: Change): Promise<void> {
+    const shown = this.shownChange(path, change);
+    if (!shown) { return; }
+    if (!(await this.editors.applyEdit(path, undoneChange(shown.baseline, shown.document, shown.change)))) {
+      this.editors.showError(`${basename(path)}: the change could not be undone`);
+      return;
+    }
+    await this.save(path, 'undone');
   }
 
   keepFile(path = this.editors.activePath()): void {
@@ -74,6 +110,25 @@ export class ReviewControls {
 
   previous(path = this.editors.activePath()): Promise<void> {
     return this.move(path, -1);
+  }
+
+  private shownChange(path: string, change: Change): ShownChange | undefined {
+    const baseline = this.baseline(path);
+    const document = this.editors.text(path);
+    if (baseline === undefined || document === undefined) { return undefined; }
+    const text = baseline ?? '';
+    const still = lineChanges(splitLines(text), splitLines(document)).some(({ original, modified }) =>
+      original.start === change.original.start && original.end === change.original.end
+      && modified.start === change.modified.start && modified.end === change.modified.end);
+    return still ? { baseline: text, document, change } : undefined;
+  }
+
+  private async save(path: string, done: 'kept' | 'undone'): Promise<void> {
+    try {
+      await this.editors.save(path);
+    } catch (e) {
+      this.editors.showError(`${basename(path)}: the change was ${done} but the file could not be saved: ${messageOf(e)}`);
+    }
   }
 
   /** From a file not under review, the first or the last. */

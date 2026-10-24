@@ -125,6 +125,32 @@ describe('Review', () => {
     expect(files()).toEqual([['/w/a.ts', 'one', 'two']]);
   });
 
+  it('sets a baseline of its own, telling its listeners, and keeps the file under review until it holds the baseline', () => {
+    const { review: subject, files, heard } = review();
+    subject.changed('/w/a.ts', 'one\n', 'one\ntwo\nthree\n');
+    subject.setBaseline('/w/a.ts', 'one\ntwo\n');
+    expect(files()).toEqual([['/w/a.ts', 'one\ntwo\n', 'one\ntwo\nthree\n']]);
+    subject.setBaseline('/w/a.ts', 'one\ntwo\nthree, typed\n');
+    expect(files()).toEqual([['/w/a.ts', 'one\ntwo\nthree, typed\n', 'one\ntwo\nthree\n']]);
+    subject.read('/w/a.ts', 'one\ntwo\nthree, typed\n');
+    expect(files()).toEqual([]);
+    expect(heard).toEqual(['/w/a.ts', '/w/a.ts', '/w/a.ts', '/w/a.ts']);
+  });
+
+  it('lets a file go at once when the baseline it sets is what the file holds', () => {
+    const { review: subject, files } = review();
+    subject.changed('/w/a.ts', 'one', 'two');
+    subject.setBaseline('/w/a.ts', 'two');
+    expect(files()).toEqual([]);
+  });
+
+  it('sets no baseline for a file not under review', () => {
+    const { review: subject, files, heard } = review();
+    subject.setBaseline('/w/a.ts', 'one');
+    expect(files()).toEqual([]);
+    expect(heard).toEqual([]);
+  });
+
   it('restores nothing for a file not under review', async () => {
     const { review: subject, restored } = review();
     await subject.undoFile('/w/a.ts');

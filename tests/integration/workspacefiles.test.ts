@@ -61,7 +61,7 @@ suite('Workspace files', () => {
   test('restores into an open document with unsaved edits, leaving the disk, and the editor can undo it', async () => {
     const file = path.join(folder, 'a.txt');
     fs.writeFileSync(file, 'agent\n');
-    const editor = await edited(file, 'human\n');
+    const editor = await edited(file, 'user\n');
 
     await workspaceFiles.restore(file, 'baseline\n');
 
@@ -69,7 +69,7 @@ suite('Workspace files', () => {
     assert.strictEqual(editor.document.isDirty, true);
     assert.strictEqual(fs.readFileSync(file, 'utf8'), 'agent\n');
     await vscode.commands.executeCommand('undo');
-    assert.strictEqual(editor.document.getText(), 'human\nagent\n');
+    assert.strictEqual(editor.document.getText(), 'user\nagent\n');
   });
 
   test('restores a file shown with no unsaved edits on disk, and its editor follows', async () => {
@@ -97,12 +97,12 @@ suite('Workspace files', () => {
   test("deletes a created file whose document has unsaved edits, leaving the edits in its editor", async () => {
     const file = path.join(folder, 'new.txt');
     fs.writeFileSync(file, 'agent\n');
-    const editor = await edited(file, 'human\n');
+    const editor = await edited(file, 'user\n');
 
     await workspaceFiles.restore(file, null);
 
     assert.strictEqual(fs.existsSync(file), false);
-    assert.strictEqual(editor.document.getText(), 'human\nagent\n');
+    assert.strictEqual(editor.document.getText(), 'user\nagent\n');
   });
 
   test('reads a file as VS Code decodes it, taking off a byte-order mark and keeping its line endings', async () => {
