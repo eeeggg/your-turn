@@ -30,6 +30,8 @@ async function controls({ deleted = false, changes = false } = {}) {
   const documents = new Map<string, string>(Object.entries(disk).flatMap(([path, text]) => text === null ? [] : [[path, text]]));
   const restored: [string, FileContent][] = [];
   const opened: string[] = [];
+  const shown: string[] = [];
+  const views: string[] = [];
   const errors: string[] = [];
   const saved: string[] = [];
   let failing = false;
@@ -54,6 +56,11 @@ async function controls({ deleted = false, changes = false } = {}) {
   const subject = new ReviewControls(reviews, {
     activePath: () => active,
     open: async (path) => { opened.push(path); },
+    showChange: async (path) => { shown.push(path); },
+    showChangeOf: async (path, changes, index) => {
+      views.push(`show ${path} at ${String(changes[index]?.modified.start)} of ${changes.map(({ modified }) => modified.start).join()}`);
+    },
+    closeChange: async (path) => { views.push(`close ${path} with ${documents.get(path) === twoChanges.after ? 'both' : 'one'}`); },
     showError: (message) => errors.push(message),
     text: (path) => documents.get(path),
     applyEdit: async (path, { start, end, text }) => {
@@ -72,6 +79,8 @@ async function controls({ deleted = false, changes = false } = {}) {
     reviews,
     restored,
     opened,
+    shown,
+    views,
     errors,
     saved,
     documents,
@@ -189,6 +198,19 @@ describe('ReviewControls', () => {
     expect(saved).toEqual(['/w/m.ts']);
   });
 
+  it("closes quick diff's view before keeping a change, then shows the next change once the file is saved", async () => {
+    const { controls: subject, views } = await controls({ changes: true });
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    expect(views).toEqual(['close /w/m.ts with both', 'show /w/m.ts at 6 of 6']);
+  });
+
+  it('shows the first change after undoing the last, and none once the file has no change left', async () => {
+    const { controls: subject, views } = await controls({ changes: true });
+    await subject.undoChange('/w/m.ts', lineChanged(6));
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    expect(views).toEqual(['close /w/m.ts with both', 'show /w/m.ts at 1 of 1', 'close /w/m.ts with one']);
+  });
+
   it('does nothing for a change that is no longer between the baseline and the document, as VS Code diffed before the agent wrote', async () => {
     const { controls: subject, saved, documents } = await controls({ changes: true });
     documents.set('/w/m.ts', lines('0', '1', 'TWO', '3', '4', '5', '6', 'SEVEN'));
@@ -242,5 +264,41 @@ describe('ReviewControls', () => {
     await subject.next('/w/a.ts');
     await subject.previous('/w/a.ts');
     expect(opened).toEqual([]);
+  });
+
+  it("shows a change of the active editor's file under review, or else of the first file, and none with no file", async () => {
+    const { controls: subject, shown, activate, reviews } = await controls();
+    activate('/w/b.ts');
+    await subject.turnEnded('s1');
+    activate('/w/other.ts');
+    await subject.turnEnded('s1');
+    reviews.activeSessionChanged(null);
+    await subject.turnEnded('s1');
+    expect(shown).toEqual(['/w/b.ts', '/w/a.ts']);
+  });
+
+  it("shows no deleted file's change, as no editor shows it", async () => {
+    const { controls: subject, shown, activate } = await controls({ deleted: true });
+    activate('/w/gone.ts');
+    await subject.turnEnded('s1');
+    expect(shown).toEqual(['/w/a.ts']);
+  });
+
+  it('shows a change once the files the turn\'s edits name were read, as the turn can end before', async () => {
+    const { controls: subject, shown, reviews } = await controls();
+    reviews.shown()?.keepAll();
+    void reviews.handleSessionUpdate('s1', edited('t6', '/w/b.ts', 'b\n', 'B\n'), 'v1');
+    await subject.turnEnded('s1');
+    expect(shown).toEqual(['/w/b.ts']);
+  });
+
+  it("shows a change of a file the user comes to while it is under review, none of a file not under review or deleted", async () => {
+    const { controls: subject, shown, reviews } = await controls({ deleted: true });
+    await subject.entered('/w/b.ts');
+    await subject.entered('/w/other.ts');
+    await subject.entered('/w/gone.ts');
+    reviews.shown()?.keepFile('/w/a.ts');
+    await subject.entered('/w/a.ts');
+    expect(shown).toEqual(['/w/b.ts']);
   });
 });

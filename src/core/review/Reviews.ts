@@ -32,6 +32,8 @@ export class Reviews {
   private readonly sessions = new Map<string, SessionReview>();
   private readonly loading = new Set<string>();
   private readonly listeners = new Set<ShownReviewListener>();
+  /** Each session's updates so far, settled once all were taken. */
+  private readonly taken = new Map<string, Promise<unknown>>();
   private shownSessionId: string | null = null;
 
   constructor(private readonly files: ReviewFiles) {}
@@ -54,7 +56,14 @@ export class Reviews {
     if (this.loading.has(sessionId)) { return Promise.resolve(); }
     const session = this.session(sessionId, schema);
     if (session.guard.schema !== schema) { session.guard = this.guard(schema, session.review); }
-    return session.guard.guard.handleSessionUpdate(update);
+    const handled = session.guard.guard.handleSessionUpdate(update);
+    this.taken.set(sessionId, Promise.allSettled([this.taken.get(sessionId), handled]));
+    return handled;
+  }
+
+  /** Settles once the session's updates so far were taken, as its turn can end before the files they name were read. */
+  async settled(sessionId: string): Promise<void> {
+    await this.taken.get(sessionId);
   }
 
   loadStarted(sessionId: string): void {
@@ -68,6 +77,7 @@ export class Reviews {
   /** A load it started will not end. */
   sessionRemoved(sessionId: string): void {
     this.loading.delete(sessionId);
+    this.taken.delete(sessionId);
   }
 
   activeSessionChanged(sessionId: string | null): void {

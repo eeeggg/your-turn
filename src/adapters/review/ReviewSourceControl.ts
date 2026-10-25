@@ -3,7 +3,7 @@ import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
 
 /** The scheme of a file's baseline as quick diff opens it: the file's URI with this scheme in place of `file`. */
-const BASELINE_SCHEME = 'review-baseline';
+export const BASELINE_SCHEME = 'review-baseline';
 
 /**
  * The review's own source control, there only because the stable API gives quick diff an original through a source
@@ -47,12 +47,14 @@ export class ReviewSourceControl implements vscode.Disposable {
   }
 
   private show(): void {
-    this.files.resourceStates = this.controls.reviewedPaths().map((path) => {
+    const left = this.listedFiles();
+    const paths = this.controls.reviewedPaths();
+    this.files.resourceStates = paths.map((path) => {
       const resourceUri = vscode.Uri.file(path);
       return { resourceUri, command: { command: 'vscode.open', title: 'Open', arguments: [resourceUri] } };
     });
-    for (const document of vscode.workspace.textDocuments) {
-      if (document.uri.scheme === BASELINE_SCHEME) { this.baselineChanged.fire(document.uri); }
+    for (const path of new Set([...left, ...paths])) {
+      this.baselineChanged.fire(vscode.Uri.file(path).with({ scheme: BASELINE_SCHEME }));
     }
   }
 }

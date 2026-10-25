@@ -16,7 +16,7 @@ import { Reviews } from '@/core/review/Reviews';
 import { Takeovers } from '@/core/review/Takeovers';
 import { ChatViewController, type DiffFileChoice } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
-import { log, setLogSink } from '@/core/Log';
+import { log, logError, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
@@ -53,6 +53,8 @@ export interface ExtensionTestApi {
   reviewOriginal(uri: vscode.Uri): vscode.Uri | undefined;
   /** The paths the review's source control lists, which VS Code cannot read back. */
   reviewListedFiles(): string[];
+  /** Settles once the change shown as the last turn ended is, as it opens an editor some time after the turn ends. */
+  turnEndShown(): Promise<void>;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -130,6 +132,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
   const reviewControls = new ReviewControls(reviews, vscodeReviewEditors);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
+  chatViewController.addTurnListener((inProgress) => reviewPresenters.turnInProgress(inProgress));
   const reviewSourceControl = new ReviewSourceControl(reviewControls, reviews);
   const reviewTakeovers = new ReviewTakeovers(new Takeovers(reviews), reviewControls);
   sessionManager.on('session-removed', (sessionId) => {
@@ -151,6 +154,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   });
   sessionManager.on('session-ended', (sessionId, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
+  });
+  let turnEndShown = Promise.resolve();
+  sessionManager.on('turn-ended', (sessionId) => {
+    if (sessionId !== sessionManager.getActiveSessionId()) { return; }
+    turnEndShown = reviewControls.turnEnded(sessionId).catch((e: unknown) => logError("Showing the turn's change failed", e));
   });
   sessionManager.on('clear-transcript', () => {
     chatViewController.clearTranscript();
@@ -189,6 +197,12 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     },
   );
   const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
+  /**
+   * The review's decisions wait for the agent's turn to end, so none acts on a file the agent is writing. Their
+   * `enablement` disables their buttons and keys, but not `executeCommand`, which runs a command regardless.
+   */
+  const unlessTurnRuns = <A extends unknown[]>(run: (...args: A) => unknown) =>
+    (...args: A) => (chatViewController.hasRunningTurn ? undefined : run(...args));
   const chooseDiffFile = (arg: unknown, open: DiffFileChoice['open']) => {
     const choice = diffFileChoiceOf(arg, open);
     return choice && chatViewController.chooseDiffFile(choice);
@@ -252,17 +266,17 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }),
     vscode.commands.registerCommand('acp.previousReviewFile', (arg?: unknown) => reviewControls.previous(reviewPathOf(arg))),
     vscode.commands.registerCommand('acp.nextReviewFile', (arg?: unknown) => reviewControls.next(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.undoFile', (arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.keepFile', (arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.keepAllFiles', () => reviewControls.keepAll()),
-    vscode.commands.registerCommand('acp.keepChange', (...args: unknown[]) => {
+    vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg)))),
+    vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg)))),
+    vscode.commands.registerCommand('acp.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
+    vscode.commands.registerCommand('acp.keepChange', unlessTurnRuns((...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
       return change && reviewControls.keepChange(change.path, change.change);
-    }),
-    vscode.commands.registerCommand('acp.undoChange', (...args: unknown[]) => {
+    })),
+    vscode.commands.registerCommand('acp.undoChange', unlessTurnRuns((...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
       return change && reviewControls.undoChange(change.path, change.change);
-    }),
+    })),
     vscode.commands.registerCommand('acp.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
@@ -299,6 +313,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reviewedFiles: () => reviewControls.reviewedPaths(),
     reviewOriginal: (uri) => reviewSourceControl.originalResource(uri),
     reviewListedFiles: () => reviewSourceControl.listedFiles(),
+    turnEndShown: () => turnEndShown,
   };
 }
 

@@ -53,6 +53,8 @@ export interface DiffFileChoice {
   open: 'file' | 'changes';
 }
 
+type TurnListener = (inProgress: boolean) => void;
+
 /** What the chat view needs from the editor it runs in. */
 export interface ChatViewEnvironment extends Commands {
   /** Deliver a webview message; dropped while the chat view is not open. */
@@ -82,6 +84,7 @@ export class ChatViewController {
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
   private readonly commandOutput: CommandOutputFeed;
   private readonly diffs = new ToolCallDiffs();
+  private readonly turnListeners = new Set<TurnListener>();
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -101,6 +104,11 @@ export class ChatViewController {
           exitStatus: exitStatus && { exitCode: exitStatus.exitCode, signal: exitStatus.signal },
         }),
     });
+  }
+
+  /** Hears whether the shown session's turn is running each time that is set: a turn starting or ending, or a switch. */
+  addTurnListener(listener: TurnListener): void {
+    this.turnListeners.add(listener);
   }
 
   /** Whether the active session has a prompt in flight. */
@@ -420,9 +428,13 @@ export class ChatViewController {
     });
   }
 
-  /** Shows the Cancel button in the chat view's title bar (the `acp.turnInProgress` `when` clause in package.json). */
+  /**
+   * Shows the Cancel button in the chat view's title bar and disables the review's buttons (`acp.turnInProgress` in
+   * package.json), and tells the listeners.
+   */
   private setTurnInProgress(inProgress: boolean): void {
     void this.environment.executeCommand('setContext', 'acp.turnInProgress', inProgress);
+    for (const listener of this.turnListeners) { listener(inProgress); }
   }
 
   /** Posts what came late about a session, which matters only while the chat view shows it. */

@@ -74,6 +74,11 @@ function editOf({ range, rangeOffset, rangeLength, text }: vscode.TextDocumentCo
 export class ReviewTakeovers implements vscode.Disposable {
   /** Each open document's text before its latest change. */
   private readonly texts = new Map<string, string>();
+  /**
+   * Whether each open document had unsaved edits before its latest change, as VS Code last told: it tells of a change
+   * of the dirty flag as a change with no content changes, after a revert's content change.
+   */
+  private readonly dirty = new Map<string, boolean>();
   /** The editor of each file last active, the view's being none of them. */
   private readonly editors = new Map<string, vscode.TextEditor>();
   private readonly subscriptions: vscode.Disposable[];
@@ -83,7 +88,10 @@ export class ReviewTakeovers implements vscode.Disposable {
     this.activated(vscode.window.activeTextEditor);
     this.subscriptions = [
       vscode.workspace.onDidOpenTextDocument((document) => this.opened(document)),
-      vscode.workspace.onDidCloseTextDocument(({ uri }) => this.texts.delete(uri.fsPath)),
+      vscode.workspace.onDidCloseTextDocument(({ uri }) => {
+        this.texts.delete(uri.fsPath);
+        this.dirty.delete(uri.fsPath);
+      }),
       vscode.workspace.onDidChangeTextDocument((event) => this.changed(event)),
       vscode.workspace.onWillSaveTextDocument(({ document }) => saveStarted(document.uri.fsPath)),
       vscode.workspace.onDidSaveTextDocument(({ uri }) => saveEnded(uri.fsPath)),
@@ -96,7 +104,9 @@ export class ReviewTakeovers implements vscode.Disposable {
   }
 
   private opened(document: vscode.TextDocument): void {
-    if (document.uri.scheme === 'file') { this.texts.set(document.uri.fsPath, document.getText()); }
+    if (document.uri.scheme !== 'file') { return; }
+    this.texts.set(document.uri.fsPath, document.getText());
+    this.dirty.set(document.uri.fsPath, document.isDirty);
   }
 
   private activated(editor: vscode.TextEditor | undefined): void {
@@ -104,22 +114,27 @@ export class ReviewTakeovers implements vscode.Disposable {
   }
 
   private changed({ document, contentChanges, reason }: vscode.TextDocumentChangeEvent): void {
-    if (document.uri.scheme !== 'file' || contentChanges.length === 0) { return; }
+    if (document.uri.scheme !== 'file') { return; }
     const path = document.uri.fsPath;
+    const wasDirty = this.dirty.get(path) ?? false;
+    this.dirty.set(path, document.isDirty);
+    if (contentChanges.length === 0) { return; }
     const before = this.texts.get(path);
     const after = document.getText();
     this.texts.set(path, after);
     if (before === undefined || this.controls.baseline(path) === undefined) { return; }
-    const source = this.sourceOf(path, reason, after);
+    const source = this.sourceOf(path, reason, after, wasDirty);
     if (source === 'user' || source === 'undo') { this.closeView(path, document); }
     this.takeovers.edited(path, source, before, after, contentChanges.map(editOf));
   }
 
-  private sourceOf(path: string, reason: vscode.TextDocumentChangeReason | undefined, after: string): EditSource {
+  /** VS Code reloads only a document with no unsaved edits, so the disk's text over unsaved edits is a revert. */
+  private sourceOf(path: string, reason: vscode.TextDocumentChangeReason | undefined, after: string, wasDirty: boolean): EditSource {
     if (reviewEditing.has(path)) { return 'review'; }
     if (saving.has(path)) { return 'save'; }
     if (reason !== undefined) { return 'undo'; }
-    return matchesDisk(path, after) ? 'reload' : 'user';
+    if (!matchesDisk(path, after)) { return 'user'; }
+    return wasDirty ? 'revert' : 'reload';
   }
 
   private closeView(path: string, document: vscode.TextDocument): void {

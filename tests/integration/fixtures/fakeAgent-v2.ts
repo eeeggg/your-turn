@@ -14,7 +14,7 @@ import { Readable, Writable } from 'node:stream';
  * A prompt of "edit <dir>" instead edits `a.ts` in that directory and deletes `gone.ts`, reporting both as one tool
  * call's diff: its `changes` and a `git_patch` in ACP's form, with absolute paths and no `a/` or `b/`. A prompt of "run"
  * reports a command it runs in a terminal of its own, as `run` describes. A prompt of "review <dir>" changes files
- * there for `review.test.ts`, as `changeForReview` describes.
+ * there for `review.test.ts`, as `changeForReview` describes; "again <dir>" then changes `a.ts` once more, and "three <dir>" changes `m.ts` there in three places.
  */
 
 const SESSION_ID = 'fake-session';
@@ -188,6 +188,59 @@ async function changeForReview(client: AgentContext, sessionId: string, dir: str
   });
 }
 
+/** Changes `a.ts`'s first line once its first change is kept, for a round of `review.test.ts`'s after its first. */
+async function changeAgain(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const modified = join(dir, 'a.ts');
+  if (readFileSync(modified, 'utf8') !== 'one\nTWO\n') {
+    throw new Error(`${dir} is not laid out as the second round expects`);
+  }
+  writeFileSync(modified, 'ONE\nTWO\n');
+  const patch = [
+    `diff --git ${modified} ${modified}`,
+    `--- ${modified}`,
+    `+++ ${modified}`,
+    '@@ -1,2 +1,2 @@',
+    '-one',
+    '+ONE',
+    ' TWO',
+    '',
+  ].join('\n');
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'review-2',
+      title: 'Change a.ts again',
+      kind: 'edit',
+      status: 'completed',
+      content: [{ type: 'diff', changes: [{ operation: 'modify', path: modified, fileType: 'text' }], patch: { format: 'git_patch', text: patch } }],
+    },
+  });
+}
+
+/** Changes lines 2, 15 and 28 of `m.ts`'s thirty, `l1` to `l30`, for three changes far apart in quick diff's view. */
+async function changeThree(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const modified = join(dir, 'm.ts');
+  const lines = Array.from({ length: 30 }, (_, index) => `l${index + 1}`);
+  if (readFileSync(modified, 'utf8') !== `${lines.join('\n')}\n`) {
+    throw new Error(`${dir} is not laid out as three changes expect`);
+  }
+  writeFileSync(modified, `${lines.map((line) => (['l2', 'l15', 'l28'].includes(line) ? line.toUpperCase() : line)).join('\n')}\n`);
+  const hunk = (at: number) => [`@@ -${at},3 +${at},3 @@`, ` l${at}`, `-l${at + 1}`, `+L${at + 1}`, ` l${at + 2}`];
+  const patch = [`diff --git ${modified} ${modified}`, `--- ${modified}`, `+++ ${modified}`, ...hunk(1), ...hunk(14), ...hunk(27), ''].join('\n');
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'review-3',
+      title: 'Change m.ts in three places',
+      kind: 'edit',
+      status: 'completed',
+      content: [{ type: 'diff', changes: [{ operation: 'modify', path: modified, fileType: 'text' }], patch: { format: 'git_patch', text: patch } }],
+    },
+  });
+}
+
 /**
  * A command's terminal, reported as ACP allows: a chunk before any tool call names the terminal, a snapshot replacing
  * it, a character split between two chunks, and the exit status last, after its tool call was marked completed, as
@@ -244,6 +297,18 @@ agent({ name: 'fake-agent' })
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         await changeForReview(client, params.sessionId, text.slice('review '.length));
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text.startsWith('again ')) {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await changeAgain(client, params.sessionId, text.slice('again '.length));
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text.startsWith('three ')) {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await changeThree(client, params.sessionId, text.slice('three '.length));
         await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
       })();
     } else if (text === 'run') {

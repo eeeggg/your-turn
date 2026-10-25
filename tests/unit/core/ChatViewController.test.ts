@@ -403,6 +403,17 @@ describe('ChatViewController', () => {
       expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false), inProgress(true), inProgress(false)]);
     });
 
+    it('tells its turn listeners each time it tells the editor, for the review to pause', async () => {
+      const { sessions, controller } = setup();
+      const heard: boolean[] = [];
+      controller.addTurnListener((inProgress) => heard.push(inProgress));
+
+      const turn = sendPrompt(controller, 'hello');
+      sessions.answer();
+      await turn;
+      expect(heard).toEqual([true, false]);
+    });
+
     it('tells a chat view that opens during a turn that the turn is running, so it holds the next prompt', async () => {
       const { sessions, environment, controller } = setup();
       const turn = sendPrompt(controller, 'hello');

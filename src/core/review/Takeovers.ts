@@ -5,10 +5,10 @@ import type { Reviews } from './Reviews';
 
 /**
  * Who changed a document under review, as the adapter tells them apart: the user, the review itself (Undo Change, Undo
- * File), a save's participants (formatters), an undo or a redo, or VS Code giving the document the disk's text again,
- * on a reload or a revert.
+ * File), a save's participants (formatters), an undo or a redo, a revert of unsaved edits to the disk's text, or VS
+ * Code reloading a document with none, which is the disk's new text, as the agent's write.
  */
-export type EditSource = 'user' | 'review' | 'save' | 'undo' | 'reload';
+export type EditSource = 'user' | 'review' | 'save' | 'undo' | 'revert' | 'reload';
 
 /** One of a document change's edits, in the text before it, by its lines and by its text. */
 export type DocumentEdit = UserEdit & TextEdit;
@@ -21,13 +21,17 @@ const hashOf = (text: string) => createHash('sha1').update(text).digest('base64'
 /**
  * Keeps the shown review's baselines following the edits to the files' documents. The user's edits take over the
  * changes they touch; a save's go into the baseline where they touch none. Each file's history keeps the baseline it
- * had at each text its document had, so an undo, a redo or a revert bringing a text back brings its baseline back:
- * Ctrl+Z after Undo Change brings the change back for review, and Ctrl+Z of a takeover the change it took over.
+ * had at each text its document had while under review, so an undo, a redo or a revert bringing a text back brings
+ * its baseline back: Ctrl+Z after Undo Change brings the change back for review, and Ctrl+Z of a takeover the change it
+ * took over. A reload is the disk's new text, never a return to an earlier one, so it leaves the baseline alone even
+ * when the agent writes a text the document had.
  */
 export class Takeovers {
   private readonly histories = new Map<string, Map<string, FileContent>>();
 
-  constructor(private readonly reviews: Reviews) {}
+  constructor(private readonly reviews: Reviews) {
+    reviews.addListener(() => this.forgetLeft());
+  }
 
   edited(path: string, source: EditSource, before: string, after: string, edits: readonly DocumentEdit[]): void {
     const review = this.reviews.shown();
@@ -39,7 +43,7 @@ export class Takeovers {
     this.remember(path, before, file.baseline);
     const baseline = this.followed(path, source, file.baseline, before, after, edits);
     if (baseline !== file.baseline) { review.setBaseline(path, baseline); }
-    this.remember(path, after, baseline);
+    if (review.file(path)) { this.remember(path, after, baseline); }
   }
 
   private followed(path: string, source: EditSource, baseline: FileContent, before: string, after: string, edits: readonly DocumentEdit[]): FileContent {
@@ -47,17 +51,26 @@ export class Takeovers {
     const asText = (followed: string) => followed === text ? baseline : followed;
     switch (source) {
       case 'review':
+      case 'reload':
         return baseline;
       case 'save':
         return asText(savedOver(text, before, edits));
       case 'user':
         return asText(takenOver(text, before, after, edits));
       case 'undo':
-      case 'reload': {
+      case 'revert': {
         const earlier = this.histories.get(path)?.get(hashOf(after));
         if (earlier !== undefined) { return earlier; }
         return source === 'undo' ? asText(takenOver(text, before, after, edits)) : baseline;
       }
+    }
+  }
+
+  /** A file out of the shown review forgets its history, so a round of review after it starts with none. */
+  private forgetLeft(): void {
+    const review = this.reviews.shown();
+    for (const path of [...this.histories.keys()]) {
+      if (!review?.file(path)) { this.histories.delete(path); }
     }
   }
 

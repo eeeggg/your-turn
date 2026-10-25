@@ -35,6 +35,7 @@ function recording() {
     buttons: false,
     files: [] as string[],
     position: undefined as string | undefined,
+    paused: false,
   };
   const display: ReviewDisplay = {
     review: (sessionShown, files) => {
@@ -42,6 +43,7 @@ function recording() {
       shown.files = files.map((uri) => uri.toString());
     },
     position: (text) => { shown.position = text; },
+    paused: (paused) => { shown.paused = paused; },
     dispose: () => {},
   };
   return { shown, display };

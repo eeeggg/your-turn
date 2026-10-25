@@ -59,6 +59,7 @@ for (const version of [1, 2]) {
       posts.length = 0;
       await api.sendChatMessage({ type: 'sendPrompt', text: `edit ${dir}` });
       await waitFor(() => posts.find((post) => post.type === 'promptEnd'), 'the turn to end');
+      await api.turnEndShown();
       return waitFor(editCall, 'the edit tool call');
     };
     const showDiffs = (on: boolean) => config().update('showToolCallDiffs', on, vscode.ConfigurationTarget.Global);
@@ -79,6 +80,8 @@ for (const version of [1, 2]) {
       await vscode.commands.executeCommand('acp-chat.focus');
       await api.chatViewReady;
       await vscode.commands.executeCommand('acp.connectAgent', agentName);
+      // Every fake agent's session has the same ID, and a session's review outlives it, so earlier suites' edits show.
+      await vscode.commands.executeCommand('acp.keepAllFiles');
     });
 
     setup(() => {
