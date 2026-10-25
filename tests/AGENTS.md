@@ -14,13 +14,21 @@ Vitest provides the fast in-process test system. Run all of its projects with
   host. Read `tests/unit/AGENTS.md` before changing it.
 - `tests/webview/` loads the compiled production webview bundle into a fresh
   jsdom page. Use it for behavior at the bundled webview boundary. Compile
-  first, then run it with `npx vitest run --project webview`.
+  first, then run it with `make test-webview`.
 
 ## VS Code integration
 
-`tests/integration/` exercises behavior that requires the real VS Code API,
-workbench UI or extension host. Run it with `make test-integration`. Read
+`tests/integration/` exercises behavior that requires the real VS Code API or
+extension host without driving the rendered workbench. Run it with
+`make test-integration`. Read
 `tests/integration/AGENTS.md` before changing its tests, fixtures or runner.
+
+## Desktop UI
+
+`tests/ui/` drives a real pinned desktop VS Code window with Playwright. Use
+it only for rendered workbench behavior, focus, layout and interaction that
+lower layers cannot observe. Run it with `make test-ui`. Read
+`tests/ui/AGENTS.md` before changing its tests, fixtures or runner.
 
 ## Adding a test framework
 

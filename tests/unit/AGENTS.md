@@ -50,5 +50,5 @@
 ## Verification
 
 - During development, run the changed file directly when useful.
-- Before handoff, run `npx vitest run --project unit`. Also run type checking
+- Before handoff, run `make test-unit`. Also run type checking
   and linting after substantive changes.

@@ -5,6 +5,7 @@
     { "path": "./src" },
     { "path": "./src/webview" },
     { "path": "./tests" },
-    { "path": "./tests/integration" }
+    { "path": "./tests/integration" },
+    { "path": "./tests/ui" }
   ]
 }

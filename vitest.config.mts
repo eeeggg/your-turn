@@ -35,7 +35,7 @@ export default defineConfig({
         'src/adapters/**',
       ],
       reporter: ['text', 'html'],
-      reportsDirectory: 'coverage',
+      reportsDirectory: 'test-results/unit/coverage',
     },
   },
 });
