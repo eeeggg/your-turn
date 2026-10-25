@@ -1,7 +1,6 @@
 import { memo, useMemo } from 'react';
 import { Diff, Hunk, type ChangeData, type DiffType, type HunkData } from 'react-diff-view';
-import type { DiffHunk } from '@/shared/WebviewMessages';
-import type { DiffFile, DiffNote } from '@/webview/state/ToolCallDiffs';
+import type { DiffFile, DiffHunk, DiffNote } from '@/shared/WebviewMessages';
 import { useDispatch } from '@/webview/views/StoreContext';
 
 const operationLabel: Record<DiffFile['operation'], string> = {
@@ -34,7 +33,7 @@ const noteText: Record<DiffNote, string> = {
 
 /**
  * A tool call's diff, as the agent reported it: a section for each file it changed. `firstFile` is the first one's
- * place across the tool call's diffs, by which the store finds a file the user opens.
+ * place across the tool call's diffs, by which the extension finds a file the user opens.
  */
 export function ToolCallDiffView({ files, toolCallId, firstFile }: { files: readonly DiffFile[]; toolCallId: string; firstFile: number }) {
   return (
@@ -54,7 +53,7 @@ const FileSection = memo(function FileSection({ file, toolCallId, index }: { fil
         <span className="tc-diff-operation flex-none text-muted-foreground">{operationLabel[file.operation]}</span>
         <span className="tc-diff-path flex-1 wrap-anywhere">
           {file.oldPath !== null && `${file.oldPath} → `}
-          {file.reported === null ? file.path : <FileLink path={file.path} toolCallId={toolCallId} index={index} hasLines={file.reported.lines !== null} />}
+          {file.opens === null ? file.path : <FileLink path={file.path} toolCallId={toolCallId} index={index} hasLines={file.opens === 'fileAndChanges'} />}
         </span>
         {file.added > 0 && <span className="tc-diff-added flex-none text-success">{`+${file.added}`}</span>}
         {file.removed > 0 && <span className="tc-diff-removed flex-none text-failure">{`−${file.removed}`}</span>}
@@ -82,7 +81,7 @@ function FileLink({ path, toolCallId, index, hasLines }: { path: string; toolCal
       className="tc-diff-link cursor-pointer text-left wrap-anywhere hover:text-link hover:underline focus-visible:text-link"
       title="Open the file; right-click for more"
       data-vscode-context={JSON.stringify(context)}
-      onClick={() => dispatch({ type: 'diffFileChosen', toolCallId, file: index, open: 'file' })}
+      onClick={() => dispatch({ type: 'diffFileClicked', toolCallId, file: index })}
     >
       {path}
     </button>

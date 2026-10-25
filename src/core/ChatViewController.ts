@@ -1,30 +1,26 @@
 import type {
   ConfigOption,
   ConfigValueGroup,
-  FileChange,
-  FileDiff,
   PlanStep,
   SessionUpdate,
   SlashCommand,
 } from '@/core/acp/AcpDriver';
 import type {
-  DiffFileChoice,
+  DiffFile as WebviewDiffFile,
   ExtensionToWebviewMessage,
   Picker,
   PickerValueGroup,
   PlanStep as WebviewPlanStep,
   SlashCommand as WebviewSlashCommand,
-  FileChange as WebviewFileChange,
-  ReportedFile as WebviewReportedFile,
   ToolCallContent as WebviewToolCallContent,
-  ToolCallDiff,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { SessionInfo, SessionManager } from './SessionManager';
 import type { AgentTerminals } from './AgentTerminals';
 import { CommandOutputFeed, type ShownContent } from './CommandOutputFeed';
 import { logError, messageOf } from './Log';
-import { openReportedChanges, openReportedFile, type FileEditor, type ReportedFile } from './ReportedFiles';
+import { openReportedChanges, openReportedFile, type FileEditor } from './ReportedFiles';
+import { ToolCallDiffs, type DiffFile } from './ToolCallDiffs';
 import type { Commands } from './VsCodeApi';
 
 /** The session operations the chat view uses. */
@@ -48,6 +44,16 @@ export type ChatSessions = Pick<
 const TEXT_CHUNK_WINDOW_MS = 16;
 
 type TextMessage = Extract<ExtensionToWebviewMessage, { type: 'agentText' | 'thoughtText' | 'promptText' }>;
+
+/** The user chose to open a file of a tool call's diffs: the `file`th across them, in the order they were reported. */
+export interface DiffFileChoice {
+  toolCallId: string;
+  file: number;
+  /** Open File, or Open Changes in VS Code's diff editor. */
+  open: 'file' | 'changes';
+}
+
+type TurnListener = (inProgress: boolean) => void;
 
 /** What the chat view needs from the editor it runs in. */
 export interface ChatViewEnvironment extends Commands {
@@ -77,6 +83,8 @@ export class ChatViewController {
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
   private readonly commandOutput: CommandOutputFeed;
+  private readonly diffs = new ToolCallDiffs();
+  private readonly turnListeners = new Set<TurnListener>();
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -86,7 +94,7 @@ export class ChatViewController {
   ) {
     this.commandOutput = new CommandOutputFeed(terminals, {
       toolCallContent: (sessionId, toolCallId, content) =>
-        this.postAbout(sessionId, { type: 'toolCall', toolCallId, content: toolCallContent(content, this.environment.showsToolCallDiffs()) }),
+        this.postAbout(sessionId, { type: 'toolCall', toolCallId, content: this.toolCallContent(sessionId, toolCallId, content) }),
       terminal: (sessionId, terminalId, { text, truncated }, exitStatus) =>
         this.postAbout(sessionId, {
           type: 'terminal',
@@ -96,6 +104,11 @@ export class ChatViewController {
           exitStatus: exitStatus && { exitCode: exitStatus.exitCode, signal: exitStatus.signal },
         }),
     });
+  }
+
+  /** Hears whether the shown session's turn is running each time that is set: a turn starting or ending, or a switch. */
+  addTurnListener(listener: TurnListener): void {
+    this.turnListeners.add(listener);
   }
 
   /** Whether the active session has a prompt in flight. */
@@ -128,19 +141,24 @@ export class ChatViewController {
         this.sendRunningTurn();
         break;
       case 'openFile':
+        await this.chooseDiffFile({ toolCallId: message.toolCallId, file: message.file, open: 'file' });
+        break;
       case 'openChanges':
-        try {
-          await (message.type === 'openFile' ? openReportedFile : openReportedChanges)(reportedFile(message.file), this.editor);
-        } catch (e) {
-          logError(`Failed to open ${message.file.path}`, e);
-        }
+        await this.chooseDiffFile({ toolCallId: message.toolCallId, file: message.file, open: 'changes' });
         break;
     }
   }
 
-  /** The user chose Open File or Open Changes from the context menu on a diff's file; the webview knows which file. */
-  chooseDiffFile(choice: DiffFileChoice): void {
-    this.post({ type: 'diffFileChosen', ...choice });
+  /** Open File or Open Changes of a file of the shown session's tool call, chosen in the chat view or its context menu. */
+  async chooseDiffFile(choice: DiffFileChoice): Promise<void> {
+    const sessionId = this.sessions.getActiveSessionId();
+    const reported = sessionId === null ? undefined : this.diffs.file(sessionId, choice.toolCallId, choice.file)?.reported;
+    if (!reported || (choice.open === 'changes' && reported.lines === null)) { return; }
+    try {
+      await (choice.open === 'file' ? openReportedFile : openReportedChanges)(reported, this.editor);
+    } catch (e) {
+      logError(`Failed to open ${reported.path}`, e);
+    }
   }
 
   handleSessionUpdate(sessionId: string, update: SessionUpdate): void {
@@ -198,6 +216,7 @@ export class ChatViewController {
   /** The session is gone, whether its agent exited or the user disconnected it. */
   notifySessionRemoved(sessionId: string): void {
     this.commandOutput.forgetSession(sessionId);
+    this.diffs.forgetSession(sessionId);
   }
 
   /**
@@ -221,10 +240,11 @@ export class ChatViewController {
   }
 
   /**
-   * A `session/load` replay is starting. The webview wipes the transcript,
+   * A `session/load` replay is starting, which reports the session's tool calls again. The webview wipes the transcript,
    * disables input, and shows a loading overlay until {@link notifyLoadSessionEnd}.
    */
-  notifyLoadSessionStart(): void {
+  notifyLoadSessionStart(sessionId: string): void {
+    this.diffs.forgetSession(sessionId);
     this.post({ type: 'loadSessionStart' });
   }
 
@@ -369,7 +389,7 @@ export class ChatViewController {
           toolCallId: update.toolCallId,
           ...(update.title !== undefined ? { title: update.title } : {}),
           ...(update.status !== undefined ? { status: update.status } : {}),
-          ...(content !== undefined ? { content: toolCallContent(content, this.environment.showsToolCallDiffs()) } : {}),
+          ...(content !== undefined ? { content: this.toolCallContent(sessionId, update.toolCallId, content) } : {}),
         };
       }
       case 'plan':
@@ -388,9 +408,33 @@ export class ChatViewController {
     }
   }
 
-  /** Shows the Cancel button in the chat view's title bar (the `acp.turnInProgress` `when` clause in package.json). */
+  /** The tool call's content as the contract has it; its diffs' files as shown, only while `acp.showToolCallDiffs` is on. */
+  private toolCallContent(sessionId: string, toolCallId: string, content: readonly ShownContent[]): WebviewToolCallContent[] {
+    const showsDiffs = this.environment.showsToolCallDiffs();
+    const diffs = showsDiffs ? content.flatMap((item) => (item.kind === 'diff' ? [item.diff] : [])) : [];
+    const shown = this.diffs.shown(sessionId, toolCallId, diffs, this.sessions.getSession(sessionId)?.cwd ?? null);
+    let next = 0;
+    return content.flatMap((item): WebviewToolCallContent[] => {
+      switch (item.kind) {
+        case 'text':
+          return [{ kind: 'text', text: item.text }];
+        case 'commandOutput':
+          return [{ kind: 'commandOutput', text: item.output.text, truncated: item.output.truncated }];
+        case 'diff':
+          return showsDiffs ? [{ kind: 'diff', files: (shown[next++] ?? []).map(diffFile) }] : [];
+        case 'terminal':
+          return [{ kind: 'terminal', terminalId: item.terminalId }];
+      }
+    });
+  }
+
+  /**
+   * Shows the Cancel button in the chat view's title bar and disables the review's buttons (`acp.turnInProgress` in
+   * package.json), and tells the listeners.
+   */
   private setTurnInProgress(inProgress: boolean): void {
     void this.environment.executeCommand('setContext', 'acp.turnInProgress', inProgress);
+    for (const listener of this.turnListeners) { listener(inProgress); }
   }
 
   /** Posts what came late about a session, which matters only while the chat view shows it. */
@@ -426,62 +470,22 @@ function planStep(step: PlanStep): WebviewPlanStep {
   return { text: step.text, status: step.status };
 }
 
-function toolCallContent(content: readonly ShownContent[], showsDiffs: boolean): WebviewToolCallContent[] {
-  return content.flatMap((item): WebviewToolCallContent[] => {
-    switch (item.kind) {
-      case 'text':
-        return [{ kind: 'text', text: item.text }];
-      case 'commandOutput':
-        return [{ kind: 'commandOutput', text: item.output.text, truncated: item.output.truncated }];
-      case 'diff':
-        return showsDiffs ? [{ kind: 'diff', diff: toolCallDiff(item.diff) }] : [];
-      case 'terminal':
-        return [{ kind: 'terminal', terminalId: item.terminalId }];
-    }
-  });
-}
-
-function toolCallDiff(diff: FileDiff): ToolCallDiff {
-  if (diff.kind === 'wholeFile') {
-    return { kind: 'wholeFile', path: diff.path, oldText: diff.oldText, newText: diff.newText };
-  }
+function diffFile(file: DiffFile): WebviewDiffFile {
   return {
-    kind: 'changes',
-    changes: diff.changes.map(fileChange),
-    patch: diff.patch ? { format: diff.patch.format, text: diff.patch.text } : null,
-  };
-}
-
-function fileChange(change: FileChange): WebviewFileChange {
-  return {
-    operation: change.operation,
-    path: change.path,
-    ...(change.oldPath !== undefined ? { oldPath: change.oldPath } : {}),
-    fileType: change.fileType,
-    mimeType: change.mimeType,
-  };
-}
-
-function reportedFile(file: WebviewReportedFile): ReportedFile {
-  const { lines } = file;
-  return {
-    path: file.path,
     operation: file.operation,
-    lines:
-      lines === null
-        ? null
-        : lines.kind === 'wholeFile'
-          ? { kind: 'wholeFile', oldText: lines.oldText, newText: lines.newText }
-          : {
-              kind: 'hunks',
-              hunks: lines.hunks.map((hunk) => ({
-                oldStart: hunk.oldStart,
-                oldLines: hunk.oldLines,
-                newStart: hunk.newStart,
-                newLines: hunk.newLines,
-                lines: [...hunk.lines],
-              })),
-            },
+    path: file.path,
+    oldPath: file.oldPath,
+    added: file.added,
+    removed: file.removed,
+    hunks: file.hunks.map((hunk) => ({
+      oldStart: hunk.oldStart,
+      oldLines: hunk.oldLines,
+      newStart: hunk.newStart,
+      newLines: hunk.newLines,
+      lines: [...hunk.lines],
+    })),
+    note: file.note,
+    opens: file.reported === null ? null : file.reported.lines === null ? 'file' : 'fileAndChanges',
   };
 }
 

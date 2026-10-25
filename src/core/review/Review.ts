@@ -51,6 +51,15 @@ export class Review {
     if (file) { this.set(path, file.baseline, content); }
   }
 
+  /**
+   * A baseline the review sets itself, a change kept or the user's edits taken in, rather than evidence. The file stays
+   * under review until what it holds, its disk and not its unsaved edits, is the baseline.
+   */
+  setBaseline(path: string, baseline: FileContent): void {
+    const file = this.reviewed.get(path);
+    if (file) { this.set(path, baseline, file.current); }
+  }
+
   keepFile(path: string): void {
     const file = this.reviewed.get(path);
     if (file) { this.set(path, file.current, file.current); }

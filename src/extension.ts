@@ -10,11 +10,13 @@ import { SessionHistoryStore } from '@/core/SessionHistoryStore';
 import { SessionList } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
+import type { Change } from '@/core/review/Hunks';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
-import { ChatViewController } from '@/core/ChatViewController';
+import { Takeovers } from '@/core/review/Takeovers';
+import { ChatViewController, type DiffFileChoice } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
-import { log, setLogSink } from '@/core/Log';
+import { log, logError, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
@@ -22,13 +24,15 @@ import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
 import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { ReviewPresenters, vscodeReviewEditors } from '@/adapters/review/ReviewPresenters';
+import { ReviewSourceControl } from '@/adapters/review/ReviewSourceControl';
+import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
-import type { DiffFileChoice, ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 /**
  * What `activate` returns in extension tests, and only there. Each test bundles its own copies of `src/`, so it cannot
@@ -45,6 +49,12 @@ export interface ExtensionTestApi {
   sendChatMessage(message: WebviewToExtensionMessage): Promise<void>;
   /** The paths under review in the shown review, as its presenters show them but VS Code cannot read back. */
   reviewedFiles(): string[];
+  /** The original the review's source control gives quick diff for `uri`, as VS Code cannot be asked for it. */
+  reviewOriginal(uri: vscode.Uri): vscode.Uri | undefined;
+  /** The paths the review's source control lists, which VS Code cannot read back. */
+  reviewListedFiles(): string[];
+  /** Settles once the change shown as the last turn ended is, as it opens an editor some time after the turn ends. */
+  turnEndShown(): Promise<void>;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -122,6 +132,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
   const reviewControls = new ReviewControls(reviews, vscodeReviewEditors);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
+  chatViewController.addTurnListener((inProgress) => reviewPresenters.turnInProgress(inProgress));
+  const reviewSourceControl = new ReviewSourceControl(reviewControls, reviews);
+  const reviewTakeovers = new ReviewTakeovers(new Takeovers(reviews), reviewControls);
   sessionManager.on('session-removed', (sessionId) => {
     agentTerminals.endSession(sessionId);
     reviews.sessionRemoved(sessionId);
@@ -142,6 +155,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionManager.on('session-ended', (sessionId, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
   });
+  let turnEndShown = Promise.resolve();
+  sessionManager.on('turn-ended', (sessionId) => {
+    if (sessionId !== sessionManager.getActiveSessionId()) { return; }
+    turnEndShown = reviewControls.turnEnded(sessionId).catch((e: unknown) => logError("Showing the turn's change failed", e));
+  });
   sessionManager.on('clear-transcript', () => {
     chatViewController.clearTranscript();
   });
@@ -152,7 +170,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     // The load replays the terminals' updates, which would add their chunks to what is kept again.
     agentTerminals.forgetSession(sessionId);
     reviews.loadStarted(sessionId);
-    chatViewController.notifyLoadSessionStart();
+    chatViewController.notifyLoadSessionStart(sessionId);
   });
   sessionManager.on('session-load-end', (sessionId, _agentName, ok) => {
     reviews.loadEnded(sessionId);
@@ -179,11 +197,15 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     },
   );
   const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
+  /**
+   * The review's decisions wait for the agent's turn to end, so none acts on a file the agent is writing. Their
+   * `enablement` disables their buttons and keys, but not `executeCommand`, which runs a command regardless.
+   */
+  const unlessTurnRuns = <A extends unknown[]>(run: (...args: A) => unknown) =>
+    (...args: A) => (chatViewController.hasRunningTurn ? undefined : run(...args));
   const chooseDiffFile = (arg: unknown, open: DiffFileChoice['open']) => {
     const choice = diffFileChoiceOf(arg, open);
-    if (choice) {
-      chatViewController.chooseDiffFile(choice);
-    }
+    return choice && chatViewController.chooseDiffFile(choice);
   };
 
   context.subscriptions.push(
@@ -196,6 +218,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reportedFileEditor,
     statusBarManager,
     reviewPresenters,
+    reviewSourceControl,
+    reviewTakeovers,
     vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.newSession', () => sessionCommands.newSession()),
     vscode.commands.registerCommand('acp.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
@@ -242,9 +266,17 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }),
     vscode.commands.registerCommand('acp.previousReviewFile', (arg?: unknown) => reviewControls.previous(reviewPathOf(arg))),
     vscode.commands.registerCommand('acp.nextReviewFile', (arg?: unknown) => reviewControls.next(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.undoFile', (arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.keepFile', (arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.keepAllFiles', () => reviewControls.keepAll()),
+    vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg)))),
+    vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg)))),
+    vscode.commands.registerCommand('acp.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
+    vscode.commands.registerCommand('acp.keepChange', unlessTurnRuns((...args: unknown[]) => {
+      const change = quickDiffChangeOf(args);
+      return change && reviewControls.keepChange(change.path, change.change);
+    })),
+    vscode.commands.registerCommand('acp.undoChange', unlessTurnRuns((...args: unknown[]) => {
+      const change = quickDiffChangeOf(args);
+      return change && reviewControls.undoChange(change.path, change.change);
+    })),
     vscode.commands.registerCommand('acp.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
@@ -279,6 +311,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatViewReady,
     sendChatMessage: (message) => chatViewController.handleMessage(message),
     reviewedFiles: () => reviewControls.reviewedPaths(),
+    reviewOriginal: (uri) => reviewSourceControl.originalResource(uri),
+    reviewListedFiles: () => reviewSourceControl.listedFiles(),
+    turnEndShown: () => turnEndShown,
   };
 }
 
@@ -312,6 +347,22 @@ function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileC
 /** The title area passes its editor's URI; the status bar passes nothing, and so means the active editor's file. */
 function reviewPathOf(arg: unknown): string | undefined {
   return arg instanceof vscode.Uri && arg.scheme === 'file' ? arg.fsPath : undefined;
+}
+
+/**
+ * The quick diff view's title passes its document's URI, its changes and the index of the one shown. A change's lines are
+ * 1-based and inclusive, and a side with none has an end of 0 and a start of the line before.
+ */
+function quickDiffChangeOf([uri, changes, index]: unknown[]): { path: string; change: Change } | undefined {
+  if (!(uri instanceof vscode.Uri) || uri.scheme !== 'file' || !Array.isArray(changes) || typeof index !== 'number') { return undefined; }
+  const change = changes[index] as Partial<Record<
+    'originalStartLineNumber' | 'originalEndLineNumber' | 'modifiedStartLineNumber' | 'modifiedEndLineNumber', unknown
+  >> | undefined;
+  const lines = (start: unknown, end: unknown) =>
+    typeof start === 'number' && typeof end === 'number' ? (end === 0 ? { start, end: start } : { start: start - 1, end }) : undefined;
+  const original = lines(change?.originalStartLineNumber, change?.originalEndLineNumber);
+  const modified = lines(change?.modifiedStartLineNumber, change?.modifiedEndLineNumber);
+  return original && modified ? { path: uri.fsPath, change: { original, modified } } : undefined;
 }
 
 /** The context menu on a command's output passes the `data-vscode-context` the chat view gave it. */

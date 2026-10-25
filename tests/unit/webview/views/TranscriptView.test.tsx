@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
-import type { ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
@@ -9,6 +9,17 @@ import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
 
 afterEach(cleanup);
+
+/** A file as the extension sends it; by default one it reported no lines of. */
+const diffFile = (file: Partial<DiffFile> & Pick<DiffFile, 'operation' | 'path'>): DiffFile => ({
+  oldPath: null,
+  added: 0,
+  removed: 0,
+  hunks: [],
+  note: null,
+  opens: 'file',
+  ...file,
+});
 
 // jsdom has no layout to scroll, so the library's part is checked live; this records what the view hands it.
 const stickToBottom = vi.hoisted(() => ({
@@ -378,7 +389,14 @@ describe('tool calls', () => {
   it('draws no diffs while a tool call is closed, and once the user opens it draws each where it was reported among the texts', async () => {
     const view = renderChatView();
     view.connect();
-    const edit: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/src/a.ts', oldText: 'a\nb\nc\n', newText: 'a\nB\nc\n' } };
+    const edit: ToolCallContent = { kind: 'diff', files: [diffFile({
+      operation: 'modify',
+      path: 'src/a.ts',
+      added: 1,
+      removed: 1,
+      hunks: [{ oldStart: 1, oldLines: 3, newStart: 1, newLines: 3, lines: [' a', '-b', '+B', ' c'] }],
+      opens: 'fileAndChanges',
+    })] };
     view.toolCall({ toolCallId: 't1', title: 'Edit', status: 'completed', content: [{ kind: 'text', text: 'before' }, edit, { kind: 'text', text: 'after' }] });
     view.toolCall({ toolCallId: 't2', title: 'Edit', status: 'completed', content: [edit] });
     const [call, onlyDiffs] = view.all('.tool-call-inline');
@@ -408,13 +426,11 @@ describe('tool calls', () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'Apply patch', status: 'failed', content: [
-      { kind: 'diff', diff: { kind: 'changes', changes: [
-        { operation: 'move', path: '/work/src/math.ts', oldPath: '/work/src/util.ts', fileType: 'text', mimeType: null },
-        { operation: 'delete', path: '/elsewhere/logo.png', fileType: 'binary', mimeType: 'image/png' },
-      ], patch: null } },
-      { kind: 'diff', diff: { kind: 'changes', changes: [
-        { operation: 'modify', path: '/work/src/left-out.ts', fileType: 'text', mimeType: null },
-      ], patch: { format: 'git_patch', text: '' } } },
+      { kind: 'diff', files: [
+        diffFile({ operation: 'move', path: 'src/math.ts', oldPath: 'src/util.ts', note: 'noPatch' }),
+        diffFile({ operation: 'delete', path: '/elsewhere/logo.png', note: 'noPatch' }),
+      ] },
+      { kind: 'diff', files: [diffFile({ operation: 'modify', path: 'src/left-out.ts', note: 'noLines' })] },
     ] });
 
     expect(view.all('.tc-diff-file').map((file) => [file.querySelector('.tc-diff-header')?.textContent, file.querySelector('.tc-diff-note')?.textContent])).toEqual([
@@ -429,11 +445,18 @@ describe('tool calls', () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'Edit', status: 'failed', content: [
-      { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a\n', newText: 'b\n' } },
-      { kind: 'diff', diff: { kind: 'changes', changes: [
-        { operation: 'move', path: '/work/src/math.ts', oldPath: '/work/src/util.ts', fileType: 'text', mimeType: null },
-        { operation: 'add', path: '/work/dist', fileType: 'directory', mimeType: null },
-      ], patch: null } },
+      { kind: 'diff', files: [diffFile({
+        operation: 'modify',
+        path: 'a.ts',
+        added: 1,
+        removed: 1,
+        hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
+        opens: 'fileAndChanges',
+      })] },
+      { kind: 'diff', files: [
+        diffFile({ operation: 'move', path: 'src/math.ts', oldPath: 'src/util.ts', note: 'noPatch' }),
+        diffFile({ operation: 'add', path: 'dist', note: 'noPatch', opens: null }),
+      ] },
     ] });
     view.takePosted();
 
@@ -445,7 +468,7 @@ describe('tool calls', () => {
     expect(view.all('.tc-diff-path').map((path) => path.textContent)).toEqual(['a.ts', 'src/util.ts → src/math.ts', 'dist']);
 
     fireEvent.click(view.part('.tc-diff-file:nth-child(1) .tc-diff-link'));
-    expect(view.takePosted()).toEqual([{ type: 'openFile', file: { path: '/work/a.ts', operation: 'modify', lines: { kind: 'wholeFile', oldText: 'a\n', newText: 'b\n' } } }]);
+    expect(view.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 0 }]);
   });
 
   it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", () => {

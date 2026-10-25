@@ -1,6 +1,8 @@
 import { basename } from 'node:path';
+import { lineChanges, splitLines } from '@/core/diff/LineChanges';
 import { messageOf } from '@/core/Log';
-import { addedLines, type LineRange } from './AddedLines';
+import { keptChange, undoneChange, type Change, type TextEdit } from './Hunks';
+import type { FileContent } from './Review';
 import type { Reviews } from './Reviews';
 
 /** The editors the review's controls act on, by a file's path. */
@@ -8,11 +10,30 @@ export interface ReviewEditors {
   /** The file in the active editor, when it is one on disk. */
   activePath(): string | undefined;
   open(path: string): Promise<void>;
+  /** Opens the file with quick diff's view showing the change after the cursor, once VS Code has diffed it. */
+  showChange(path: string): Promise<void>;
+  /** Opens the file with quick diff's view showing `changes[index]`, once VS Code's diff of it is `changes`. */
+  showChangeOf(path: string, changes: readonly Change[], index: number): Promise<void>;
+  /** Closes quick diff's view on the file, before the review's edit would move it on to a change of VS Code's choice. */
+  closeChange(path: string): Promise<void>;
   showError(message: string): void;
+  /** The text of the file's open document, its unsaved edits included; undefined when it is not open. */
+  text(path: string): string | undefined;
+  /** Applies `edit` to the file's open document as an edit the user can undo; false when it was not applied. */
+  applyEdit(path: string, edit: TextEdit): Promise<boolean>;
+  /** Saves the file's open document when it has unsaved edits; rejects when it could not. */
+  save(path: string): Promise<void>;
+}
+
+/** A change quick diff showed, as it still is between a file's baseline and its document. */
+interface ShownChange {
+  readonly baseline: string;
+  readonly document: string;
+  readonly change: Change;
 }
 
 /**
- * What the human sees of the shown review and does with it, from the editor's title area and the status bar: each
+ * What the user sees of the shown review and does with it, from the editor's title area and the status bar: each
  * command acts on the file it is given, or the active editor's. Moving between files goes round from the last to the
  * first.
  */
@@ -40,10 +61,36 @@ export class ReviewControls {
     return index < 0 ? `– of ${paths.length}` : `${index + 1} of ${paths.length}`;
   }
 
-  /** The lines `text` added to the file's baseline; nothing for a file not under review. */
-  addedLines(path: string, text: string): LineRange[] {
-    const file = this.reviews.shown()?.file(path);
-    return file ? addedLines(file.baseline, text) : [];
+  /** The file's baseline in the shown review, `null` for a file the agent created; undefined for a file not under review. */
+  baseline(path: string): FileContent | undefined {
+    return this.reviews.shown()?.file(path)?.baseline;
+  }
+
+  /**
+   * Keeps one change quick diff showed: the baseline takes the document's lines, and the file is saved. Nothing when the
+   * change is no longer the document's, as the agent wrote the file since VS Code diffed it; its view shows the new one.
+   * The view then shows the next change, as `showNextChange` says.
+   */
+  async keepChange(path: string, change: Change): Promise<void> {
+    const shown = this.shownChange(path, change);
+    if (!shown) { return; }
+    await this.editors.closeChange(path);
+    this.reviews.shown()?.setBaseline(path, keptChange(shown.baseline, shown.document, shown.change));
+    await this.save(path, 'kept');
+    await this.showNextChange(path, shown.change);
+  }
+
+  /** Undoes one change quick diff showed: the document takes the baseline's lines, and the file is saved; then as Keep. */
+  async undoChange(path: string, change: Change): Promise<void> {
+    const shown = this.shownChange(path, change);
+    if (!shown) { return; }
+    await this.editors.closeChange(path);
+    if (!(await this.editors.applyEdit(path, undoneChange(shown.baseline, shown.document, shown.change)))) {
+      this.editors.showError(`${basename(path)}: the change could not be undone`);
+      return;
+    }
+    await this.save(path, 'undone');
+    await this.showNextChange(path, shown.change);
   }
 
   keepFile(path = this.editors.activePath()): void {
@@ -74,6 +121,60 @@ export class ReviewControls {
 
   previous(path = this.editors.activePath()): Promise<void> {
     return this.move(path, -1);
+  }
+
+  /**
+   * The shown session's turn ended: a change in quick diff's view, once the files its edits name were read, of the
+   * active editor's file under review, or else of the first file; never a deleted file's, which no editor shows.
+   */
+  async turnEnded(sessionId: string): Promise<void> {
+    await this.reviews.settled(sessionId);
+    const paths = this.reviews.shown()?.files().filter((file) => file.current !== null).map((file) => file.path) ?? [];
+    const active = this.editors.activePath();
+    const path = active !== undefined && paths.includes(active) ? active : paths[0];
+    if (path !== undefined) { await this.editors.showChange(path); }
+  }
+
+  /**
+   * The user came to a file's editor, Next and Previous File's among them: a change in quick diff's view while the file
+   * is under review, as VS Code closes the view when its editor shows another file.
+   */
+  async entered(path: string): Promise<void> {
+    const file = this.reviews.shown()?.file(path);
+    if (file && file.current !== null) { await this.editors.showChange(path); }
+  }
+
+  /**
+   * Quick diff's view on the change after one just kept or undone, which now starts where that one did or after, or on
+   * the first from the last; none once the file has no change left.
+   */
+  private async showNextChange(path: string, done: Change): Promise<void> {
+    const baseline = this.baseline(path);
+    const document = this.editors.text(path);
+    if (baseline === undefined || document === undefined) { return; }
+    const changes = lineChanges(splitLines(baseline ?? ''), splitLines(document)).map(({ original, modified }) => ({ original, modified }));
+    if (changes.length === 0) { return; }
+    const after = changes.findIndex(({ modified }) => modified.start >= done.modified.start);
+    await this.editors.showChangeOf(path, changes, after < 0 ? 0 : after);
+  }
+
+  private shownChange(path: string, change: Change): ShownChange | undefined {
+    const baseline = this.baseline(path);
+    const document = this.editors.text(path);
+    if (baseline === undefined || document === undefined) { return undefined; }
+    const text = baseline ?? '';
+    const still = lineChanges(splitLines(text), splitLines(document)).some(({ original, modified }) =>
+      original.start === change.original.start && original.end === change.original.end
+      && modified.start === change.modified.start && modified.end === change.modified.end);
+    return still ? { baseline: text, document, change } : undefined;
+  }
+
+  private async save(path: string, done: 'kept' | 'undone'): Promise<void> {
+    try {
+      await this.editors.save(path);
+    } catch (e) {
+      this.editors.showError(`${basename(path)}: the change was ${done} but the file could not be saved: ${messageOf(e)}`);
+    }
   }
 
   /** From a file not under review, the first or the last. */

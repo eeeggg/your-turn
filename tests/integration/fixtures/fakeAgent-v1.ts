@@ -13,7 +13,8 @@ import { Readable, Writable } from 'node:stream';
  * A prompt of "edit <dir>" instead edits `a.ts` in that directory, creates `new.ts` there and reports both as one
  * tool call's whole-file diffs. A prompt of "run" reports a command it ran, as an `execute` tool call with its output
  * as text, as a v1 agent does: `commandoutput.test.ts` expects the same output as `fakeAgent-v2.ts`'s terminal.
- * A prompt of "review <dir>" changes files there for `review.test.ts`, one of them other than it reports.
+ * A prompt of "review <dir>" changes files there for `review.test.ts`, one of them other than it reports; "again <dir>"
+ * then changes `a.ts` once more, and "three <dir>" changes `m.ts` there in three places.
  */
 
 const SESSION_ID = 'fake-session';
@@ -89,6 +90,44 @@ async function changeForReview(client: AgentContext, sessionId: string, dir: str
   });
 }
 
+/** Changes `a.ts`'s first line, for a round of `review.test.ts`'s after its first. */
+async function changeAgain(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const modified = join(dir, 'a.ts');
+  const oldText = readFileSync(modified, 'utf8');
+  const newText = oldText.replace('one', 'ONE');
+  writeFileSync(modified, newText);
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'review-2',
+      title: 'Change a.ts again',
+      kind: 'edit',
+      status: 'completed',
+      content: [{ type: 'diff', path: modified, oldText, newText }],
+    },
+  });
+}
+
+/** Changes lines 2, 15 and 28 of `m.ts`'s thirty, `l1` to `l30`, for three changes far apart in quick diff's view. */
+async function changeThree(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const modified = join(dir, 'm.ts');
+  const oldText = readFileSync(modified, 'utf8');
+  const newText = oldText.split('\n').map((line) => (['l2', 'l15', 'l28'].includes(line) ? line.toUpperCase() : line)).join('\n');
+  writeFileSync(modified, newText);
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'review-3',
+      title: 'Change m.ts in three places',
+      kind: 'edit',
+      status: 'completed',
+      content: [{ type: 'diff', path: modified, oldText, newText }],
+    },
+  });
+}
+
 function run(client: AgentContext, sessionId: string): Promise<void> {
   return client.notify(methods.client.session.update, {
     sessionId,
@@ -125,6 +164,14 @@ agent({ name: 'fake-agent' })
     }
     if (text.startsWith('review ')) {
       await changeForReview(client, params.sessionId, text.slice('review '.length));
+      return { stopReason: 'end_turn' };
+    }
+    if (text.startsWith('again ')) {
+      await changeAgain(client, params.sessionId, text.slice('again '.length));
+      return { stopReason: 'end_turn' };
+    }
+    if (text.startsWith('three ')) {
+      await changeThree(client, params.sessionId, text.slice('three '.length));
       return { stopReason: 'end_turn' };
     }
     if (text === 'run') {

@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.13",
+  "version": "0.3.14",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -168,31 +168,43 @@
         "command": "acp.previousReviewFile",
         "title": "Previous File Under Review",
         "icon": "$(arrow-up)",
-        "enablement": "acp.reviewHasFiles"
+        "enablement": "acp.reviewHasFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.nextReviewFile",
         "title": "Next File Under Review",
         "icon": "$(arrow-down)",
-        "enablement": "acp.reviewHasFiles"
+        "enablement": "acp.reviewHasFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.undoFile",
         "title": "Undo File",
         "icon": "$(discard)",
-        "enablement": "resource in acp.reviewedFiles"
+        "enablement": "resource in acp.reviewedFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.keepFile",
         "title": "Keep File",
         "icon": "$(check)",
-        "enablement": "resource in acp.reviewedFiles"
+        "enablement": "resource in acp.reviewedFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.keepAllFiles",
         "title": "Keep All",
         "icon": "$(check-all)",
-        "enablement": "acp.reviewHasFiles"
+        "enablement": "acp.reviewHasFiles && !acp.turnInProgress"
+      },
+      {
+        "command": "acp.undoChange",
+        "title": "Undo Change",
+        "icon": "$(discard)",
+        "enablement": "!acp.turnInProgress"
+      },
+      {
+        "command": "acp.keepChange",
+        "title": "Keep Change",
+        "icon": "$(check)",
+        "enablement": "!acp.turnInProgress"
       }
     ],
     "menus": {
@@ -248,6 +260,26 @@
         {
           "command": "acp.keepAllFiles",
           "when": "false"
+        },
+        {
+          "command": "acp.undoChange",
+          "when": "false"
+        },
+        {
+          "command": "acp.keepChange",
+          "when": "false"
+        }
+      ],
+      "scm/change/title": [
+        {
+          "command": "acp.undoChange",
+          "when": "originalResourceScheme == review-baseline",
+          "group": "navigation@1"
+        },
+        {
+          "command": "acp.keepChange",
+          "when": "originalResourceScheme == review-baseline",
+          "group": "navigation@2"
         }
       ],
       "editor/title": [
@@ -438,6 +470,7 @@
     "date-fns": "^4.4.0",
     "diff": "^9.0.0",
     "execa": "^10.2.0",
+    "monaco-editor": "0.57.0",
     "react": "^19.3.1",
     "react-diff-view": "^3.3.3",
     "react-dom": "^19.3.1",

@@ -29,16 +29,13 @@ const edited = (toolCallId: string, file: string, old: string, now: string): Ses
   content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: file, oldText: old, newText: now } }],
 });
 
-/**
- * What was last put on screen: whether the buttons are, the files that enable those for a file, the status bar's text,
- * and each editor's added lines by path.
- */
+/** What was last put on screen: whether the buttons are, the files that enable those for a file, and the status bar's text. */
 function recording() {
   const shown = {
     buttons: false,
     files: [] as string[],
     position: undefined as string | undefined,
-    added: new Map<string, [number, number][]>(),
+    paused: false,
   };
   const display: ReviewDisplay = {
     review: (sessionShown, files) => {
@@ -46,7 +43,7 @@ function recording() {
       shown.files = files.map((uri) => uri.toString());
     },
     position: (text) => { shown.position = text; },
-    addedLines: (editor, ranges) => { shown.added.set(editor.document.uri.fsPath, ranges.map((range) => [range.start.line, range.end.line])); },
+    paused: (paused) => { shown.paused = paused; },
     dispose: () => {},
   };
   return { shown, display };
@@ -119,16 +116,6 @@ suite('Review presenters', () => {
     assert.strictEqual(shown.position, '0 of 0');
     reviews.activeSessionChanged(null);
     assert.strictEqual(shown.position, undefined);
-  });
-
-  test('colours the lines added to the baseline, unsaved edits among them, and none once kept', async () => {
-    const editor = await open(a);
-    await until(() => shown.added.has(a), 'a.txt to be decorated');
-    assert.deepStrictEqual(shown.added.get(a), [[1, 1]]);
-    await editor.edit((edit) => edit.insert(new vscode.Position(0, 0), 'typed\n'));
-    assert.deepStrictEqual(shown.added.get(a), [[0, 0], [2, 2]]);
-    controls.keepFile(a);
-    assert.deepStrictEqual(shown.added.get(a), []);
   });
 
   test('moves to the next and previous files, opening them, round from the last to the first', async () => {

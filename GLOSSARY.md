@@ -4,6 +4,12 @@ A VS Code extension that lets a user work with any ACP agent from inside the edi
 
 ## Language
 
+### People
+
+**User**:
+The person working in VS Code with the extension: prompting agents, answering their permission requests, and reviewing and editing the files they change. The user's actions and edits are told apart from the agent's.
+_Avoid_: human, developer, person
+
 ### Architecture
 
 **Extension**:
@@ -189,7 +195,7 @@ _Avoid_: command (unqualified), action
 ### Review
 
 **Review**:
-A session's files whose net change the human has yet to keep or undo, each from its baseline to what it holds now, whoever changed it since. Only evidence of an agent's change puts a file under review.
+A session's files whose net change the user has yet to keep or undo, each from its baseline to what it holds now, whoever changed it since. Only evidence of an agent's change puts a file under review.
 _Avoid_: diff (a tool call's, which is history), changeset, pending changes
 
 **Baseline**:
