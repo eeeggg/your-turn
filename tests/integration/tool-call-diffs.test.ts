@@ -6,39 +6,27 @@ import { setup, suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import { observed } from './observed';
 
 type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
 
-async function waitFor<T>(find: () => T | undefined, what: string, timeoutMs = 1000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const found = find();
-    if (found !== undefined) {
-      return found;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for ${what}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
 const activeTab = () => vscode.window.tabGroups.activeTabGroup.activeTab;
+const tabEvents = [vscode.window.tabGroups.onDidChangeTabs, vscode.window.tabGroups.onDidChangeTabGroups] as const;
 
 /** Waits for the file itself in the active tab; a diff editor's modified side has the same path, so it does not count. */
 async function shownFile(path: string): Promise<void> {
-  await waitFor(() => {
+  await observed(tabEvents, () => {
     const input = activeTab()?.input;
     return input instanceof vscode.TabInputText && input.uri.scheme === 'file' && input.uri.fsPath === path ? true : undefined;
-  }, `${path} to open`);
+  });
 }
 
 /** Waits for the diff editor under the title and gives the texts of its two sides. */
 async function shownChanges(title: string): Promise<{ before: string; after: string }> {
-  const input = await waitFor(() => {
+  const input = await observed(tabEvents, () => {
     const tab = activeTab();
     return tab?.label === title && tab.input instanceof vscode.TabInputTextDiff ? tab.input : undefined;
-  }, `the diff editor ${title}`);
+  });
   const [before, after] = await Promise.all([input.original, input.modified].map((uri) => vscode.workspace.openTextDocument(uri)));
   return { before: before?.getText() ?? '', after: after?.getText() ?? '' };
 }
@@ -46,6 +34,7 @@ async function shownChanges(title: string): Promise<{ before: string; after: str
 for (const version of [1, 2]) {
   suite(`Tool Call Diffs Test Suite, ACP v${version}`, () => {
     const agentName = `fake-diffs-v${version}`;
+    const sessionId = `toolcalldiffs-v${version}`;
     let api: ExtensionTestApi;
     let dir: string;
     let original: { agents: unknown; showToolCallDiffs: unknown };
@@ -58,9 +47,9 @@ for (const version of [1, 2]) {
     const prompt = async () => {
       posts.length = 0;
       await api.sendChatMessage({ type: 'sendPrompt', text: `edit ${dir}` });
-      await waitFor(() => posts.find((post) => post.type === 'promptEnd'), 'the turn to end');
+      await observed(api.chatPosts, () => posts.find((post) => post.type === 'promptEnd'));
       await api.turnEndShown();
-      return waitFor(editCall, 'the edit tool call');
+      return observed(api.chatPosts, editCall);
     };
     const showDiffs = (on: boolean) => config().update('showToolCallDiffs', on, vscode.ConfigurationTarget.Global);
 
@@ -74,14 +63,12 @@ for (const version of [1, 2]) {
       original = { agents: config().inspect('agents')?.globalValue, showToolCallDiffs: config().inspect('showToolCallDiffs')?.globalValue };
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1' } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
         vscode.ConfigurationTarget.Global,
       );
       await vscode.commands.executeCommand('acp-chat.focus');
       await api.chatViewReady;
       await vscode.commands.executeCommand('acp.connectAgent', agentName);
-      // Every fake agent's session has the same ID, and a session's review outlives it, so earlier suites' edits show.
-      await vscode.commands.executeCommand('acp.keepAllFiles');
     });
 
     setup(() => {

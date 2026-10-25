@@ -2,24 +2,10 @@ import * as assert from 'assert';
 import { suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
+import { observed } from './observed';
 
-/** VS Code opens, shows and closes terminals asynchronously. */
-async function waitFor<T>(find: () => T | undefined, what: string, timeoutMs = 2000): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const found = find();
-    if (found !== undefined) {
-      return found;
-    }
-    if (Date.now() > deadline) {
-      throw new Error(`Timed out waiting for ${what}`);
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
-const shown = (name: string) => waitFor(() => (vscode.window.activeTerminal?.name === name ? true : undefined), `${name} to be shown`);
-const named = (name: string) => waitFor(() => vscode.window.terminals.find((terminal) => terminal.name === name), `a terminal named ${name}`);
+const shown = (name: string) => observed(vscode.window.onDidChangeActiveTerminal, () => (vscode.window.activeTerminal?.name === name ? true : undefined));
+const named = (name: string) => observed(vscode.window.onDidOpenTerminal, () => vscode.window.terminals.find((terminal) => terminal.name === name));
 
 suite('Terminal displays', () => {
   teardown(() => {
@@ -48,10 +34,11 @@ suite('Terminal displays', () => {
   });
 
   test('says when the user closes it', async () => {
-    let closed = 0;
-    pseudoterminalDisplays.open('closing', () => closed++);
+    let reportClosed: () => void = () => {};
+    const closed = new Promise<void>((resolve) => { reportClosed = resolve; });
+    pseudoterminalDisplays.open('closing', reportClosed);
     (await named('closing')).dispose();
 
-    await waitFor(() => (closed === 1 ? true : undefined), 'the close to be heard');
+    await closed;
   });
 });

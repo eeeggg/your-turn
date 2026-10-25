@@ -799,29 +799,39 @@ describe('ChatViewController', () => {
     });
 
     it("posts an execute tool call's title and status at once, and its text once cleaned, as command output", async () => {
-      const { sessions, environment, controller } = setup();
-      sessions.session = sessionInfo();
+      vi.useFakeTimers();
+      try {
+        const { sessions, environment, controller } = setup();
+        sessions.session = sessionInfo();
 
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
-        { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
-      ] });
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
-      await new Promise((resolve) => setTimeout(resolve, 50));
+        controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
+          { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
+        ] });
+        expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
+        await vi.runAllTimersAsync();
 
-      expect(environment.take()).toEqual([
-        { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }] },
-      ]);
+        expect(environment.take()).toEqual([
+          { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }] },
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("drops an execute tool call's cleaned text once its session is no longer shown", async () => {
-      const { sessions, environment, controller } = setup();
-      sessions.session = sessionInfo();
+      vi.useFakeTimers();
+      try {
+        const { sessions, environment, controller } = setup();
+        sessions.session = sessionInfo();
 
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
-      sessions.activeId = null;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+        controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
+        sessions.activeId = null;
+        await vi.runAllTimersAsync();
 
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1' }]);
+        expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1' }]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     describe("the output of a session that ended, which goes once the chat view clears the session's transcript", () => {

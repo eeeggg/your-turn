@@ -7,5 +7,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "files": ["esbuild.mjs", "eslint.config.mjs", ".vscode-test.mjs", "vitest.config.mts"]
+  "files": ["esbuild.mjs", "eslint.config.mjs", ".vscode-test.mjs", "vitest.config.mts", "tools/run-integration.mjs"]
 }

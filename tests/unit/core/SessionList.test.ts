@@ -293,21 +293,32 @@ describe('SessionList', () => {
 
     it('ignores a list that arrives after it was invalidated', async () => {
       const replies: ((response: ListSessionsResponse) => void)[] = [];
+      const waiting: (() => void)[] = [];
+      const nextRequest = () => new Promise<void>((resolve) => waiting.push(resolve));
       const script: AgentScript = () => fakeAgent(listingCaps).onRequest(methods.agent.session.list, () =>
-        new Promise<ListSessionsResponse>((resolve) => replies.push(resolve)));
+        new Promise<ListSessionsResponse>((resolve) => {
+          replies.push(resolve);
+          waiting.shift()?.();
+        }));
       const { list } = setup({ fake: script });
 
+      const first = nextRequest();
       await list.sessionsOf('fake');
-      await vi.waitFor(() => expect(replies).toHaveLength(1));
+      await first;
+      expect(replies).toHaveLength(1);
       list.invalidate('fake');
+      const second = nextRequest();
       await list.sessionsOf('fake');
-      await vi.waitFor(() => expect(replies).toHaveLength(2));
+      await second;
+      expect(replies).toHaveLength(2);
 
+      const changes = vi.fn();
+      list.on('changed', changes);
+      replies[0]?.({ sessions: [session('stale')] });
       replies[1]?.({ sessions: [session('fresh')] });
       expect(await listed(list, 'fake')).toMatchObject({ rows: [{ sessionId: 'fresh' }] });
-      replies[0]?.({ sessions: [session('stale')] });
-      await new Promise((resolve) => setImmediate(resolve));
       expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: 'fresh' }] });
+      expect(changes).toHaveBeenCalledOnce();
     });
 
     it('asks for authentication when the user cancels it', async () => {

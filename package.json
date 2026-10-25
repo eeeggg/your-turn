@@ -461,6 +461,7 @@
     "lint": "eslint . --max-warnings 0 && knip",
     "pretest": "npm run compile && npm run lint",
     "test": "vitest run && vscode-test",
+    "test:integration": "node tools/run-integration.mjs",
     "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage",
     "coverage:integration": "npm run compile && npm run lint && vscode-test --coverage --coverage-output coverage-integration"
   },

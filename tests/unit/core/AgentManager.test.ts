@@ -1,4 +1,4 @@
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,25 +43,6 @@ async function readUntil(agent: AgentProcess, done: (text: string) => boolean): 
   return text;
 }
 
-function isRunning(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function until(check: () => boolean): Promise<void> {
-  const deadline = Date.now() + 5000;
-  while (!check()) {
-    if (Date.now() > deadline) {
-      throw new Error('Timed out');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-}
-
 describe('AgentManager', () => {
   it('carries messages over the agent\'s stdin and stdout', async () => {
     const { agent } = launch('process.stdin.pipe(process.stdout)');
@@ -101,17 +82,39 @@ describe('AgentManager', () => {
   });
 
   it('stops the agent and every process it started when killed', async () => {
-    const { agent, exited } = launch(
-      "const child = require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);" +
-      "process.stdout.write(child.pid + '\\n'); setInterval(() => {}, 1000)",
-    );
-    const pid = Number(await readUntil(agent, (text) => text.includes('\n')));
-    expect(isRunning(pid)).toBe(true);
+    const directory = mkdtempSync(join(tmpdir(), 'acp-process-group-'));
+    const watchers: { close(): void }[] = [];
+    const created = (name: string) => new Promise<void>((resolve) => {
+      const watcher = watch(directory, (_event, file) => {
+        if (file?.toString() === name && existsSync(join(directory, name))) {
+          watcher.close();
+          resolve();
+        }
+      });
+      watchers.push(watcher);
+    });
+    const ready = created('ready');
+    const stopped = created('stopped');
+    try {
+      const child = [
+        "const fs = require('node:fs');",
+        `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(join(directory, 'stopped'))}, ''); process.exit(0); });`,
+        `fs.writeFileSync(${JSON.stringify(join(directory, 'ready'))}, '');`,
+        'setInterval(() => {}, 1000);',
+      ].join('');
+      const { agent, exited } = launch(
+        `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
+      );
+      await ready;
 
-    agent.kill();
+      agent.kill();
 
-    expect(await exited).toBeNull();
-    await until(() => !isRunning(pid));
+      expect(await exited).toBeNull();
+      await stopped;
+    } finally {
+      for (const watcher of watchers) { watcher.close(); }
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 });
 

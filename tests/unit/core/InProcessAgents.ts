@@ -51,8 +51,10 @@ export interface LaunchedAgent {
   readonly process: AgentProcess;
   killed: boolean;
   exited: boolean;
+  /** Settles after output has closed and the process exit was reported. */
+  readonly exitReported: Promise<void>;
   /** The process dies on its own, without being killed; a null code is a death by signal. */
-  crash(code?: number | null, order?: ExitOrder): void;
+  crash(code?: number | null, order?: ExitOrder): Promise<void>;
 }
 
 /**
@@ -80,19 +82,32 @@ export class InProcessAgents implements AgentLauncher {
     script().connect(ndJsonStream(toClient.writable, toAgent.readable));
 
     // Like a process's stdio, both streams close when the agent exits.
-    const exit = (code: number | null, order: ExitOrder = 'output-then-exit') => {
-      if (launched.exited) { return; }
+    let finishExit: () => void = () => {};
+    const exitReported = new Promise<void>((resolve) => { finishExit = resolve; });
+    const exit = async (code: number | null, order: ExitOrder = 'output-then-exit'): Promise<void> => {
+      if (launched.exited) { return launched.exitReported; }
       launched.exited = true;
       const closeOutput = () => { for (const close of closers) { close(); } };
       if (order === 'output-then-exit') {
         closeOutput();
-        setImmediate(() => events.exit(code));
+        await new Promise<void>((resolve) => {
+          setImmediate(() => {
+            events.exit(code);
+            resolve();
+          });
+        });
       } else {
-        setImmediate(() => {
-          events.exit(code);
-          setImmediate(closeOutput);
+        await new Promise<void>((resolve) => {
+          setImmediate(() => {
+            events.exit(code);
+            setImmediate(() => {
+              closeOutput();
+              resolve();
+            });
+          });
         });
       }
+      finishExit();
     };
     const process: AgentProcess = {
       id: `agent_${this.nextId++}`,
@@ -100,10 +115,10 @@ export class InProcessAgents implements AgentLauncher {
       output: toClient.readable,
       kill: () => {
         launched.killed = true;
-        exit(null);
+        void exit(null);
       },
     };
-    const launched: LaunchedAgent = { name, cwd, process, killed: false, exited: false, crash: (code = 1, order) => exit(code, order) };
+    const launched: LaunchedAgent = { name, cwd, process, killed: false, exited: false, exitReported, crash: (code = 1, order) => exit(code, order) };
     this.launched.push(launched);
     return process;
   }
@@ -122,7 +137,7 @@ export class InProcessAgents implements AgentLauncher {
 export async function connectedDriver(
   script: AgentScript,
   handlers: ClientHandlers = unusedHandlers,
-): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; schemas: AcpSchema[]; exit: () => void }> {
+): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; schemas: AcpSchema[]; exit: () => Promise<void> }> {
   const agents = new InProcessAgents({ fake: script });
   const sessionUpdates = new SessionUpdateHandler();
   const updates: [string, SessionUpdate][] = [];
@@ -133,7 +148,7 @@ export async function connectedDriver(
   });
   const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
   const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
-  return { driver, updates, schemas, exit: () => agents.launched[0]?.crash() };
+  return { driver, updates, schemas, exit: async () => { await agents.launched[0]?.crash(); } };
 }
 
 /** An ACP v2 SDK agent with sessions that answers `initialize`; add the requests a test needs. */

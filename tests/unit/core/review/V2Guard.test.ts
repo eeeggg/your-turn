@@ -178,11 +178,17 @@ describe('V2Guard', () => {
 
   it("puts a tool call's files under review in the order reported, however their reads land", async () => {
     const review = new Review(async () => {});
+    let readA: (content: string) => void = () => {};
+    const a = new Promise<string>((resolve) => { readA = resolve; });
+    const reads: string[] = [];
     const guard = new V2Guard(review, async (path) => {
-      if (path === '/w/a.ts') { await new Promise((resolve) => setTimeout(resolve, 10)); }
-      return path === '/w/a.ts' ? 'one\nTWO\n' : 'B';
+      reads.push(path);
+      return path === '/w/a.ts' ? a : 'B';
     });
-    await guard.handleSessionUpdate(toolCall('t1', 'completed', [changes(modifyA + modifyB, change('modify', '/w/a.ts'), change('modify', '/w/b.ts'))]));
+    const handled = guard.handleSessionUpdate(toolCall('t1', 'completed', [changes(modifyA + modifyB, change('modify', '/w/a.ts'), change('modify', '/w/b.ts'))]));
+    expect(reads).toEqual(['/w/a.ts', '/w/b.ts']);
+    readA('one\nTWO\n');
+    await handled;
     expect(review.files().map((file) => file.path)).toEqual(['/w/a.ts', '/w/b.ts']);
   });
 

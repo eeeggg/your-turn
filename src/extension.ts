@@ -49,12 +49,16 @@ export interface ExtensionTestApi {
   sendChatMessage(message: WebviewToExtensionMessage): Promise<void>;
   /** The paths under review in the shown review, as its presenters show them but VS Code cannot read back. */
   reviewedFiles(): string[];
+  /** Fires whenever the shown review or one of its files changes. */
+  readonly reviewChanges: vscode.Event<void>;
   /** The original the review's source control gives quick diff for `uri`, as VS Code cannot be asked for it. */
   reviewOriginal(uri: vscode.Uri): vscode.Uri | undefined;
   /** The paths the review's source control lists, which VS Code cannot read back. */
   reviewListedFiles(): string[];
   /** Settles once the change shown as the last turn ended is, as it opens an editor some time after the turn ends. */
   turnEndShown(): Promise<void>;
+  /** Settles once the latest quick-diff presentation caused by changing tabs does. */
+  reviewPresentationSettled(): Promise<void>;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -129,6 +133,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
   sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
   const reviews = new Reviews(workspaceFiles);
+  const reviewChanges = new vscode.EventEmitter<void>();
+  context.subscriptions.push(reviewChanges);
+  reviews.addListener(() => reviewChanges.fire());
   sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
   const reviewControls = new ReviewControls(reviews, vscodeReviewEditors);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
@@ -311,9 +318,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatViewReady,
     sendChatMessage: (message) => chatViewController.handleMessage(message),
     reviewedFiles: () => reviewControls.reviewedPaths(),
+    reviewChanges: reviewChanges.event,
     reviewOriginal: (uri) => reviewSourceControl.originalResource(uri),
     reviewListedFiles: () => reviewSourceControl.listedFiles(),
     turnEndShown: () => turnEndShown,
+    reviewPresentationSettled: () => reviewPresenters.settled(),
   };
 }
 
