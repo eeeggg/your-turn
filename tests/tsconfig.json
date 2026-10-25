@@ -10,5 +10,5 @@
     }
   },
   "include": ["./**/*.ts", "./**/*.tsx", "../src/core/diff/*.d.ts"],
-  "exclude": ["integration"]
+  "exclude": ["integration", "ui"]
 }

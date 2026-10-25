@@ -1,8 +1,7 @@
 .vscode/**
 .vscode-test/**
 src/**
-coverage/**
-coverage-integration/**
+test-results/**
 node_modules/**
 .gitignore
 .gitattributes
@@ -16,6 +15,7 @@ eslint.config.mjs
 .vscode-test.mjs
 tests/**
 vitest.config.mts
+playwright.config.mts
 vsc-extension-quickstart.md
 .github/**
 Makefile

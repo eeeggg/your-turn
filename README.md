@@ -118,7 +118,7 @@ npm run pretest    # Type-check every project, build, lint
 npm test           # Vitest suites (tests/unit, tests/webview), then VS Code integration suites (tests/integration)
 xvfb-run -a npm test   # Same, on Linux without a display (what `make test` runs)
 npx vitest run     # Vitest suites only; webview tests need a current `npm run compile`
-npm run coverage   # Unit suite under coverage; HTML report in coverage/
+npm run coverage   # Unit suite under coverage; HTML report in test-results/unit/coverage/
 ```
 
 ### Packaging
