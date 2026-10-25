@@ -12,7 +12,8 @@ suite('Reported File Editor Test Suite', () => {
   let b: string;
   let editor: ReportedFileEditor;
 
-  suiteSetup(() => {
+  suiteSetup(async () => {
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
     dir = mkdtempSync(join(tmpdir(), 'acp-reported-'));
     a = join(dir, 'a.ts');
     b = join(dir, 'b.ts');

@@ -19,24 +19,30 @@ const focusChatView: Call = { call: 'executeCommand', command: 'acp-chat.focus' 
 function sessionAgent(name: string, init: Partial<InitializeResponse> = {}, extend: (app: AgentApp) => AgentApp = (app) => app) {
   let created = 0;
   const requests: { method: string; params: unknown }[] = [];
+  const waiting: ((request: { method: string; params: unknown }) => void)[] = [];
+  const record = (request: { method: string; params: unknown }) => {
+    requests.push(request);
+    waiting.shift()?.(request);
+  };
   const script: AgentScript = () => extend(fakeAgent(init)
     .onRequest(methods.agent.session.new, () => ({ sessionId: `${name}-${++created}` }))
     .onRequest(methods.agent.session.load, ({ params }) => {
-      requests.push({ method: 'session/load', params });
+      record({ method: 'session/load', params });
       return {};
     })
     .onRequest(methods.agent.session.resume, ({ params }) => {
-      requests.push({ method: 'session/resume', params });
+      record({ method: 'session/resume', params });
       return {};
     })
     .onRequest(methods.agent.session.setMode, ({ params }) => {
-      requests.push({ method: 'session/set_mode', params });
+      record({ method: 'session/set_mode', params });
       return {};
     })
     .onNotification(methods.agent.session.cancel, ({ params }) => {
-      requests.push({ method: 'session/cancel', params });
+      record({ method: 'session/cancel', params });
     }));
-  return { script, requests };
+  const nextRequest = () => new Promise<{ method: string; params: unknown }>((resolve) => waiting.push(resolve));
+  return { script, requests, nextRequest };
 }
 
 function setup(scripts: Record<string, AgentScript>) {
@@ -371,10 +377,12 @@ describe('SessionCommands', () => {
       const one = sessionAgent('one');
       const { manager, commands } = setup({ one: one.script });
       await manager.connectToAgent('one');
+      const cancelled = one.nextRequest();
 
       await commands.cancelTurn();
 
-      await vi.waitFor(() => expect(one.requests).toEqual([{ method: 'session/cancel', params: { sessionId: 'one-1' } }]));
+      expect(await cancelled).toEqual({ method: 'session/cancel', params: { sessionId: 'one-1' } });
+      expect(one.requests).toHaveLength(1);
     });
 
     it('sets the mode it is given', async () => {

@@ -375,7 +375,7 @@ describe('V2Driver', () => {
       const outcome = outcomeOf(agent.driver.prompt('s1', go));
       await agent.report(running);
 
-      agent.exit();
+      await agent.exit();
 
       expect(await outcome).toEqual(new Error('The connection to the agent closed before the turn ended'));
       expect(agent.driver.closed).toBe(true);
@@ -387,8 +387,7 @@ describe('V2Driver', () => {
       }));
 
       const refused = await outcomeOf(driver.prompt('s1', go));
-      exit();
-      await new Promise((resolve) => setImmediate(resolve));
+      await exit();
 
       expect(refused).toHaveProperty('message', expect.stringContaining('Too many prompts'));
       expect(driver.closed).toBe(true);

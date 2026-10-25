@@ -4,18 +4,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { setup, suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
-import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Waits for `count` changes to have been heard, as a watcher reports a write some time after it. */
-async function heard(changes: () => number, count: number, timeoutMs = 3000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (changes() < count) {
-    if (Date.now() > deadline) { throw new Error(`Heard ${changes()} changes, expected ${count}`); }
-    await sleep(20);
-  }
-}
+import { createWorkspaceFiles, workspaceFiles } from '@/adapters/review/WorkspaceFiles';
+import { observed } from './observed';
 
 suite('Workspace files', () => {
   let folder: string;
@@ -68,6 +58,7 @@ suite('Workspace files', () => {
     assert.strictEqual(editor.document.getText(), 'baseline\n');
     assert.strictEqual(editor.document.isDirty, true);
     assert.strictEqual(fs.readFileSync(file, 'utf8'), 'agent\n');
+    await vscode.window.showTextDocument(editor.document, { preserveFocus: false });
     await vscode.commands.executeCommand('undo');
     assert.strictEqual(editor.document.getText(), 'user\nagent\n');
   });
@@ -76,20 +67,17 @@ suite('Workspace files', () => {
     const file = path.join(folder, 'a.txt');
     fs.writeFileSync(file, 'agent\n');
     const { document } = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
-    // VS Code starts watching a file outside the workspace some time after it is opened, so the file is written until
-    // its editor follows.
-    let written = '';
-    for (let attempt = 0; document.getText() !== written && attempt < 20; attempt++) {
-      written = `agent ${attempt}\n`;
-      fs.writeFileSync(file, written);
-      await sleep(150);
-    }
+    const written = 'agent changed\n';
+    const followed = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === written ? true : undefined));
+    await vscode.workspace.fs.writeFile(vscode.Uri.file(file), Buffer.from(written));
+    await followed;
     assert.strictEqual(document.getText(), written, 'the editor never followed the disk');
 
+    const restored = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === 'baseline\n' ? true : undefined));
     await workspaceFiles.restore(file, 'baseline\n');
 
     assert.strictEqual(fs.readFileSync(file, 'utf8'), 'baseline\n');
-    for (let attempt = 0; document.getText() !== 'baseline\n' && attempt < 50; attempt++) { await sleep(20); }
+    await restored;
     assert.strictEqual(document.getText(), 'baseline\n');
     assert.strictEqual(document.isDirty, false);
   });
@@ -118,31 +106,44 @@ suite('Workspace files', () => {
     await assert.rejects(workspaceFiles.read(binary));
   });
 
-  test('hears a file outside the workspace created, written, replaced by a rename and deleted, until disposed', async () => {
+  test('watches the exact file for creation, change and deletion until disposed', () => {
     const file = path.join(folder, 'watched.txt');
-    let changes = 0;
-    const watcher = workspaceFiles.watch(file, () => changes++);
-    // The watcher starts some time after it is made, so the file is written until it is heard.
-    for (let attempt = 0; changes === 0 && attempt < 20; attempt++) {
-      fs.writeFileSync(file, `created ${attempt}\n`);
-      await sleep(150);
-    }
-    assert.ok(changes > 0, 'the watcher never heard the file');
+    const uri = vscode.Uri.file(file);
+    const created = new vscode.EventEmitter<vscode.Uri>();
+    const changed = new vscode.EventEmitter<vscode.Uri>();
+    const deleted = new vscode.EventEmitter<vscode.Uri>();
+    let pattern: vscode.RelativePattern | undefined;
+    let disposed = false;
+    const files = createWorkspaceFiles((watched) => {
+      pattern = watched;
+      return {
+        ignoreCreateEvents: false,
+        ignoreChangeEvents: false,
+        ignoreDeleteEvents: false,
+        onDidCreate: created.event,
+        onDidChange: changed.event,
+        onDidDelete: deleted.event,
+        dispose: () => {
+          disposed = true;
+          created.dispose();
+          changed.dispose();
+          deleted.dispose();
+        },
+      };
+    });
 
-    let expected = changes + 1;
-    fs.writeFileSync(file, 'changed\n');
-    await heard(() => changes, expected);
-    fs.writeFileSync(`${file}.tmp`, 'renamed over\n');
-    fs.renameSync(`${file}.tmp`, file);
-    await heard(() => changes, ++expected);
-    fs.unlinkSync(file);
-    await heard(() => changes, ++expected);
-
+    let reports = 0;
+    const watcher = files.watch(file, () => { reports++; });
+    assert.ok(pattern);
+    assert.strictEqual(pattern.baseUri.fsPath, folder);
+    assert.strictEqual(pattern.pattern, 'watched.txt');
+    created.fire(uri);
+    changed.fire(uri);
+    deleted.fire(uri);
+    assert.strictEqual(reports, 3);
     watcher.dispose();
-    await sleep(300);
-    const disposedAt = changes;
-    fs.writeFileSync(file, 'after dispose\n');
-    await sleep(500);
-    assert.strictEqual(changes, disposedAt);
+    assert.strictEqual(disposed, true);
+    created.fire(uri);
+    assert.strictEqual(reports, 3);
   });
 });

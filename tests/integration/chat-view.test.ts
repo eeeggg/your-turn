@@ -13,5 +13,5 @@ suite('Chat View Test Suite', () => {
     await vscode.commands.executeCommand('acp-chat.focus');
 
     await api.chatViewReady;
-  }).timeout(15_000);
+  });
 });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TerminalExitStatus, ToolCallContent } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import type { ShownOutput } from '@/core/CommandOutput';
@@ -26,8 +26,8 @@ const chunk = (terminalId: string, text: string) => ({ kind: 'terminalOutput' as
 /** With fake timers, the time xterm's own timers need to apply a write, once the feed reads a terminal. */
 const XTERM_PARSING_MS = 10;
 
-/** Long enough for every cleaning to finish. */
-const cleaningDone = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
+/** Applies every task the terminal cleaner queued. */
+const cleaningDone = () => vi.runAllTimersAsync();
 
 describe('CommandOutputFeed', () => {
   afterEach(() => {
@@ -35,6 +35,10 @@ describe('CommandOutputFeed', () => {
   });
 
   describe("an execute tool call's text", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
     it('holds it back, then sends it cleaned, as a terminal shows it', async () => {
       const { feed, sent } = setup();
       const diff: ToolCallContent = { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: null, newText: 'a' } };

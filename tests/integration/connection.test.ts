@@ -10,16 +10,6 @@ import { setLogSink, type TrafficDirection } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 
-async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) {
-      throw new Error('Timed out waiting for condition');
-    }
-    await new Promise(resolve => setTimeout(resolve, 20));
-  }
-}
-
 /** The value at `path` in a JSON value, or undefined. */
 function at(value: unknown, ...path: string[]): unknown {
   return path.reduce<unknown>(
@@ -38,6 +28,8 @@ for (const version of [1, 2]) {
     let driver: AcpDriver;
     const exits: (number | null)[] = [];
     const texts: string[] = [];
+    const textWaiters: { text: string; resolve: () => void }[] = [];
+    const exitWaiters: (() => void)[] = [];
     const logs: string[] = [];
     const traffic: { direction: TrafficDirection; data: unknown }[] = [];
 
@@ -57,6 +49,13 @@ for (const version of [1, 2]) {
       updates.addListener((_sessionId, update) => {
         if (update.kind === 'agentText') {
           texts.push(update.text);
+          for (const waiter of textWaiters.splice(0)) {
+            if (texts.includes(waiter.text)) {
+              waiter.resolve();
+            } else {
+              textWaiters.push(waiter);
+            }
+          }
         }
       });
       manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
@@ -68,10 +67,18 @@ for (const version of [1, 2]) {
         env: { ELECTRON_RUN_AS_NODE: '1' },
       }, __dirname, {
         error: () => {},
-        exit: (code) => exits.push(code),
+        exit: (code) => {
+          exits.push(code);
+          for (const resolve of exitWaiters.splice(0)) { resolve(); }
+        },
       });
       driver = await manager.connect('fake-agent', agent);
     });
+
+    const nextText = (text: string) => texts.includes(text)
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => textWaiters.push({ text, resolve }));
+    const nextExit = () => new Promise<void>((resolve) => exitWaiters.push(resolve));
 
     suiteTeardown(async () => {
       agent?.kill();
@@ -111,8 +118,9 @@ for (const version of [1, 2]) {
     });
 
     test('Sends cancel as a notification', async () => {
+      const acknowledged = nextText('cancel-ack');
       await driver.cancel('fake-session');
-      await waitFor(() => texts.includes('cancel-ack'));
+      await acknowledged;
     });
 
     test('Traffic tap records both directions', () => {
@@ -124,8 +132,9 @@ for (const version of [1, 2]) {
 
     test('Reports the agent exiting after it is killed', async () => {
       assert.ok(agent);
+      const exited = nextExit();
       agent.kill();
-      await waitFor(() => exits.length > 0);
+      await exited;
       assert.strictEqual(exits.length, 1);
     });
   });

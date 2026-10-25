@@ -168,6 +168,7 @@ function vscodeReviewDisplay(): ReviewDisplay {
  */
 export class ReviewPresenters implements vscode.Disposable {
   private readonly subscriptions: vscode.Disposable[];
+  private latestPresentation = Promise.resolve();
   private turnRuns = false;
   /**
    * The active tab's file, for a change of tab to show its change in quick diff's view; not the active editor, which
@@ -199,6 +200,11 @@ export class ReviewPresenters implements vscode.Disposable {
     this.display.paused(inProgress);
   }
 
+  /** Settles once the latest quick-diff presentation started by a tab change does. */
+  settled(): Promise<void> {
+    return this.latestPresentation;
+  }
+
   /** A tab of a file under review coming to the front shows its change, though not while the turn runs. */
   private tabsChanged(): void {
     this.showPosition();
@@ -206,7 +212,7 @@ export class ReviewPresenters implements vscode.Disposable {
     if (path === this.tabPath) { return; }
     this.tabPath = path;
     if (path !== undefined && !this.turnRuns) {
-      this.controls.entered(path).catch((e: unknown) => logError("Showing the file's change failed", e));
+      this.latestPresentation = this.controls.entered(path).catch((e: unknown) => logError("Showing the file's change failed", e));
     }
   }
 

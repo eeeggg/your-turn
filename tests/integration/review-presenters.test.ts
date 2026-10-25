@@ -10,17 +10,6 @@ import { Reviews } from '@/core/review/Reviews';
 import { ReviewPresenters, vscodeReviewEditors, type ReviewDisplay } from '@/adapters/review/ReviewPresenters';
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Waits for `condition`, as VS Code tells of tabs and editors some time after they change. */
-async function until(condition: () => boolean, what: string, timeoutMs = 3000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) { throw new Error(`Timed out waiting for ${what}`); }
-    await sleep(20);
-  }
-}
-
 /** A completed tool call that changed `file` from `old` to `now`, the empty text with nothing there for a deletion. */
 const edited = (toolCallId: string, file: string, old: string, now: string): SessionUpdate => ({
   kind: 'toolCall',
@@ -101,15 +90,15 @@ suite('Review presenters', () => {
 
   test("shows the active file's place among the files under review, a dash for another file, and 0 of 0 with none", async () => {
     await open(a);
-    await until(() => shown.position === '1 of 2', 'a.txt to be 1 of 2');
+    assert.strictEqual(shown.position, '1 of 2');
     await open(b);
-    await until(() => shown.position === '2 of 2', 'b.txt to be 2 of 2');
+    assert.strictEqual(shown.position, '2 of 2');
     const other = path.join(folder, 'other.txt');
     fs.writeFileSync(other, 'other\n');
     await open(other);
-    await until(() => shown.position === '– of 2', 'a dash for other.txt');
+    assert.strictEqual(shown.position, '– of 2');
     await vscode.window.showTextDocument(vscode.Uri.file(b));
-    await until(() => shown.position === '2 of 2', 'b.txt to be 2 of 2 again');
+    assert.strictEqual(shown.position, '2 of 2');
     controls.keepFile(b);
     assert.strictEqual(shown.position, '– of 1');
     controls.keepAll();
@@ -132,7 +121,7 @@ suite('Review presenters', () => {
     const gone = path.join(folder, 'gone.txt');
     await reviews.handleSessionUpdate('s1', edited('t3', gone, 'gone\n', ''), 'v1');
     await controls.previous(a);
-    await until(() => shown.position === '3 of 3', 'the deleted file to be 3 of 3');
+    assert.strictEqual(shown.position, '3 of 3');
     assert.strictEqual(activeFile(), undefined);
 
     await controls.undoFile();

@@ -12,9 +12,6 @@ import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionE
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
 
-/** Let pending callbacks, including agent exits, run. */
-const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
-
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
   return {
@@ -81,9 +78,17 @@ function setup(scripts: Record<string, AgentScript>) {
     new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) }),
   );
   const received: [string, SessionUpdate][] = [];
+  const receivedWaiters: { count: number; resolve: () => void }[] = [];
   updates.addListener((sessionId, update) => {
     received.push([sessionId, update]);
     chatView.handleSessionUpdate(sessionId, update);
+    for (const waiter of receivedWaiters.splice(0)) {
+      if (received.length >= waiter.count) {
+        waiter.resolve();
+      } else {
+        receivedWaiters.push(waiter);
+      }
+    }
   });
 
   const events: unknown[][] = [];
@@ -100,6 +105,10 @@ function setup(scripts: Record<string, AgentScript>) {
     received,
     events,
     linkActiveFile(link: FileLink) { fileLink = link; },
+    receivedAtLeast(count: number): Promise<void> {
+      if (received.length >= count) { return Promise.resolve(); }
+      return new Promise((resolve) => receivedWaiters.push({ count, resolve }));
+    },
     /** Events emitted since the last call. */
     takeEvents(): unknown[][] { return events.splice(0); },
   };
@@ -185,9 +194,10 @@ describe('SessionManager', () => {
     it('disconnects an agent launched only to list its sessions', async () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent().script });
       await manager.ensureConnected('fake');
+      const closed = new Promise<void>((resolve) => manager.once('agent-closed', () => resolve()));
 
       await manager.disconnectAgent('fake');
-      await settle();
+      await closed;
 
       expect(agents.launched[0]?.killed).toBe(true);
       expect(takeEvents()).toEqual([['agent-closed', 'agent_1', null]]);
@@ -197,9 +207,10 @@ describe('SessionManager', () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent().script });
       await manager.connectToAgent('fake');
       takeEvents();
+      const closed = new Promise<void>((resolve) => manager.once('agent-closed', () => resolve()));
 
       await manager.disconnectAgent('fake');
-      await settle();
+      await closed;
 
       expect(agents.launched[0]?.killed).toBe(true);
       expect(manager.hasSession('fake')).toBe(false);
@@ -410,14 +421,17 @@ describe('SessionManager', () => {
 
     it('sends cancel as a notification', async () => {
       const cancelled: string[] = [];
+      let cancellationReceived: () => void = () => {};
+      const received = new Promise<void>((resolve) => { cancellationReceived = resolve; });
       const fake = sessionAgent('s1', (app) => app.onNotification(methods.agent.session.cancel, ({ params }) => {
         cancelled.push(params.sessionId);
+        cancellationReceived();
       }));
       const { manager } = setup({ fake: fake.script });
       await manager.connectToAgent('fake');
 
       await manager.cancelTurn('s1');
-      await settle();
+      await received;
 
       expect(cancelled).toEqual(['s1']);
     });
@@ -523,10 +537,11 @@ describe('SessionManager', () => {
         await notify({ sessionUpdate: 'session_info_update', title: 'Early title' });
         return { sessionId: 's1', configOptions: [modelOption('a')] };
       });
-      const { manager, received } = setup({ fake: script });
+      const { manager, received, receivedAtLeast } = setup({ fake: script });
+      const updatesReceived = receivedAtLeast(3);
 
       const session = await manager.connectToAgent('fake');
-      await settle();
+      await updatesReceived;
 
       expect(received).toHaveLength(3);
       expect(session.availableCommands).toEqual([{ name: 'init', description: 'Init', takesInput: false, hint: null }]);
@@ -556,11 +571,12 @@ describe('SessionManager', () => {
         await client.notify(methods.client.session.update, { sessionId: 's1', update });
         return { stopReason: 'end_turn' };
       }));
-      const { manager } = setup({ fake: fake.script });
+      const { manager, received, receivedAtLeast } = setup({ fake: fake.script });
       await manager.connectToAgent('fake');
+      const updated = receivedAtLeast(received.length + 1);
 
       await manager.sendPrompt('s1', 'hello');
-      await settle();
+      await updated;
 
       expect(manager.getSession('s1')?.configOptions).toEqual([]);
     });
@@ -830,11 +846,12 @@ describe('SessionManager', () => {
     });
 
     it('lets a title the agent replays during the load replace the listed one', async () => {
-      const { manager } = setup({ fake: listingAgent(['Listed title'], 'Replayed title') });
+      const { manager, received, receivedAtLeast } = setup({ fake: listingAgent(['Listed title'], 'Replayed title') });
       await manager.listSessions('fake');
+      const replayed = receivedAtLeast(received.length + 1);
 
       const session = await manager.loadSession('fake', 'old');
-      await settle();
+      await replayed;
 
       expect(session.title).toBe('Replayed title');
     });
@@ -894,8 +911,7 @@ describe('SessionManager', () => {
       await manager.connectToAgent('fake');
       takeEvents();
 
-      agents.launched[0]?.crash(1);
-      await settle();
+      await agents.launched[0]?.crash(1);
 
       expect(manager.getActiveSessionId()).toBeNull();
       expect(manager.hasSession('fake')).toBe(false);
@@ -912,8 +928,7 @@ describe('SessionManager', () => {
       await manager.connectToAgent('fake');
       takeEvents();
 
-      agents.launched[0]?.crash(null);
-      await settle();
+      await agents.launched[0]?.crash(null);
 
       expect(takeEvents()).toContainEqual(['session-ended', 's1', 'Fake Agent exited unexpectedly.']);
     });
@@ -932,9 +947,10 @@ describe('SessionManager', () => {
         }), init);
         const { manager, takeEvents } = setup({ fake: fake.script });
         await manager.connectToAgent('fake');
+        const closed = new Promise<void>((resolve) => manager.once('agent-closed', () => resolve()));
 
         await stop(manager);
-        await settle();
+        await closed;
 
         const events = takeEvents().map(([event]) => event);
         expect(events, name).toContain('session-removed');
@@ -944,15 +960,20 @@ describe('SessionManager', () => {
 
     it('fails a prompt in flight only once the exit has ended its session, whichever the agent reports first', async () => {
       for (const order of ['output-then-exit', 'exit-then-output'] as ExitOrder[]) {
+        let promptStarted: () => void = () => {};
+        const started = new Promise<void>((resolve) => { promptStarted = resolve; });
         const script: AgentScript = () => fakeAgent()
           .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' }))
-          .onRequest(methods.agent.session.prompt, () => new Promise(() => {}));
+          .onRequest(methods.agent.session.prompt, () => {
+            promptStarted();
+            return new Promise(() => {});
+          });
         const { agents, manager, events } = setup({ fake: script });
         await manager.connectToAgent('fake');
         const prompt = manager.sendPrompt('s1', 'hello');
-        await settle();
+        await started;
 
-        agents.launched[0]?.crash(1, order);
+        await agents.launched[0]?.crash(1, order);
         const failure = await prompt.then(() => 'answered', () => events.map(([event]) => event));
 
         expect(failure, order).toContain('session-ended');
@@ -966,8 +987,7 @@ describe('SessionManager', () => {
       const { agents, manager } = setup({ fake: script });
       await manager.loadSession('fake', 'old');
 
-      agents.launched[0]?.crash(1);
-      await settle();
+      await agents.launched[0]?.crash(1);
 
       expect(manager.getSession('old')).toBeUndefined();
       expect(manager.getActiveSessionId()).toBeNull();
@@ -976,8 +996,7 @@ describe('SessionManager', () => {
     it('launches a fresh agent after the previous one exited', async () => {
       const { agents, manager } = setup({ fake: sessionAgent().script });
       await manager.ensureConnected('fake');
-      agents.launched[0]?.crash(1);
-      await settle();
+      await agents.launched[0]?.crash(1);
 
       await manager.connectToAgent('fake');
 
@@ -995,7 +1014,7 @@ describe('SessionManager', () => {
 
       await manager.newSession();
       expect(replaced?.killed).toBe(true);
-      await settle();
+      await replaced?.exitReported;
 
       expect(manager.getActiveSessionId()).toBe('s2');
       expect(manager.hasSession('fake')).toBe(true);

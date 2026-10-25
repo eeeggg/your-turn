@@ -17,7 +17,7 @@ import { Readable, Writable } from 'node:stream';
  * then changes `a.ts` once more, and "three <dir>" changes `m.ts` there in three places.
  */
 
-const SESSION_ID = 'fake-session';
+const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
 
 function modelOption(currentValue: string): SessionConfigOption {
   return {

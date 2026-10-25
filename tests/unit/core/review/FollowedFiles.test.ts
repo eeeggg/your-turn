@@ -1,4 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { setLogSink } from '@/core/Log';
 import { FollowedFiles } from '@/core/review/FollowedFiles';
 import { Review, type FileContent } from '@/core/review/Review';
 
@@ -27,6 +28,18 @@ function followed() {
   return { review, subject, reads, watchers, change, current };
 }
 
+/** Settles on the first review change after which `condition` holds. */
+function reviewChanged(review: Review, condition: () => boolean): Promise<void> {
+  if (condition()) { return Promise.resolve(); }
+  return new Promise((resolve) => {
+    review.addListener(() => {
+      if (condition()) { resolve(); }
+    });
+  });
+}
+
+afterEach(() => { setLogSink(undefined); });
+
 describe('FollowedFiles', () => {
   it('watches a file while it is under review', () => {
     const { review, watchers } = followed();
@@ -40,16 +53,20 @@ describe('FollowedFiles', () => {
     const { review, reads, change, current } = followed();
     review.changed('/w/a.ts', 'one', 'two');
     change('/w/a.ts');
+    const changed = reviewChanged(review, () => current('/w/a.ts') === 'edited');
     reads[0]?.give('edited');
-    await vi.waitFor(() => expect(current('/w/a.ts')).toBe('edited'));
+    await changed;
+    expect(current('/w/a.ts')).toBe('edited');
   });
 
   it('lets a file go once a read finds it back at its baseline', async () => {
     const { review, reads, watchers, change } = followed();
     review.changed('/w/a.ts', 'one', 'two');
     change('/w/a.ts');
+    const left = reviewChanged(review, () => review.files().length === 0);
     reads[0]?.give('one');
-    await vi.waitFor(() => expect(review.files()).toEqual([]));
+    await left;
+    expect(review.files()).toEqual([]);
     expect(watchers.size).toBe(0);
   });
 
@@ -60,10 +77,14 @@ describe('FollowedFiles', () => {
     change('/w/a.ts');
     change('/w/a.ts');
     expect(reads.map((read) => read.path)).toEqual(['/w/a.ts']);
+    const older = reviewChanged(review, () => current('/w/a.ts') === 'older');
     reads[0]?.give('older');
-    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    await older;
+    expect(reads).toHaveLength(2);
+    const newer = reviewChanged(review, () => current('/w/a.ts') === 'newer');
     reads[1]?.give('newer');
-    await vi.waitFor(() => expect(current('/w/a.ts')).toBe('newer'));
+    await newer;
+    expect(current('/w/a.ts')).toBe('newer');
     expect(reads).toHaveLength(2);
   });
 
@@ -71,12 +92,18 @@ describe('FollowedFiles', () => {
     const { review, reads, change, current } = followed();
     review.changed('/w/a.ts', 'one', 'two');
     change('/w/a.ts');
+    const failed = new Promise<void>((resolve) => {
+      setLogSink({ log: () => resolve(), warn() {}, error() {}, traffic() {} });
+    });
     reads[0]?.fail(new Error('EACCES'));
-    await vi.waitFor(() => expect(current('/w/a.ts')).toBe('two'));
+    await failed;
+    expect(current('/w/a.ts')).toBe('two');
     change('/w/a.ts');
-    await vi.waitFor(() => expect(reads).toHaveLength(2));
+    expect(reads).toHaveLength(2);
+    const changed = reviewChanged(review, () => current('/w/a.ts') === 'three');
     reads[1]?.give('three');
-    await vi.waitFor(() => expect(current('/w/a.ts')).toBe('three'));
+    await changed;
+    expect(current('/w/a.ts')).toBe('three');
   });
 
   it('drops a read that lands after its file left the review, though it came back since', async () => {
@@ -85,9 +112,17 @@ describe('FollowedFiles', () => {
     change('/w/a.ts');
     review.keepFile('/w/a.ts');
     review.changed('/w/a.ts', 'two', 'three');
+    const seen: FileContent[] = [];
+    review.addListener((path) => {
+      if (path === '/w/a.ts') { seen.push(current(path) ?? null); }
+    });
     reads[0]?.give('read before it left');
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(current('/w/a.ts')).toBe('three');
+    change('/w/a.ts');
+    const currentRead = reviewChanged(review, () => current('/w/a.ts') === 'read after it returned');
+    reads[1]?.give('read after it returned');
+    await currentRead;
+    expect(current('/w/a.ts')).toBe('read after it returned');
+    expect(seen).not.toContain('read before it left');
   });
 
   it('stops every watcher once disposed, and starts none for evidence after', () => {
