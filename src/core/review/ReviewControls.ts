@@ -124,14 +124,12 @@ export class ReviewControls {
   }
 
   /**
-   * The shown session's turn ended: a change in quick diff's view, once the files its edits name were read, of the
-   * active editor's file under review, or else of the first file; never a deleted file's, which no editor shows.
+   * The shown session's turn ended: the first unresolved change in review order, once the files its edits name were
+   * read; never a deleted file's, which no editor shows.
    */
   async turnEnded(sessionId: string): Promise<void> {
     await this.reviews.settled(sessionId);
-    const paths = this.reviews.shown()?.files().filter((file) => file.current !== null).map((file) => file.path) ?? [];
-    const active = this.editors.activePath();
-    const path = active !== undefined && paths.includes(active) ? active : paths[0];
+    const path = this.reviews.shown()?.files().find((file) => file.current !== null)?.path;
     if (path !== undefined) { await this.editors.showChange(path); }
   }
 

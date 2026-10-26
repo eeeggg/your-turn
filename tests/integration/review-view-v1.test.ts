@@ -133,7 +133,7 @@ for (const version of [1]) {
       assert.ok(await quickDiffHasChange(modified), 'quick diff has the second change');
     });
 
-    test("The turn ending shows the active editor's file's change though the chat view has the focus", async () => {
+    test("The turn ending shows the first review file's change though the chat view has the focus", async () => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(modified));
       await vscode.commands.executeCommand('acp-chat.focus');

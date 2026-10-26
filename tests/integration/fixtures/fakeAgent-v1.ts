@@ -14,7 +14,8 @@ import { Readable, Writable } from 'node:stream';
  * tool call's whole-file diffs. A prompt of "run" reports a command it ran, as an `execute` tool call with its output
  * as text, as a v1 agent does: `commandoutput.test.ts` expects the same output as `fakeAgent-v2.ts`'s terminal.
  * A prompt of "review <dir>" changes files there for `review.test.ts`, one of them other than it reports; "again <dir>"
- * then changes `a.ts` once more, and "three <dir>" changes `m.ts` there in three places.
+ * then changes `a.ts` once more, "review-open <dir>" changes two existing files for the UI journey, and "three <dir>"
+ * changes `m.ts` there in three places.
  */
 
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
@@ -109,6 +110,28 @@ async function changeAgain(client: AgentContext, sessionId: string, dir: string)
   });
 }
 
+/** Changes two existing, openable files in order for the UI review-presentation journey. */
+async function changeOpenFiles(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const paths = [join(dir, 'a.ts'), join(dir, 'b.ts')];
+  const changes = paths.map((path) => {
+    const oldText = readFileSync(path, 'utf8');
+    const newText = oldText.replace('before', 'after');
+    writeFileSync(path, newText);
+    return { type: 'diff' as const, path, oldText, newText };
+  });
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'review-open-1',
+      title: 'Change open files',
+      kind: 'edit',
+      status: 'completed',
+      content: changes,
+    },
+  });
+}
+
 /** Changes lines 2, 15 and 28 of `m.ts`'s thirty, `l1` to `l30`, for three changes far apart in quick diff's view. */
 async function changeThree(client: AgentContext, sessionId: string, dir: string): Promise<void> {
   const modified = join(dir, 'm.ts');
@@ -164,6 +187,10 @@ agent({ name: 'fake-agent' })
     }
     if (text.startsWith('review ')) {
       await changeForReview(client, params.sessionId, text.slice('review '.length));
+      return { stopReason: 'end_turn' };
+    }
+    if (text.startsWith('review-open ')) {
+      await changeOpenFiles(client, params.sessionId, text.slice('review-open '.length));
       return { stopReason: 'end_turn' };
     }
     if (text.startsWith('again ')) {

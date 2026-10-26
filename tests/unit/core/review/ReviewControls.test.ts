@@ -266,7 +266,7 @@ describe('ReviewControls', () => {
     expect(opened).toEqual([]);
   });
 
-  it("shows a change of the active editor's file under review, or else of the first file, and none with no file", async () => {
+  it('shows the first unresolved file when a turn ends, regardless of the active editor, and none with no file', async () => {
     const { controls: subject, shown, activate, reviews } = await controls();
     activate('/w/b.ts');
     await subject.turnEnded('s1');
@@ -274,7 +274,7 @@ describe('ReviewControls', () => {
     await subject.turnEnded('s1');
     reviews.activeSessionChanged(null);
     await subject.turnEnded('s1');
-    expect(shown).toEqual(['/w/b.ts', '/w/a.ts']);
+    expect(shown).toEqual(['/w/a.ts', '/w/a.ts']);
   });
 
   it("shows no deleted file's change, as no editor shows it", async () => {

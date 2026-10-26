@@ -71,16 +71,21 @@ let shows = 0;
 let latestShow = Promise.resolve();
 
 /**
- * `editor.action.dirtydiff.next`, VS Code's Alt+F3, acts on the focused editor only, which opening the file makes it,
- * after `prepare`; and it does nothing before VS Code has diffed the file, so it is tried until the view shows, and not
- * once it does, as it would move the view on a change. Each show stops the one before, as two could both run it before
- * the view shows, and the one before may try an editor that lost the focus since; the one stopped ends with the last.
+ * `editor.action.dirtydiff.next`, VS Code's Alt+F3, acts on the focused editor only. Focus the file's text editor
+ * explicitly, close any old view whose visible baseline would otherwise look like success, and start after the final
+ * line so "next" wraps to the first change unless `prepare` chooses another. VS Code does nothing before it has diffed
+ * the file, so the command is tried until the new view shows. Each show stops the one before, as two could both run it
+ * before the view shows, and the one before may try an editor that lost the focus since; the one stopped ends with the
+ * last.
  */
 function show(path: string, prepare: (current: () => boolean) => Promise<void> = async () => {}): Promise<void> {
   const own = ++shows;
   const current = () => own === shows && activePath() === path;
   const shown = (async () => {
-    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(path));
+    const editor = await vscode.window.showTextDocument(vscode.Uri.file(path), { preview: false, preserveFocus: false });
+    if (viewShown(path)) { await vscode.commands.executeCommand('closeQuickDiff'); }
+    const end = editor.document.lineAt(editor.document.lineCount - 1).range.end;
+    editor.selection = new vscode.Selection(end, end);
     await prepare(current);
     for (let attempt = 0; attempt < VIEW_ATTEMPTS && current() && !viewShown(path); attempt++) {
       await vscode.commands.executeCommand('editor.action.dirtydiff.next');
