@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.15",
+  "version": "0.3.16-dev.2",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -165,34 +165,52 @@
         "title": "Open in Terminal"
       },
       {
+        "command": "acp.openReview",
+        "title": "Open ACP Review",
+        "icon": "$(diff)",
+        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+      },
+      {
         "command": "acp.previousReviewFile",
         "title": "Previous File Under Review",
-        "icon": "$(arrow-up)",
-        "enablement": "acp.reviewHasFiles && !acp.turnInProgress"
+        "icon": "$(arrow-left)",
+        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.nextReviewFile",
         "title": "Next File Under Review",
-        "icon": "$(arrow-down)",
-        "enablement": "acp.reviewHasFiles && !acp.turnInProgress"
+        "icon": "$(arrow-right)",
+        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.undoFile",
         "title": "Undo File",
         "icon": "$(discard)",
-        "enablement": "resource in acp.reviewedFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && resource in acp.reviewedFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.keepFile",
         "title": "Keep File",
         "icon": "$(check)",
-        "enablement": "resource in acp.reviewedFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && resource in acp.reviewedFiles && !acp.turnInProgress"
       },
       {
         "command": "acp.keepAllFiles",
         "title": "Keep All",
         "icon": "$(check-all)",
-        "enablement": "acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+      },
+      {
+        "command": "acp.undoDiffChange",
+        "title": "Undo Change",
+        "icon": "$(discard)",
+        "enablement": "acp.reviewDiffChange && !acp.turnInProgress"
+      },
+      {
+        "command": "acp.keepDiffChange",
+        "title": "Keep Change",
+        "icon": "$(check)",
+        "enablement": "acp.reviewDiffChange && !acp.turnInProgress"
       },
       {
         "command": "acp.undoChange",
@@ -209,6 +227,18 @@
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "acp.openReview",
+          "when": "acp.reviewShown && acp.reviewHasFiles"
+        },
+        {
+          "command": "acp.keepDiffChange",
+          "when": "false"
+        },
+        {
+          "command": "acp.undoDiffChange",
+          "when": "false"
+        },
         {
           "command": "acp.refreshSessions",
           "when": "false"
@@ -284,29 +314,34 @@
       ],
       "editor/title": [
         {
+          "command": "acp.openReview",
+          "when": "config.acp.review.presentation == diffEditor && acp.reviewShown && acp.reviewHasFiles && activeEditor == workbench.editors.files.textFileEditor && isFileSystemResource && !textCompareEditorActive",
+          "group": "navigation@-1"
+        },
+        {
           "command": "acp.previousReviewFile",
-          "when": "acp.reviewShown",
-          "group": "navigation@1"
+          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@-5"
         },
         {
           "command": "acp.nextReviewFile",
-          "when": "acp.reviewShown",
-          "group": "navigation@2"
+          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@-4"
         },
         {
           "command": "acp.undoFile",
-          "when": "acp.reviewShown",
-          "group": "navigation@3"
+          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@-3"
         },
         {
           "command": "acp.keepFile",
-          "when": "acp.reviewShown",
-          "group": "navigation@4"
+          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@-2"
         },
         {
           "command": "acp.keepAllFiles",
-          "when": "acp.reviewShown",
-          "group": "navigation@5"
+          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "group": "navigation@-1"
         }
       ],
       "webview/context": [
@@ -413,9 +448,21 @@
         "when": "acp.turnInProgress"
       }
     ],
+    "configurationDefaults": {
+      "diffEditor.codeLens": true
+    },
     "configuration": {
       "title": "ACP Client",
       "properties": {
+        "acp.review.presentation": {
+          "type": "string",
+          "enum": [
+            "quickDiff",
+            "diffEditor"
+          ],
+          "default": "diffEditor",
+          "description": "Review agent changes in a native diff editor with per-change CodeLens and editor title controls, or in the inline quick diff view."
+        },
         "acp.agents": {
           "type": "object",
           "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",

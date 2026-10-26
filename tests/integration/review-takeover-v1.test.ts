@@ -72,6 +72,7 @@ for (const version of [1]) {
 
     teardown(async () => {
       await vscode.commands.executeCommand('acp.keepAllFiles');
+      await api.reviewPresentationSettled();
       await vscode.commands.executeCommand('workbench.action.files.revert');
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       fs.rmSync(folder, { recursive: true, force: true });
@@ -79,8 +80,12 @@ for (const version of [1]) {
 
     /** Line `line` of `file` replaced in its editor, as the user types. */
     async function typed(file: string, line: number, text: string): Promise<vscode.TextEditor> {
-      const editor = await vscode.window.showTextDocument(vscode.Uri.file(file));
-      await editor.edit((edit) => edit.replace(editor.document.lineAt(line).range, text));
+      await vscode.window.showTextDocument(vscode.Uri.file(file));
+      await api.reviewPresentationSettled();
+      const editor = vscode.window.activeTextEditor;
+      assert.ok(editor);
+      assert.strictEqual(editor.document.uri.toString(), vscode.Uri.file(file).toString());
+      assert.strictEqual(await editor.edit((edit) => edit.replace(editor.document.lineAt(line).range, text)), true);
       return editor;
     }
 

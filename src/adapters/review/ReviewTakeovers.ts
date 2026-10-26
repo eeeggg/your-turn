@@ -89,6 +89,7 @@ export class ReviewTakeovers implements vscode.Disposable {
     this.subscriptions = [
       vscode.workspace.onDidOpenTextDocument((document) => this.opened(document)),
       vscode.workspace.onDidCloseTextDocument(({ uri }) => {
+        if (uri.scheme !== 'file') { return; }
         this.texts.delete(uri.fsPath);
         this.dirty.delete(uri.fsPath);
       }),
@@ -138,6 +139,8 @@ export class ReviewTakeovers implements vscode.Disposable {
   }
 
   private closeView(path: string, document: vscode.TextDocument): void {
+    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+    if (input instanceof vscode.TabInputTextDiff) { return; }
     const active = vscode.window.activeTextEditor;
     if (active?.document !== document) { return; }
     if (active.viewColumn !== undefined) {

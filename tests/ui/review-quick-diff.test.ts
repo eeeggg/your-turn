@@ -12,6 +12,8 @@ import {
 } from './workbench';
 import { expect, test } from './window';
 
+test.use({ reviewPresentation: 'quickDiff' });
+
 async function openFile(window: Parameters<typeof editorTab>[0], name: string): Promise<void> {
   await window.keyboard.press('Control+P');
   await quickInput(window).fill(name);

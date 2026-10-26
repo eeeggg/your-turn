@@ -47,6 +47,10 @@ export function editorTab(window: Page, name: string): Locator {
   return window.locator('.tabs-container .tab').filter({ hasText: name });
 }
 
+export function plainFileTab(window: Page, name: string): Locator {
+  return editorTab(window, name).filter({ hasNotText: '— ACP Review' });
+}
+
 /**
  * VS Code's private peek-view DOM represents the visible quick-diff widget.
  * Requiring the extension-owned Keep Change action distinguishes it from
@@ -63,4 +67,83 @@ export function reviewQuickDiff(window: Page, fileName: string): Locator {
 /** The extension-owned review status item in VS Code's workbench status bar. */
 export function reviewStatus(window: Page): Locator {
   return window.locator('[id="formulahendry.acp-client.acp.review"]');
+}
+
+export function reviewChangeStatus(window: Page): Locator {
+  return window.locator('[id="formulahendry.acp-client.acp.review.change"]');
+}
+
+/** VS Code's native selection status reports the cursor without reading editor internals. */
+export function editorSelection(window: Page): Locator {
+  return window.locator('[id="status.editor.selection"]');
+}
+
+/** VS Code's native diff editor container; its private DOM is the rendered split editor boundary. */
+export function reviewDiffEditor(window: Page): Locator {
+  return window.locator('.monaco-diff-editor:visible').filter({
+    has: window.locator('.monaco-editor[data-uri^="acp-review-diff:"]'),
+  });
+}
+
+/** VS Code renders extension CodeLens commands as links inside its private codelens widget. */
+export function reviewLens(window: Page, action: 'Keep Change' | 'Undo Change', position?: string): Locator {
+  const rows = reviewDiffEditor(window).locator('.modified-in-monaco-diff-editor .codelens-decoration');
+  return (position ? rows.filter({ hasText: position }) : rows).locator('a').filter({ hasText: action });
+}
+
+/** Editor title action labels are provided by the extension's command contributions. */
+export function reviewTitleAction(window: Page, action: string): Locator {
+  return window.locator('.editor-actions').getByRole('button', { name: action, exact: true });
+}
+
+/** Native diff navigation includes its keyboard shortcut in the accessible label. */
+export async function navigateDiff(window: Page, direction: 'Previous' | 'Next'): Promise<void> {
+  const name = new RegExp(`^${direction} Change(?: \\(|$)`);
+  const button = window.locator('.editor-actions').getByRole('button', { name });
+  if (await button.isVisible()) { await button.click(); }
+  else {
+    await window.locator('.editor-actions').getByRole('button', { name: 'More Actions...', exact: true }).click();
+    await window.getByRole('menuitem', { name: new RegExp(`^${direction} Change(?:\\s|$)`) }).click();
+  }
+}
+
+export function hideSecondarySideBar(window: Page): Locator {
+  return window.getByRole('button', { name: /^Hide Secondary Side Bar/ });
+}
+
+export function gitOpenChanges(window: Page): Locator {
+  return window.locator('.editor-actions').getByRole('button', { name: 'Open Changes', exact: true });
+}
+
+export function gitOpenFile(window: Page): Locator {
+  return window.locator('.editor-actions').getByRole('button', { name: 'Open File', exact: true });
+}
+
+export function sourceControl(window: Page): Locator {
+  return window.getByRole('tab', { name: /^Source Control \(/ });
+}
+
+export function gitWorkingTreeChange(window: Page, name: string): Locator {
+  return window.getByRole('treeitem', { name: `${name}, Modified`, exact: true });
+}
+
+/** A plain file editor excludes VS Code's native diff editor containers. */
+export function plainFileEditor(window: Page): Locator {
+  return window.locator('.editor-instance').filter({ hasNot: window.locator('.monaco-diff-editor') })
+    .locator('.monaco-editor[data-uri^="file:"]');
+}
+
+/** A native Git comparison must retain Git's original URI, distinct from ACP's baseline. */
+export function gitDiffEditor(window: Page): Locator {
+  return window.locator('.monaco-diff-editor:visible').filter({
+    has: window.locator('.monaco-editor[data-uri^="git:"]'),
+  });
+}
+
+export function modifiedReviewEditor(window: Page): Locator {
+  return reviewDiffEditor(window).locator('.modified-in-monaco-diff-editor');
+}
+
+export function modifiedReviewLine(window: Page, text: string): Locator {
+  return modifiedReviewEditor(window).getByText(text, { exact: true });
 }

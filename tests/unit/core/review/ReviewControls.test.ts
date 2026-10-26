@@ -92,6 +92,16 @@ async function controls({ deleted = false, changes = false } = {}) {
 }
 
 describe('ReviewControls', () => {
+  it('maps a cursor on either side to a current change, including a deletion anchor', async () => {
+    const { controls: subject, documents } = await controls({ changes: true });
+    expect(subject.changeAt('/w/m.ts', 6, 'original')).toEqual({ change: lineChanged(6), index: 1, total: 2 });
+    documents.set('/w/m.ts', lines('1', '3', '4', '5', '6', '7'));
+    expect(subject.changeAt('/w/m.ts', 0, 'modified')).toEqual({
+      change: { original: { start: 1, end: 2 }, modified: { start: 1, end: 1 } }, index: 0, total: 1,
+    });
+    expect(subject.changeAt('/w/other.ts', 0, 'modified')).toBeUndefined();
+  });
+
   it("lists the shown review's files, and a file's place among them, with a dash for a file not among them", async () => {
     const { controls: subject } = await controls();
     expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/b.ts', '/w/c.ts']);
@@ -264,6 +274,49 @@ describe('ReviewControls', () => {
     await subject.next('/w/a.ts');
     await subject.previous('/w/a.ts');
     expect(opened).toEqual([]);
+  });
+
+  it('opens the first unresolved file, ignoring the active editor and honoring removed files, and none with no review', async () => {
+    const { controls: subject, shown, activate, reviews } = await controls();
+    activate('/w/b.ts');
+    await subject.openReview();
+    activate('/w/other.ts');
+    await subject.openReview();
+    subject.keepFile('/w/a.ts');
+    await subject.openReview();
+    subject.keepAll();
+    await subject.openReview();
+    reviews.activeSessionChanged(null);
+    await subject.openReview();
+    expect(shown).toEqual(['/w/a.ts', '/w/a.ts', '/w/b.ts']);
+  });
+
+  it("shows no deleted file's change when opening the review, skipping to the next unresolved file or none", async () => {
+    const shown: string[] = [];
+    const reviews = new Reviews({
+      read: async (path) => path === '/w/b.ts' ? 'B\n' : null,
+      restore: async () => {},
+      watch: () => ({ dispose: () => {} }),
+    });
+    reviews.activeSessionChanged('s1');
+    await reviews.handleSessionUpdate('s1', edited('t1', '/w/gone.ts', 'gone\n', ''), 'v1');
+    await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
+    const subject = new ReviewControls(reviews, {
+      activePath: () => undefined,
+      open: async () => {},
+      showChange: async (path) => { shown.push(path); },
+      showChangeOf: async () => {},
+      closeChange: async () => {},
+      showError: () => {},
+      text: () => undefined,
+      applyEdit: async () => false,
+      save: async () => {},
+    });
+    await subject.openReview();
+    expect(shown).toEqual(['/w/b.ts']);
+    reviews.shown()?.keepFile('/w/b.ts');
+    await subject.openReview();
+    expect(shown).toEqual(['/w/b.ts']);
   });
 
   it('shows the first unresolved file when a turn ends, regardless of the active editor, and none with no file', async () => {

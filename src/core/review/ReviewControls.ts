@@ -66,6 +66,25 @@ export class ReviewControls {
     return this.reviews.shown()?.file(path)?.baseline;
   }
 
+  /** The unresolved changes against the open document, including unsaved edits. */
+  changes(path: string): Change[] {
+    const baseline = this.baseline(path);
+    const document = this.editors.text(path);
+    return baseline === undefined || document === undefined ? []
+      : lineChanges(splitLines(baseline ?? ''), splitLines(document)).map(({ original, modified }) => ({ original, modified }));
+  }
+
+  /** The change at the cursor, otherwise the next one with wraparound; empty ranges anchor on the preceding line. */
+  changeAt(path: string, line: number, side: 'original' | 'modified'): { change: Change; index: number; total: number } | undefined {
+    const changes = this.changes(path);
+    const anchor = (change: Change) => Math.max(0, change[side].start - (change[side].start === change[side].end ? 1 : 0));
+    let index = changes.findIndex((change) => line >= anchor(change) && line < Math.max(anchor(change) + 1, change[side].end));
+    if (index < 0) { index = changes.findIndex((change) => anchor(change) >= line); }
+    if (index < 0) { index = 0; }
+    const change = changes[index];
+    return change && { change, index, total: changes.length };
+  }
+
   /**
    * Keeps one change quick diff showed: the baseline takes the document's lines, and the file is saved. Nothing when the
    * change is no longer the document's, as the agent wrote the file since VS Code diffed it; its view shows the new one.
@@ -123,14 +142,19 @@ export class ReviewControls {
     return this.move(path, -1);
   }
 
+  /** Opens the first unresolved file in review order, independent of the active editor; skips deleted files. */
+  async openReview(): Promise<void> {
+    const path = this.reviews.shown()?.files().find((file) => file.current !== null)?.path;
+    if (path !== undefined) { await this.editors.showChange(path); }
+  }
+
   /**
    * The shown session's turn ended: the first unresolved change in review order, once the files its edits name were
    * read; never a deleted file's, which no editor shows.
    */
   async turnEnded(sessionId: string): Promise<void> {
     await this.reviews.settled(sessionId);
-    const path = this.reviews.shown()?.files().find((file) => file.current !== null)?.path;
-    if (path !== undefined) { await this.editors.showChange(path); }
+    await this.openReview();
   }
 
   /**
@@ -150,7 +174,7 @@ export class ReviewControls {
     const baseline = this.baseline(path);
     const document = this.editors.text(path);
     if (baseline === undefined || document === undefined) { return; }
-    const changes = lineChanges(splitLines(baseline ?? ''), splitLines(document)).map(({ original, modified }) => ({ original, modified }));
+    const changes = this.changes(path);
     if (changes.length === 0) { return; }
     const after = changes.findIndex(({ modified }) => modified.start >= done.modified.start);
     await this.editors.showChangeOf(path, changes, after < 0 ? 0 : after);
@@ -161,7 +185,7 @@ export class ReviewControls {
     const document = this.editors.text(path);
     if (baseline === undefined || document === undefined) { return undefined; }
     const text = baseline ?? '';
-    const still = lineChanges(splitLines(text), splitLines(document)).some(({ original, modified }) =>
+    const still = this.changes(path).some(({ original, modified }) =>
       original.start === change.original.start && original.end === change.original.end
       && modified.start === change.modified.start && modified.end === change.modified.end);
     return still ? { baseline: text, document, change } : undefined;

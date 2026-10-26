@@ -210,13 +210,13 @@ export class ReviewPresenters implements vscode.Disposable {
     return this.latestPresentation;
   }
 
-  /** A tab of a file under review coming to the front shows its change, though not while the turn runs. */
+  /** Only quick diff follows plain-tab entry; a normal editor must not reopen an ACP Review diff. */
   private tabsChanged(): void {
     this.showPosition();
     const path = textTabPath();
     if (path === this.tabPath) { return; }
     this.tabPath = path;
-    if (path !== undefined && !this.turnRuns) {
+    if (path !== undefined && !this.turnRuns && vscode.workspace.getConfiguration('acp').get<string>('review.presentation', 'diffEditor') === 'quickDiff') {
       this.latestPresentation = this.controls.entered(path).catch((e: unknown) => logError("Showing the file's change failed", e));
     }
   }

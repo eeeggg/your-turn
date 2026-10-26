@@ -151,6 +151,21 @@ async function changeThree(client: AgentContext, sessionId: string, dir: string)
   });
 }
 
+async function changeDiffReview(client: AgentContext, sessionId: string, dir: string): Promise<void> {
+  const path = join(dir, 'm.ts');
+  const oldText = readFileSync(path, 'utf8');
+  const newText = oldText.replace('l2\n', 'AGENT changed\n')
+    .replace('l15\n', 'l15\nAGENT added\n').replace('l28\n', '');
+  writeFileSync(path, newText);
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: {
+      sessionUpdate: 'tool_call', toolCallId: 'review-diff-1', title: 'Change, add and delete lines',
+      kind: 'edit', status: 'completed', content: [{ type: 'diff', path, oldText, newText }],
+    },
+  });
+}
+
 function run(client: AgentContext, sessionId: string): Promise<void> {
   return client.notify(methods.client.session.update, {
     sessionId,
@@ -199,6 +214,10 @@ agent({ name: 'fake-agent' })
     }
     if (text.startsWith('three ')) {
       await changeThree(client, params.sessionId, text.slice('three '.length));
+      return { stopReason: 'end_turn' };
+    }
+    if (text.startsWith('review-diff ')) {
+      await changeDiffReview(client, params.sessionId, text.slice('review-diff '.length));
       return { stopReason: 'end_turn' };
     }
     if (text === 'run') {

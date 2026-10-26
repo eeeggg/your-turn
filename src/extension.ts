@@ -23,9 +23,10 @@ import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
 import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
 import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
-import { ReviewPresenters, vscodeReviewEditors } from '@/adapters/review/ReviewPresenters';
+import { ReviewPresenters } from '@/adapters/review/ReviewPresenters';
 import { ReviewSourceControl } from '@/adapters/review/ReviewSourceControl';
 import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
+import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
@@ -137,7 +138,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   context.subscriptions.push(reviewChanges);
   reviews.addListener(() => reviewChanges.fire());
   sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
-  const reviewControls = new ReviewControls(reviews, vscodeReviewEditors);
+  const reviewDiffs = new DiffReviewPresentation(reviews);
+  const reviewControls = new ReviewControls(reviews, reviewDiffs);
+  reviewDiffs.attach(reviewControls);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
   chatViewController.addTurnListener((inProgress) => reviewPresenters.turnInProgress(inProgress));
   const reviewSourceControl = new ReviewSourceControl(reviewControls, reviews);
@@ -225,6 +228,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reportedFileEditor,
     statusBarManager,
     reviewPresenters,
+    reviewDiffs,
     reviewSourceControl,
     reviewTakeovers,
     vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
@@ -271,6 +275,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
         log(`No output kept for ${output.name}`);
       }
     }),
+    vscode.commands.registerCommand('acp.openReview', unlessTurnRuns(() => reviewControls.openReview())),
     vscode.commands.registerCommand('acp.previousReviewFile', (arg?: unknown) => reviewControls.previous(reviewPathOf(arg))),
     vscode.commands.registerCommand('acp.nextReviewFile', (arg?: unknown) => reviewControls.next(reviewPathOf(arg))),
     vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg)))),
@@ -280,6 +285,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       const change = quickDiffChangeOf(args);
       return change && reviewControls.keepChange(change.path, change.change);
     })),
+    vscode.commands.registerCommand('acp.keepDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('keep', arg))),
+    vscode.commands.registerCommand('acp.undoDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('undo', arg))),
     vscode.commands.registerCommand('acp.undoChange', unlessTurnRuns((...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
       return change && reviewControls.undoChange(change.path, change.change);
@@ -322,7 +329,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reviewOriginal: (uri) => reviewSourceControl.originalResource(uri),
     reviewListedFiles: () => reviewSourceControl.listedFiles(),
     turnEndShown: () => turnEndShown,
-    reviewPresentationSettled: () => reviewPresenters.settled(),
+    reviewPresentationSettled: async () => { await reviewPresenters.settled(); await reviewDiffs.settled(); },
   };
 }
 

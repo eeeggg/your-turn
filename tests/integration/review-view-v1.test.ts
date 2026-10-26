@@ -23,6 +23,7 @@ for (const version of [1]) {
     const agentName = `fake-review-v${version}`;
     let api: ExtensionTestApi;
     let original: unknown;
+    let originalPresentation: unknown;
     const posts: ExtensionToWebviewMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
     const config = () => vscode.workspace.getConfiguration('acp');
@@ -33,6 +34,8 @@ for (const version of [1]) {
     let mismatched: string;
 
     suiteSetup(async () => {
+      originalPresentation = config().inspect('review.presentation')?.globalValue;
+      await config().update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
       const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
@@ -52,6 +55,7 @@ for (const version of [1]) {
     suiteTeardown(async () => {
       await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
       await config().update('agents', original, vscode.ConfigurationTarget.Global);
+      await config().update('review.presentation', originalPresentation, vscode.ConfigurationTarget.Global);
       for (const subscription of subscriptions) { subscription.dispose(); }
     });
 

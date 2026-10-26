@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { downloadAndUnzipVSCode } from '@vscode/test-electron';
 import {
   _electron,
@@ -17,6 +19,9 @@ const vscodeVersion = '1.143.1';
 const windowSize = { width: 1400, height: 900 };
 
 interface UiFixtures {
+  reviewPresentation: 'diffEditor' | 'quickDiff' | undefined;
+  workspaceFiles: Record<string, string>;
+  gitRepository: boolean;
   workspace: string;
   window: Page;
 }
@@ -148,16 +153,25 @@ async function closeApplication(application: ElectronApplication, diagnostics: D
 }
 
 export const test = base.extend<UiFixtures>({
-  workspace: async ({}, use) => {
+  reviewPresentation: [undefined, { option: true }],
+  workspaceFiles: [{}, { option: true }],
+  gitRepository: [false, { option: true }],
+  workspace: async ({ workspaceFiles, gitRepository }, use) => {
     const workspace = await mkdtemp(join(tmpdir(), 'acp-ui-workspace-'));
     try {
+      await Promise.all(Object.entries(workspaceFiles).map(([name, text]) => writeFile(join(workspace, name), text)));
+      if (gitRepository) {
+        const run = promisify(execFile);
+        await run('git', ['init', '--quiet', workspace]);
+        await run('git', ['-C', workspace, 'add', '.']);
+      }
       await use(workspace);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
   },
 
-  window: async ({ workspace }, use, testInfo) => {
+  window: async ({ workspace, reviewPresentation, gitRepository }, use, testInfo) => {
     let application: ElectronApplication | undefined;
     let profile: string | undefined;
     let extensions: string | undefined;
@@ -182,6 +196,8 @@ export const test = base.extend<UiFixtures>({
         'update.mode': 'none',
         'window.dialogStyle': 'custom',
         'workbench.startupEditor': 'none',
+        ...(gitRepository ? { 'git.enabled': true } : {}),
+        ...(reviewPresentation ? { 'acp.review.presentation': reviewPresentation } : {}),
         'acp.agents': {
           'fake-v1': {
             command: process.execPath,
