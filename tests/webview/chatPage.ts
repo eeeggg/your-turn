@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { expect, onTestFinished } from 'vitest';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
 import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
@@ -95,6 +96,13 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     pretendToBeVisual: true,
     virtualConsole,
     beforeParse(window) {
+      onTestFinished(() => {
+        try {
+          expect(errors).toEqual([]);
+        } finally {
+          window.close();
+        }
+      });
       // jsdom does not implement scrolling, or the layout that would resize anything.
       window.Element.prototype.scrollIntoView = () => undefined;
       Object.assign(window, { acquireVsCodeApi: () => api, ResizeObserver: NoResizeObserver });

@@ -16,8 +16,5 @@ test('Ctrl+Shift+A reveals ACP Chat in a fresh VS Code window', async ({ window 
     type: 'prompt focus before connection',
     description: await prompt.isEnabled() ? 'enabled' : 'disabled',
   });
-  await window.evaluate(() => new Promise<void>((resolvePaint) => {
-    globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(() => resolvePaint()));
-  }));
   await window.screenshot({ path: testInfo.outputPath('acp-chat-revealed.png') });
 });

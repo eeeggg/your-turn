@@ -1,13 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { Picker } from '@/shared/WebviewMessages';
 import { connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
-
-afterEach(() => {
-  expect(page.errors).toEqual([]);
-  page.close();
-});
 
 const modelPicker: Picker = {
   id: 'model',

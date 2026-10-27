@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import type { FileContent } from '@/core/review/Review';
 import { ReviewControls } from '@/core/review/ReviewControls';
@@ -47,6 +47,7 @@ async function controls({ deleted = false, changes = false } = {}) {
     },
     watch: () => ({ dispose: () => {} }),
   });
+  onTestFinished(async () => { await reviews.dispose(); });
   reviews.activeSessionChanged('s1');
   await reviews.handleSessionUpdate('s1', edited('t1', '/w/a.ts', 'a\n', 'A\n'), 'v1');
   await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
@@ -298,6 +299,7 @@ describe('ReviewControls', () => {
       restore: async () => {},
       watch: () => ({ dispose: () => {} }),
     });
+    onTestFinished(async () => { await reviews.dispose(); });
     reviews.activeSessionChanged('s1');
     await reviews.handleSessionUpdate('s1', edited('t1', '/w/gone.ts', 'gone\n', ''), 'v1');
     await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');

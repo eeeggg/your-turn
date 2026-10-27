@@ -26,6 +26,8 @@ for (const version of [1, 2]) {
     let agent: AgentProcess | undefined;
     let manager: ConnectionManager;
     let driver: AcpDriver;
+    let updates: SessionUpdateHandler | undefined;
+    let exited: Promise<void> | undefined;
     const exits: (number | null)[] = [];
     const texts: string[] = [];
     const textWaiters: { text: string; resolve: () => void }[] = [];
@@ -45,7 +47,7 @@ for (const version of [1, 2]) {
         traffic: (direction, data) => traffic.push({ direction, data }),
       });
 
-      const updates = new SessionUpdateHandler();
+      updates = new SessionUpdateHandler();
       updates.addListener((_sessionId, update) => {
         if (update.kind === 'agentText') {
           texts.push(update.text);
@@ -61,6 +63,8 @@ for (const version of [1, 2]) {
       manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
 
       // Inside the test host, process.execPath is the Electron binary.
+      let finishExit: () => void = () => {};
+      exited = new Promise<void>((resolve) => { finishExit = resolve; });
       agent = new AgentManager().launch('fake-agent', {
         command: process.execPath,
         args: [path.join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)],
@@ -69,6 +73,7 @@ for (const version of [1, 2]) {
         error: () => {},
         exit: (code) => {
           exits.push(code);
+          finishExit();
           for (const resolve of exitWaiters.splice(0)) { resolve(); }
         },
       });
@@ -81,10 +86,14 @@ for (const version of [1, 2]) {
     const nextExit = () => new Promise<void>((resolve) => exitWaiters.push(resolve));
 
     suiteTeardown(async () => {
-      agent?.kill();
-      setLogSink(undefined);
-      const config = vscode.workspace.getConfiguration('acp');
-      await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);
+      try {
+        if (agent) { agent.kill(); await exited; }
+      } finally {
+        updates?.dispose();
+        setLogSink(undefined);
+        const config = vscode.workspace.getConfiguration('acp');
+        await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);
+      }
     });
 
     test('Initializes the connection', () => {

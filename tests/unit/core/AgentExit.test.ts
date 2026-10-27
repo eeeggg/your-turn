@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { methods } from '@agentclientprotocol/sdk';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
@@ -32,15 +32,18 @@ function setup() {
     { workspaceCwd: () => '/work', agentConfigs: () => ({ fake: { command: 'fake' } }), activeFileLink: () => undefined },
     { chooseAuthMethod: vi.fn() },
   );
+  onTestFinished(async () => { await manager.dispose(); });
   const turnInProgress: unknown[] = [];
   const toExtension = (message: WebviewToExtensionMessage) => setImmediate(() => void controller.handleMessage(message));
   const store = createStore(initialState, update, toExtension, () => 0);
   const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
+  onTestFinished(async () => { await terminals.dispose(); });
   const controller = new ChatViewController(manager, {
     post: (message) => store.dispatch(message),
     executeCommand: async (...args) => { turnInProgress.push(args[2]); },
     showsToolCallDiffs: () => false,
   }, unusedEditor, terminals);
+  onTestFinished(async () => { updates.dispose(); await controller.dispose(); });
   updates.addListener((sessionId, update) => controller.handleSessionUpdate(sessionId, update));
   updates.addListener((sessionId, update) => terminals.handleSessionUpdate(sessionId, update));
   manager.on('session-removed', (sessionId) => {

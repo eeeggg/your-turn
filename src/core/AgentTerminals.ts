@@ -1,6 +1,6 @@
 import type { SessionUpdate, TerminalExitStatus } from '@/core/acp/AcpDriver';
 import { Cleaner, forTerminal, type ShownOutput } from './CommandOutput';
-import { log, messageOf } from './Log';
+import { log, logError, messageOf } from './Log';
 
 /** How much of a command's output is kept, the most recent. */
 const KEPT_CHARACTERS = 10 * 1024 * 1024;
@@ -51,6 +51,9 @@ interface SessionOutput {
 export class AgentTerminals {
   private readonly sessions = new Map<string, SessionOutput>();
   private readonly listeners = new Set<TerminalListener>();
+  private readonly releases = new Set<Promise<void>>();
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
 
   constructor(private readonly displays: TerminalDisplays) {}
 
@@ -58,7 +61,12 @@ export class AgentTerminals {
     this.listeners.add(listener);
   }
 
+  removeListener(listener: TerminalListener): void {
+    this.listeners.delete(listener);
+  }
+
   handleSessionUpdate(sessionId: string, update: SessionUpdate): void {
+    if (this.disposed) { return; }
     if (update.kind !== 'terminal' && update.kind !== 'terminalOutput') { return; }
     const terminal = this.terminal(sessionId, update.terminalId);
     const written = update.kind === 'terminal' ? terminal.update(update) : terminal.append(update.data);
@@ -67,6 +75,7 @@ export class AgentTerminals {
 
   /** An `execute` tool call's text, all of its command's output so far, replacing what was kept. */
   keepCommandText(sessionId: string, toolCallId: string, text: string): void {
+    if (this.disposed) { return; }
     const output = new KeptOutput();
     output.add(text);
     this.session(sessionId).texts.set(toolCallId, output);
@@ -135,12 +144,30 @@ export class AgentTerminals {
     return true;
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
     for (const sessionId of this.sessions.keys()) {
       this.forgetSession(sessionId);
     }
     this.listeners.clear();
+    this.disposal = Promise.allSettled(this.releases).then((results) => {
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to dispose terminal output');
+      }
+    });
+    return this.disposal;
   }
+
+  private release = (cleaner: Cleaner): void => {
+    const released = cleaner.dispose();
+    this.releases.add(released);
+    void released.then(
+      () => this.releases.delete(released),
+      (e: unknown) => logError('Failed to dispose terminal cleaner', e),
+    );
+  };
 
   private session(sessionId: string): SessionOutput {
     let session = this.sessions.get(sessionId);
@@ -155,7 +182,7 @@ export class AgentTerminals {
     const { terminals } = this.session(sessionId);
     let terminal = terminals.get(terminalId);
     if (!terminal) {
-      terminal = new AgentTerminal();
+      terminal = new AgentTerminal(this.release);
       terminals.set(terminalId, terminal);
     }
     return terminal;
@@ -233,6 +260,8 @@ class AgentTerminal {
   private cleaner: Cleaner | null = null;
   private last: Promise<ShownOutput> = Promise.resolve({ text: '', truncated: false });
 
+  constructor(private readonly release: (cleaner: Cleaner) => void) {}
+
   /** Applies an update, a field left out staying as it was, and returns what an open VS Code terminal is written. */
   update(update: TerminalUpdate): string {
     const written = update.output !== undefined ? this.replace(update.output ?? new Uint8Array()) : '';
@@ -269,7 +298,7 @@ class AgentTerminal {
   }
 
   dispose(): void {
-    this.cleaner?.dispose();
+    if (this.cleaner) { this.release(this.cleaner); }
     this.cleaner = null;
   }
 
@@ -303,6 +332,8 @@ class AgentTerminal {
     const cleaner = this.cleaner;
     if (!cleaner) { return; }
     this.cleaner = null;
-    this.last = cleaner.shown().finally(() => cleaner.dispose());
+    this.last = cleaner.shown();
+    void this.last.catch((e: unknown) => logError('Failed to read terminal output', e));
+    this.release(cleaner);
   }
 }

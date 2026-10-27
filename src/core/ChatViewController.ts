@@ -85,6 +85,8 @@ export class ChatViewController {
   private readonly commandOutput: CommandOutputFeed;
   private readonly diffs = new ToolCallDiffs();
   private readonly turnListeners = new Set<TurnListener>();
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -122,6 +124,7 @@ export class ChatViewController {
   }
 
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
+    if (this.disposed) { return; }
     switch (message.type) {
       case 'sendPrompt':
         await this.sendPrompt(message.text);
@@ -162,6 +165,7 @@ export class ChatViewController {
   }
 
   handleSessionUpdate(sessionId: string, update: SessionUpdate): void {
+    if (this.disposed) { return; }
     // Applied before the active-session check: an agent can send these while
     // a session is still being created, before it becomes the active session.
     switch (update.kind) {
@@ -257,6 +261,16 @@ export class ChatViewController {
   clearTranscript(): void {
     this.terminals.forgetEndedSessions();
     this.post({ type: 'clearTranscript' });
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
+    if (this.pendingText) { clearTimeout(this.pendingText.timer); }
+    this.pendingText = null;
+    this.turnListeners.clear();
+    this.disposal = this.commandOutput.dispose();
+    return this.disposal;
   }
 
   private async sendPrompt(text: string): Promise<void> {
@@ -445,6 +459,7 @@ export class ChatViewController {
   }
 
   private post(message: ExtensionToWebviewMessage): void {
+    if (this.disposed) { return; }
     this.sendPendingText();
     this.environment.post(message);
   }

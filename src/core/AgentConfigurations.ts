@@ -150,14 +150,20 @@ export class AgentConfigurations {
     }
     const replacing = Object.hasOwn(this.agents(), name);
     const runs = `It runs: ${commandLine(config)}`;
-    const choice = replacing
-      ? await this.window.showWarningMessage(
-        `Replace agent "${name}" with ${name} ${version} from the ACP registry? Its configuration is overwritten, and the agent is stopped if it is running. ${runs}`,
-        { modal: true },
-        'Replace',
-      )
-      : await this.window.showInformationMessage(`Add ${name} ${version} from the ACP registry? ${runs}`, { modal: true }, 'Add');
-    if (choice === undefined) { return; }
+    const action = replacing ? 'Replace' : 'Add';
+    const choice = await this.window.showQuickPick([
+      {
+        label: action,
+        detail: replacing ? `Its configuration is overwritten, and the agent is stopped if it is running. ${runs}` : runs,
+      },
+      { label: 'Cancel' },
+    ], {
+      title: 'Add ACP Agent',
+      placeHolder: replacing
+        ? `Replace agent "${name}" with ${name} ${version} from the ACP registry?`
+        : `Add ${name} ${version} from the ACP registry?`,
+    });
+    if (choice?.label !== action) { return; }
     await this.saveAgent(name, config, replacing);
   }
 
@@ -177,12 +183,14 @@ export class AgentConfigurations {
 
     const replacing = Object.hasOwn(this.agents(), name);
     if (replacing) {
-      const choice = await this.window.showWarningMessage(
-        `Replace agent "${name}"? Its configuration is overwritten, and the agent is stopped if it is running.`,
-        { modal: true },
-        'Replace',
-      );
-      if (choice !== 'Replace') { return; }
+      const choice = await this.window.showQuickPick([
+        { label: 'Replace', detail: 'Its configuration is overwritten, and the agent is stopped if it is running.' },
+        { label: 'Cancel' },
+      ], {
+        title: 'Add ACP Agent',
+        placeHolder: `Replace agent "${name}"?`,
+      });
+      if (choice?.label !== 'Replace') { return; }
     }
 
     const command = (await this.window.showInputBox({
@@ -266,12 +274,14 @@ export class AgentConfigurations {
         continue;
       }
       if (Object.hasOwn(this.agents(), name)) {
-        const choice = await this.window.showWarningMessage(
-          `Replace agent "${name}"? Its configuration is overwritten, and the agent is stopped if it is running. It runs: ${commandLine(config)}`,
-          { modal: true },
-          'Replace',
-        );
-        if (choice !== 'Replace') { continue; }
+        const choice = await this.window.showQuickPick([
+          { label: 'Replace', detail: `Its configuration is overwritten, and the agent is stopped if it is running. It runs: ${commandLine(config)}` },
+          { label: 'Skip' },
+        ], {
+          title: 'Detect ACP Agents',
+          placeHolder: `Replace agent "${name}"?`,
+        });
+        if (choice?.label !== 'Replace') { continue; }
         replacing.push(name);
       }
       adding[name] = config;
@@ -318,8 +328,14 @@ export class AgentConfigurations {
       return;
     }
 
-    const choice = await this.window.showWarningMessage(`Remove agent "${name}"?`, { modal: true }, 'Remove');
-    if (choice !== 'Remove') { return; }
+    const choice = await this.window.showQuickPick([
+      { label: 'Remove', detail: 'Remove its configuration from the user settings and stop the agent if it is running.' },
+      { label: 'Cancel' },
+    ], {
+      title: 'Remove ACP Agent',
+      placeHolder: `Remove agent "${name}"?`,
+    });
+    if (choice?.label !== 'Remove') { return; }
 
     await this.sessions.disconnectAgent(name);
     await this.save(remaining);

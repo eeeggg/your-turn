@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
-import { ReviewPresenters, vscodeReviewEditors, type ReviewDisplay } from '@/adapters/review/ReviewPresenters';
+import { ReviewPresenters, createReviewEditors, type ReviewDisplay } from '@/adapters/review/ReviewPresenters';
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 
 /** A completed tool call that changed `file` from `old` to `now`, the empty text with nothing there for a deletion. */
@@ -46,34 +46,51 @@ suite('Review presenters', () => {
   let folder: string;
   let reviews: Reviews;
   let controls: ReviewControls;
-  let presenters: ReviewPresenters;
   let shown: ReturnType<typeof recording>['shown'];
   let a: string;
   let b: string;
+  let prior: unknown;
+  let owned: { reviews?: Reviews; presenters?: ReviewPresenters; editors?: ReturnType<typeof createReviewEditors> } = {};
 
   /** `a.txt` and `b.txt` changed in session `s1`, shown, in that order. */
   setup(async () => {
+    owned = {};
+    folder = '';
+    prior = vscode.workspace.getConfiguration('acp').inspect('review.presentation')?.globalValue;
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-presenters-'));
     a = path.join(folder, 'a.txt');
     b = path.join(folder, 'b.txt');
     fs.writeFileSync(a, 'one\nadded\n');
     fs.writeFileSync(b, 'B\n');
-    reviews = new Reviews(workspaceFiles);
-    controls = new ReviewControls(reviews, vscodeReviewEditors);
+    owned.reviews = reviews = new Reviews(workspaceFiles);
+    owned.editors = createReviewEditors();
+    controls = new ReviewControls(reviews, owned.editors);
     const record = recording();
     shown = record.shown;
-    presenters = new ReviewPresenters(controls, reviews, record.display);
+    owned.presenters = new ReviewPresenters(controls, reviews, record.display);
     reviews.activeSessionChanged('s1');
     await reviews.handleSessionUpdate('s1', edited('t1', a, 'one\n', 'one\nadded\n'), 'v1');
     await reviews.handleSessionUpdate('s1', edited('t2', b, 'b\n', 'B\n'), 'v1');
   });
 
-  teardown(async () => {
-    await vscode.commands.executeCommand('workbench.action.files.revert');
-    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    presenters.dispose();
-    reviews.dispose();
-    fs.rmSync(folder, { recursive: true, force: true });
+  teardown(async function () {
+    const failures: unknown[] = [];
+    const cleanup = async (action: () => unknown) => {
+      try { await action(); } catch (error) { failures.push(error); }
+    };
+    await Promise.all([
+      cleanup(() => owned.presenters?.dispose()),
+      cleanup(() => owned.editors?.dispose()),
+      cleanup(() => owned.reviews?.dispose()),
+    ]);
+    await cleanup(() => vscode.commands.executeCommand('workbench.action.files.revert'));
+    await cleanup(() => vscode.commands.executeCommand('workbench.action.closeAllEditors'));
+    await cleanup(() => vscode.workspace.getConfiguration('acp').update('review.presentation', prior, vscode.ConfigurationTarget.Global));
+    await cleanup(() => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } });
+    if (failures.length > 0) {
+      const error = new AggregateError(failures, 'Failed to clean up review presenters');
+      if (this.currentTest?.err) { console.error(error); } else { throw error; }
+    }
   });
 
   test("shows the buttons while a session is shown, enabled for a file on the shown review's files only", async () => {
@@ -86,6 +103,178 @@ suite('Review presenters', () => {
     assert.deepStrictEqual(shown.files, []);
     reviews.activeSessionChanged(null);
     assert.strictEqual(shown.buttons, false);
+  });
+
+  test('disposal stops display updates and drains a presentation already started by tab entry', async () => {
+    const config = vscode.workspace.getConfiguration('acp');
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const opening = new Promise<void>((resolve) => { started = resolve; });
+    let finished = false;
+    let updates = 0;
+    await owned.presenters?.dispose();
+    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+    await config.update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
+    assert.ok(owned.editors);
+    const subject = new ReviewPresenters(new ReviewControls(reviews, {
+      ...owned.editors,
+      showChange: async () => { started(); await gate; finished = true; },
+    }), reviews, {
+      review: () => { updates++; }, position: () => { updates++; }, paused: () => { updates++; }, dispose: () => {},
+    });
+    owned.presenters = subject;
+    try {
+      await open(a);
+      await opening;
+      const disposed = subject.dispose();
+      const finishedAtDisposal = Promise.resolve(disposed).then(() => finished);
+      assert.strictEqual(subject.dispose(), disposed);
+      const before = updates;
+      reviews.shown()?.keepFile(b);
+      subject.turnInProgress(true);
+      await open(b);
+      release();
+      await disposed;
+      await subject.settled();
+
+      assert.strictEqual(await finishedAtDisposal, true);
+      assert.strictEqual(updates, before);
+      assert.deepStrictEqual(controls.reviewedPaths(), [a]);
+    } finally {
+      release();
+      await subject.settled();
+      await subject.dispose();
+    }
+  });
+
+  test('quick-diff disposal cancels a retry wait and issues no later editor command', async () => {
+    const commands: string[] = [];
+    let started: () => void = () => {};
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    let cancelled = false;
+    let waitFinished = false;
+    const editors = createReviewEditors(
+      async (command) => { commands.push(command); },
+      (_ms, signal) => new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          cancelled = true;
+          const error = new Error('cancelled');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+        started();
+      }).finally(() => { waitFinished = true; }),
+    );
+    const showing = editors.showChange(a);
+    try {
+      await waiting;
+      const disposed = editors.dispose();
+      const finishedAtDisposal = disposed.then(() => waitFinished);
+      assert.strictEqual(editors.dispose(), disposed);
+      await disposed;
+      await showing;
+      assert.strictEqual(cancelled, true);
+      assert.strictEqual(await finishedAtDisposal, true);
+      assert.deepStrictEqual(commands, ['editor.action.dirtydiff.next']);
+      await editors.showChange(b);
+      await editors.showChangeOf(a, controls.changes(a), 0);
+      await editors.open(b);
+      assert.deepStrictEqual(commands, ['editor.action.dirtydiff.next']);
+    } finally {
+      await editors.dispose();
+      await showing;
+    }
+  });
+
+  for (const operation of ['open', 'showChange', 'showChangeOf'] as const) {
+    test(`quick-diff disposal drains an accepted ${operation} command without starting another`, async () => {
+      let release: () => void = () => {};
+      let started: () => void = () => {};
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const commandStarted = new Promise<void>((resolve) => { started = resolve; });
+      const commands: string[] = [];
+      let finished = false;
+      const editors = createReviewEditors(async (command, ...args) => {
+        commands.push(command);
+        started();
+        await gate;
+        await vscode.commands.executeCommand(command, ...args);
+        finished = true;
+      }, async () => { throw new Error('disposed work must not start a retry wait'); });
+      const showing = operation === 'showChangeOf'
+        ? editors.showChangeOf(a, [{ original: { start: 1, end: 1 }, modified: { start: 1, end: 2 } }], 0)
+        : editors[operation](a);
+      try {
+        await commandStarted;
+        const disposed = editors.dispose();
+        const finishedAtDisposal = disposed.then(() => finished);
+        release();
+        await disposed;
+        await showing;
+        assert.strictEqual(await finishedAtDisposal, true);
+        assert.deepStrictEqual(commands, [operation === 'open' ? 'vscode.open'
+          : operation === 'showChange' ? 'editor.action.dirtydiff.next' : 'workbench.action.editor.nextChange']);
+      } finally {
+        release();
+        await Promise.allSettled([showing, editors.dispose()]);
+      }
+    });
+  }
+
+  test('quick-diff disposal drains a sibling command before reporting an accepted command failure', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const failure = new Error('opening failed during shutdown');
+    let siblingFinished = false;
+    const editors = createReviewEditors(async (_command, uri) => {
+      if (uri instanceof vscode.Uri && uri.fsPath === a) { throw failure; }
+      await gate;
+      siblingFinished = true;
+    });
+    const opening = editors.open(a);
+    const rejected = assert.rejects(opening, (error: unknown) => error === failure);
+    const sibling = editors.open(b);
+    try {
+      const disposed = editors.dispose();
+      const finishedAtDisposal = disposed.then(() => siblingFinished, () => siblingFinished);
+      const failedDisposal = assert.rejects(disposed, (error: unknown) =>
+        error instanceof AggregateError && error.errors.includes(failure));
+      release();
+      await Promise.all([rejected, sibling, failedDisposal]);
+      assert.strictEqual(await finishedAtDisposal, true);
+    } finally {
+      release();
+      await Promise.allSettled([opening, sibling, editors.dispose()]);
+    }
+  });
+
+  test('a superseded quick-diff presentation awaits its replacement during disposal', async () => {
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const commandStarted = new Promise<void>((resolve) => { started = resolve; });
+    let finished = false;
+    const editors = createReviewEditors(async (command, ...args) => {
+      started();
+      await gate;
+      await vscode.commands.executeCommand(command, ...args);
+      finished = true;
+    }, async () => { throw new Error('disposed work must not start a retry wait'); });
+    const earlier = editors.showChange(a);
+    const finishedAtEarlierCompletion = earlier.then(() => finished);
+    const replacement = editors.showChange(a);
+    try {
+      await commandStarted;
+      const disposed = editors.dispose();
+      release();
+      await disposed;
+      await Promise.all([earlier, replacement]);
+      assert.strictEqual(await finishedAtEarlierCompletion, true);
+    } finally {
+      release();
+      await Promise.allSettled([earlier, replacement, editors.dispose()]);
+    }
   });
 
   test("shows the active file's place among the files under review, a dash for another file, and 0 of 0 with none", async () => {

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
 import { answer, connect, loadChatPage, replayed, toolCall, type ChatPage } from './chatPage';
 
@@ -7,11 +7,6 @@ let page: ChatPage;
 beforeEach(() => {
   page = loadChatPage();
   connect(page);
-});
-
-afterEach(() => {
-  expect(page.errors).toEqual([]);
-  page.close();
 });
 
 function messages(): string[] {

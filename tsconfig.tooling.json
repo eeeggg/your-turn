@@ -13,6 +13,7 @@
     ".vscode-test.mjs",
     "playwright.config.mts",
     "vitest.config.mts",
-    "tools/run-integration.mjs"
+    "tools/run-integration.mjs",
+    "tools/run-tests.mjs"
   ]
 }

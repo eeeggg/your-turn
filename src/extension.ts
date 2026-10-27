@@ -35,6 +35,8 @@ import { getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
+let shutdown: (() => Promise<void>) | undefined;
+
 /**
  * What `activate` returns in extension tests, and only there. Each test bundles its own copies of `src/`, so it cannot
  * reach the extension's objects otherwise.
@@ -134,6 +136,28 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
   sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
   const reviews = new Reviews(workspaceFiles);
+  let disposal: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    if (disposal) { return disposal; }
+    sessionUpdateHandler.dispose();
+    chatMessageSubscription.dispose();
+    const output = chatViewController.dispose();
+    const terminals = agentTerminals.dispose();
+    reviewSourceControl.dispose();
+    const takeovers = reviewTakeovers.dispose();
+    const presenters = reviewPresenters.dispose();
+    const diffs = reviewDiffs.dispose();
+    const review = reviews.dispose();
+    const sessions = sessionManager.dispose();
+    disposal = Promise.allSettled([output, terminals, takeovers, presenters, diffs, review, sessions, turnEndShown]).then((results) => {
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down ACP Client');
+      }
+    });
+    return disposal;
+  };
+  shutdown = stop;
   const reviewChanges = new vscode.EventEmitter<void>();
   context.subscriptions.push(reviewChanges);
   reviews.addListener(() => reviewChanges.fire());
@@ -227,10 +251,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatMessageSubscription,
     reportedFileEditor,
     statusBarManager,
-    reviewPresenters,
-    reviewDiffs,
-    reviewSourceControl,
-    reviewTakeovers,
     vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.newSession', () => sessionCommands.newSession()),
     vscode.commands.registerCommand('acp.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
@@ -303,10 +323,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }),
     {
       dispose: () => {
-        sessionManager.dispose();
-        sessionUpdateHandler.dispose();
-        agentTerminals.dispose();
-        reviews.dispose();
+        void stop().catch((error: unknown) => logError('Failed to shut down ACP Client', error));
         chatWebviewProvider.dispose();
         sessionTreeProvider.dispose();
         sessionList.dispose();
@@ -333,7 +350,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   };
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
+  await shutdown?.();
   log('ACP Client extension deactivated.');
 }
 

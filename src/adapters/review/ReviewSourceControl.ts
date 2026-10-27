@@ -18,8 +18,9 @@ export class ReviewSourceControl implements vscode.Disposable {
   private readonly files = this.control.createResourceGroup('files', 'Files Under Review');
   private readonly baselineChanged = new vscode.EventEmitter<vscode.Uri>();
   private readonly baselines: vscode.Disposable;
+  private readonly changed = () => this.show();
 
-  constructor(private readonly controls: ReviewControls, reviews: Reviews) {
+  constructor(private readonly controls: ReviewControls, private readonly reviews: Reviews) {
     this.control.inputBox.visible = false;
     this.control.quickDiffProvider = { provideOriginalResource: (uri) => this.originalResource(uri) };
     this.files.hideWhenEmpty = true;
@@ -27,7 +28,7 @@ export class ReviewSourceControl implements vscode.Disposable {
       onDidChange: this.baselineChanged.event,
       provideTextDocumentContent: (uri) => this.controls.baseline(uri.with({ scheme: 'file' }).fsPath) ?? '',
     });
-    reviews.addListener(() => this.show());
+    reviews.addListener(this.changed);
     this.show();
   }
 
@@ -41,6 +42,7 @@ export class ReviewSourceControl implements vscode.Disposable {
   }
 
   dispose(): void {
+    this.reviews.removeListener(this.changed);
     this.baselines.dispose();
     this.baselineChanged.dispose();
     this.control.dispose();

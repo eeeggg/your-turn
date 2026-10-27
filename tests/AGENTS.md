@@ -4,26 +4,119 @@ Start here when choosing a test layer, changing test infrastructure or adding
 a testing framework. Follow the more specific `AGENTS.md` in a test's
 directory when one exists.
 
-## Vitest
+## Tooling Policy
 
-Vitest provides the fast in-process test system. Run all of its projects with
-`npx vitest run`.
+Make is the supported developer entry point for tests, coverage, type checking,
+and linting.
+
+- Do not directly invoke `npm`, `npx`, framework CLIs (Vitest, Mocha,
+  Playwright), or runner script files as workflow commands; commands belong
+  inside shared tooling.
+- If a workflow operation is missing, extend and verify the shared tooling first;
+  ask when facing meaningful trade-offs.
+- Do not create or rely on separate temporary-script verification workflows.
+- Repeated runs stop on the first failure; never retry until green.
+- Always report the exact Make command, scope, repeat count, and results; a
+  focused test pass is not a substitute for the full gate.
+
+## Make Interface
+
+### Prerequisites
+
+- The test environment requires Linux, Node 24, `bubblewrap` (`bwrap`) with
+  permission to create user/PID namespaces, and Xvfb. Linux and bubblewrap are
+  unconditional requirements, including for the process regressions in the
+  default unit suite; cross-platform test portability is not a gate.
+- Keep prerequisite declarations within this repository; do not modify shared
+  host-level provisioning outside it. Missing containment prerequisites must
+  fail, never silently disable cleanup.
+
+### Commands
+
+- `make typecheck` — Type-check the repository.
+- `make lint` — Run ESLint and Knip over the repository.
+- `make test` — Unfiltered gate running compile, lint, Vitest (unit and
+  bundled webview), and integration suites. Rejects `FILES`, `REPEAT`, `JOBS`,
+  or inherited legacy selection overrides.
+- `make test-vitest` — Run all Vitest suites (unit and bundled webview).
+- `make test-unit` — Run the in-process Vitest unit suite.
+  Example: `make test-unit FILES='tests/unit/core/AgentManager.test.ts'`
+- `make test-webview` — Run the bundled-webview Vitest suite. Prepares the
+  webview bundle once per batch where needed.
+  Example: `make test-webview FILES='tests/webview/markdown.test.ts'`
+- `make test-integration` — Run the isolated VS Code integration suite under
+  Xvfb. Prepares bundles once per batch where needed.
+  Example: `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
+- `make test-ui` — Drive pinned desktop VS Code with Playwright under Xvfb.
+  Prepares bundles once per batch where needed.
+  Example: `make test-ui FILES='tests/ui/reveal-chat.test.ts' REPEAT=3`
+- `make coverage` — Unit test coverage entry point, controlling the same
+  unit layer and scope controls as `test-unit`.
+- `make coverage-integration` — Integration test coverage entry point,
+  controlling the same integration layer and scope controls (`FILES`, `REPEAT`,
+  `JOBS`) as `test-integration`.
+
+### Scope and Execution Controls
+
+- `FILES` — Whitespace-separated explicit repo-relative test file paths. Every
+  path is validated against the chosen test layer; an unmatched or cross-layer
+  selection produces an error.
+- `REPEAT` — Positive integer repeat count, default `1`. Repeated runs stop on
+  the first failure.
+- `JOBS` — Positive integer parallel job count, supported for `test-integration`
+  and `coverage-integration` only; other targets preserve their default.
+- Bundle preparation — Executed once per batch where needed by the Make targets
+  (`test-vitest`, `test-webview`, `test-integration`, `test-ui`, `coverage-integration`).
+- Legacy environment variables — `ACP_TEST_FILES` and `ACP_TEST_JOBS` are
+  internal integration diagnostic controls superseded by Make `FILES` and
+  `JOBS`. Never execute raw compiled bundle runs or invoke runner scripts
+  directly.
+
+## Verification and the Release Gate
+
+- For a bug, establish a failing regression before fixing it. Verify decisions
+  with deliberate breaks, one at a time. If only the build catches a break,
+  use a compiling variant; an undetected break needs a test or exposes dead code.
+- Run `make test` for the unfiltered compile, lint, unit/webview and integration
+  gate. Run `make test-ui` separately for rendered workbench behavior. These
+  isolated runs must not touch the user's Stable or Insiders windows.
+- Await observable completion. Do not add sleeps, polling delays or arbitrary
+  synchronization yields. Timeouts protect wall-clock execution, not readiness.
+  Preserve failures and cleanup ownership; do not skip, delete, suppress or
+  weaken tests to obtain a pass.
+- Automated verification carries repeatable scenarios at the appropriate layer;
+  individual implementation increments do not each need a manual gate.
+- Before handing over an authorized release candidate, report what automation
+  actually covered and give a short list of remaining manual checks: real-agent
+  behavior, the installed package over Remote-SSH, and qualitative experience.
+  A test layer's existence does not prove a scenario is covered. Do not ask the
+  user to repeat established automated scenarios; automate repeated manual
+  checks where feasible.
+- The user installs candidates in Insiders and explicitly accepts the focused
+  manual release gate. A green automated gate alone does not authorize release.
+
+## Test Layers
+
+### Vitest
+
+Vitest provides the fast in-process test system. Run all Vitest projects with
+`make test-vitest`.
 
 - `tests/unit/` exercises source modules and React views directly. Prefer this
   project whenever behavior does not require a shipped bundle or real VS Code
   host. Read `tests/unit/AGENTS.md` before changing it.
 - `tests/webview/` loads the compiled production webview bundle into a fresh
-  jsdom page. Use it for behavior at the bundled webview boundary. Compile
-  first, then run it with `make test-webview`.
+  jsdom page. Use it for behavior at the bundled webview boundary. Read
+  `tests/webview/AGENTS.md` before changing it. Run with `make test-webview`.
 
-## VS Code integration
+### VS Code integration
 
 `tests/integration/` exercises behavior that requires the real VS Code API or
 extension host without driving the rendered workbench. Run it with
 `make test-integration`. Read
 `tests/integration/AGENTS.md` before changing its tests, fixtures or runner.
 
-## Desktop UI
+### Desktop UI
 
 `tests/ui/` drives a real pinned desktop VS Code window with Playwright. Use
 it only for rendered workbench behavior, focus, layout and interaction that

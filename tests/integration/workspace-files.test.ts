@@ -6,18 +6,29 @@ import { setup, suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { createWorkspaceFiles, workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { observed } from './observed';
+import { cleanup } from './cleanup';
 
 suite('Workspace files', () => {
   let folder: string;
 
-  setup(() => {
+  setup(function () {
+    console.info('[workspace-files] starting', this.currentTest?.title);
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-review-'));
   });
 
-  teardown(async () => {
-    await vscode.commands.executeCommand('workbench.action.files.revert');
-    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    fs.rmSync(folder, { recursive: true, force: true });
+  teardown(async function () {
+    await cleanup(this.currentTest, [
+      async () => {
+        console.info('[workspace-files] reverting', this.currentTest?.title);
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+        console.info('[workspace-files] reverted', this.currentTest?.title);
+      },
+      async () => {
+        await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        console.info('[workspace-files] editors closed', this.currentTest?.title);
+      },
+      () => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } },
+    ]);
   });
 
   /** Opens the file in an editor, and types `typed` at its start, unsaved. */
@@ -67,17 +78,25 @@ suite('Workspace files', () => {
     const file = path.join(folder, 'a.txt');
     fs.writeFileSync(file, 'agent\n');
     const { document } = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
+    const report = (phase: string) => {
+      console.info('[workspace-files]', phase, JSON.stringify({ text: document.getText(), dirty: document.isDirty, closed: document.isClosed, disk: fs.readFileSync(file, 'utf8') }));
+    };
+    report('clean document opened');
     const written = 'agent changed\n';
     const followed = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === written ? true : undefined));
     await vscode.workspace.fs.writeFile(vscode.Uri.file(file), Buffer.from(written));
+    report('disk changed');
     await followed;
+    report('editor followed disk');
     assert.strictEqual(document.getText(), written, 'the editor never followed the disk');
 
     const restored = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === 'baseline\n' ? true : undefined));
     await workspaceFiles.restore(file, 'baseline\n');
 
     assert.strictEqual(fs.readFileSync(file, 'utf8'), 'baseline\n');
+    report('disk restored');
     await restored;
+    report('editor followed restoration');
     assert.strictEqual(document.getText(), 'baseline\n');
     assert.strictEqual(document.isDirty, false);
   });

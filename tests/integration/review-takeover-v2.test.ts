@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { observed } from './observed';
+import { cleanup } from './cleanup';
 
 
 for (const version of [2]) {
@@ -38,10 +39,12 @@ for (const version of [2]) {
       await vscode.commands.executeCommand('acp.connectAgent', agentName);
     });
 
-    suiteTeardown(async () => {
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
-      await config().update('agents', original, vscode.ConfigurationTarget.Global);
-      for (const subscription of subscriptions) { subscription.dispose(); }
+    suiteTeardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => config().update('agents', original, vscode.ConfigurationTarget.Global),
+        ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
+      ]);
     });
 
     /**
@@ -49,6 +52,7 @@ for (const version of [2]) {
      * v2, it also changes a file it reports with no patch and creates one it reports as binary.
      */
     setup(async () => {
+      folder = '';
       folder = fs.mkdtempSync(join(os.tmpdir(), 'acp-review-e2e-'));
       modified = join(folder, 'a.ts');
       deleted = join(folder, 'gone.ts');
@@ -70,12 +74,14 @@ for (const version of [2]) {
       return vscode.workspace.openTextDocument(original);
     }
 
-    teardown(async () => {
-      await vscode.commands.executeCommand('acp.keepAllFiles');
-      await api.reviewPresentationSettled();
-      await vscode.commands.executeCommand('workbench.action.files.revert');
-      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-      fs.rmSync(folder, { recursive: true, force: true });
+    teardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.keepAllFiles'),
+        () => api.reviewPresentationSettled(),
+        () => vscode.commands.executeCommand('workbench.action.files.revert'),
+        () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),
+        () => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } },
+      ]);
     });
 
     /** Line `line` of `file` replaced in its editor, as the user types. */

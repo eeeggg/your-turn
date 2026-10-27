@@ -31,12 +31,16 @@ interface SessionCommands {
 export class CommandOutputFeed {
   private readonly sessions = new Map<string, SessionCommands>();
   private readonly pendingTerminals = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly pending = new Set<Promise<void>>();
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
+  private readonly terminalListener = (sessionId: string, terminalId: string) => this.terminalChanged(sessionId, terminalId);
 
   constructor(
     private readonly terminals: AgentTerminals,
     private readonly sink: CommandOutputSink,
   ) {
-    terminals.addListener((sessionId, terminalId) => this.terminalChanged(sessionId, terminalId));
+    terminals.addListener(this.terminalListener);
   }
 
   /**
@@ -49,6 +53,7 @@ export class CommandOutputFeed {
     toolKind: ToolKind | undefined,
     content: ToolCallContent[] | undefined,
   ): ShownContent[] | undefined {
+    if (this.disposed) { return undefined; }
     const { toolCalls, contentVersions } = this.commandsOf(sessionId);
     if (toolKind !== undefined) {
       if (toolKind === 'execute') { toolCalls.add(toolCallId); } else { toolCalls.delete(toolCallId); }
@@ -63,20 +68,49 @@ export class CommandOutputFeed {
       return content;
     }
     this.terminals.keepCommandText(sessionId, toolCallId, texts.join('\n'));
-    Promise.all(content.map(commandOutput)).then(
-      (shown) => {
-        if (contentVersions.get(toolCallId) === version) {
+    const posting = Promise.allSettled(content.map(commandOutput)).then(
+      (results) => {
+        const shown = results.map((result) => {
+          if (result.status === 'rejected') { throw result.reason; }
+          return result.value;
+        });
+        if (!this.disposed && contentVersions.get(toolCallId) === version) {
           this.sink.toolCallContent(sessionId, toolCallId, shown);
         }
       },
-      (e: unknown) => logError(`Failed to clean the output of tool call ${toolCallId}`, e),
     );
+    this.track(posting, `Failed to clean the output of tool call ${toolCallId}`);
     return undefined;
   }
 
   /** The session is gone, and its tool calls with it. */
   forgetSession(sessionId: string): void {
+    this.sessions.get(sessionId)?.contentVersions.clear();
     this.sessions.delete(sessionId);
+  }
+
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
+    this.terminals.removeListener(this.terminalListener);
+    for (const timer of this.pendingTerminals.values()) { clearTimeout(timer); }
+    this.pendingTerminals.clear();
+    this.sessions.clear();
+    this.disposal = Promise.allSettled(this.pending).then((results) => {
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to dispose command output');
+      }
+    });
+    return this.disposal;
+  }
+
+  private track(work: Promise<void>, failure: string): void {
+    this.pending.add(work);
+    void work.then(
+      () => this.pending.delete(work),
+      (e: unknown) => { logError(failure, e); this.pending.delete(work); },
+    );
   }
 
   private commandsOf(sessionId: string): SessionCommands {
@@ -89,11 +123,12 @@ export class CommandOutputFeed {
   }
 
   private terminalChanged(sessionId: string, terminalId: string): void {
+    if (this.disposed) { return; }
     const pendingKey = JSON.stringify([sessionId, terminalId]);
     if (this.pendingTerminals.has(pendingKey)) { return; }
     this.pendingTerminals.set(pendingKey, setTimeout(() => {
       this.pendingTerminals.delete(pendingKey);
-      this.sendTerminal(sessionId, terminalId).catch((e: unknown) => logError(`Failed to show terminal ${terminalId}`, e));
+      this.track(this.sendTerminal(sessionId, terminalId), `Failed to show terminal ${terminalId}`);
     }, TERMINAL_POST_INTERVAL_MS));
   }
 
@@ -101,7 +136,8 @@ export class CommandOutputFeed {
     const info = this.terminals.info(sessionId, terminalId);
     const shown = this.terminals.shown(sessionId, terminalId);
     if (!info || !shown) { return; }
-    this.sink.terminal(sessionId, terminalId, await shown, info.exitStatus);
+    const output = await shown;
+    if (!this.disposed) { this.sink.terminal(sessionId, terminalId, output, info.exitStatus); }
   }
 }
 

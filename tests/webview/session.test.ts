@@ -1,14 +1,32 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
-afterEach(() => {
-  expect(page.errors).toEqual([]);
-  page.close();
-});
-
 describe('session state', () => {
+  it('closes every test-owned page after the test finishes', () => {
+    const opened: ChatPage[] = [];
+    const heard: string[] = [];
+    onTestFinished(() => {
+      try {
+        for (const openedPage of opened) {
+          openedPage.window.dispatchEvent(new openedPage.window.Event('cleanup-probe'));
+        }
+        expect(heard).toEqual([]);
+      } finally {
+        for (const openedPage of opened) { openedPage.close(); }
+      }
+    });
+    page = loadChatPage();
+    opened.push(page, loadChatPage());
+    for (const [index, openedPage] of opened.entries()) {
+      openedPage.window.addEventListener('cleanup-probe', () => heard.push(String(index)));
+      openedPage.window.dispatchEvent(new openedPage.window.Event('cleanup-probe'));
+    }
+    expect(heard).toEqual(['0', '1']);
+    heard.length = 0;
+  });
+
   it('starts disconnected and tells the host it is ready', () => {
     page = loadChatPage();
 

@@ -23,6 +23,8 @@ export interface ShownOutput {
  * redrawn line shows its last state only. Writes are applied in order, after they return.
  */
 export class Cleaner {
+  private pending: Promise<void> = Promise.resolve();
+  private disposal: Promise<void> | undefined;
   private readonly terminal = new Terminal({
     cols: COLUMNS,
     rows: ROWS,
@@ -33,12 +35,31 @@ export class Cleaner {
   });
 
   write(text: string): void {
-    this.terminal.write(text);
+    this.assertOpen();
+    this.pending = this.pending.then(() => new Promise<void>((resolve) => this.terminal.write(text, resolve)));
+    void this.pending.catch(() => {});
   }
 
   /** Once every write so far is applied: the last `SHOWN_LINES` rows, up to `SHOWN_CHARACTERS`. */
-  async shown(): Promise<ShownOutput> {
-    await new Promise<void>((resolve) => this.terminal.write('', resolve));
+  shown(): Promise<ShownOutput> {
+    this.assertOpen();
+    const shown = this.pending.then(() => this.read());
+    this.pending = shown.then(() => {});
+    void this.pending.catch(() => {});
+    return shown;
+  }
+
+  /** Stops new work and releases the terminal only after all accepted writes and reads finish. */
+  dispose(): Promise<void> {
+    this.disposal ??= this.pending.finally(() => this.terminal.dispose());
+    return this.disposal;
+  }
+
+  private assertOpen(): void {
+    if (this.disposal) { throw new Error('Cleaner is disposed'); }
+  }
+
+  private read(): ShownOutput {
     const buffer = this.terminal.buffer.active;
     const lines: string[] = [];
     let length = 0;
@@ -61,10 +82,6 @@ export class Cleaner {
       ? { text: text.slice(-SHOWN_CHARACTERS), truncated: true }
       : { text, truncated: full || row >= 0 };
   }
-
-  dispose(): void {
-    this.terminal.dispose();
-  }
 }
 
 /** The last row holding anything: the screen's rows below the cursor are empty. */
@@ -83,7 +100,7 @@ export async function cleaned(text: string): Promise<ShownOutput> {
     cleaner.write(text);
     return await cleaner.shown();
   } finally {
-    cleaner.dispose();
+    await cleaner.dispose();
   }
 }
 

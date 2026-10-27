@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { observed } from './observed';
+import { cleanup } from './cleanup';
 
 /** A change as quick diff's title passes it: 1-based inclusive lines, a side with none being `[the line before, 0]`. */
 const quickDiffChange = ([originalStartLineNumber, originalEndLineNumber]: [number, number], [modifiedStartLineNumber, modifiedEndLineNumber]: [number, number]) =>
@@ -43,10 +44,12 @@ for (const version of [2]) {
       await vscode.commands.executeCommand('acp.connectAgent', agentName);
     });
 
-    suiteTeardown(async () => {
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
-      await config().update('agents', original, vscode.ConfigurationTarget.Global);
-      for (const subscription of subscriptions) { subscription.dispose(); }
+    suiteTeardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => config().update('agents', original, vscode.ConfigurationTarget.Global),
+        ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
+      ]);
     });
 
     /**
@@ -54,6 +57,7 @@ for (const version of [2]) {
      * v2, it also changes a file it reports with no patch and creates one it reports as binary.
      */
     setup(async () => {
+      folder = '';
       folder = fs.mkdtempSync(join(os.tmpdir(), 'acp-review-e2e-'));
       modified = join(folder, 'a.ts');
       created = join(folder, 'new.ts');
@@ -77,11 +81,13 @@ for (const version of [2]) {
       return vscode.workspace.openTextDocument(original);
     }
 
-    teardown(async () => {
-      await vscode.commands.executeCommand('acp.keepAllFiles');
-      await vscode.commands.executeCommand('workbench.action.files.revert');
-      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-      fs.rmSync(folder, { recursive: true, force: true });
+    teardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.keepAllFiles'),
+        () => vscode.commands.executeCommand('workbench.action.files.revert'),
+        () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),
+        () => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } },
+      ]);
     });
 
     test('The files the agent changed come under review in the order reported, not one the disk does not hold as reported', () => {

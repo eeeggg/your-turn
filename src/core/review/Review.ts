@@ -32,6 +32,10 @@ export class Review {
     this.listeners.add(listener);
   }
 
+  removeListener(listener: ReviewListener): void {
+    this.listeners.delete(listener);
+  }
+
   files(): readonly ReviewedFile[] {
     return [...this.reviewed.values()];
   }

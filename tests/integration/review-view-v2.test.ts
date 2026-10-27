@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { observed } from './observed';
+import { cleanup } from './cleanup';
 
 const activeFile = () => vscode.window.activeTextEditor?.document.uri.fsPath;
 
@@ -52,11 +53,13 @@ for (const version of [2]) {
       await vscode.commands.executeCommand('acp.connectAgent', agentName);
     });
 
-    suiteTeardown(async () => {
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
-      await config().update('agents', original, vscode.ConfigurationTarget.Global);
-      await config().update('review.presentation', originalPresentation, vscode.ConfigurationTarget.Global);
-      for (const subscription of subscriptions) { subscription.dispose(); }
+    suiteTeardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => config().update('agents', original, vscode.ConfigurationTarget.Global),
+        () => config().update('review.presentation', originalPresentation, vscode.ConfigurationTarget.Global),
+        ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
+      ]);
     });
 
     /**
@@ -64,6 +67,7 @@ for (const version of [2]) {
      * v2, it also changes a file it reports with no patch and creates one it reports as binary.
      */
     setup(async () => {
+      folder = '';
       folder = fs.mkdtempSync(join(os.tmpdir(), 'acp-review-e2e-'));
       modified = join(folder, 'a.ts');
       created = join(folder, 'new.ts');
@@ -87,11 +91,13 @@ for (const version of [2]) {
       return vscode.workspace.openTextDocument(original);
     }
 
-    teardown(async () => {
-      await vscode.commands.executeCommand('acp.keepAllFiles');
-      await vscode.commands.executeCommand('workbench.action.files.revert');
-      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-      fs.rmSync(folder, { recursive: true, force: true });
+    teardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.keepAllFiles'),
+        () => vscode.commands.executeCommand('workbench.action.files.revert'),
+        () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),
+        () => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } },
+      ]);
     });
 
     test("The agent's turn ending shows the first file under review in quick diff's view", async () => {
@@ -159,17 +165,17 @@ for (const version of [2]) {
     test("The review's decisions do nothing while the agent's turn runs, and act again once it ends", async () => {
       const window = vscode.window as { showQuickPick: unknown };
       const original = window.showQuickPick;
-      let answer: (() => void) | undefined;
+      let answer: ((accept: boolean) => void) | undefined;
       let permissionAsked!: () => void;
       const asked = new Promise<void>((resolve) => { permissionAsked = resolve; });
       window.showQuickPick = (items: readonly vscode.QuickPickItem[]) => new Promise((resolve) => {
-        answer = () => resolve(items[0]);
+        answer = (accept) => resolve(accept ? items[0] : undefined);
         permissionAsked();
       });
+      const ended = posts.filter((post) => post.type === 'promptEnd').length;
+      const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
+      const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
       try {
-        const ended = posts.filter((post) => post.type === 'promptEnd').length;
-        const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-        const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
         await asked;
         await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
         await vscode.commands.executeCommand('acp.undoFile', vscode.Uri.file(modified));
@@ -177,30 +183,36 @@ for (const version of [2]) {
         assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
         assert.strictEqual(fs.readFileSync(modified, 'utf8'), 'one\nTWO\n');
 
-        answer?.();
+        answer?.(true);
         await Promise.all([turn, promptEnded]);
         await api.turnEndShown();
         await vscode.commands.executeCommand('acp.keepFile', vscode.Uri.file(created));
         assert.deepStrictEqual(api.reviewedFiles(), [modified, deleted]);
       } finally {
-        window.showQuickPick = original;
+        try {
+          answer?.(false);
+          await Promise.all([turn, promptEnded]);
+          await api.turnEndShown();
+        } finally {
+          window.showQuickPick = original;
+        }
       }
     });
 
     test("Coming to a file under review while the agent's turn runs leaves quick diff's view closed", async function () {
       const window = vscode.window as { showQuickPick: unknown };
       const original = window.showQuickPick;
-      let answer: (() => void) | undefined;
+      let answer: ((accept: boolean) => void) | undefined;
       let permissionAsked!: () => void;
       const asked = new Promise<void>((resolve) => { permissionAsked = resolve; });
       window.showQuickPick = (items: readonly vscode.QuickPickItem[]) => new Promise((resolve) => {
-        answer = () => resolve(items[0]);
+        answer = (accept) => resolve(accept ? items[0] : undefined);
         permissionAsked();
       });
+      const ended = posts.filter((post) => post.type === 'promptEnd').length;
+      const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
+      const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
       try {
-        const ended = posts.filter((post) => post.type === 'promptEnd').length;
-        const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-        const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
         await asked;
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(mismatched));
         await api.reviewPresentationSettled();
@@ -208,12 +220,17 @@ for (const version of [2]) {
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(modified));
         assert.ok(!viewShown(modified), 'the view stays closed during the turn');
 
-        answer?.();
+        answer?.(true);
         await Promise.all([turn, promptEnded]);
         await api.turnEndShown();
       } finally {
-        answer?.();
-        window.showQuickPick = original;
+        try {
+          answer?.(false);
+          await Promise.all([turn, promptEnded]);
+          await api.turnEndShown();
+        } finally {
+          window.showQuickPick = original;
+        }
       }
     });
 

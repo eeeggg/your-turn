@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, ListSessionsResponse, SessionInfo } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
@@ -31,9 +31,11 @@ function setup(scripts: Record<string, AgentScript>) {
     },
     authPrompt,
   );
+  onTestFinished(async () => { await manager.dispose(); });
   const history = new SessionHistoryStore(memoryStore());
   manager.setHistoryStore(history);
   const list = new SessionList(manager, history, () => Object.keys(scripts), () => '/work', () => NOW);
+  onTestFinished(() => { list.dispose(); });
   return { agents, manager, history, list, authPrompt };
 }
 
@@ -73,6 +75,27 @@ function listingAgent(pages: Record<string, ListSessionsResponse | (() => ListSe
 const session = (sessionId: string, extra: Partial<SessionInfo> = {}): SessionInfo => ({ sessionId, cwd: '/work', ...extra });
 
 describe('SessionList', () => {
+  it('releases test-owned agents and listeners after the test finishes', async () => {
+    let exitReported = false;
+    onTestFinished(async () => {
+      const { agents, manager, history, list } = fixture;
+      try {
+        expect(agents.launched.map(({ killed, exited }) => ({ killed, exited }))).toEqual([{ killed: true, exited: true }]);
+        expect(exitReported).toBe(true);
+        expect(manager.listenerCount('session-added')).toBe(0);
+        expect(history.listenerCount('changed')).toBe(0);
+        expect(list.listenerCount('changed')).toBe(0);
+      } finally {
+        list.dispose();
+        await manager.dispose();
+      }
+    });
+    const fixture = setup({ fake: () => fakeAgent() });
+    fixture.list.on('changed', () => {});
+    await fixture.manager.ensureConnected('fake');
+    void fixture.agents.launched[0]?.exitReported.then(() => { exitReported = true; });
+  });
+
   describe('agents', () => {
     it('lists each configured agent with whether it is in session', async () => {
       const { manager, list } = setup({
@@ -300,7 +323,19 @@ describe('SessionList', () => {
           replies.push(resolve);
           waiting.shift()?.();
         }));
-      const { list } = setup({ fake: script });
+      const { list, manager } = setup({ fake: script });
+      const requests = vi.spyOn(manager, 'listSessions');
+      onTestFinished(async () => {
+        try {
+          for (const reply of replies) { reply({ sessions: [] }); }
+          await Promise.all(requests.mock.results.map((result) => {
+            if (result.type !== 'return') { throw result.value; }
+            return result.value;
+          }));
+        } finally {
+          requests.mockRestore();
+        }
+      });
 
       const first = nextRequest();
       await list.sessionsOf('fake');

@@ -2,7 +2,6 @@ import type {
   Commands,
   Disposable,
   InputBoxOptions,
-  MessageOptions,
   ProgressOptions,
   QuickPick,
   QuickPickItem,
@@ -16,7 +15,7 @@ export type Call =
   | { call: 'showQuickPick'; items: readonly (string | QuickPickItem)[]; options?: QuickPickOptions }
   | { call: 'createQuickPick'; title?: string; placeholder?: string; busy: boolean; items: readonly QuickPickItem[] }
   | { call: 'showInputBox'; options?: InputBoxOptions }
-  | { call: MessageCall; message: string; options?: MessageOptions; items?: string[] }
+  | { call: MessageCall; message: string; items?: string[] }
   | { call: 'withProgress'; options: ProgressOptions }
   | { call: 'executeCommand'; command: string; rest?: unknown[] };
 
@@ -75,24 +74,12 @@ export class ScriptedUser implements Window, Commands {
     return this.text('showInputBox');
   }
 
-  showInformationMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined>;
-  showInformationMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): Promise<T | undefined>;
-  showInformationMessage<T extends string>(message: string, ...rest: (T | MessageOptions)[]): Promise<T | undefined> {
-    const [first, ...others] = rest;
-    if (typeof first === 'object') {
-      return this.message('showInformationMessage', message, others as T[], first);
-    }
-    return this.message('showInformationMessage', message, rest as T[]);
+  showInformationMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined> {
+    return this.message('showInformationMessage', message, items);
   }
 
-  showWarningMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined>;
-  showWarningMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): Promise<T | undefined>;
-  showWarningMessage<T extends string>(message: string, ...rest: (T | MessageOptions)[]): Promise<T | undefined> {
-    const [first, ...others] = rest;
-    if (typeof first === 'object') {
-      return this.message('showWarningMessage', message, others as T[], first);
-    }
-    return this.message('showWarningMessage', message, rest as T[]);
+  showWarningMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined> {
+    return this.message('showWarningMessage', message, items);
   }
 
   showErrorMessage<T extends string>(message: string, ...items: T[]): Promise<T | undefined> {
@@ -109,8 +96,8 @@ export class ScriptedUser implements Window, Commands {
     return undefined;
   }
 
-  private async message<T extends string>(call: MessageCall, message: string, items: T[], options?: MessageOptions): Promise<T | undefined> {
-    this.calls.push({ call, message, ...(options ? { options } : {}), ...(items.length > 0 ? { items } : {}) });
+  private async message<T extends string>(call: MessageCall, message: string, items: T[]): Promise<T | undefined> {
+    this.calls.push({ call, message, ...(items.length > 0 ? { items } : {}) });
     if (items.length === 0) {
       return undefined;
     }

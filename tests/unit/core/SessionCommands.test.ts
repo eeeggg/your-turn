@@ -74,7 +74,11 @@ function setup(scripts: Record<string, AgentScript>) {
 }
 
 const underReview = (count: string) => `${count} still under review, kept until this session is opened again in this window.`;
-const asked = (message: string, ...items: string[]): Call => ({ call: 'showWarningMessage', message, options: { modal: true }, items });
+const asked = (question: string, detail: string, action: string, keepAll?: { label: string; detail: string }): Call => ({
+  call: 'showQuickPick',
+  items: [{ label: action, detail }, ...(keepAll ? [keepAll] : []), { label: 'Cancel' }],
+  options: { title: action, placeHolder: question },
+});
 
 describe('SessionCommands', () => {
   describe('connect', () => {
@@ -142,7 +146,7 @@ describe('SessionCommands', () => {
 
       expect(manager.getActiveSessionId()).toBe('two-1');
       expect(user.take()).toEqual([
-        asked('Switch to two? This stops the turn in progress.', 'Switch Agent'),
+        asked('Switch to two?', 'This stops the turn in progress.', 'Switch Agent'),
         progress('Connecting to two...'),
       ]);
     });
@@ -170,7 +174,9 @@ describe('SessionCommands', () => {
       expect(keptIn).toEqual(['one-1']);
       expect(manager.getActiveSessionId()).toBe('two-1');
       expect(user.take()).toEqual([
-        asked(`Switch to two? ${underReview('2 files are')}`, 'Switch Agent', 'Keep All and Switch'),
+        asked('Switch to two?', underReview('2 files are'), 'Switch Agent', {
+          label: 'Keep All and Switch', detail: 'Keep 2 files under review before continuing.',
+        }),
         progress('Connecting to two...'),
       ]);
     });
@@ -225,7 +231,7 @@ describe('SessionCommands', () => {
 
       expect(agents.launched).toHaveLength(1);
       expect(manager.getActiveSessionId()).toBe('one-1');
-      expect(user.take()).toEqual([asked('Start a new session? This stops the turn in progress.', 'New Session')]);
+      expect(user.take()).toEqual([asked('Start a new session?', 'This stops the turn in progress.', 'New Session')]);
     });
 
     it('names everything it would lose, and keeps every file when asked', async () => {
@@ -242,9 +248,10 @@ describe('SessionCommands', () => {
       expect(manager.getActiveSessionId()).toBe('one-2');
       expect(user.take()).toEqual([
         asked(
-          `Start a new session? This stops the turn in progress and discards 1 queued prompt. ${underReview('1 file is')}`,
+          'Start a new session?',
+          `This stops the turn in progress and discards 1 queued prompt. ${underReview('1 file is')}`,
           'New Session',
-          'Keep All and Start',
+          { label: 'Keep All and Start', detail: 'This stops the turn in progress and discards 1 queued prompt. Keep 1 file under review before continuing.' },
         ),
         progress('Starting new session with Fake Agent...'),
       ]);
@@ -278,6 +285,54 @@ describe('SessionCommands', () => {
         progress('Starting new session with Fake Agent...'),
         { call: 'showErrorMessage', message: 'Failed to start new session: Internal error: out of quota' },
       ]);
+    });
+  });
+
+  describe.each([
+    { action: 'Switch Agent', transition: (commands: SessionCommands) => commands.connect('two'), destination: 'two-1' },
+    { action: 'New Session', transition: (commands: SessionCommands) => commands.newSession(), destination: 'one-2' },
+    { action: 'Open Session', transition: (commands: SessionCommands) => commands.open('two', 'old'), destination: 'old' },
+  ])('$action decisions', ({ action, transition, destination }) => {
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Cancel', 'Cancel'],
+    ])('leaves the session, transcript, queued prompts, and review unchanged when the user %s', async (_choice, answer) => {
+      const { agents, manager, transcript, review, keptIn, user, commands } = setup({
+        one: sessionAgent('one').script,
+        two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script,
+      });
+      await manager.connectToAgent('one');
+      transcript.hasRunningTurn = true;
+      transcript.queuedPrompts = 2;
+      review.paths = ['/w/a.ts'];
+      user.answer(answer);
+
+      await transition(commands);
+
+      expect(manager.getActiveSessionId()).toBe('one-1');
+      expect(agents.running('one')).toHaveLength(1);
+      expect(agents.launched).toHaveLength(1);
+      expect(transcript.clearTranscript).not.toHaveBeenCalled();
+      expect(transcript.queuedPrompts).toBe(2);
+      expect(review.paths).toEqual(['/w/a.ts']);
+      expect(keptIn).toEqual([]);
+      expect(user.take()).toHaveLength(1);
+    });
+
+    it('continues without Keep All and leaves review unresolved', async () => {
+      const { manager, review, keptIn, user, commands } = setup({
+        one: sessionAgent('one').script,
+        two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script,
+      });
+      await manager.connectToAgent('one');
+      review.paths = ['/w/a.ts'];
+      user.answer(action);
+
+      await transition(commands);
+
+      expect(manager.getActiveSessionId()).toBe(destination);
+      expect(review.paths).toEqual(['/w/a.ts']);
+      expect(keptIn).toEqual([]);
     });
   });
 
@@ -506,7 +561,7 @@ describe('SessionCommands', () => {
 
       expect(manager.getActiveSessionId()).toBe('old');
       expect(user.take()).toEqual([
-        asked('Open a different session? This discards 2 queued prompts.', 'Open Session'),
+        asked('Open a different session?', 'This discards 2 queued prompts.', 'Open Session'),
         focusChatView,
         progress('Loading session…'),
       ]);
@@ -523,7 +578,7 @@ describe('SessionCommands', () => {
 
       expect(manager.getActiveSessionId()).toBe('one-1');
       expect(two.requests).toEqual([]);
-      expect(user.take()).toEqual([asked('Open a different session? This stops the turn in progress.', 'Open Session')]);
+      expect(user.take()).toEqual([asked('Open a different session?', 'This stops the turn in progress.', 'Open Session')]);
     });
 
     it('asks while files are under review, and with Keep All keeps them before opening', async () => {
@@ -537,7 +592,9 @@ describe('SessionCommands', () => {
       expect(keptIn).toEqual(['one-1']);
       expect(manager.getActiveSessionId()).toBe('old');
       expect(user.take()).toEqual([
-        asked(`Open a different session? ${underReview('1 file is')}`, 'Open Session', 'Keep All and Open'),
+        asked('Open a different session?', underReview('1 file is'), 'Open Session', {
+          label: 'Keep All and Open', detail: 'Keep 1 file under review before continuing.',
+        }),
         focusChatView,
         progress('Loading session…'),
       ]);

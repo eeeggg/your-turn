@@ -1,4 +1,4 @@
-import { afterEach, assert, beforeEach, describe, expect, it } from 'vitest';
+import { assert, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
 import { answer, connect, loadChatPage, plan, thought, toolCall, type ChatPage } from './chatPage';
 
@@ -8,11 +8,6 @@ beforeEach(() => {
   page = loadChatPage();
   connect(page);
   page.send({ type: 'promptStart' });
-});
-
-afterEach(() => {
-  expect(page.errors).toEqual([]);
-  page.close();
 });
 
 /** Each part of the only turn as `hook classes: text`. */

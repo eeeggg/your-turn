@@ -1,12 +1,13 @@
 import { existsSync, mkdtempSync, realpathSync, rmSync, watch, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { AgentManager, findOnPath, type AgentConfigEntry, type AgentProcess } from '@/core/AgentManager';
 
 /** Launch a Node script as the agent and record what the launcher reports. */
 function launch(script: string, options: { env?: Record<string, string>; cwd?: string } = {}) {
   const reports: string[] = [];
+  let finished = false;
   let reportExit: (code: number | null) => void = () => {};
   const exited = new Promise<number | null>((resolve) => { reportExit = resolve; });
   const config: AgentConfigEntry = {
@@ -17,9 +18,14 @@ function launch(script: string, options: { env?: Record<string, string>; cwd?: s
   const agent = new AgentManager().launch('test-agent', config, options.cwd ?? process.cwd(), {
     error: (error) => reports.push(`error: ${error.message}`),
     exit: (code) => {
+      finished = true;
       reports.push(`exit: ${String(code)}`);
       reportExit(code);
     },
+  });
+  onTestFinished(async () => {
+    if (!finished) { agent.kill(); }
+    await exited;
   });
   return { agent, reports, exited };
 }
@@ -45,14 +51,18 @@ async function readUntil(agent: AgentProcess, done: (text: string) => boolean): 
 
 describe('AgentManager', () => {
   it('carries messages over the agent\'s stdin and stdout', async () => {
-    const { agent } = launch('process.stdin.pipe(process.stdout)');
+    const { agent, exited } = launch('process.stdin.pipe(process.stdout)');
 
     const writer = agent.input.getWriter();
-    await writer.write(new TextEncoder().encode('{"jsonrpc":"2.0"}\n'));
-    writer.releaseLock();
+    try {
+      await writer.write(new TextEncoder().encode('{"jsonrpc":"2.0"}\n'));
+    } finally {
+      writer.releaseLock();
+    }
 
     expect(await readUntil(agent, (text) => text.includes('\n'))).toBe('{"jsonrpc":"2.0"}\n');
     agent.kill();
+    await exited;
   });
 
   it('reports the exit code of an agent that exits', async () => {
@@ -84,6 +94,11 @@ describe('AgentManager', () => {
   it('stops the agent and every process it started when killed', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'acp-process-group-'));
     const watchers: { close(): void }[] = [];
+    // Finish processes before removing their files, including after a failed or timed-out test.
+    onTestFinished(() => {
+      for (const watcher of watchers) { watcher.close(); }
+      rmSync(directory, { recursive: true, force: true });
+    });
     const created = (name: string) => new Promise<void>((resolve) => {
       const watcher = watch(directory, (_event, file) => {
         if (file?.toString() === name && existsSync(join(directory, name))) {
@@ -95,26 +110,22 @@ describe('AgentManager', () => {
     });
     const ready = created('ready');
     const stopped = created('stopped');
-    try {
-      const child = [
-        "const fs = require('node:fs');",
-        `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(join(directory, 'stopped'))}, ''); process.exit(0); });`,
-        `fs.writeFileSync(${JSON.stringify(join(directory, 'ready'))}, '');`,
-        'setInterval(() => {}, 1000);',
-      ].join('');
-      const { agent, exited } = launch(
-        `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: 'ignore' }); setInterval(() => {}, 1000)`,
-      );
-      await ready;
+    const child = [
+      "const fs = require('node:fs');",
+      `process.on('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(join(directory, 'stopped'))}, ''); process.exit(0); });`,
+      `fs.writeFileSync(${JSON.stringify(join(directory, 'ready'))}, '');`,
+      'setInterval(() => {}, 1000);',
+    ].join('');
+    // Inherited pipes keep the launcher's completion pending until the descendant exits too.
+    const { agent, exited } = launch(
+      `require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(child)}], { stdio: ['ignore', 'inherit', 'inherit'] }); setInterval(() => {}, 1000)`,
+    );
+    await ready;
 
-      agent.kill();
+    agent.kill();
 
-      expect(await exited).toBeNull();
-      await stopped;
-    } finally {
-      for (const watcher of watchers) { watcher.close(); }
-      rmSync(directory, { recursive: true, force: true });
-    }
+    expect(await exited).toBeNull();
+    await stopped;
   });
 });
 

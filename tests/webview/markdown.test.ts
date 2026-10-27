@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { answer as agentText, connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
@@ -7,11 +7,6 @@ beforeEach(() => {
   page = loadChatPage();
   connect(page);
   page.takePosted();
-});
-
-afterEach(() => {
-  expect(page.errors).toEqual([]);
-  page.close();
 });
 
 function message(): Element {
@@ -107,13 +102,17 @@ describe('links', () => {
 
   it('copies a link to the clipboard from the button beside it', async () => {
     const copied: string[] = [];
+    let written: () => void = () => {};
+    const clipboardWritten = new Promise<void>((resolve) => { written = resolve; });
     Object.defineProperty(page.window.navigator, 'clipboard', {
-      value: { writeText: (text: string) => Promise.resolve(void copied.push(text)) },
+      value: { writeText: async (text: string) => { copied.push(text); written(); } },
     });
     answer('See [the site](https://example.com/).');
 
-    message().querySelector<HTMLButtonElement>('button[aria-label="Copy link"]')?.click();
-    await Promise.resolve();
+    const copy = message().querySelector<HTMLButtonElement>('button[aria-label="Copy link"]');
+    expect(copy).not.toBeNull();
+    copy?.click();
+    await clipboardWritten;
 
     expect(copied).toEqual(['https://example.com/']);
   });

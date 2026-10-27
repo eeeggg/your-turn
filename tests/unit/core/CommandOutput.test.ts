@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { Cleaner, cleaned, forTerminal } from '@/core/CommandOutput';
 
 const ESC = '\x1b';
@@ -48,11 +48,35 @@ describe('CommandOutput', () => {
       const lines = Array.from({ length: 1_000 }, (_, i) => `${i}`.padStart(19, '.'));
       expect(await cleaned(lines.join('\n'))).toEqual({ text: lines.join('\n'), truncated: false });
     });
+
+    it.each([
+      { name: '4 KiB', sizes: [4 * 1024] },
+      { name: '10 MiB', sizes: [10 * 1024 * 1024] },
+      { name: '50 MiB stress case', sizes: [50 * 1024 * 1024] },
+      { name: 'five growing snapshots, 1–5 MiB (15 MiB total)', sizes: [1, 2, 3, 4, 5].map((size) => size * 1024 * 1024) },
+    ])('finishes queued parsing and preserves the final output: $name', async ({ sizes }) => {
+      const line = `${ESC}[32mPASS${ESC}[0m command output ${'x'.repeat(80)}\n`;
+      const ending = '\nfinal output';
+      const inputs = sizes.map((size) =>
+        line.repeat(Math.ceil(size / line.length)).slice(0, size - ending.length) + ending,
+      );
+      const pending = inputs.map(cleaned);
+      const outputs = await Promise.all(pending);
+
+      expect(outputs).toHaveLength(sizes.length);
+      for (const [index, output] of outputs.entries()) {
+        expect(output.text.endsWith('\nfinal output')).toBe(true);
+        expect(output.text).not.toContain(ESC);
+        expect(output.text.length).toBeLessThanOrEqual(20_000);
+        expect(output.truncated).toBe((sizes[index] ?? 0) > 20_000);
+      }
+    });
   });
 
   describe('Cleaner', () => {
     it('applies an escape sequence split between writes, and shows what has been written so far each time', async () => {
       const cleaner = new Cleaner();
+      onTestFinished(async () => { await cleaner.dispose(); });
       try {
         cleaner.write(`${ESC}[3`);
         cleaner.write(`1mred${ESC}[0m\nnext`);
@@ -60,8 +84,37 @@ describe('CommandOutput', () => {
         cleaner.write('\rlast');
         expect(await cleaner.shown()).toEqual({ text: 'red\nlast', truncated: false });
       } finally {
-        cleaner.dispose();
+        await cleaner.dispose();
       }
+    });
+
+    it('drains accepted writes and reads before disposal, once, without accepting more work', async () => {
+      vi.useFakeTimers();
+      onTestFinished(() => { vi.useRealTimers(); });
+      const cleaner = new Cleaner();
+      onTestFinished(async () => {
+        const disposed = cleaner.dispose();
+        await vi.runAllTimersAsync();
+        await disposed;
+      });
+      cleaner.write('first\n');
+      const first = cleaner.shown();
+      cleaner.write('last');
+      const last = cleaner.shown();
+      const completed: string[] = [];
+      void first.then(() => completed.push('first'));
+      void last.then(() => completed.push('last'));
+      const disposed = cleaner.dispose();
+      const completedAtDisposal = disposed.then(() => [...completed]);
+      expect(cleaner.dispose()).toBe(disposed);
+      expect(() => cleaner.write('too late')).toThrow('disposed');
+      await vi.runAllTimersAsync();
+      await disposed;
+
+      expect(await completedAtDisposal).toEqual(['first', 'last']);
+      expect(await first).toEqual({ text: 'first', truncated: false });
+      expect(await last).toEqual({ text: 'first\nlast', truncated: false });
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 

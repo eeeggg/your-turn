@@ -1,20 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { answer, connect, loadChatPage, plan, texts, thought, toolCall, type ChatPage } from './chatPage';
 
-const pages: ChatPage[] = [];
-
 function open(savedState?: unknown): ChatPage {
-  const page = loadChatPage(savedState === undefined ? {} : { savedState });
-  pages.push(page);
-  return page;
+  return loadChatPage(savedState === undefined ? {} : { savedState });
 }
-
-afterEach(() => {
-  for (const page of pages.splice(0)) {
-    expect(page.errors).toEqual([]);
-    page.close();
-  }
-});
 
 /** One full turn: a user prompt, a thought, a tool call, an answer and a plan. */
 function runTurn(page: ChatPage): void {

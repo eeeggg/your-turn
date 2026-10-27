@@ -1,7 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { TerminalExitStatus, ToolCallContent } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
-import type { ShownOutput } from '@/core/CommandOutput';
+import { Cleaner, type ShownOutput } from '@/core/CommandOutput';
 import { CommandOutputFeed, type ShownContent } from '@/core/CommandOutputFeed';
 
 type Sent =
@@ -11,10 +11,20 @@ type Sent =
 function setup() {
   const written: string[] = [];
   const terminals = new AgentTerminals({ open: () => ({ write: (text) => written.push(text), show: () => {} }) });
+  onTestFinished(async () => {
+    const disposed = terminals.dispose();
+    if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
+    await disposed;
+  });
   const sent: Sent[] = [];
   const feed = new CommandOutputFeed(terminals, {
     toolCallContent: (sessionId, toolCallId, content) => sent.push(['toolCallContent', sessionId, toolCallId, content]),
     terminal: (sessionId, terminalId, output, exitStatus) => sent.push(['terminal', sessionId, terminalId, output, exitStatus]),
+  });
+  onTestFinished(async () => {
+    const disposed = feed.dispose();
+    if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
+    await disposed;
   });
   return { terminals, feed, sent, written };
 }
@@ -23,16 +33,73 @@ const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ 
 const output = (text: string, truncated = false): ShownContent => ({ kind: 'commandOutput', output: { text, truncated } });
 const chunk = (terminalId: string, text: string) => ({ kind: 'terminalOutput' as const, terminalId, data: new TextEncoder().encode(text) });
 
-/** With fake timers, the time xterm's own timers need to apply a write, once the feed reads a terminal. */
-const XTERM_PARSING_MS = 10;
-
 /** Applies every task the terminal cleaner queued. */
 const cleaningDone = () => vi.runAllTimersAsync();
 
 describe('CommandOutputFeed', () => {
-  afterEach(() => {
-    vi.useRealTimers();
+  it('drains accepted cleaning without posting after disposal and detaches from terminals', async () => {
+    vi.useFakeTimers();
+    const { feed, terminals, sent } = setup();
+    feed.toolCallContent('s1', 'c1', 'execute', texts('pending'));
+    terminals.handleSessionUpdate('s1', chunk('t1', 'pending terminal'));
+    const disposed = feed.dispose();
+    expect(feed.dispose()).toBe(disposed);
+    terminals.handleSessionUpdate('s1', chunk('t1', ' after disposal'));
+    expect(feed.toolCallContent('s1', 'late', 'execute', texts('late'))).toBeUndefined();
+    await vi.runAllTimersAsync();
+    await disposed;
+
+    expect(sent).toEqual([]);
+    expect(terminals.open('s1', { kind: 'toolCall', toolCallId: 'late' }, 'late')).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
   });
+
+  it('awaits terminal reads already started when disposed', async () => {
+    vi.useFakeTimers();
+    const { feed, terminals, sent } = setup();
+    const read = vi.spyOn(terminals, 'shown');
+    onTestFinished(() => { read.mockRestore(); });
+    terminals.handleSessionUpdate('s1', chunk('t1', 'pending'));
+    vi.advanceTimersByTime(250);
+    expect(read).toHaveBeenCalledOnce();
+    const disposed = feed.dispose();
+    await vi.runAllTimersAsync();
+    await disposed;
+    expect(sent).toEqual([]);
+  });
+
+  it('drains sibling cleaners even when one output cannot be read', async () => {
+    vi.useFakeTimers();
+    const terminals = new AgentTerminals({ open: () => ({ write() {}, show() {} }) });
+    const feed = new CommandOutputFeed(terminals, { toolCallContent() {}, terminal() {} });
+    onTestFinished(async () => {
+      const disposal = Promise.allSettled([feed.dispose(), terminals.dispose()]);
+      await vi.runAllTimersAsync();
+      await disposal;
+    });
+    const failure = new Error('cannot read output');
+    const read = vi.spyOn(Cleaner.prototype, 'shown').mockRejectedValueOnce(failure);
+    onTestFinished(() => { read.mockRestore(); });
+    let siblingReleased = false;
+    const dispose = Cleaner.prototype.dispose;
+    const released = vi.spyOn(Cleaner.prototype, 'dispose').mockImplementation(function (this: Cleaner) {
+      const completion = dispose.call(this);
+      if (released.mock.calls.length === 2) {
+        return completion.then(() => { siblingReleased = true; });
+      }
+      return completion;
+    });
+    onTestFinished(() => { released.mockRestore(); });
+    feed.toolCallContent('s1', 'c1', 'execute', texts('broken', 'still parsing'));
+    const disposed = feed.dispose();
+    const checked = disposed.catch((error: unknown) => ({ error, siblingReleased }));
+    await vi.runAllTimersAsync();
+    const result = await checked;
+    expect(result?.siblingReleased).toBe(true);
+    expect(result?.error).toBeInstanceOf(AggregateError);
+  });
+
+  beforeEach(() => { onTestFinished(() => { vi.useRealTimers(); }); });
 
   describe("an execute tool call's text", () => {
     beforeEach(() => {
@@ -108,6 +175,16 @@ describe('CommandOutputFeed', () => {
       expect(sent.map(([, sessionId]) => sessionId)).toEqual(['s2']);
     });
 
+    it('drops pending content from a forgotten session even when its ID is reused', async () => {
+      const { feed, sent } = setup();
+      feed.toolCallContent('s1', 'c1', 'execute', texts('old session'));
+      feed.forgetSession('s1');
+      feed.toolCallContent('s1', 'c1', 'execute', texts('new session'));
+      await cleaningDone();
+
+      expect(sent).toEqual([['toolCallContent', 's1', 'c1', [output('new session')]]]);
+    });
+
     it("shows a command's last characters, and says when earlier ones are not shown", async () => {
       const { feed, sent } = setup();
       const lines = Array.from({ length: 3_000 }, (_, i) => `${i + 1}`);
@@ -128,11 +205,11 @@ describe('CommandOutputFeed', () => {
       terminals.handleSessionUpdate('s1', chunk('t1', 'two\n'));
       await vi.advanceTimersByTimeAsync(249);
       expect(sent).toEqual([]);
-      await vi.advanceTimersByTimeAsync(1 + XTERM_PARSING_MS);
+      await vi.advanceTimersByTimeAsync(1);
       expect(sent).toEqual([['terminal', 's1', 't1', { text: 'one\ntwo', truncated: false }, null]]);
 
       terminals.handleSessionUpdate('s1', { kind: 'terminal', terminalId: 't1', exitStatus: { exitCode: 2, signal: null } });
-      await vi.advanceTimersByTimeAsync(250 + XTERM_PARSING_MS);
+      await vi.advanceTimersByTimeAsync(250);
       expect(sent.at(-1)).toEqual(['terminal', 's1', 't1', { text: 'one\ntwo', truncated: false }, { exitCode: 2, signal: null }]);
       expect(sent).toHaveLength(2);
     });
@@ -144,7 +221,7 @@ describe('CommandOutputFeed', () => {
       terminals.handleSessionUpdate('s1', chunk('t1', 'first'));
       await vi.advanceTimersByTimeAsync(100);
       terminals.handleSessionUpdate('s2', chunk('t1', 'second'));
-      await vi.advanceTimersByTimeAsync(150 + XTERM_PARSING_MS);
+      await vi.advanceTimersByTimeAsync(150);
       expect(sent.map(([, sessionId]) => sessionId)).toEqual(['s1']);
       await vi.advanceTimersByTimeAsync(100);
       expect(sent.map(([, sessionId]) => sessionId)).toEqual(['s1', 's2']);

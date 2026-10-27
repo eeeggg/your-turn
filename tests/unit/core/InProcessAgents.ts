@@ -1,6 +1,7 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
 import type { AgentApp, AgentConnector, InitializeResponse } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
+import { onTestFinished } from 'vitest';
 import type { AcpDriver, AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
@@ -79,7 +80,11 @@ export class InProcessAgents implements AgentLauncher {
     });
     const toAgent = pipe();
     const toClient = pipe();
-    script().connect(ndJsonStream(toClient.writable, toAgent.readable));
+    let connection: unknown;
+    try { connection = script().connect(ndJsonStream(toClient.writable, toAgent.readable)); }
+    catch (error) { for (const close of closers) { close(); } throw error; }
+    const closed = connection && typeof connection === 'object' && 'closed' in connection && connection.closed instanceof Promise
+      ? connection.closed as Promise<void> : undefined;
 
     // Like a process's stdio, both streams close when the agent exits.
     let finishExit: () => void = () => {};
@@ -107,6 +112,7 @@ export class InProcessAgents implements AgentLauncher {
           });
         });
       }
+      await closed;
       finishExit();
     };
     const process: AgentProcess = {
@@ -140,6 +146,11 @@ export async function connectedDriver(
 ): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; schemas: AcpSchema[]; exit: () => Promise<void> }> {
   const agents = new InProcessAgents({ fake: script });
   const sessionUpdates = new SessionUpdateHandler();
+  const exit = async () => {
+    sessionUpdates.dispose();
+    await Promise.all(agents.launched.map((agent) => agent.crash()));
+  };
+  onTestFinished(exit);
   const updates: [string, SessionUpdate][] = [];
   const schemas: AcpSchema[] = [];
   sessionUpdates.addListener((sessionId, update, schema) => {
@@ -148,7 +159,7 @@ export async function connectedDriver(
   });
   const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
   const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
-  return { driver, updates, schemas, exit: async () => { await agents.launched[0]?.crash(); } };
+  return { driver, updates, schemas, exit };
 }
 
 /** An ACP v2 SDK agent with sessions that answers `initialize`; add the requests a test needs. */

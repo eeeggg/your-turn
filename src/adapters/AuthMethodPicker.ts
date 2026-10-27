@@ -7,29 +7,22 @@ export function createAuthMethodPicker(active: (method: AuthMethod) => void = ()
   return {
     async chooseAuthMethod(agentName, methods) {
       const [only] = methods;
-      if (methods.length === 1 && only) {
-        const confirm = await vscode.window.showInformationMessage(
-          `${agentName} requires authentication via "${only.name}".`,
-          { modal: true, ...(only.description ? { detail: only.description } : {}) },
-          'Authenticate',
-        );
-        return confirm === 'Authenticate' ? only : undefined;
-      }
-
-      const items = methods.map(m => ({
-        label: m.name,
-        description: m.description || '',
-        detail: `ID: ${m.id}`,
+      const single = methods.length === 1 ? only : undefined;
+      const items: (vscode.QuickPickItem & { method?: AuthMethod })[] = methods.map(m => ({
+        label: single ? 'Authenticate' : m.name,
+        description: single ? m.name : m.description || '',
+        detail: single ? m.description || `ID: ${m.id}` : `ID: ${m.id}`,
         method: m,
       }));
+      if (single) { items.push({ label: 'Cancel' }); }
       const picked = await vscode.window.showQuickPick(
         items,
         {
-          placeHolder: 'Select an authentication method',
+          placeHolder: single ? `Authenticate via "${single.name}"?` : 'Select an authentication method',
           title: `${agentName} requires authentication`,
           onDidSelectItem: (item) => {
             const selected = items.find((candidate) => candidate === item);
-            if (selected) { active(selected.method); }
+            if (selected?.method) { active(selected.method); }
           },
         },
       );

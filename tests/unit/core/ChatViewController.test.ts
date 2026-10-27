@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
+import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import type { FileEditor } from '@/core/ReportedFiles';
 import type { SessionInfo } from '@/core/SessionManager';
@@ -162,20 +163,64 @@ class FakeEditor implements FileEditor {
 
 function setup() {
   const sessions = new FakeSessions();
+  onTestFinished(() => { expect(sessions.prompts, 'chat prompts left pending by the test').toHaveLength(0); });
   const environment = new FakeEnvironment();
   const editor = new FakeEditor();
   const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
+  onTestFinished(async () => {
+    const disposed = terminals.dispose();
+    if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
+    await disposed;
+  });
   const controller = new ChatViewController(sessions, environment, editor, terminals);
+  onTestFinished(async () => {
+    const disposed = controller.dispose();
+    if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
+    await disposed;
+  });
   return { sessions, environment, editor, terminals, controller };
 }
 
-function sendPrompt(controller: ChatViewController, text: string): Promise<void> {
-  return controller.handleMessage({ type: 'sendPrompt', text });
+function sendPrompt(controller: ChatViewController, sessions: FakeSessions, text: string): Promise<void> {
+  const turn = controller.handleMessage({ type: 'sendPrompt', text });
+  onTestFinished(async () => {
+    for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); }
+    await turn;
+  });
+  return turn;
 }
 
 const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
+  it('stops posting and accepting updates while its command output drains on disposal', async () => {
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    const { controller, terminals, environment, sessions } = setup();
+    let outputReleased = false;
+    const dispose = Cleaner.prototype.dispose;
+    const release = vi.spyOn(Cleaner.prototype, 'dispose').mockImplementation(function (this: Cleaner) {
+      return dispose.call(this).then(() => { outputReleased = true; });
+    });
+    onTestFinished(() => { release.mockRestore(); });
+    controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'pending' }] });
+    controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: null, text: 'pending text' });
+    terminals.handleSessionUpdate('s1', { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('pending terminal') });
+    environment.take();
+    const disposed = controller.dispose();
+    const releasedAtDisposal = disposed.then(() => outputReleased);
+    expect(controller.dispose()).toBe(disposed);
+    controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: null, text: 'late' });
+    await controller.handleMessage({ type: 'sendPrompt', text: 'late' });
+    await vi.runAllTimersAsync();
+    await disposed;
+
+    expect(await releasedAtDisposal).toBe(true);
+    expect(environment.take()).toEqual([]);
+    expect(sessions.sendPrompt).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   describe('session state', () => {
     it('describes the active session when the webview is ready', async () => {
       const { sessions, environment, controller } = setup();
@@ -338,7 +383,7 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.activeId = null;
 
-      await sendPrompt(controller, 'hello');
+      await sendPrompt(controller, sessions, 'hello');
 
       expect(sessions.sendPrompt).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([{ type: 'error', message: 'No active session. Create a session first.' }]);
@@ -347,7 +392,7 @@ describe('ChatViewController', () => {
     it('runs a turn and reports its end', async () => {
       const { sessions, environment, controller } = setup();
 
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(sessions.recordFirstPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(environment.take()).toEqual([{ type: 'promptStart' }]);
@@ -364,7 +409,7 @@ describe('ChatViewController', () => {
     it('reports a failed prompt as an error that ends the turn', async () => {
       const { sessions, environment, controller } = setup();
 
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       sessions.fail(new Error('agent crashed'));
       await turn;
 
@@ -380,7 +425,7 @@ describe('ChatViewController', () => {
     it('uses a generic message when the failure has none', async () => {
       const { sessions, environment, controller } = setup();
 
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       sessions.fail({});
       await turn;
 
@@ -391,13 +436,13 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       const inProgress = (value: boolean) => ['setContext', 'acp.turnInProgress', value];
 
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       expect(environment.executeCommand.mock.calls).toEqual([inProgress(true)]);
       sessions.answer();
       await turn;
       expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false)]);
 
-      const failing = sendPrompt(controller, 'again');
+      const failing = sendPrompt(controller, sessions, 'again');
       sessions.fail(new Error('agent crashed'));
       await failing;
       expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false), inProgress(true), inProgress(false)]);
@@ -408,7 +453,7 @@ describe('ChatViewController', () => {
       const heard: boolean[] = [];
       controller.addTurnListener((inProgress) => heard.push(inProgress));
 
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       sessions.answer();
       await turn;
       expect(heard).toEqual([true, false]);
@@ -416,7 +461,7 @@ describe('ChatViewController', () => {
 
     it('tells a chat view that opens during a turn that the turn is running, so it holds the next prompt', async () => {
       const { sessions, environment, controller } = setup();
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       environment.take();
 
       await controller.handleMessage({ type: 'ready' });
@@ -442,7 +487,7 @@ describe('ChatViewController', () => {
         ];
         for (const [name, outcome] of outcomes) {
           const { sessions, environment, controller } = setup();
-          const turn = sendPrompt(controller, 'hello');
+          const turn = sendPrompt(controller, sessions, 'hello');
           switchTo(sessions, controller, 's2');
           environment.take();
 
@@ -455,7 +500,7 @@ describe('ChatViewController', () => {
 
       it('takes the Cancel button off the title bar while another session is shown, and puts it back on return', async () => {
         const { sessions, environment, controller } = setup();
-        void sendPrompt(controller, 'hello');
+        const turn = sendPrompt(controller, sessions, 'hello');
         environment.executeCommand.mockClear();
 
         switchTo(sessions, controller, 's2');
@@ -465,57 +510,67 @@ describe('ChatViewController', () => {
           ['setContext', 'acp.turnInProgress', false],
           ['setContext', 'acp.turnInProgress', true],
         ]);
+        sessions.answer();
+        await turn;
       });
 
-      it('tells the chat view the turn is still running when it shows that session again', () => {
+      it('tells the chat view the turn is still running when it shows that session again', async () => {
         const { sessions, environment, controller } = setup();
-        void sendPrompt(controller, 'hello');
+        const turn = sendPrompt(controller, sessions, 'hello');
         switchTo(sessions, controller, 's2');
         expect(environment.take().map((message) => message.type)).toEqual(['promptStart', 'state']);
 
         switchTo(sessions, controller, 's1');
 
         expect(environment.take().map((message) => message.type)).toEqual(['state', 'promptStart']);
+        sessions.answer();
+        await turn;
       });
 
-      it("says no turn is running while another session is active, and the left session's turn is again on return", () => {
+      it("says no turn is running while another session is active, and the left session's turn is again on return", async () => {
         const { sessions, controller } = setup();
-        void sendPrompt(controller, 'hello');
+        const turn = sendPrompt(controller, sessions, 'hello');
 
         switchTo(sessions, controller, 's2');
         expect(controller.hasRunningTurn).toBe(false);
         switchTo(sessions, controller, 's1');
         expect(controller.hasRunningTurn).toBe(true);
+        sessions.answer();
+        await turn;
       });
     });
 
     it('does not tell the chat view again that a turn is running when the same session is reported again', async () => {
-      const { environment, controller } = setup();
+      const { sessions, environment, controller } = setup();
       await controller.handleMessage({ type: 'ready' });
-      void sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       environment.take();
 
       controller.notifyActiveSessionChanged();
 
       expect(environment.take().map((message) => message.type)).toEqual(['state']);
+      sessions.answer();
+      await turn;
     });
 
     describe('when the agent of a session exits', () => {
       it('tells the chat view why its session ended, which ends the turn', async () => {
-        const { environment, controller } = setup();
+        const { sessions, environment, controller } = setup();
         await controller.handleMessage({ type: 'ready' });
-        void sendPrompt(controller, 'hello');
+        const turn = sendPrompt(controller, sessions, 'hello');
         environment.take();
 
         controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
 
         expect(environment.take()).toEqual([{ type: 'sessionEnded', message: 'Fake Agent exited unexpectedly (code 1).' }]);
+        sessions.fail(new Error('ACP connection closed'));
+        await turn;
       });
 
       it('says nothing more when the turn then fails, the session being gone', async () => {
         const { sessions, environment, controller } = setup();
         await controller.handleMessage({ type: 'ready' });
-        const turn = sendPrompt(controller, 'hello');
+        const turn = sendPrompt(controller, sessions, 'hello');
         controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
         sessions.activeId = null;
         controller.notifyActiveSessionChanged();
@@ -528,9 +583,9 @@ describe('ChatViewController', () => {
       });
 
       it('forgets the turn, so the chat view is not told it is running when it opens again', async () => {
-        const { environment, controller } = setup();
+        const { sessions, environment, controller } = setup();
         await controller.handleMessage({ type: 'ready' });
-        void sendPrompt(controller, 'hello');
+        const turn = sendPrompt(controller, sessions, 'hello');
 
         controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
         environment.take();
@@ -538,6 +593,8 @@ describe('ChatViewController', () => {
 
         expect(environment.take().map((message) => message.type)).toEqual(['state']);
         expect(controller.hasRunningTurn).toBe(false);
+        sessions.fail(new Error('ACP connection closed'));
+        await turn;
       });
 
       it('does not tell the chat view about a session it does not show', async () => {
@@ -774,64 +831,55 @@ describe('ChatViewController', () => {
 
     it("passes on a tool call's terminals by ID, and tells the webview of each terminal once its changes settle, for the active session only", async () => {
       vi.useFakeTimers();
-      try {
-        const { sessions, environment, terminals, controller } = setup();
-        sessions.session = sessionInfo();
-        const feed = (sessionId: string, update: SessionUpdate) => {
-          controller.handleSessionUpdate(sessionId, update);
-          terminals.handleSessionUpdate(sessionId, update);
-        };
+      onTestFinished(() => { vi.useRealTimers(); });
+      const { sessions, environment, terminals, controller } = setup();
+      sessions.session = sessionInfo();
+      const feed = (sessionId: string, update: SessionUpdate) => {
+        controller.handleSessionUpdate(sessionId, update);
+        terminals.handleSessionUpdate(sessionId, update);
+      };
 
-        feed('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'terminal', terminalId: 'term' }] });
-        feed('s1', { kind: 'terminal', terminalId: 'term', command: 'npm test' });
-        feed('s1', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('\x1b[31mfailed\x1b[0m\n') });
-        feed('other', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('elsewhere') });
-        feed('s1', { kind: 'terminal', terminalId: 'term', exitStatus: { exitCode: 1, signal: null } });
-        await vi.advanceTimersByTimeAsync(300);
+      feed('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'terminal', terminalId: 'term' }] });
+      feed('s1', { kind: 'terminal', terminalId: 'term', command: 'npm test' });
+      feed('s1', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('\x1b[31mfailed\x1b[0m\n') });
+      feed('other', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('elsewhere') });
+      feed('s1', { kind: 'terminal', terminalId: 'term', exitStatus: { exitCode: 1, signal: null } });
+      await vi.runAllTimersAsync();
 
-        expect(environment.take()).toEqual([
-          { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'terminal', terminalId: 'term' }] },
-          { type: 'terminal', terminalId: 'term', text: 'failed', truncated: false, exitStatus: { exitCode: 1, signal: null } },
-        ]);
-      } finally {
-        vi.useRealTimers();
-      }
+      expect(environment.take()).toEqual([
+        { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'terminal', terminalId: 'term' }] },
+        { type: 'terminal', terminalId: 'term', text: 'failed', truncated: false, exitStatus: { exitCode: 1, signal: null } },
+      ]);
     });
 
     it("posts an execute tool call's title and status at once, and its text once cleaned, as command output", async () => {
       vi.useFakeTimers();
-      try {
-        const { sessions, environment, controller } = setup();
-        sessions.session = sessionInfo();
+      onTestFinished(() => { vi.useRealTimers(); });
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
 
-        controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
-          { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
-        ] });
-        expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
-        await vi.runAllTimersAsync();
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
+        { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
+      ] });
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
+      await vi.runAllTimersAsync();
 
-        expect(environment.take()).toEqual([
-          { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }] },
-        ]);
-      } finally {
-        vi.useRealTimers();
-      }
+      expect(environment.take()).toEqual([
+        { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }] },
+      ]);
     });
 
     it("drops an execute tool call's cleaned text once its session is no longer shown", async () => {
       vi.useFakeTimers();
-      try {
-        const { sessions, environment, controller } = setup();
-        sessions.session = sessionInfo();
+      onTestFinished(() => { vi.useRealTimers(); });
+      const { sessions, environment, controller } = setup();
+      sessions.session = sessionInfo();
 
-        controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
-        sessions.activeId = null;
-        await vi.runAllTimersAsync();
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
+      sessions.activeId = null;
+      await vi.runAllTimersAsync();
 
-        expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1' }]);
-      } finally {
-        vi.useRealTimers();
-      }
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1' }]);
     });
 
     describe("the output of a session that ended, which goes once the chat view clears the session's transcript", () => {
@@ -927,8 +975,10 @@ describe('ChatViewController', () => {
   });
 
   describe('text chunks', () => {
-    beforeEach(() => vi.useFakeTimers());
-    afterEach(() => vi.useRealTimers());
+    beforeEach(() => {
+      vi.useFakeTimers();
+      onTestFinished(() => { vi.useRealTimers(); });
+    });
 
     const answer = (text: string, messageId: string | null = null): ExtensionToWebviewMessage => ({ type: 'agentText', messageId, text });
     const answerChunk = (text: string, messageId: string | null = null): SessionUpdate => ({ kind: 'agentText', messageId, text });
@@ -952,7 +1002,7 @@ describe('ChatViewController', () => {
 
     it('sends the text before anything that follows it, without waiting', async () => {
       const { sessions, environment, controller } = setup();
-      const turn = sendPrompt(controller, 'hello');
+      const turn = sendPrompt(controller, sessions, 'hello');
       environment.take();
 
       controller.handleSessionUpdate('s1', answerChunk('reading'));

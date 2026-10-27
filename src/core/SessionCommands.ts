@@ -10,7 +10,7 @@ export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompt
 /** What commands need of the shown review. */
 export type ShownReview = Pick<ReviewControls, 'reviewedPaths' | 'keepAll'>;
 
-/** A switch of session: what it asks, its button, the button that first keeps every file, and whether it stops the agent. */
+/** A switch of session: what it asks, its choices, and whether it stops the agent. */
 interface Switch {
   question: string;
   action: string;
@@ -190,15 +190,26 @@ export class SessionCommands {
       ...(stopsTurn ? ['stops the turn in progress'] : []),
       ...(queued > 0 ? [`discards ${counted(queued, 'queued prompt', 'queued prompts')}`] : []),
     ];
-    const parts = [
-      question,
-      ...(losses.length > 0 ? [`This ${losses.join(' and ')}.`] : []),
-      ...(reviewed > 0 ? [`${counted(reviewed, 'file is', 'files are')} still under review, kept until this session is opened again in this window.`] : []),
-    ];
-    const actions = reviewed > 0 ? [action, keepAllAction] : [action];
-    const choice = await this.window.showWarningMessage(parts.join(' '), { modal: true }, ...actions);
-    if (choice === keepAllAction) { this.review.keepAll(); }
-    return choice !== undefined;
+    const consequences = losses.length > 0 ? [`This ${losses.join(' and ')}.`] : [];
+    const choice = await this.window.showQuickPick([
+      {
+        label: action,
+        detail: [
+          ...consequences,
+          ...(reviewed > 0 ? [`${counted(reviewed, 'file is', 'files are')} still under review, kept until this session is opened again in this window.`] : []),
+        ].join(' '),
+      },
+      ...(reviewed > 0 ? [{
+        label: keepAllAction,
+        detail: [...consequences, `Keep ${counted(reviewed, 'file', 'files')} under review before continuing.`].join(' '),
+      }] : []),
+      { label: 'Cancel' },
+    ], { title: action, placeHolder: question });
+    if (choice?.label === keepAllAction) {
+      this.review.keepAll();
+      return true;
+    }
+    return choice?.label === action;
   }
 
   private async pickAgent(): Promise<string | undefined> {

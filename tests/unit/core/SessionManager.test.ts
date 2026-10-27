@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod as AcpAuthMethod, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
@@ -67,16 +67,20 @@ function setup(scripts: Record<string, AgentScript>) {
   };
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
   const manager = new SessionManager(agents, new ConnectionManager(updates, '0.0.0-test', () => unusedHandlers), environment, authPrompt);
+  onTestFinished(async () => { await manager.dispose(); });
   const sessionHistory = new SessionHistoryStore(memoryStore());
   manager.setHistoryStore(sessionHistory);
 
   // As in the extension, the chat view applies session updates to the sessions.
+  const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
+  onTestFinished(async () => { await terminals.dispose(); });
   const chatView = new ChatViewController(
     manager,
     { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false },
     unusedEditor,
-    new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) }),
+    terminals,
   );
+  onTestFinished(async () => { updates.dispose(); await chatView.dispose(); });
   const received: [string, SessionUpdate][] = [];
   const receivedWaiters: { count: number; resolve: () => void }[] = [];
   updates.addListener((sessionId, update) => {
@@ -1023,13 +1027,31 @@ describe('SessionManager', () => {
 
     describe('when the command cannot start, as real processes', () => {
       function realAgent(config: AgentConfigEntry): SessionManager {
-        return new SessionManager(
+        const manager = new SessionManager(
           new AgentManager(),
           new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
           { workspaceCwd: () => process.cwd(), agentConfigs: () => ({ broken: config }), activeFileLink: () => undefined },
           { chooseAuthMethod: vi.fn() },
         );
+        onTestFinished(async () => { await manager.dispose(); });
+        return manager;
       }
+
+      it('awaits Execa completion when shutting down an initialized real process', async () => {
+        const manager = realAgent({ command: process.execPath, args: ['-e', `
+          require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => {
+            const request = JSON.parse(line);
+            process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { protocolVersion: 1 } }) + '\\n');
+          });
+        `] });
+        await manager.ensureConnected('broken');
+        const closed: (number | null)[] = [];
+        manager.on('agent-closed', (_id, code) => closed.push(code));
+
+        await manager.dispose();
+
+        expect(closed).toEqual([null]);
+      });
 
       it('fails to connect through a command missing from the PATH with the explanation checking a package runner gives', async () => {
         const manager = realAgent({ command: 'acp-test-no-such-command', args: ['acp'] });
@@ -1046,14 +1068,149 @@ describe('SessionManager', () => {
     });
 
     it('stops every agent on dispose', async () => {
-      const { agents, manager } = setup({ one: sessionAgent('s1').script, two: sessionAgent('s2').script });
+      const { agents, manager, takeEvents } = setup({ one: sessionAgent('s1').script, two: sessionAgent('s2').script });
       await manager.ensureConnected('one');
       await manager.connectToAgent('two');
+      takeEvents();
 
-      manager.dispose();
+      const disposed = manager.dispose();
 
       expect(agents.launched.map((l) => l.killed)).toEqual([true, true]);
       expect(manager.getActiveSessionId()).toBe('s2');
+      await disposed;
+      expect(takeEvents().filter(([event]) => event === 'agent-closed')).toEqual([
+        ['agent-closed', 'agent_1', null],
+        ['agent-closed', 'agent_2', null],
+      ]);
+      expect(manager.getActiveSessionId()).toBeNull();
+    });
+
+    it('awaits an already-disconnected agent during disposal', async () => {
+      const { manager, takeEvents } = setup({ fake: sessionAgent().script });
+      await manager.ensureConnected('fake');
+      await manager.disconnectAgent('fake');
+
+      await manager.dispose();
+
+      expect(takeEvents()).toEqual([['agent-closed', 'agent_1', null]]);
+    });
+
+    it('shares disposal completion between repeated calls', async () => {
+      const { manager, takeEvents } = setup({ fake: sessionAgent().script });
+      await manager.ensureConnected('fake');
+
+      const disposed = manager.dispose();
+
+      expect(manager.dispose()).toBe(disposed);
+      await disposed;
+      expect(takeEvents()).toEqual([['agent-closed', 'agent_1', null]]);
+      expect(manager.dispose()).toBe(disposed);
+    });
+
+    it('does not reuse a session while disposal is still waiting for its agent to exit', async () => {
+      const { agents, manager } = setup({ fake: sessionAgent().script });
+      await manager.connectToAgent('fake');
+      const disposed = manager.dispose();
+
+      await expect(manager.connectToAgent('fake')).rejects.toThrow('Session manager is disposed.');
+      await disposed;
+
+      expect(manager.getActiveSessionId()).toBeNull();
+      expect(agents.launched).toHaveLength(1);
+    });
+
+    it('awaits both a replaced agent and its replacement without reporting an unexpected session end', async () => {
+      let next = 0;
+      const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: `s${++next}` }));
+      const { agents, manager, takeEvents } = setup({ fake: script });
+      await manager.connectToAgent('fake');
+      await manager.newSession();
+      takeEvents();
+
+      await manager.dispose();
+
+      expect(agents.launched).toHaveLength(2);
+      expect(agents.launched.every((launched) => launched.killed)).toBe(true);
+      expect(takeEvents()).not.toContainEqual(['session-ended', 's2', 'Fake Agent exited unexpectedly.']);
+      expect(manager.getSession('s2')).toBeUndefined();
+      expect(manager.getActiveSessionId()).toBeNull();
+    });
+
+    it('does not register a session whose reply arrives after shutdown begins', async () => {
+      let requested: () => void = () => {};
+      const started = new Promise<void>((resolve) => { requested = resolve; });
+      let answer: () => void = () => {};
+      const reply = new Promise<void>((resolve) => { answer = resolve; });
+      const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, async () => {
+        requested();
+        await reply;
+        return { sessionId: 'late' };
+      });
+      const { agents, manager } = setup({ fake: script });
+      const connecting = manager.connectToAgent('fake').then(() => 'connected', () => 'closed');
+      await started;
+      const process = agents.launched[0]?.process;
+      if (!process) { throw new Error('Agent was not launched.'); }
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => {});
+      try {
+        const disposed = manager.dispose();
+        answer();
+
+        expect(await connecting).toBe('closed');
+        expect(manager.getSession('late')).toBeUndefined();
+
+        await agents.launched[0]?.crash();
+        await disposed;
+      } finally {
+        kill.mockRestore();
+        answer();
+        await agents.launched[0]?.crash();
+        await connecting;
+      }
+    });
+
+    it('stops and awaits a process whose initialize request is still pending', async () => {
+      let initializing: () => void = () => {};
+      const started = new Promise<void>((resolve) => { initializing = resolve; });
+      let finishInitialize: () => void = () => {};
+      const initialize = new Promise<void>((resolve) => { finishInitialize = resolve; });
+      const script: AgentScript = () => agent().onRequest(methods.agent.initialize, async () => {
+        initializing();
+        await initialize;
+        return { protocolVersion: 1 };
+      });
+      const { agents, manager, takeEvents } = setup({ fake: script });
+      const connecting = manager.ensureConnected('fake').then(() => 'connected', () => 'closed');
+      try {
+        await started;
+
+        await manager.dispose();
+
+        expect(agents.launched[0]?.killed).toBe(true);
+        expect(takeEvents()).toEqual([['agent-closed', 'agent_1', null]]);
+        expect(await connecting).toBe('closed');
+        expect(manager.getCachedCapabilities('fake')).toBeUndefined();
+      } finally {
+        finishInitialize();
+        await agents.launched[0]?.crash();
+        await connecting;
+      }
+    });
+
+    it('refuses new connections and sessions after disposal without launching another process', async () => {
+      const { agents, manager } = setup({ fake: sessionAgent().script });
+      await manager.dispose();
+
+      for (const connect of [
+        () => manager.ensureConnected('fake'),
+        () => manager.connectToAgent('fake'),
+        () => manager.listSessions('fake'),
+        () => manager.loadSession('fake', 'old'),
+        () => manager.resumeSession('fake', 'old'),
+      ]) {
+        await expect(connect()).rejects.toThrow('Session manager is disposed.');
+      }
+      expect(agents.launched).toEqual([]);
     });
   });
 });

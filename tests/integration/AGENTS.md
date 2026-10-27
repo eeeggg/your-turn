@@ -1,4 +1,4 @@
-# Test Instructions
+# Integration-test Instructions
 
 ## Integration-test architecture
 
@@ -58,5 +58,32 @@
   Linux inotify instances, budgeted at 32 instances per VS Code job.
 - Dispose filesystem watchers. New global resources require explicit ownership
   and teardown, and must leave enough headroom for hundreds of future tests.
-- `ACP_TEST_FILES` and `ACP_TEST_JOBS` are diagnostic overrides, not permanent
-  suite partitioning or correctness gates.
+- Legacy `ACP_TEST_*` environment variables (`ACP_TEST_FILES`, `ACP_TEST_JOBS`)
+  are internal diagnostic controls superseded by Make controls (`FILES`, `JOBS`).
+  Never execute raw compiled bundle runs or invoke runner scripts directly.
+
+## Verification
+
+- Make is the supported developer entry point. Do not invoke runner script files,
+  framework CLIs (Mocha), or `npm` directly.
+- During development, run targeted integration test files with:
+  `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
+- `FILES` accepts explicit whitespace-separated repo-relative source test paths
+  (no globs or unmatched paths).
+- `REPEAT` runs fresh sequential executions (positive integer, default `1`) and
+  stops immediately on the first failure. Bundles and extension are prepared
+  once per batch.
+- `JOBS` sets a positive integer parallel worker count (supported for
+  `test-integration` and `coverage-integration` only).
+- Run integration coverage with:
+  `make coverage-integration`
+  (accepts `FILES`, `REPEAT`, and `JOBS`).
+- Legacy `ACP_TEST_*` environment variables are internal diagnostic controls;
+  use Make entry points and controls instead.
+- `make test` is the unfiltered gate running compile, lint, Vitest (unit and
+  bundled webview), and integration suites. It rejects `FILES`, `REPEAT`,
+  `JOBS`, or inherited legacy selection overrides.
+- Always report the exact Make command, scope, repeat count, and results; a
+  focused test pass is not a substitute for the full gate.
+- Before handoff, run `make test-integration` (or full gate `make test`).
+  Also run `make typecheck` and `make lint` after substantive changes.

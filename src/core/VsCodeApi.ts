@@ -45,10 +45,6 @@ export interface InputBoxOptions {
   placeHolder?: string;
 }
 
-export interface MessageOptions {
-  modal?: boolean;
-}
-
 /** The `vscode.ProgressLocation` values core uses. */
 export const ProgressLocation = { Notification: 15 } as const;
 
@@ -65,9 +61,7 @@ export interface Window {
   createQuickPick<T extends QuickPickItem>(): QuickPick<T>;
   showInputBox(options?: InputBoxOptions): PromiseLike<string | undefined>;
   showInformationMessage<T extends string>(message: string, ...items: T[]): PromiseLike<T | undefined>;
-  showInformationMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): PromiseLike<T | undefined>;
   showWarningMessage<T extends string>(message: string, ...items: T[]): PromiseLike<T | undefined>;
-  showWarningMessage<T extends string>(message: string, options: MessageOptions, ...items: T[]): PromiseLike<T | undefined>;
   showErrorMessage<T extends string>(message: string, ...items: T[]): PromiseLike<T | undefined>;
   withProgress<R>(options: ProgressOptions, task: () => PromiseLike<R>): PromiseLike<R>;
 }

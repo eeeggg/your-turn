@@ -10,7 +10,14 @@ import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
 import { Takeovers } from '@/core/review/Takeovers';
 import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
-import { vscodeReviewEditors } from '@/adapters/review/ReviewPresenters';
+import { createReviewEditors } from '@/adapters/review/ReviewPresenters';
+import { observed } from './observed';
+
+function deferred() {
+  let resolve: () => void = () => {};
+  const promise = new Promise<void>((give) => { resolve = give; });
+  return { promise, resolve };
+}
 
 suite('Native review diff', () => {
   let folder: string;
@@ -18,9 +25,10 @@ suite('Native review diff', () => {
   let reviews: Reviews;
   let controls: ReviewControls;
   let presentation: DiffReviewPresentation;
-  let takeovers: ReviewTakeovers;
   let prior: unknown;
   let openDiff: (...args: [vscode.Uri, vscode.Uri, string, vscode.TextDocumentShowOptions]) => Thenable<unknown>;
+  let closeTabs: (tabs: readonly vscode.Tab[]) => Thenable<boolean>;
+  let owned: { reviews?: Reviews; presentation?: DiffReviewPresentation; takeovers?: ReviewTakeovers; editors?: ReturnType<typeof createReviewEditors> } = {};
   const before = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\n';
   const after = 'one\nTWO\nthree\nfour\nfive\nsix\nSEVEN\n';
 
@@ -33,17 +41,20 @@ suite('Native review diff', () => {
     tab.input instanceof vscode.TabInputTextDiff && tab.input.original.scheme === 'acp-review-diff');
 
   setup(async () => {
+    owned = {};
+    folder = '';
     prior = vscode.workspace.getConfiguration('acp').inspect('review.presentation')?.globalValue;
     await vscode.workspace.getConfiguration('acp').update('review.presentation', 'diffEditor', vscode.ConfigurationTarget.Global);
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-native-review-'));
     file = path.join(folder, 'file.txt');
     fs.writeFileSync(file, after);
-    reviews = new Reviews(workspaceFiles);
+    owned.reviews = reviews = new Reviews(workspaceFiles);
     openDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args);
-    presentation = new DiffReviewPresentation(reviews, (...args) => openDiff(...args));
+    closeTabs = (tabs) => vscode.window.tabGroups.close(tabs, true);
+    owned.presentation = presentation = new DiffReviewPresentation(reviews, (...args) => openDiff(...args), (tabs) => closeTabs(tabs));
     controls = new ReviewControls(reviews, presentation);
     presentation.attach(controls);
-    takeovers = new ReviewTakeovers(new Takeovers(reviews), controls);
+    owned.takeovers = new ReviewTakeovers(new Takeovers(reviews), controls);
     const session = `native-${path.basename(folder)}`;
     reviews.activeSessionChanged(session);
     await reviews.handleSessionUpdate(session, {
@@ -53,16 +64,23 @@ suite('Native review diff', () => {
     await controls.turnEnded(session);
   });
 
-  teardown(async () => {
-    takeovers.dispose();
-    reviews.activeSessionChanged(null);
-    await presentation.settled();
-    presentation.dispose();
-    reviews.dispose();
-    await vscode.commands.executeCommand('workbench.action.files.revert');
-    await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-    await vscode.workspace.getConfiguration('acp').update('review.presentation', prior, vscode.ConfigurationTarget.Global);
-    fs.rmSync(folder, { recursive: true, force: true });
+  teardown(async function () {
+    const failures: unknown[] = [];
+    const cleanup = async (action: () => unknown) => {
+      try { await action(); } catch (error) { failures.push(error); }
+    };
+    await cleanup(() => owned.takeovers?.dispose());
+    await cleanup(() => owned.presentation?.dispose());
+    await cleanup(() => owned.editors?.dispose());
+    await cleanup(() => owned.reviews?.dispose());
+    await cleanup(() => vscode.commands.executeCommand('workbench.action.files.revert'));
+    await cleanup(() => vscode.commands.executeCommand('workbench.action.closeAllEditors'));
+    await cleanup(() => vscode.workspace.getConfiguration('acp').update('review.presentation', prior, vscode.ConfigurationTarget.Global));
+    await cleanup(() => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } });
+    if (failures.length > 0) {
+      const error = new AggregateError(failures, 'Failed to clean up review diff');
+      if (this.currentTest?.err) { console.error(error); } else { throw error; }
+    }
   });
 
   test('opens the actual writable file against a baseline and updates it after Keep', async () => {
@@ -80,6 +98,65 @@ suite('Native review diff', () => {
     assert.equal((await lenses()).filter((lens) => lens.command?.command === 'acp.undoDiffChange').length, 1);
   });
 
+  test('settles an active diff opening, not only retired-tab closure', async () => {
+    const { promise: gate, resolve: release } = deferred();
+    const { promise: opening, resolve: started } = deferred();
+    let finished = false;
+    openDiff = async () => { started(); await gate; finished = true; };
+    const showing = presentation.showChange(file);
+    try {
+      await opening;
+      const settled = presentation.settled().then(() => finished);
+      release();
+      assert.equal(await settled, true);
+      await showing;
+    } finally {
+      release();
+      await showing;
+    }
+  });
+
+  test('disposal drains an opening, abandons queued openings and leaves unresolved review intact', async () => {
+    await vscode.window.tabGroups.close(ownedTabs(), true);
+    const { promise: gate, resolve: release } = deferred();
+    const { promise: opening, resolve: started } = deferred();
+    let calls = 0;
+    let finished = false;
+    openDiff = async (...args) => {
+      calls++;
+      started();
+      await gate;
+      await vscode.commands.executeCommand('vscode.diff', ...args);
+      finished = true;
+    };
+    const showing = presentation.showChangeOf(file, controls.changes(file), 0);
+    let queued: Promise<void> | undefined;
+    try {
+      await opening;
+      queued = presentation.showChangeOf(file, controls.changes(file), 1);
+      const disposed = presentation.dispose();
+      const finishedAtDisposal = Promise.resolve(disposed).then(() => finished);
+      assert.equal(presentation.dispose(), disposed);
+      release();
+      await disposed;
+      await Promise.all([showing, queued]);
+
+      assert.equal(await finishedAtDisposal, true);
+      assert.equal(calls, 1);
+      assert.equal(ownedTabs().length, 0);
+      assert.equal(controls.changes(file).length, 2);
+      await presentation.showChange(file);
+      await presentation.showChangeOf(file, controls.changes(file), 0);
+      reviews.activeSessionChanged('other-session');
+      reviews.activeSessionChanged(`native-${path.basename(folder)}`);
+      assert.equal(calls, 1);
+      assert.equal(controls.changes(file).length, 2);
+    } finally {
+      release();
+      await Promise.all([showing, queued]);
+    }
+  });
+
   test('rejects a stale lens even when an intervening edit preserves the hunk coordinates', async () => {
     const keep = (await lenses()).find((lens) => lens.command?.command === 'acp.keepDiffChange');
     assert.ok(keep);
@@ -95,10 +172,55 @@ suite('Native review diff', () => {
     assert.equal(document.getText(), 'one\nNEW\nthree\nfour\nfive\nsix\nSEVEN\n');
   });
 
+  test('disposal drains a retired tab closure and reports its failure after a sibling closes', async () => {
+    const other = path.join(folder, 'other.txt');
+    fs.writeFileSync(other, 'NEW\n');
+    const session = `native-${path.basename(folder)}`;
+    await reviews.handleSessionUpdate(session, {
+      kind: 'toolCall', toolCallId: 'other', status: 'completed',
+      content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: other, oldText: 'old\n', newText: 'NEW\n' } }],
+    }, 'v1');
+    await presentation.showChange(other);
+    const { promise: gate, resolve: release } = deferred();
+    const { promise: closing, resolve: started } = deferred();
+    const failure = new Error('retired tab closure failed');
+    let siblingFinished = false;
+    closeTabs = async (tabs) => {
+      const input = tabs[0]?.input;
+      if (input instanceof vscode.TabInputTextDiff && input.modified.fsPath === file) {
+        started();
+        await gate;
+        throw failure;
+      }
+      await gate;
+      const closed = await vscode.window.tabGroups.close(tabs, true);
+      siblingFinished = true;
+      return closed;
+    };
+    controls.keepFile(file);
+    try {
+      await closing;
+      const disposed = presentation.dispose();
+      const finishedAtDisposal = disposed.then(() => siblingFinished, () => siblingFinished);
+      const rejected = assert.rejects(disposed, (error: unknown) =>
+        error instanceof AggregateError && error.errors.includes(failure));
+      release();
+      await rejected;
+      assert.equal(await finishedAtDisposal, true);
+      assert.equal(ownedTabs().length, 1);
+      assert.equal(controls.baseline(other), 'old\n');
+    } finally {
+      release();
+      await presentation.dispose().catch(() => {});
+      delete owned.presentation;
+    }
+  });
+
   test('opens an evidenced review even before an existing document reload exposes its hunks', async () => {
     await vscode.window.tabGroups.close(ownedTabs(), true);
+    owned.editors = createReviewEditors();
     controls = new ReviewControls(reviews, {
-      ...vscodeReviewEditors,
+      ...owned.editors,
       text: () => before,
       showChange: (path) => presentation.showChange(path),
     });
@@ -169,13 +291,18 @@ suite('Native review diff', () => {
       return vscode.commands.executeCommand('vscode.diff', ...args);
     };
     const showing = presentation.showChange(file);
-    await opening;
-    reviews.activeSessionChanged(null);
-    release();
-    await showing;
-    await presentation.settled();
-    assert.equal(ownedTabs().length, 0);
-    assert.equal((await vscode.workspace.openTextDocument(diff.original)).getText(), before);
+    try {
+      await opening;
+      reviews.activeSessionChanged(null);
+      release();
+      await showing;
+      await presentation.settled();
+      assert.equal(ownedTabs().length, 0);
+      assert.equal((await vscode.workspace.openTextDocument(diff.original)).getText(), before);
+    } finally {
+      release();
+      await showing;
+    }
   });
 
   test('retries Open ACP Review after an opening fails without changing the unresolved review', async () => {
@@ -201,11 +328,17 @@ suite('Native review diff', () => {
     const opening = new Promise<void>((resolve) => { started = resolve; });
     openDiff = async () => { started(); return gate; };
     const rejected = assert.rejects(presentation.showChangeOf(file, controls.changes(file), 0), /opening failed/);
-    await opening;
-    const queued = presentation.showChangeOf(file, controls.changes(file), 1);
-    openDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args);
-    fail(new Error('opening failed'));
-    await Promise.all([rejected, queued]);
+    let queued: Promise<void> | undefined;
+    try {
+      await opening;
+      queued = presentation.showChangeOf(file, controls.changes(file), 1);
+      openDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args);
+      fail(new Error('opening failed'));
+      await Promise.all([rejected, queued]);
+    } finally {
+      fail(new Error('opening failed'));
+      await Promise.allSettled([rejected, queued]);
+    }
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
     assert.equal(diff.modified.fsPath, file);
@@ -221,10 +354,15 @@ suite('Native review diff', () => {
     const opening = new Promise<void>((resolve) => { started = resolve; });
     openDiff = async () => { started(); return gate; };
     const rejected = assert.rejects(presentation.showChange(file), /opening failed/);
-    await opening;
-    reviews.activeSessionChanged(null);
-    fail(new Error('opening failed'));
-    await rejected;
+    try {
+      await opening;
+      reviews.activeSessionChanged(null);
+      fail(new Error('opening failed'));
+      await rejected;
+    } finally {
+      fail(new Error('opening failed'));
+      await Promise.allSettled([rejected]);
+    }
     await presentation.settled();
     assert.equal(ownedTabs().length, 0);
   });
@@ -243,11 +381,17 @@ suite('Native review diff', () => {
       return vscode.commands.executeCommand('vscode.diff', ...args);
     };
     const showing = presentation.showChangeOf(file, controls.changes(file), 0);
-    await opening;
-    const queued = presentation.showChangeOf(file, controls.changes(file), 1);
-    reviews.activeSessionChanged(null);
-    release();
-    await Promise.all([showing, queued, presentation.settled()]);
+    let queued: Promise<void> | undefined;
+    try {
+      await opening;
+      queued = presentation.showChangeOf(file, controls.changes(file), 1);
+      reviews.activeSessionChanged(null);
+      release();
+      await Promise.all([showing, queued, presentation.settled()]);
+    } finally {
+      release();
+      await Promise.allSettled([showing, queued]);
+    }
     assert.equal(calls, 1);
     assert.equal(ownedTabs().length, 0);
   });
@@ -256,11 +400,8 @@ suite('Native review diff', () => {
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
     const editor = await vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
-    const closed = new Promise<void>((resolve) => {
-      const subscription = vscode.workspace.onDidCloseTextDocument((document) => {
-        if (document.uri.toString() === diff.original.toString()) { subscription.dispose(); resolve(); }
-      });
-    });
+    const closed = observed(vscode.workspace.onDidCloseTextDocument, () =>
+      vscode.workspace.textDocuments.some((document) => document.uri.toString() === diff.original.toString()) ? undefined : true);
     await vscode.window.tabGroups.close(ownedTabs(), true);
     await closed;
     assert.equal(await editor.edit((edit) => edit.replace(new vscode.Range(0, 0, 0, 3), 'USER')), true);

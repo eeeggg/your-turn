@@ -1,14 +1,17 @@
 import { availableParallelism } from 'node:os';
-import { readdir, readFile, readlink, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readdir, readFile, readlink, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 const root = resolve(import.meta.dirname, '..');
 const testDirectory = join(root, 'dist', 'test');
 const cli = join(root, 'node_modules', '@vscode', 'test-cli', 'out', 'bin.mjs');
 const jobWatchdogMs = 10 * 60 * 1000;
+const shutdownWatchdogMs = 5000;
 const inotifyInstancesPerJob = 32;
+const coverage = process.argv.includes('--coverage');
 
 async function detectInotifyCapacity() {
   if (process.platform !== 'linux' || process.getuid === undefined) {
@@ -70,6 +73,30 @@ testFiles.forEach((file, index) => {
 });
 const profiles = await mkdtemp(join(tmpdir(), 'acp-integration-'));
 const configDirectory = await mkdtemp(join(root, '.vscode-test', 'parallel-config-'));
+/** @type {string | undefined} */
+let coverageDirectory;
+let stopping = false;
+let interruptedExitCode = 0;
+/** @type {Set<() => void>} */
+const activeJobs = new Set();
+
+function stopJobs() {
+  stopping = true;
+  for (const stop of activeJobs) { stop(); }
+}
+
+function interrupt() {
+  interruptedExitCode = 130;
+  stopJobs();
+}
+
+function terminate() {
+  interruptedExitCode = 143;
+  stopJobs();
+}
+
+process.on('SIGINT', interrupt);
+process.on('SIGTERM', terminate);
 
 /** @typedef {{ code: number, output: string }} RunResult */
 
@@ -82,7 +109,9 @@ function runGroup(group, index) {
     `--user-data-dir=${profile}`,
     '--disable-extensions',
   ]);
-  const configText = `export default {
+  const configText = `import base from ${JSON.stringify(pathToFileURL(join(root, '.vscode-test.mjs')).href)};
+export default {
+  ...base,
   tests: [{
     files: ${files},
     extensionDevelopmentPath: ${JSON.stringify(root)},
@@ -93,11 +122,15 @@ function runGroup(group, index) {
 
   /** @returns {Promise<RunResult>} */
   const run = () => new Promise((resolveRun) => {
+    if (stopping) { resolveRun({ code: 1, output: '' }); return; }
     const command = process.platform === 'linux' ? 'xvfb-run' : process.execPath;
     const display = 1000 + (process.pid % 50000) + index;
+    const coverageArgs = coverageDirectory === undefined
+      ? []
+      : ['--coverage', '--coverage-output', join(coverageDirectory, `job-${index + 1}`)];
     const args = process.platform === 'linux'
-      ? [`--server-num=${display}`, process.execPath, cli, '--config', config]
-      : [cli, '--config', config];
+      ? [`--server-num=${display}`, process.execPath, cli, '--config', config, ...coverageArgs]
+      : [cli, '--config', config, ...coverageArgs];
     const child = spawn(command, args, {
       cwd: root,
       env: { ...process.env, VSCODE_TEST_GROUP: String(index + 1) },
@@ -107,14 +140,29 @@ function runGroup(group, index) {
     let output = '';
     let completeOutput = '';
     let timedOut = false;
-    const stop = () => {
+    let failed = false;
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let shutdownWatchdog;
+    /** @param {NodeJS.Signals} signal */
+    const signalJob = (signal) => {
       if (child.pid === undefined) { return; }
       if (process.platform === 'win32') {
-        child.kill('SIGTERM');
+        child.kill(signal);
       } else {
-        try { process.kill(-child.pid, 'SIGTERM'); } catch { /* The child may have exited already. */ }
+        try { process.kill(-child.pid, signal); } catch (error) {
+          if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH') {
+            failed = true;
+            console.error(`Could not signal integration job ${index + 1}:`, error);
+          }
+        }
       }
     };
+    const stop = () => {
+      if (shutdownWatchdog !== undefined) { return; }
+      signalJob('SIGTERM');
+      shutdownWatchdog = setTimeout(() => { signalJob('SIGKILL'); }, shutdownWatchdogMs);
+    };
+    activeJobs.add(stop);
     /** @param {string} chunk */
     const write = (chunk) => {
       output += chunk;
@@ -129,6 +177,10 @@ function runGroup(group, index) {
     };
     child.stdout.setEncoding('utf8').on('data', write);
     child.stderr.setEncoding('utf8').on('data', write);
+    child.on('error', (error) => {
+      failed = true;
+      write(`Could not start integration job: ${error.message}\n`);
+    });
     const watchdog = setTimeout(() => {
       timedOut = true;
       const message = `\n[integration ${index + 1}] Job watchdog expired after ${jobWatchdogMs / 60000} minutes\n`;
@@ -139,28 +191,54 @@ function runGroup(group, index) {
     }, jobWatchdogMs);
     child.on('close', (code) => {
       clearTimeout(watchdog);
+      clearTimeout(shutdownWatchdog);
+      activeJobs.delete(stop);
       if (output) { process.stdout.write(`[integration ${index + 1}] ${output}`); }
-      resolveRun({ code: timedOut ? 1 : code ?? 1, output: completeOutput });
+      resolveRun({ code: timedOut || failed ? 1 : code ?? 1, output: completeOutput });
     });
   });
   return writeFile(config, configText).then(run);
 }
 
 try {
+  if (coverage) {
+    const reports = join(root, 'test-results', 'integration', 'coverage');
+    await mkdir(reports, { recursive: true });
+    coverageDirectory = await mkdtemp(join(reports, 'run-'));
+    await writeFile(join(coverageDirectory, 'jobs.json'), JSON.stringify(groups.map((group, index) => ({
+      files: group.map((file) => basename(file)),
+      report: `job-${index + 1}/index.html`,
+    })), null, 2));
+    console.log(`Per-job coverage reports (not combined): ${coverageDirectory}`);
+  }
   const inotifyDetails = inotify.limit === undefined
     ? ''
     : `, ${inotify.used}/${inotify.limit} inotify instances already used, budgeting ${inotifyInstancesPerJob} per job`;
   console.log(`Running ${testFiles.length} integration files in ${groups.length} VS Code jobs (default ${detectedJobs}, ${availableParallelism()} available CPUs${inotifyDetails})`);
-  const results = await Promise.all(groups.map(runGroup));
+  const settled = await Promise.allSettled(groups.map((group, index) => runGroup(group, index).catch(/** @param {unknown} error */ (error) => {
+    stopJobs();
+    throw error;
+  })));
+  const errors = settled.filter((result) => result.status === 'rejected');
+  if (errors.length > 0) { throw new AggregateError(errors.map((result) => /** @type {unknown} */ (result.reason)), 'Integration jobs could not run'); }
+  const results = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+  if (coverageDirectory !== undefined) {
+    console.log(`Coverage reports and job mapping: ${coverageDirectory}`);
+  }
   const passed = results.reduce((sum, { output }) => sum + Number(/(\d+) passing/.exec(output)?.[1] ?? 0), 0);
   const failed = results.filter(({ code }) => code !== 0);
-  if (failed.length > 0) {
+  if (interruptedExitCode !== 0) {
+    console.error('Integration run interrupted; isolated jobs have closed');
+    process.exitCode = interruptedExitCode;
+  } else if (failed.length > 0) {
     console.error(`Integration run failed: ${passed} tests passed across ${failed.length} failed job(s)`);
     process.exitCode = 1;
   } else {
     console.log(`Integration run passed: ${passed} tests across ${results.length} jobs`);
   }
 } finally {
+  process.off('SIGINT', interrupt);
+  process.off('SIGTERM', terminate);
   await rm(configDirectory, { recursive: true, force: true });
   await rm(profiles, { recursive: true, force: true });
 }

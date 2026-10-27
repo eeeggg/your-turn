@@ -34,12 +34,20 @@ export class Reviews {
   private readonly listeners = new Set<ShownReviewListener>();
   /** Each session's updates so far, settled once all were taken. */
   private readonly taken = new Map<string, Promise<unknown>>();
+  private readonly pending = new Set<Promise<void>>();
   private shownSessionId: string | null = null;
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
 
   constructor(private readonly files: ReviewFiles) {}
 
   addListener(listener: ShownReviewListener): void {
+    if (this.disposed) { return; }
     this.listeners.add(listener);
+  }
+
+  removeListener(listener: ShownReviewListener): void {
+    this.listeners.delete(listener);
   }
 
   /** Whether a session is active, even one whose review was not made yet, as it is made on its first update. */
@@ -53,10 +61,15 @@ export class Reviews {
 
   /** Settles once the files its evidence names were read. */
   handleSessionUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): Promise<void> {
-    if (this.loading.has(sessionId)) { return Promise.resolve(); }
+    if (this.disposed || this.loading.has(sessionId)) { return Promise.resolve(); }
     const session = this.session(sessionId, schema);
     if (session.guard.schema !== schema) { session.guard = this.guard(schema, session.review); }
     const handled = session.guard.guard.handleSessionUpdate(update);
+    this.pending.add(handled);
+    void handled.then(
+      () => this.pending.delete(handled),
+      () => this.pending.delete(handled),
+    );
     this.taken.set(sessionId, Promise.allSettled([this.taken.get(sessionId), handled]));
     return handled;
   }
@@ -67,6 +80,7 @@ export class Reviews {
   }
 
   loadStarted(sessionId: string): void {
+    if (this.disposed) { return; }
     this.loading.add(sessionId);
   }
 
@@ -81,14 +95,28 @@ export class Reviews {
   }
 
   activeSessionChanged(sessionId: string | null): void {
+    if (this.disposed) { return; }
     if (sessionId === this.shownSessionId) { return; }
     this.shownSessionId = sessionId;
     this.changed();
   }
 
-  dispose(): void {
-    for (const session of this.sessions.values()) { session.followed.dispose(); }
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
+    this.listeners.clear();
+    this.shownSessionId = null;
+    const followed = [...this.sessions.values()].map((session) => session.followed.dispose());
     this.sessions.clear();
+    this.loading.clear();
+    this.taken.clear();
+    this.disposal = Promise.allSettled([...this.pending, ...followed]).then((results) => {
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to dispose reviews');
+      }
+    });
+    return this.disposal;
   }
 
   private session(sessionId: string, schema: AcpSchema): SessionReview {

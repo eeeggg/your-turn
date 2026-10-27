@@ -14,6 +14,14 @@
 
 ## Isolation and ownership
 
+- Linux desktop tests require `bubblewrap` (`bwrap`) and permission to create
+  user namespaces. `electron.sh` contains Electron and its descendants in a PID
+  namespace. Its owner lifeline uses descriptor 3 from the pinned Playwright
+  launch; an unavailable socket fails launch rather than disabling containment.
+- Keep Playwright's awaited application close. Forced fixture cleanup targets
+  namespace PID 1. Playwright launch failures use its own launch-group kill;
+  namespace cleanup on that path is not independently awaited by the fixture.
+
 - Each test owns a unique workspace, user-data directory, extensions
   directory, agent process, VS Code window, X display and output artifacts.
 - Cleanup must run when fixture setup, the test body or diagnostics fail.
@@ -37,8 +45,25 @@
 
 ## Verification
 
-- Run UI tests with `make test-ui`.
-- Inspect the named passing screenshot when a test establishes visual
-  behavior. Failure artifacts belong under `test-results/ui/`.
-- Before handoff, run type checking and linting, the affected lower test
-  layers, and the repeated UI baseline required by the plan.
+- Make is the supported developer entry point. Do not invoke Playwright, Electron,
+  framework CLIs, or runner scripts directly.
+- During development, run targeted UI test files with:
+  `make test-ui FILES='tests/ui/reveal-chat.test.ts' REPEAT=3`
+- `FILES` accepts explicit whitespace-separated repo-relative source test paths
+  (no globs or unmatched paths).
+- `REPEAT` runs fresh sequential executions (positive integer, default `1`) and
+  stops immediately on the first failure. Bundles are prepared once per batch.
+- `JOBS` is not supported for `test-ui` (`JOBS` is supported for `test-integration`
+  and `coverage-integration` only).
+- Inspect the named passing screenshot when a test establishes visual behavior.
+  Failure artifacts (screenshots, traces, DOM state, focus logs) belong under
+  `test-results/ui/`.
+- Keep retries disabled while measuring reliability. Ensure full cleanup runs
+  when fixture setup, the test body, or diagnostics fail.
+- `make test` is the unfiltered gate running compile, lint, Vitest (unit and
+  bundled webview), and integration suites. It rejects `FILES`, `REPEAT`,
+  `JOBS`, or inherited legacy selection overrides.
+- Always report the exact Make command, scope, repeat count, and results; a
+  focused test pass is not a substitute for the full gate.
+- Before handoff, run `make test-ui`. The full gate `make test` does not run UI tests.
+  Also run `make typecheck` and `make lint` after substantive changes.

@@ -5,6 +5,7 @@ import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { observed } from './observed';
+import { cleanup } from './cleanup';
 
 type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
 type TerminalPost = Extract<ExtensionToWebviewMessage, { type: 'terminal' }>;
@@ -50,15 +51,18 @@ for (const version of [1, 2]) {
       await observed(api.chatPosts, () => posts.find((post) => post.type === 'promptEnd'));
     });
 
-    suiteTeardown(async () => {
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
-      for (const terminal of vscode.window.terminals) {
-        terminal.dispose();
-      }
-      await config().update('agents', original, vscode.ConfigurationTarget.Global);
-      for (const subscription of subscriptions) {
-        subscription.dispose();
-      }
+    suiteTeardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        ...vscode.window.terminals.map((terminal) => async () => {
+          let closed: () => void = () => {};
+          const completion = new Promise<void>((resolve) => { closed = resolve; });
+          const subscription = vscode.window.onDidCloseTerminal((ended) => { if (ended === terminal) { closed(); } });
+          try { terminal.dispose(); await completion; } finally { subscription.dispose(); }
+        }),
+        () => config().update('agents', original, vscode.ConfigurationTarget.Global),
+        ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
+      ]);
     });
 
     test("The command's output reaches the chat view as a terminal shows it, the same on both versions", async () => {
@@ -87,7 +91,9 @@ for (const version of [1, 2]) {
       await openInTerminal();
       await outputShown;
 
-      vscode.window.createTerminal({ name: 'another', pty: { onDidWrite: new vscode.EventEmitter<string>().event, open: () => {}, close: () => {} } }).show();
+      const writes = new vscode.EventEmitter<string>();
+      subscriptions.push(writes);
+      vscode.window.createTerminal({ name: 'another', pty: { onDidWrite: writes.event, open: () => {}, close: () => {} } }).show();
       await observed(vscode.window.onDidChangeActiveTerminal, () => (vscode.window.activeTerminal?.name === 'another' ? true : undefined));
       const broughtForward = observed(vscode.window.onDidChangeActiveTerminal, () => (vscode.window.activeTerminal?.name === 'npm test' ? true : undefined));
       await openInTerminal();

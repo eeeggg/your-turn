@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { AgentTerminals, type CommandSource, type TerminalDisplays } from '@/core/AgentTerminals';
 import { Cleaner } from '@/core/CommandOutput';
@@ -29,6 +29,7 @@ function fed(...updates: [string, SessionUpdate][]) {
     },
   };
   const terminals = new AgentTerminals(displays);
+  onTestFinished(async () => { await terminals.dispose(); });
   const heard: [string, string][] = [];
   terminals.addListener((sessionId, terminalId) => heard.push([sessionId, terminalId]));
   for (const [sessionId, update] of updates) {
@@ -45,6 +46,30 @@ function fed(...updates: [string, SessionUpdate][]) {
 }
 
 describe('AgentTerminals', () => {
+  it('drains reads across replacement, command end and forgetting before disposal completes', async () => {
+    const { terminals } = fed(['s1', chunk('t1', 'original')]);
+    const original = terminals.shown('s1', 't1');
+    terminals.handleSessionUpdate('s1', { kind: 'terminal', terminalId: 't1', output: bytes('replacement') });
+    const replacement = terminals.shown('s1', 't1');
+    const completed: string[] = [];
+    void original?.then(() => completed.push('original'));
+    void replacement?.then(() => completed.push('replacement'));
+    terminals.endSession('s1');
+    terminals.forgetSession('s1');
+    const disposed = terminals.dispose();
+    const completedAtDisposal = disposed.then(() => [...completed]);
+    expect(terminals.dispose()).toBe(disposed);
+    await disposed;
+
+    expect(await completedAtDisposal).toEqual(['original', 'replacement']);
+    expect(await original).toEqual({ text: 'original', truncated: false });
+    expect(await replacement).toEqual({ text: 'replacement', truncated: false });
+    terminals.handleSessionUpdate('s1', chunk('late', 'not accepted'));
+    terminals.keepCommandText('s1', 'late', 'not accepted');
+    expect(terminals.info('s1', 'late')).toBeUndefined();
+    expect(terminals.open('s1', toolCall('late'), 'late')).toBe(false);
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
   });

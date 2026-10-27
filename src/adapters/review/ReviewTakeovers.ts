@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import * as vscode from 'vscode';
+import { logError } from '@/core/Log';
 import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { DocumentEdit, EditSource, Takeovers } from '@/core/review/Takeovers';
 
@@ -11,9 +12,11 @@ const SAVE_LIMIT_MS = 10_000;
 const reviewEditing = new Set<string>();
 const saving = new Map<string, ReturnType<typeof setTimeout>>();
 
-function saveStarted(path: string): void {
+function saveStarted(path: string, ended: () => void = () => {}): ReturnType<typeof setTimeout> {
   clearTimeout(saving.get(path));
-  saving.set(path, setTimeout(() => saving.delete(path), SAVE_LIMIT_MS));
+  const timer = setTimeout(() => { saving.delete(path); ended(); }, SAVE_LIMIT_MS);
+  saving.set(path, timer);
+  return timer;
 }
 
 function saveEnded(path: string): void {
@@ -82,6 +85,11 @@ export class ReviewTakeovers implements vscode.Disposable {
   /** The editor of each file last active, the view's being none of them. */
   private readonly editors = new Map<string, vscode.TextEditor>();
   private readonly subscriptions: vscode.Disposable[];
+  private readonly saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly waiting = new Set<() => void>();
+  private readonly pending = new Set<Promise<void>>();
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
 
   constructor(private readonly takeovers: Takeovers, private readonly controls: ReviewControls) {
     for (const document of vscode.workspace.textDocuments) { this.opened(document); }
@@ -94,14 +102,33 @@ export class ReviewTakeovers implements vscode.Disposable {
         this.dirty.delete(uri.fsPath);
       }),
       vscode.workspace.onDidChangeTextDocument((event) => this.changed(event)),
-      vscode.workspace.onWillSaveTextDocument(({ document }) => saveStarted(document.uri.fsPath)),
-      vscode.workspace.onDidSaveTextDocument(({ uri }) => saveEnded(uri.fsPath)),
+      vscode.workspace.onWillSaveTextDocument(({ document }) => {
+        const path = document.uri.fsPath;
+        this.saveTimers.set(path, saveStarted(path, () => this.saveTimers.delete(path)));
+      }),
+      vscode.workspace.onDidSaveTextDocument(({ uri }) => { saveEnded(uri.fsPath); this.saveTimers.delete(uri.fsPath); }),
       vscode.window.onDidChangeActiveTextEditor((editor) => this.activated(editor)),
     ];
   }
 
-  dispose(): void {
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
     for (const subscription of this.subscriptions) { subscription.dispose(); }
+    for (const done of this.waiting) { done(); }
+    for (const [path, timer] of this.saveTimers) {
+      clearTimeout(timer);
+      if (saving.get(path) === timer) { saving.delete(path); }
+    }
+    this.saveTimers.clear();
+    this.texts.clear();
+    this.dirty.clear();
+    this.editors.clear();
+    this.disposal = Promise.allSettled([...this.pending]).then((results) => {
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length) { throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to dispose review takeovers'); }
+    });
+    return this.disposal;
   }
 
   private opened(document: vscode.TextDocument): void {
@@ -115,6 +142,7 @@ export class ReviewTakeovers implements vscode.Disposable {
   }
 
   private changed({ document, contentChanges, reason }: vscode.TextDocumentChangeEvent): void {
+    if (this.disposed) { return; }
     if (document.uri.scheme !== 'file') { return; }
     const path = document.uri.fsPath;
     const wasDirty = this.dirty.get(path) ?? false;
@@ -144,23 +172,36 @@ export class ReviewTakeovers implements vscode.Disposable {
     const active = vscode.window.activeTextEditor;
     if (active?.document !== document) { return; }
     if (active.viewColumn !== undefined) {
-      void vscode.commands.executeCommand('closeQuickDiff');
+      this.track(Promise.resolve(vscode.commands.executeCommand('closeQuickDiff')));
       return;
     }
-    void this.handOver(active, this.editors.get(path));
+    this.track(this.handOver(active, this.editors.get(path)));
+  }
+
+  private track(running: Promise<unknown>): void {
+    const completion = running.then(() => {});
+    this.pending.add(completion);
+    void completion.then(() => this.pending.delete(completion), (error: unknown) => {
+      this.pending.delete(completion);
+      logError('Closing the review view failed', error);
+    });
   }
 
   /** Gives the file's editor the view's cursor, once the view reports where it was typed, then closes the view. */
   private async handOver(view: vscode.TextEditor, editor: vscode.TextEditor | undefined): Promise<void> {
     await new Promise<void>((resolve) => {
+      const waiting = this.waiting;
       const timer = setTimeout(done, VIEW_SELECTION_WAIT_MS);
       const moved = vscode.window.onDidChangeTextEditorSelection(({ textEditor }) => { if (textEditor === view) { done(); } });
+      waiting.add(done);
       function done() {
         clearTimeout(timer);
         moved.dispose();
+        waiting.delete(done);
         resolve();
       }
     });
+    if (this.disposed) { return; }
     if (editor && vscode.window.visibleTextEditors.includes(editor)) { editor.selections = view.selections; }
     await vscode.commands.executeCommand('closeQuickDiff');
   }

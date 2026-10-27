@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
-import type { PermissionOption, PermissionRequest } from '@/core/acp/AcpDriver';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import type { PermissionOption, PermissionOutcome, PermissionRequest } from '@/core/acp/AcpDriver';
 import { PermissionRequests, type AutoApprove, type PermissionChooser, type PermissionPrompt } from '@/core/PermissionRequests';
 
 const allowOnce: PermissionOption = { id: 'allow', name: 'Allow', kind: 'allow_once' };
@@ -19,7 +19,7 @@ const selected = (optionId: string) => ({ kind: 'selected', optionId });
 const cancelled = { kind: 'cancelled' };
 
 /** A chooser the test answers by hand, one pending choice at a time. */
-function manualChooser(autoApprove: AutoApprove = 'ask') {
+function manualRequests(autoApprove: AutoApprove = 'ask') {
   interface Pending {
     prompt: PermissionPrompt;
     options: readonly PermissionOption[];
@@ -28,25 +28,40 @@ function manualChooser(autoApprove: AutoApprove = 'ask') {
   }
   const pending: Pending[] = [];
   const waiting: ((choice: Pending) => void)[] = [];
+  const replies = new Set<Promise<PermissionOutcome>>();
+  let closing = false;
   const chooser: PermissionChooser = {
     autoApprove: () => autoApprove,
-    choose: (prompt, options) => new Promise((resolve, reject) => {
+    choose: (prompt, options) => closing ? Promise.resolve(undefined) : new Promise((resolve, reject) => {
       const choice = { prompt, options, answer: resolve, fail: reject };
       pending.push(choice);
       waiting.shift()?.(choice);
     }),
   };
   const nextChoice = () => new Promise<Pending>((resolve) => waiting.push(resolve));
-  return { chooser, pending, nextChoice };
+  const requests = new PermissionRequests(chooser);
+  const ask = (request: PermissionRequest) => {
+    const reply = requests.requestPermission(request);
+    replies.add(reply);
+    void reply.then(() => replies.delete(reply));
+    return reply;
+  };
+  const close = async () => {
+    closing = true;
+    for (const choice of pending) { choice.answer(undefined); }
+    await Promise.all(replies);
+    expect(replies.size, 'permission requests left pending by the test').toBe(0);
+  };
+  onTestFinished(close);
+  return { ask, pending, nextChoice, close };
 }
 
 describe('PermissionRequests', () => {
   it("returns the option the user chooses, showing the request's title", async () => {
-    const { chooser, pending, nextChoice } = manualChooser();
-    const requests = new PermissionRequests(chooser);
+    const { ask, pending, nextChoice } = manualRequests();
     const shown = nextChoice();
 
-    const answer = requests.requestPermission(request('Edit a.ts'));
+    const answer = ask(request('Edit a.ts'));
     const choice = await shown;
     expect([choice.prompt, choice.options]).toEqual([{ title: 'Edit a.ts', detail: null }, [reject, allowOnce]]);
     pending[0]?.answer('allow');
@@ -55,13 +70,15 @@ describe('PermissionRequests', () => {
   });
 
   it('falls back to a generic title when the request has none', async () => {
-    const { chooser, nextChoice } = manualChooser();
-    const requests = new PermissionRequests(chooser);
+    const { ask, nextChoice } = manualRequests();
     const shown = nextChoice();
 
-    void requests.requestPermission(request(null));
+    const answer = ask(request(null));
 
-    expect((await shown).prompt.title).toBe('Permission Request');
+    const choice = await shown;
+    expect(choice.prompt.title).toBe('Permission Request');
+    choice.answer(undefined);
+    expect(await answer).toEqual(cancelled);
   });
 
   it.each([
@@ -70,33 +87,52 @@ describe('PermissionRequests', () => {
     [{ description: 'Needs the network' }, 'Needs the network'],
     [{ subject: '', description: '' }, null],
   ])('shows what the request is about, then why, as the detail: %o', async (about, detail) => {
-    const { chooser, nextChoice } = manualChooser();
-    const requests = new PermissionRequests(chooser);
+    const { ask, nextChoice } = manualRequests();
     const shown = nextChoice();
 
-    void requests.requestPermission(request('Run command?', [reject, allowOnce], about));
+    const answer = ask(request('Run command?', [reject, allowOnce], about));
 
-    expect((await shown).prompt).toEqual({ title: 'Run command?', detail });
+    const choice = await shown;
+    expect(choice.prompt).toEqual({ title: 'Run command?', detail });
+    choice.answer(undefined);
+    expect(await answer).toEqual(cancelled);
+  });
+
+  it('settles the active and queued test requests when an assertion interrupts them', async () => {
+    const { ask, nextChoice, close } = manualRequests();
+    const shown = nextChoice();
+    const first = ask(request('first'));
+    const second = ask(request('second'));
+    const failure = new Error('assertion failed before answering');
+    const interrupted = async () => {
+      try {
+        await shown;
+        throw failure;
+      } finally {
+        await close();
+      }
+    };
+
+    await expect(interrupted()).rejects.toBe(failure);
+    expect(await Promise.all([first, second])).toEqual([cancelled, cancelled]);
   });
 
   it('reports a dismissed choice as cancelled', async () => {
-    const { chooser, nextChoice } = manualChooser();
-    const requests = new PermissionRequests(chooser);
+    const { ask, nextChoice } = manualRequests();
     const shown = nextChoice();
 
-    const answer = requests.requestPermission(request('Edit a.ts'));
+    const answer = ask(request('Edit a.ts'));
     (await shown).answer(undefined);
 
     expect(await answer).toEqual(cancelled);
   });
 
   it('asks about one request at a time, in the order they arrive', async () => {
-    const { chooser, pending, nextChoice } = manualChooser();
-    const requests = new PermissionRequests(chooser);
+    const { ask, pending, nextChoice } = manualRequests();
     const firstShown = nextChoice();
 
-    const first = requests.requestPermission(request('first'));
-    const second = requests.requestPermission(request('second'));
+    const first = ask(request('first'));
+    const second = ask(request('second'));
     await firstShown;
     expect(pending.map((p) => p.prompt.title)).toEqual(['first']);
 
@@ -111,12 +147,11 @@ describe('PermissionRequests', () => {
   });
 
   it('cancels a request whose choice fails, and goes on to the next', async () => {
-    const { chooser, pending, nextChoice } = manualChooser();
-    const requests = new PermissionRequests(chooser);
+    const { ask, pending, nextChoice } = manualRequests();
     const failingShown = nextChoice();
 
-    const failing = requests.requestPermission(request('failing'));
-    const next = requests.requestPermission(request('next'));
+    const failing = ask(request('failing'));
+    const next = ask(request('next'));
     await failingShown;
     const nextShown = nextChoice();
     pending[0]?.fail(new Error('quick pick broke'));

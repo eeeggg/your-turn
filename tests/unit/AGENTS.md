@@ -49,6 +49,15 @@
 
 ## Verification
 
-- During development, run the changed file directly when useful.
-- Before handoff, run `make test-unit`. Also run type checking
-  and linting after substantive changes.
+- Make is the supported developer entry point. Do not invoke `vitest`, `npm`,
+  or test runner scripts directly.
+- During development, run targeted test files with:
+  `make test-unit FILES='tests/unit/core/AgentManager.test.ts'`
+  Separate multiple paths with whitespace.
+- To verify stability, pass `REPEAT=<n>` (e.g. `REPEAT=3`). Repeated runs stop
+  immediately on the first failure; never retry until green.
+- Run unit test coverage with `make coverage` (accepts `FILES` and `REPEAT`).
+- Always report the exact Make command, scope, repeat count, and results; a
+  focused test pass is not a substitute for the full gate.
+- Before handoff, run `make test-unit` (or the full gate `make test`). Also run
+  `make typecheck` and `make lint` after substantive changes.

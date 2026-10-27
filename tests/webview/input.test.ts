@@ -1,13 +1,8 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import type { SlashCommand } from '@/shared/WebviewMessages';
 import { connect, loadChatPage, type ChatPage } from './chatPage';
 
 let page: ChatPage;
-
-afterEach(() => {
-  expect(page.errors).toEqual([]);
-  page.close();
-});
 
 const commands: SlashCommand[] = [
   { name: 'init', description: 'Initialize the project', takesInput: false, hint: null },

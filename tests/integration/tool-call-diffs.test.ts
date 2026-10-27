@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { observed } from './observed';
+import { cleanup } from './cleanup';
 
 type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
 
@@ -37,7 +38,7 @@ for (const version of [1, 2]) {
     const sessionId = `toolcalldiffs-v${version}`;
     let api: ExtensionTestApi;
     let dir: string;
-    let original: { agents: unknown; showToolCallDiffs: unknown };
+    let original: { agents: unknown; showToolCallDiffs: unknown } | undefined;
     const posts: ExtensionToWebviewMessage[] = [];
     const answers: WebviewToExtensionMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
@@ -77,15 +78,15 @@ for (const version of [1, 2]) {
       rmSync(join(dir, 'new.ts'), { force: true });
     });
 
-    suiteTeardown(async () => {
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
-      await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-      await config().update('agents', original.agents, vscode.ConfigurationTarget.Global);
-      await config().update('showToolCallDiffs', original.showToolCallDiffs, vscode.ConfigurationTarget.Global);
-      for (const subscription of subscriptions) {
-        subscription.dispose();
-      }
-      rmSync(dir, { recursive: true, force: true });
+    suiteTeardown(async function () {
+      await cleanup(this.currentTest, [
+        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),
+        () => original && config().update('agents', original.agents, vscode.ConfigurationTarget.Global),
+        () => original && config().update('showToolCallDiffs', original.showToolCallDiffs, vscode.ConfigurationTarget.Global),
+        ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
+        () => { if (dir) { rmSync(dir, { recursive: true, force: true }); } },
+      ]);
     });
 
     test('With acp.showToolCallDiffs off, the tool call reaches the chat view without its diffs', async () => {

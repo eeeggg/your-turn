@@ -104,6 +104,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private agents = new Map<string, RunningAgent>();
   /** Launches in progress by agent name, so concurrent callers share one process. */
   private launching = new Map<string, Promise<RunningAgent>>();
+  /** Ownership outlives initialization and removal from the reusable agents. */
+  private processes = new Map<AgentProcess, Promise<void>>();
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
   /** Session titles from each agent's `session/list` pages, by agent name then session ID. */
   private listedTitles = new Map<string, Map<string, string>>();
 
@@ -231,6 +235,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   private ensureAgent(agentName: string): Promise<RunningAgent> {
+    if (this.disposed) {
+      return Promise.reject(new Error('Session manager is disposed.'));
+    }
     const running = this.agents.get(agentName);
     if (running) {
       return Promise.resolve(running);
@@ -257,14 +264,22 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       error: (error) => { outcome.launchError = error; },
       exit: (code) => {
         outcome.exitCode = code;
-        this.handleAgentExit(agentName, agentProcess, code);
-        exitHandled();
+        try {
+          this.handleAgentExit(agentName, agentProcess, code);
+        } finally {
+          this.processes.delete(agentProcess);
+          exitHandled();
+        }
       },
     });
+    this.processes.set(agentProcess, exited);
 
     let driver: AcpDriver;
     try {
       driver = await this.connectionManager.connect(agentName, agentProcess);
+      if (this.disposed) {
+        throw new Error('Session manager is disposed.');
+      }
     } catch (e) {
       agentProcess.kill();
       // The connection can fail before the launcher reports why the process ended, which says more than a closed connection.
@@ -349,6 +364,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * applied to it instead of dropped.
    */
   private registerSession(agent: RunningAgent, sessionId: string, cwd: string, state: SessionState = NO_SESSION_STATE): SessionInfo {
+    if (this.disposed) {
+      throw new Error('Session manager is disposed.');
+    }
     // Known for a session reopened from the tree; updates drained below override it.
     const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? this.historyStore?.get(agent.name, sessionId)?.title;
     const sessionInfo: SessionInfo = {
@@ -807,12 +825,25 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     return Array.from(this.agentSessions.keys());
   }
 
-  dispose(): void {
-    for (const agent of this.agents.values()) {
-      agent.process.kill();
-    }
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
     this.agents.clear();
     this.sessions.clear();
     this.agentSessions.clear();
+    this.disposal = (async () => {
+      const results = await Promise.allSettled([...this.processes].map(async ([process, exited]) => {
+        process.kill();
+        await exited;
+      }));
+      // Closing the processes also releases initialize requests in flight.
+      await Promise.allSettled(this.launching.values());
+      this.activeSessionId = null;
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to stop agent processes.');
+      }
+    })();
+    return this.disposal;
   }
 }

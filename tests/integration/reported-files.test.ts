@@ -5,12 +5,14 @@ import { join } from 'node:path';
 import { suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
+import { cleanup } from './cleanup';
 
 suite('Reported File Editor Test Suite', () => {
   let dir: string;
   let a: string;
   let b: string;
   let editor: ReportedFileEditor;
+  let owned: ReportedFileEditor | undefined;
 
   suiteSetup(async () => {
     await vscode.commands.executeCommand('workbench.action.closeAllEditors');
@@ -20,14 +22,16 @@ suite('Reported File Editor Test Suite', () => {
     writeFileSync(a, 'a\n');
     writeFileSync(b, 'b\n');
     mkdirSync(join(dir, 'folder'));
-    editor = new ReportedFileEditor();
+    owned = editor = new ReportedFileEditor();
   });
 
   teardown(() => vscode.commands.executeCommand('workbench.action.closeAllEditors'));
 
-  suiteTeardown(() => {
-    editor.dispose();
-    rmSync(dir, { recursive: true, force: true });
+  suiteTeardown(async function () {
+    await cleanup(this.currentTest, [
+      () => owned?.dispose(),
+      () => { if (dir) { rmSync(dir, { recursive: true, force: true }); } },
+    ]);
   });
 
   const activeTab = () => vscode.window.tabGroups.activeTabGroup.activeTab;

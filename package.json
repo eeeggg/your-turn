@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -507,13 +507,15 @@
     "package": "npm run check-types && node esbuild.mjs --production",
     "lint": "eslint . --max-warnings 0 && knip",
     "pretest": "npm run compile && npm run lint",
-    "test": "vitest run && vscode-test",
+    "test": "vitest run && npm run test:integration",
     "test:unit": "vitest run --project unit",
+    "test:vitest": "vitest run",
     "test:webview": "vitest run --project webview",
     "test:integration": "node tools/run-integration.mjs",
     "test:ui": "playwright test --config playwright.config.mts",
     "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage",
-    "coverage:integration": "npm run compile && npm run lint && vscode-test --coverage --coverage-output test-results/integration/coverage"
+    "coverage:unit": "vitest run --project unit --coverage",
+    "coverage:integration": "npm run compile && npm run lint && node tools/run-integration.mjs --coverage"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.0.0",
@@ -560,7 +562,12 @@
   },
   "knip": {
     "entry": [
-      ".vscode-test.mjs"
+      ".vscode-test.mjs",
+      "tools/run-tests.mjs"
+    ],
+    "ignoreBinaries": [
+      "make",
+      "Xvfb"
     ]
   }
 }

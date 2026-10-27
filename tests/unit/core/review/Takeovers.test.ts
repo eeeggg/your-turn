@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { Reviews } from '@/core/review/Reviews';
 import { Takeovers, type DocumentEdit } from '@/core/review/Takeovers';
@@ -19,6 +19,7 @@ function lineEdited(before: string, line: number, replacement: string): { after:
 /** Takeovers over session `s1`'s review, shown, with `/w/a.ts` changed by the agent from `baseline` to `agents`. */
 async function takeovers() {
   const reviews = new Reviews({ read: async () => agents, restore: async () => {}, watch: () => ({ dispose: () => {} }) });
+  onTestFinished(async () => { await reviews.dispose(); });
   reviews.activeSessionChanged('s1');
   const update: SessionUpdate = {
     kind: 'toolCall',

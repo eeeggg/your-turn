@@ -82,6 +82,15 @@ const askArgs = { call: 'showInputBox', options: { prompt: 'Arguments (space-sep
 
 describe('AgentConfigurations', () => {
   describe('add by hand', () => {
+    const confirmReplaceOne = {
+      call: 'showQuickPick',
+      items: [
+        { label: 'Replace', detail: 'Its configuration is overwritten, and the agent is stopped if it is running.' },
+        { label: 'Cancel' },
+      ],
+      options: { title: 'Add ACP Agent', placeHolder: 'Replace agent "one"?' },
+    };
+
     it('saves the agent configuration in the user settings', async () => {
       const { configuration, user, configurations } = setup({ one: { command: 'one' } });
       user.answer(CUSTOM, 'mine', 'npx', '-y @my-org/agent');
@@ -166,12 +175,7 @@ describe('AgentConfigurations', () => {
       expect(user.take()).toEqual([
         pickedCustom,
         askName,
-        {
-          call: 'showWarningMessage',
-          message: 'Replace agent "one"? Its configuration is overwritten, and the agent is stopped if it is running.',
-          options: { modal: true },
-          items: ['Replace'],
-        },
+        confirmReplaceOne,
         askCommand,
         askArgs,
         { call: 'showInformationMessage', message: 'Agent "one" replaced.' },
@@ -194,15 +198,37 @@ describe('AgentConfigurations', () => {
       ]);
     });
 
-    it('keeps the agent configuration and the agent when the user declines to replace it', async () => {
-      const { configuration, launcher, manager, user, configurations } = setup({ one: { command: 'one' } });
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Cancel', 'Cancel'],
+    ])('keeps the configuration and running agent when the user %s', async (_action, answer) => {
+      const { configuration, launcher, manager, user, configurations } = setup({ one: { command: 'one', args: ['--old'] } });
       await manager.ensureConnected('one');
-      user.answer(CUSTOM, 'one', undefined);
+      user.answer(CUSTOM, 'one', answer);
 
       await configurations.add();
 
       expect(configuration.updates).toEqual([]);
+      expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one', args: ['--old'] } });
       expect(launcher.running('one')).toHaveLength(1);
+      expect(user.take()).toEqual([pickedCustom, askName, confirmReplaceOne]);
+    });
+
+    it.each([
+      ['the command', [undefined], [askCommand]],
+      ['a blank command', ['  '], [askCommand]],
+      ['the arguments', ['one', undefined], [askCommand, askArgs]],
+    ])('keeps the configuration and running agent when the user cancels at %s after choosing Replace', async (_step, answers, inputs) => {
+      const { configuration, launcher, manager, user, configurations } = setup({ one: { command: 'one', args: ['--old'] } });
+      await manager.ensureConnected('one');
+      user.answer(CUSTOM, 'one', 'Replace', ...answers);
+
+      await configurations.add();
+
+      expect(configuration.updates).toEqual([]);
+      expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one', args: ['--old'] } });
+      expect(launcher.running('one')).toHaveLength(1);
+      expect(user.take()).toEqual([pickedCustom, askName, confirmReplaceOne, ...inputs]);
     });
   });
 
@@ -240,10 +266,20 @@ describe('AgentConfigurations', () => {
       detail: 'ACP wrapper for Anthropic\'s Claude — runs npx --yes @agentclientprotocol/claude-agent-acp@0.94.0',
     };
     const confirmClaude = {
-      call: 'showInformationMessage',
-      message: 'Add Claude Agent 0.94.0 from the ACP registry? It runs: npx --yes @agentclientprotocol/claude-agent-acp@0.94.0',
-      options: { modal: true },
-      items: ['Add'],
+      call: 'showQuickPick',
+      items: [
+        { label: 'Add', detail: 'It runs: npx --yes @agentclientprotocol/claude-agent-acp@0.94.0' },
+        { label: 'Cancel' },
+      ],
+      options: { title: 'Add ACP Agent', placeHolder: 'Add Claude Agent 0.94.0 from the ACP registry?' },
+    };
+    const confirmReplaceOne = {
+      call: 'showQuickPick',
+      items: [
+        { label: 'Replace', detail: 'Its configuration is overwritten, and the agent is stopped if it is running. It runs: npx --yes @agentclientprotocol/claude-agent-acp@0.94.0' },
+        { label: 'Cancel' },
+      ],
+      options: { title: 'Add ACP Agent', placeHolder: 'Replace agent "one" with one 0.94.0 from the ACP registry?' },
     };
 
     it('offers Custom at once, before the registry arrives', async () => {
@@ -311,13 +347,21 @@ describe('AgentConfigurations', () => {
       });
     });
 
-    it('adds nothing when the user declines', async () => {
-      const { configuration, user, configurations } = setup({}, { registry });
-      user.answer('Claude Agent', undefined);
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Cancel', 'Cancel'],
+    ])('adds nothing and leaves the running agent when the user %s', async (_action, answer) => {
+      const { configuration, launcher, manager, user, configurations } = setup({ one: { command: 'one' } }, { registry });
+      await manager.ensureConnected('one');
+      user.answer('Claude Agent', answer);
 
       await configurations.add();
 
       expect(configuration.updates).toEqual([]);
+      expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one' } });
+      expect(launcher.running('one')).toHaveLength(1);
+      expect(launcher.running('Claude Agent')).toEqual([]);
+      expect(user.take().slice(1)).toEqual([confirmClaude]);
     });
 
     it.each([
@@ -348,14 +392,29 @@ describe('AgentConfigurations', () => {
       expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'npx', args: ['--yes', '@agentclientprotocol/claude-agent-acp@0.94.0'] } });
       expect(launcher.running('one')).toEqual([]);
       expect(user.take().slice(1)).toEqual([
-        {
-          call: 'showWarningMessage',
-          message: 'Replace agent "one" with one 0.94.0 from the ACP registry? Its configuration is overwritten, and the agent is stopped if it is running. It runs: npx --yes @agentclientprotocol/claude-agent-acp@0.94.0',
-          options: { modal: true },
-          items: ['Replace'],
-        },
+        confirmReplaceOne,
         { call: 'showInformationMessage', message: 'Agent "one" replaced.' },
       ]);
+    });
+
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Cancel', 'Cancel'],
+    ])('keeps the configuration and running agent when the user %s instead of replacing', async (_action, answer) => {
+      const one: RegistryAgent = { ...claude, name: 'one' };
+      const { configuration, launcher, manager, user, configurations } = setup(
+        { one: { command: 'one', args: ['--old'] } },
+        { registry: async () => [one] },
+      );
+      await manager.ensureConnected('one');
+      user.answer('one', answer);
+
+      await configurations.add();
+
+      expect(configuration.updates).toEqual([]);
+      expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one', args: ['--old'] } });
+      expect(launcher.running('one')).toHaveLength(1);
+      expect(user.take().slice(1)).toEqual([confirmReplaceOne]);
     });
 
     it('says where an agent of the same name the workspace settings define is, and adds nothing', async () => {
@@ -459,6 +518,14 @@ describe('AgentConfigurations', () => {
       items,
       options: { title: 'Detect ACP Agents', placeHolder: 'Agents from the ACP registry found on the PATH VS Code sees; pick those to add', canPickMany: true },
     });
+    const confirmReplaceOne = {
+      call: 'showQuickPick',
+      items: [
+        { label: 'Replace', detail: 'Its configuration is overwritten, and the agent is stopped if it is running. It runs: opencode acp' },
+        { label: 'Skip' },
+      ],
+      options: { title: 'Detect ACP Agents', placeHolder: 'Replace agent "one"?' },
+    };
 
     it('looks for the command each binary runs on this platform, and offers those found with where and what they would save', async () => {
       const { user, configurations, lookedFor } = setup({}, { registry, onPath });
@@ -544,24 +611,48 @@ describe('AgentConfigurations', () => {
       expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'opencode', args: ['acp'] } });
       expect(launcher.running('one')).toEqual([]);
       expect(user.take().slice(1)).toEqual([
-        {
-          call: 'showWarningMessage',
-          message: 'Replace agent "one"? Its configuration is overwritten, and the agent is stopped if it is running. It runs: opencode acp',
-          options: { modal: true },
-          items: ['Replace'],
-        },
+        confirmReplaceOne,
         { call: 'showInformationMessage', message: 'Agent "one" added.' },
       ]);
     });
 
-    it('keeps an agent of the same name when the user declines to replace it, adding the rest', async () => {
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Skip', 'Skip'],
+    ])('keeps the configuration and running agent when the user %s, adding the rest', async (_action, answer) => {
       const renamed: RegistryAgent = { ...opencode, name: 'one' };
-      const { configuration, user, configurations } = setup({ one: { command: 'one' } }, { registry: async () => [renamed, vtcode], onPath });
-      user.answer(['one', 'VT Code'], undefined);
+      const { configuration, launcher, manager, user, configurations } = setup({ one: { command: 'one' } }, { registry: async () => [renamed, vtcode], onPath });
+      await manager.ensureConnected('one');
+      user.answer(['one', 'VT Code'], answer);
 
       await configurations.detect();
 
       expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one' }, 'VT Code': { command: 'vtcode', args: ['acp'], env: { VT_ACP_ENABLED: '1' } } });
+      expect(launcher.running('one')).toHaveLength(1);
+      expect(user.take().slice(1)).toEqual([
+        confirmReplaceOne,
+        { call: 'showInformationMessage', message: 'Agent "VT Code" added.' },
+      ]);
+    });
+
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Skip', 'Skip'],
+    ])('saves nothing and leaves the running agent when the only selection collides and the user %s', async (_action, answer) => {
+      const renamed: RegistryAgent = { ...opencode, name: 'one' };
+      const { configuration, launcher, manager, user, configurations } = setup(
+        { one: { command: 'one', args: ['--old'] } },
+        { registry: async () => [renamed], onPath },
+      );
+      await manager.ensureConnected('one');
+      user.answer(['one'], answer);
+
+      await configurations.detect();
+
+      expect(configuration.updates).toEqual([]);
+      expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one', args: ['--old'] } });
+      expect(launcher.running('one')).toHaveLength(1);
+      expect(user.take().slice(1)).toEqual([confirmReplaceOne]);
     });
 
     it('says where an agent of the same name the workspace settings define is, and adds the rest', async () => {
@@ -588,10 +679,12 @@ describe('AgentConfigurations', () => {
 
   describe('remove', () => {
     const confirmRemove = (name: string) => ({
-      call: 'showWarningMessage',
-      message: `Remove agent "${name}"?`,
-      options: { modal: true },
-      items: ['Remove'],
+      call: 'showQuickPick',
+      items: [
+        { label: 'Remove', detail: 'Remove its configuration from the user settings and stop the agent if it is running.' },
+        { label: 'Cancel' },
+      ],
+      options: { title: 'Remove ACP Agent', placeHolder: `Remove agent "${name}"?` },
     });
 
     it('stops the agent and removes its configuration', async () => {
@@ -661,13 +754,20 @@ describe('AgentConfigurations', () => {
       ]);
     });
 
-    it('keeps the configuration when the user declines', async () => {
-      const { configuration, user, configurations } = setup({ one: { command: 'one' } });
-      user.answer(undefined);
+    it.each([
+      ['dismisses the confirmation', undefined],
+      ['chooses Cancel', 'Cancel'],
+    ])('keeps the configuration and running agent when the user %s', async (_action, answer) => {
+      const { configuration, launcher, manager, user, configurations } = setup({ one: { command: 'one' } });
+      await manager.ensureConnected('one');
+      user.answer(answer);
 
       await configurations.remove('one');
 
       expect(configuration.updates).toEqual([]);
+      expect(configuration.get<Agents>('agents')).toEqual({ one: { command: 'one' } });
+      expect(launcher.running('one')).toHaveLength(1);
+      expect(user.take()).toEqual([confirmRemove('one')]);
     });
 
     it('says so when no agent is configured', async () => {

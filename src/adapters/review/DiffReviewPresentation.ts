@@ -4,7 +4,7 @@ import { logError } from '@/core/Log';
 import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
-import { vscodeReviewEditors } from './ReviewPresenters';
+import { createReviewEditors } from './ReviewPresenters';
 
 const SCHEME = 'acp-review-diff';
 const enabled = () => vscode.workspace.getConfiguration('acp').get<string>('review.presentation', 'diffEditor') === 'diffEditor';
@@ -37,19 +37,31 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   private readonly lensesChanged = new vscode.EventEmitter<void>();
   readonly onDidChangeCodeLenses = this.lensesChanged.event;
   private readonly subscriptions: vscode.Disposable[];
+  private readonly registrations: vscode.Disposable[];
   private readonly position = vscode.window.createStatusBarItem('acp.review.change', vscode.StatusBarAlignment.Left, 98);
   private latest = Promise.resolve();
+  private readonly pending = new Set<Promise<void>>();
+  private disposed = false;
+  private disposal: Promise<void> | undefined;
+  private readonly reviewListener = () => this.changed();
+  private readonly editors = createReviewEditors();
 
-  constructor(private readonly reviews: Reviews, private readonly openDiff: OpenDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args)) {
+  constructor(
+    private readonly reviews: Reviews,
+    private readonly openDiff: OpenDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args),
+    private readonly closeTabs: (tabs: readonly vscode.Tab[]) => Thenable<boolean> = (tabs) => vscode.window.tabGroups.close(tabs, true),
+  ) {
     this.review = reviews.shown();
     this.position.name = 'ACP Current Change';
     this.position.tooltip = 'Keep Change and Undo Change in the editor title act on this change; move the cursor to choose another';
-    this.subscriptions = [
+    this.registrations = [
       vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: this.contentChanged.event,
         provideTextDocumentContent: (uri) => this.retained.get(uri.toString())?.text ?? '',
       }),
       vscode.languages.registerCodeLensProvider([{ scheme: 'file' }, { scheme: SCHEME }], this),
+    ];
+    this.subscriptions = [
       vscode.window.onDidChangeTextEditorSelection(() => this.showPosition()),
       vscode.window.onDidChangeActiveTextEditor(() => this.showPosition()),
       vscode.window.tabGroups.onDidChangeTabs(() => this.showPosition()),
@@ -58,40 +70,48 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
         if (event.affectsConfiguration('acp.review.presentation')) { this.changed(); }
       }),
     ];
-    reviews.addListener(() => this.changed());
+    reviews.addListener(this.reviewListener);
   }
 
   attach(controls: ReviewControls): void {
+    if (this.disposed) { return; }
     this.controls = controls;
     this.changed();
   }
 
-  activePath(): string | undefined { return vscodeReviewEditors.activePath(); }
-  text(path: string): string | undefined { return vscodeReviewEditors.text(path); }
-  applyEdit(path: string, edit: Parameters<ReviewEditors['applyEdit']>[1]): Promise<boolean> { return vscodeReviewEditors.applyEdit(path, edit); }
-  save(path: string): Promise<void> { return vscodeReviewEditors.save(path); }
-  showError(message: string): void { vscodeReviewEditors.showError(message); }
+  activePath(): string | undefined { return this.editors.activePath(); }
+  text(path: string): string | undefined { return this.editors.text(path); }
+  applyEdit(path: string, edit: Parameters<ReviewEditors['applyEdit']>[1]): Promise<boolean> { return this.editors.applyEdit(path, edit); }
+  save(path: string): Promise<void> { return this.editors.save(path); }
+  showError(message: string): void { this.editors.showError(message); }
 
-  async open(path: string): Promise<void> {
-    if (enabled() && this.controls?.baseline(path) !== undefined) { await this.showChange(path); }
-    else { await vscodeReviewEditors.open(path); }
+  open(path: string): Promise<void> {
+    return this.present(async () => {
+      if (enabled() && this.controls?.baseline(path) !== undefined) { await this.showChange(path); }
+      else { await this.editors.open(path); }
+    });
   }
 
-  async showChange(path: string): Promise<void> {
-    if (!enabled()) { await vscodeReviewEditors.showChange(path); return; }
-    await vscode.workspace.openTextDocument(vscode.Uri.file(path));
-    const changes = this.controls?.changes(path) ?? [];
-    if (changes.length > 0) { await this.showChangeOf(path, changes, 0); }
-    // Disk evidence can precede VS Code's reload of an already-open document.
-    else { await this.showDiff(path, 0); }
+  showChange(path: string): Promise<void> {
+    return this.present(async () => {
+      if (!enabled()) { await this.editors.showChange(path); return; }
+      await vscode.workspace.openTextDocument(vscode.Uri.file(path));
+      if (this.disposed) { return; }
+      const changes = this.controls?.changes(path) ?? [];
+      if (changes.length > 0) { await this.showChangeOf(path, changes, 0); }
+      // Disk evidence can precede VS Code's reload of an already-open document.
+      else { await this.showDiff(path, 0); }
+    });
   }
 
-  async showChangeOf(path: string, changes: readonly Change[], index: number): Promise<void> {
-    if (!enabled()) { await vscodeReviewEditors.showChangeOf(path, changes, index); return; }
-    const change = changes[index];
-    if (!change) { return; }
-    const line = Math.max(0, change.modified.start - (change.modified.start === change.modified.end ? 1 : 0));
-    await this.showDiff(path, line);
+  showChangeOf(path: string, changes: readonly Change[], index: number): Promise<void> {
+    return this.present(async () => {
+      if (!enabled()) { await this.editors.showChangeOf(path, changes, index); return; }
+      const change = changes[index];
+      if (!change) { return; }
+      const line = Math.max(0, change.modified.start - (change.modified.start === change.modified.end ? 1 : 0));
+      await this.showDiff(path, line);
+    });
   }
 
   private async showDiff(path: string, line: number): Promise<void> {
@@ -115,18 +135,18 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     entry.opening = opening.catch(() => {});
     await opening;
     if (this.baselines.get(path) !== entry) { await this.latest; return; }
-    this.lensesChanged.fire();
-    this.showPosition();
+    if (!this.disposed) { this.lensesChanged.fire(); this.showPosition(); }
   }
 
   /** A full diff stays open during a decision; the review listener closes it when its file leaves review. */
   async closeChange(path: string): Promise<void> {
-    if (!enabled()) { await vscodeReviewEditors.closeChange(path); }
+    if (this.disposed) { return; }
+    if (!enabled()) { await this.editors.closeChange(path); }
   }
 
   provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     const path = document.uri.fsPath;
-    if (!enabled() || !this.baselines.has(path) || !this.controls) { return []; }
+    if (this.disposed || !enabled() || !this.baselines.has(path) || !this.controls) { return []; }
     if (document.uri.scheme === SCHEME && this.baselines.get(path)?.uri.toString() !== document.uri.toString()) { return []; }
     const original = document.uri.scheme === SCHEME;
     const baseline = this.controls.baseline(path);
@@ -148,7 +168,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
 
   /** Lens commands carry a text snapshot; title commands resolve the cursor in either diff side at invocation. */
   async decide(action: 'keep' | 'undo', argument?: unknown): Promise<void> {
-    if (!enabled() || !this.controls) { return; }
+    if (this.disposed || !enabled() || !this.controls) { return; }
     let path: string;
     let change: Change | undefined;
     if (argument && typeof argument === 'object' && 'review' in argument) {
@@ -171,13 +191,40 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     }
   }
 
-  settled(): Promise<void> { return this.latest; }
+  settled(): Promise<void> {
+    return Promise.allSettled([this.latest, ...this.pending]).then(() => {});
+  }
 
-  dispose(): void {
+  dispose(): Promise<void> {
+    if (this.disposal) { return this.disposal; }
+    this.disposed = true;
+    this.reviews.removeListener(this.reviewListener);
+    const editors = this.editors.dispose();
     for (const subscription of this.subscriptions) { subscription.dispose(); }
-    this.contentChanged.dispose();
-    this.lensesChanged.dispose();
-    this.position.dispose();
+    const closing = [...this.baselines].map(([path, entry]) => this.closeDiff(path, entry));
+    this.latest = Promise.allSettled([this.latest, ...closing]).then(() => {});
+    this.disposal = Promise.allSettled([...this.pending, this.latest, editors]).then((results) => {
+      for (const registration of this.registrations) { registration.dispose(); }
+      this.contentChanged.dispose();
+      this.lensesChanged.dispose();
+      this.position.dispose();
+      const failures = results.filter((result) => result.status === 'rejected');
+      if (failures.length > 0) {
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to dispose review diffs');
+      }
+    });
+    return this.disposal;
+  }
+
+  private present(action: () => Promise<void>): Promise<void> {
+    if (this.disposed) { return Promise.resolve(); }
+    return this.track(action());
+  }
+
+  private track(pending: Promise<void>): Promise<void> {
+    this.pending.add(pending);
+    void pending.then(() => this.pending.delete(pending), () => this.pending.delete(pending));
+    return pending;
   }
 
   private selectedChange(): { path: string; change: Change; index: number; total: number } | undefined {
@@ -193,6 +240,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   }
 
   private showPosition(): void {
+    if (this.disposed) { return; }
     const selected = enabled() ? this.selectedChange() : undefined;
     void vscode.commands.executeCommand('setContext', 'acp.reviewDiffChange', selected !== undefined);
     if (selected) { this.position.text = `Change ${selected.index + 1} of ${selected.total}`; this.position.show(); }
@@ -200,25 +248,34 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   }
 
   private changed(): void {
+    if (this.disposed) { return; }
     const switched = this.review !== this.reviews.shown();
     this.review = this.reviews.shown();
     if (switched) { this.generation++; }
     const obsolete = [...this.baselines].filter(([path]) => switched || !enabled() || this.controls?.baseline(path) === undefined);
     // Keep retired content alive until VS Code has closed every tab using it.
-    const closing = obsolete.map(async ([path, entry]) => {
-      if (this.baselines.get(path) === entry) { this.baselines.delete(path); }
-      await entry.opening;
-      const tabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter(({ input }) =>
-        input instanceof vscode.TabInputTextDiff && input.original.toString() === entry.uri.toString());
-      if (tabs.length > 0) { await vscode.window.tabGroups.close(tabs, true); }
-    });
+    const closing = obsolete.map(([path, entry]) => this.closeDiff(path, entry));
     for (const [path, entry] of this.baselines) {
       if (obsolete.some(([, retired]) => retired === entry)) { continue; }
       entry.text = this.controls?.baseline(path) ?? '';
       this.contentChanged.fire(entry.uri);
     }
-    this.latest = Promise.all([this.latest, ...closing]).then(() => {}).catch((error: unknown) => logError('Closing review diffs failed', error));
+    this.latest = Promise.allSettled([this.latest, ...closing]).then((results) => {
+      for (const result of results) {
+        if (result.status === 'rejected') { logError('Closing review diffs failed', result.reason); }
+      }
+    });
     this.lensesChanged.fire();
     this.showPosition();
+  }
+
+  private closeDiff(path: string, entry: Baseline): Promise<void> {
+    if (this.baselines.get(path) === entry) { this.baselines.delete(path); }
+    return this.track((async () => {
+      await entry.opening;
+      const tabs = vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter(({ input }) =>
+        input instanceof vscode.TabInputTextDiff && input.original.toString() === entry.uri.toString());
+      if (tabs.length > 0) { await this.closeTabs(tabs); }
+    })());
   }
 }
