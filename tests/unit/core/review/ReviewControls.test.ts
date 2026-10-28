@@ -56,6 +56,7 @@ async function controls({ deleted = false, changes = false } = {}) {
   if (changes) { await reviews.handleSessionUpdate('s1', edited('t5', '/w/m.ts', twoChanges.before, twoChanges.after), 'v1'); }
   const subject = new ReviewControls(reviews, {
     activePath: () => active,
+    isOpen: (path) => active === path || opened.includes(path) || shown.includes(path),
     open: async (path) => { opened.push(path); },
     showChange: async (path) => { shown.push(path); },
     showChangeOf: async (path, changes, index) => {
@@ -390,6 +391,7 @@ describe('ReviewControls', () => {
     await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
     const subject = new ReviewControls(reviews, {
       activePath: () => undefined,
+      isOpen: () => false,
       open: async () => {},
       showChange: async (path) => { shown.push(path); },
       showChangeOf: async () => {},
@@ -406,15 +408,16 @@ describe('ReviewControls', () => {
     expect(shown).toEqual(['/w/b.ts']);
   });
 
-  it('shows the first unresolved file when a turn ends, regardless of the active editor, and none with no file', async () => {
+  it('shows the first unresolved file at turn end only when no review file is open', async () => {
     const { controls: subject, shown, activate, reviews } = await controls();
     activate('/w/b.ts');
     await subject.turnEnded('s1');
+    expect(shown).toEqual([]);
     activate('/w/other.ts');
     await subject.turnEnded('s1');
     reviews.activeSessionChanged(null);
     await subject.turnEnded('s1');
-    expect(shown).toEqual(['/w/a.ts', '/w/a.ts']);
+    expect(shown).toEqual(['/w/a.ts']);
   });
 
   it("shows no deleted file's change, as no editor shows it", async () => {

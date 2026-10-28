@@ -297,8 +297,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       }
     }),
     vscode.commands.registerCommand('acp.openReview', unlessTurnRuns(() => reviewControls.openReview())),
-    vscode.commands.registerCommand('acp.previousReviewFile', (arg?: unknown) => reviewControls.previous(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.nextReviewFile', (arg?: unknown) => reviewControls.next(reviewPathOf(arg))),
+    vscode.commands.registerCommand('acp.previousReviewFile', async (arg?: unknown) => {
+      await reviewControls.previous(reviewPathOf(arg));
+      await reviewPresenters.navigated();
+    }),
+    vscode.commands.registerCommand('acp.nextReviewFile', async (arg?: unknown) => {
+      await reviewControls.next(reviewPathOf(arg));
+      await reviewPresenters.navigated();
+    }),
     vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg)))),
     vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg)))),
     vscode.commands.registerCommand('acp.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),

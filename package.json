@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.18-dev.4",
+  "version": "0.3.18-dev.7",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -174,13 +174,13 @@
         "command": "acp.previousReviewFile",
         "title": "Previous File Under Review",
         "icon": "$(arrow-left)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && acp.reviewHasFiles"
       },
       {
         "command": "acp.nextReviewFile",
         "title": "Next File Under Review",
         "icon": "$(arrow-right)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && acp.reviewHasFiles"
       },
       {
         "command": "acp.undoFile",

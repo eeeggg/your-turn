@@ -143,9 +143,11 @@ for (const version of [1]) {
       assert.ok(await quickDiffHasChange(modified), 'quick diff has the second change');
     });
 
-    test("The turn ending shows the first review file's change though the chat view has the focus", async () => {
+    test("Turn end preserves an open review diff while the chat view has focus", async () => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(modified));
+      await api.reviewPresentationSettled();
+      assert.ok(viewShown(modified));
       await vscode.commands.executeCommand('acp-chat.focus');
       const window = vscode.window as { showQuickPick: unknown };
       const original = window.showQuickPick;
@@ -156,6 +158,7 @@ for (const version of [1]) {
         await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
         await promptEnded;
         await api.turnEndShown();
+        await api.reviewPresentationSettled();
       } finally {
         window.showQuickPick = original;
       }

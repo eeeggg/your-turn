@@ -105,6 +105,29 @@ for (const version of [2]) {
       assert.strictEqual(activeFile(), modified);
     });
 
+    test("The agent's turn ending preserves an already-open review file", async () => {
+      await vscode.commands.executeCommand('acp.nextReviewFile');
+      await api.reviewPresentationSettled();
+      assert.strictEqual(activeFile(), created);
+      assert.ok(viewShown(created));
+
+      const window = vscode.window as { showQuickPick: unknown };
+      const original = window.showQuickPick;
+      window.showQuickPick = async (items: readonly vscode.QuickPickItem[]) => items[0];
+      try {
+        const ended = posts.filter((post) => post.type === 'promptEnd').length;
+        const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
+        await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
+        await promptEnded;
+        await api.turnEndShown();
+      } finally {
+        window.showQuickPick = original;
+      }
+
+      assert.strictEqual(activeFile(), created);
+      assert.ok(viewShown(created));
+    });
+
     test("Coming to a file under review, by Next File or its tab, shows its change in quick diff's view again", async function () {
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(mismatched));
       await api.reviewPresentationSettled();
@@ -143,9 +166,11 @@ for (const version of [2]) {
       assert.ok(await quickDiffHasChange(modified), 'quick diff has the second change');
     });
 
-    test("The turn ending shows the first review file's change though the chat view has the focus", async () => {
+    test("Turn end preserves an open review diff while the chat view has focus", async () => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(modified));
+      await api.reviewPresentationSettled();
+      assert.ok(viewShown(modified));
       await vscode.commands.executeCommand('acp-chat.focus');
       const window = vscode.window as { showQuickPick: unknown };
       const original = window.showQuickPick;
@@ -156,6 +181,7 @@ for (const version of [2]) {
         await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
         await promptEnded;
         await api.turnEndShown();
+        await api.reviewPresentationSettled();
       } finally {
         window.showQuickPick = original;
       }

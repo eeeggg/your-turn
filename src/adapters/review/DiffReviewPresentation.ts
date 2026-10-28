@@ -80,6 +80,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   }
 
   activePath(): string | undefined { return this.editors.activePath(); }
+  isOpen(path: string): boolean { return this.editors.isOpen(path); }
   text(path: string): string | undefined { return this.editors.text(path); }
   applyEdit(path: string, edit: Parameters<ReviewEditors['applyEdit']>[1]): Promise<boolean> { return this.editors.applyEdit(path, edit); }
   save(path: string): Promise<void> { return this.editors.save(path); }

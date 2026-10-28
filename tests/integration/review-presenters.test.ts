@@ -24,7 +24,6 @@ function recording() {
     buttons: false,
     files: [] as string[],
     position: undefined as string | undefined,
-    paused: false,
   };
   const display: ReviewDisplay = {
     review: (sessionShown, files) => {
@@ -32,7 +31,6 @@ function recording() {
       shown.files = files.map((uri) => uri.toString());
     },
     position: (text) => { shown.position = text; },
-    paused: (paused) => { shown.paused = paused; },
     dispose: () => {},
   };
   return { shown, display };
@@ -120,7 +118,7 @@ suite('Review presenters', () => {
       ...owned.editors,
       showChange: async () => { started(); await gate; finished = true; },
     }), reviews, {
-      review: () => { updates++; }, position: () => { updates++; }, paused: () => { updates++; }, dispose: () => {},
+      review: () => { updates++; }, position: () => { updates++; }, dispose: () => {},
     });
     owned.presenters = subject;
     try {

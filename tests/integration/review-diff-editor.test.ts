@@ -234,6 +234,17 @@ suite('Native review diff', () => {
     assert.equal((await vscode.workspace.openTextDocument(diff.original)).getText(), before);
   });
 
+  test('opens the first review when only an ordinary file tab is open', async () => {
+    assert.equal(presentation.isOpen(file), true, 'the current review diff is open');
+    await vscode.window.tabGroups.close(ownedTabs(), true);
+    await vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
+    assert.equal(presentation.isOpen(file), false, 'an ordinary text tab is not a review diff');
+
+    await controls.turnEnded(`native-${path.basename(folder)}`);
+
+    assert.equal(ownedTabs().length, 1, 'an ordinary text tab must not suppress the review diff');
+  });
+
   test('rejects a retained lens after an earlier decision reindexes the remaining hunk, then accepts its fresh lens', async () => {
     const undo = (await lenses()).filter((lens) => lens.command?.command === 'acp.undoDiffChange');
     assert.equal(undo.length, 2);
