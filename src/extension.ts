@@ -16,7 +16,7 @@ import { Reviews } from '@/core/review/Reviews';
 import { Takeovers } from '@/core/review/Takeovers';
 import { ChatViewController, type DiffFileChoice } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
-import { log, logError, setLogSink } from '@/core/Log';
+import { logError, logInfo, logWarning, setLogSink } from '@/core/Log';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
@@ -32,7 +32,8 @@ import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
-import { outputChannelSink, disposeChannels, getOutputChannel, getTrafficChannel } from '@/adapters/OutputChannels';
+import { outputChannelSink, disposeChannels, getOutputChannel } from '@/adapters/OutputChannels';
+import { registerTrafficAdapter } from '@/adapters/Traffic';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 let shutdown: (() => Promise<void>) | undefined;
@@ -66,7 +67,8 @@ export interface ExtensionTestApi {
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
   setLogSink(outputChannelSink);
-  log('ACP Client extension activating...');
+  registerTrafficAdapter(context.subscriptions);
+  logInfo('ACP Client extension activating');
 
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
@@ -262,7 +264,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.commands.registerCommand('acp.openChat', focusChatView),
     vscode.commands.registerCommand('acp.sendPrompt', focusChatView),
     vscode.commands.registerCommand('acp.showLog', () => getOutputChannel().show()),
-    vscode.commands.registerCommand('acp.showTraffic', () => getTrafficChannel().show()),
     vscode.commands.registerCommand('acp.refreshSessions', (arg?: unknown) => {
       const agentName = agentNameOf(arg);
       if (agentName) {
@@ -292,12 +293,18 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.commands.registerCommand('acp.openCommandOutput', (arg?: unknown) => {
       const output = commandOutputOf(arg);
       if (output && !agentTerminals.open(output.sessionId, output.source, output.name)) {
-        log(`No output kept for ${output.name}`);
+        logWarning('Command output is no longer retained', { outputName: output.name });
       }
     }),
     vscode.commands.registerCommand('acp.openReview', unlessTurnRuns(() => reviewControls.openReview())),
-    vscode.commands.registerCommand('acp.previousReviewFile', (arg?: unknown) => reviewControls.previous(reviewPathOf(arg))),
-    vscode.commands.registerCommand('acp.nextReviewFile', (arg?: unknown) => reviewControls.next(reviewPathOf(arg))),
+    vscode.commands.registerCommand('acp.previousReviewFile', async (arg?: unknown) => {
+      await reviewControls.previous(reviewPathOf(arg));
+      await reviewPresenters.navigated();
+    }),
+    vscode.commands.registerCommand('acp.nextReviewFile', async (arg?: unknown) => {
+      await reviewControls.next(reviewPathOf(arg));
+      await reviewPresenters.navigated();
+    }),
     vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg)))),
     vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg)))),
     vscode.commands.registerCommand('acp.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
@@ -332,7 +339,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     },
   );
 
-  log('ACP Client extension activated.');
+  logInfo('ACP Client extension activated');
   if (context.extensionMode !== vscode.ExtensionMode.Test) {
     return undefined;
   }
@@ -352,7 +359,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
 export async function deactivate(): Promise<void> {
   await shutdown?.();
-  log('ACP Client extension deactivated.');
+  logInfo('ACP Client extension deactivated');
 }
 
 /** A session tree item, or the argument of its `acp.openSession` command. */

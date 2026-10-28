@@ -23,8 +23,6 @@ export interface ReviewDisplay extends vscode.Disposable {
   review(sessionShown: boolean, files: vscode.Uri[]): void;
   /** "2 of 5" in the status bar, or nothing. */
   position(text: string | undefined): void;
-  /** The review is paused while the agent's turn runs: the status bar's place goes nowhere and is drawn disabled. */
-  paused(paused: boolean): void;
 }
 
 /** The file in the active tab, a diff's modified side among them, when it is one on disk. */
@@ -126,6 +124,11 @@ export function createReviewEditors(
 
   return {
     activePath,
+    isOpen: (path) => viewShown(path) || vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
+      input instanceof vscode.TabInputTextDiff
+      && input.original.scheme === 'acp-review-diff'
+      && input.modified.scheme === 'file'
+      && input.modified.fsPath === path)),
     /** `vscode.open`, as it opens a tab for a file not there too, which a text document cannot. */
     open: (path) => accepted(async () => { await execute('vscode.open', vscode.Uri.file(path)); }),
     showChange: (path) => accepted(() => show(path)),
@@ -198,11 +201,6 @@ function vscodeReviewDisplay(): ReviewDisplay {
         item.show();
       }
     },
-    paused: (paused) => {
-      item.command = paused ? undefined : 'acp.nextReviewFile';
-      item.color = paused ? new vscode.ThemeColor('disabledForeground') : undefined;
-      item.tooltip = paused ? "Files under review: paused while the agent's turn runs" : 'Files under review: go to the next one';
-    },
     dispose: () => item.dispose(),
   };
 }
@@ -254,7 +252,13 @@ export class ReviewPresenters implements vscode.Disposable {
   turnInProgress(inProgress: boolean): void {
     if (this.disposed) { return; }
     this.turnRuns = inProgress;
-    this.display.paused(inProgress);
+  }
+
+  /** A user's file-navigation command may open quick diff during a turn; agent-driven tab changes may not. */
+  async navigated(): Promise<void> {
+    if (this.disposed || vscode.workspace.getConfiguration('acp').get<string>('review.presentation', 'diffEditor') !== 'quickDiff') { return; }
+    const path = textTabPath();
+    if (path !== undefined) { await this.controls.entered(path); }
   }
 
   /** Settles presentations already started by tab changes. */

@@ -1,6 +1,6 @@
 import type { SessionUpdate, TerminalExitStatus } from '@/core/acp/AcpDriver';
 import { Cleaner, forTerminal, type ShownOutput } from './CommandOutput';
-import { log, logError, messageOf } from './Log';
+import { logError } from './Log';
 
 /** How much of a command's output is kept, the most recent. */
 const KEPT_CHARACTERS = 10 * 1024 * 1024;
@@ -194,7 +194,7 @@ export class AgentTerminals {
       try {
         listener(sessionId, terminalId);
       } catch (e) {
-        log(`Error in terminal listener: ${messageOf(e)}`);
+        logError('Error in terminal listener', e);
       }
     }
   }

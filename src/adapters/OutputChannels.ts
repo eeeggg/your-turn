@@ -1,73 +1,28 @@
 import * as vscode from 'vscode';
-import { messageOf, type LogSink, type TrafficDirection } from '@/core/Log';
+import type { LogSink } from '@/core/Log';
 
-let _outputChannel: vscode.OutputChannel | undefined;
-let _trafficChannel: vscode.OutputChannel | undefined;
+let _outputChannel: vscode.LogOutputChannel | undefined;
 
-export function getOutputChannel(): vscode.OutputChannel {
-  _outputChannel ??= vscode.window.createOutputChannel('ACP Client');
+export function getOutputChannel(): vscode.LogOutputChannel {
+  _outputChannel ??= vscode.window.createOutputChannel('ACP Client', { log: true });
   return _outputChannel;
 }
 
-export function getTrafficChannel(): vscode.OutputChannel {
-  _trafficChannel ??= vscode.window.createOutputChannel('ACP Traffic');
-  return _trafficChannel;
-}
-
-function appendLog(message: string, ...args: unknown[]): void {
-  const timestamp = new Date().toISOString();
-  const formatted = args.length > 0
-    ? `[${timestamp}] ${message} ${args.map(a => JSON.stringify(a)).join(' ')}`
-    : `[${timestamp}] ${message}`;
-  getOutputChannel().appendLine(formatted);
-}
-
-function appendWarning(message: string): void {
-  getOutputChannel().appendLine(`[${new Date().toISOString()}] WARN: ${message}`);
-}
-
-function appendError(message: string, error?: unknown): void {
-  const timestamp = new Date().toISOString();
-  const errMsg = error === undefined ? '' : messageOf(error);
-  getOutputChannel().appendLine(`[${timestamp}] ERROR: ${message} ${errMsg}`);
-  if (error instanceof Error && error.stack) {
-    getOutputChannel().appendLine(error.stack);
-  }
-}
-
-function appendTraffic(direction: TrafficDirection, data: unknown): void {
-  const config = vscode.workspace.getConfiguration('acp');
-  if (!config.get<boolean>('logTraffic', true)) {
-    return;
-  }
-  const arrow = direction === 'send' ? '>>> CLIENT → AGENT' : '<<< AGENT → CLIENT';
-  const timestamp = new Date().toISOString();
-
-  // Classify message type
-  let label = '';
-  if (typeof data === 'object' && data !== null) {
-    if ('method' in data) {
-      label = 'id' in data ? ` [REQUEST] ${String(data.method)}` : ` [NOTIFICATION] ${String(data.method)}`;
-    } else if ('result' in data || 'error' in data) {
-      label = ` [RESPONSE] id=${'id' in data ? String(data.id) : 'undefined'}`;
-    }
-  }
-
-  getTrafficChannel().appendLine(
-    `[${timestamp}] ${arrow}${label}\n${JSON.stringify(data, null, 2)}\n`
-  );
-}
-
 export const outputChannelSink: LogSink = {
-  log: appendLog,
-  warn: appendWarning,
-  error: appendError,
-  traffic: appendTraffic,
+  trace: (message, context) => getOutputChannel().trace(message, ...(context === undefined ? [] : [context])),
+  debug: (message, context) => getOutputChannel().debug(message, ...(context === undefined ? [] : [context])),
+  info: (message, context) => getOutputChannel().info(message, ...(context === undefined ? [] : [context])),
+  warn: (message, context) => getOutputChannel().warn(message, ...(context === undefined ? [] : [context])),
+  error: (message, error, context) => {
+    const args = [
+      ...(error === undefined ? [] : [error]),
+      ...(context === undefined ? [] : [context]),
+    ];
+    getOutputChannel().error(message, ...args);
+  },
 };
 
 export function disposeChannels(): void {
   _outputChannel?.dispose();
-  _trafficChannel?.dispose();
   _outputChannel = undefined;
-  _trafficChannel = undefined;
 }

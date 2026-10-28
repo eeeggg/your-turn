@@ -22,7 +22,8 @@ function guarded(disk: Record<string, string | Error>) {
   const review = new Review(async () => {});
   const reads: string[] = [];
   const logged: string[] = [];
-  setLogSink({ log: (message) => logged.push(message), warn() {}, error() {}, traffic() {} });
+  const stringValue = (value: unknown): string => typeof value === 'string' ? value : '';
+  setLogSink({ trace() {}, debug() {}, info() {}, warn: (message, context) => logged.push(`${message}: ${stringValue(context?.['path'])}${context?.['reason'] ? ` ${stringValue(context['reason'])}` : ''}`), error() {} });
   const guard = new V2Guard(review, async (path): Promise<FileContent> => {
     reads.push(path);
     const content = disk[path];
@@ -36,7 +37,7 @@ function guarded(disk: Record<string, string | Error>) {
   return { feed, files, reads, logged };
 }
 
-const notReviewed = (path: string, reason: string) => `Review: ${path}'s change is not reviewed, as ${reason}`;
+const notReviewed = (path: string, reason: string) => `Review change not examined: ${path} ${reason}`;
 
 afterEach(() => { setLogSink(undefined); });
 
@@ -173,7 +174,7 @@ describe('V2Guard', () => {
     const { feed, files, logged } = guarded({ '/w/a.ts': new Error('binary'), '/w/b.ts': 'B' });
     await feed(toolCall('t1', 'completed', [changes(modifyA + modifyB, change('modify', '/w/a.ts'), change('modify', '/w/b.ts'))]));
     expect(files()).toEqual([['/w/b.ts', 'b', 'B']]);
-    expect(logged).toEqual(['Review: /w/a.ts not read, so its change is not reviewed: binary']);
+    expect(logged).toEqual(['Review change not examined because file could not be read: /w/a.ts binary']);
   });
 
   it("puts a tool call's files under review in the order reported, however their reads land", async () => {

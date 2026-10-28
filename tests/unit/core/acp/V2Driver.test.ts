@@ -623,7 +623,7 @@ describe('V2Driver', () => {
       /** What the driver passes up as the patch of each diff sent, and the warnings it logs meanwhile. */
       async function repaired(...patches: string[]): Promise<{ patches: unknown[]; warnings: string[] }> {
         const warnings: string[] = [];
-        setLogSink({ log() {}, warn: (message) => warnings.push(message), error() {}, traffic() {} });
+        setLogSink({ trace() {}, debug() {}, info() {}, warn: (message) => warnings.push(message), error() {} });
         try {
           const updates = await updatesFor(...patches.map((patchText, index): V2.SessionUpdate => ({
             sessionUpdate: 'tool_call_update',

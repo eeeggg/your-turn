@@ -3,7 +3,8 @@ import type { Stream } from '@agentclientprotocol/sdk';
 
 import type { AgentStreams } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { log, logError, logTraffic } from '@/core/Log';
+import { captureTraffic } from '@/core/Traffic';
+import { logDebug, logError, logInfo } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { AcpDriver } from './AcpDriver';
 import { negotiate } from './Negotiation';
@@ -22,28 +23,28 @@ export class ConnectionManager {
 
   /** Connect to an agent over its streams and initialize the connection. */
   async connect(agentName: string, streams: AgentStreams): Promise<AcpDriver> {
-    log(`ConnectionManager: connecting to agent ${agentName}`);
+    logDebug('Connecting to agent', { agentName });
 
     const stream = ndJsonStream(streams.input, streams.output);
 
-    // Wrap the stream to intercept and log all ACP traffic
+    // Wrap the stream to capture all ACP traffic separately from diagnostics.
     const tappedStream = this.tapStream(stream);
 
     const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
-    log(`ConnectionManager: negotiated ACP v${negotiated.version} with agent ${agentName}`);
+    logInfo('Negotiated ACP protocol', { agentName, version: negotiated.version });
     return negotiated.version === 2
       ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers())
       : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers());
   }
 
   /**
-   * Wrap a Stream to intercept and log all messages in both directions.
+   * Wrap a Stream to capture all messages in both directions.
    */
   private tapStream(stream: Stream): Stream {
     // Tap outgoing messages (client → agent)
     const sendTap = new TransformStream({
       transform(chunk: unknown, controller: TransformStreamDefaultController) {
-        logTraffic('send', chunk);
+        captureTraffic('send', chunk);
         controller.enqueue(chunk);
       },
     });
@@ -51,7 +52,7 @@ export class ConnectionManager {
     // Tap incoming messages (agent → client)
     const recvTap = new TransformStream({
       transform(chunk: unknown, controller: TransformStreamDefaultController) {
-        logTraffic('recv', chunk);
+        captureTraffic('recv', chunk);
         controller.enqueue(chunk);
       },
     });

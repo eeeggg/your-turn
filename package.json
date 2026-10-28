@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.18-dev.2",
+  "version": "0.3.18",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -111,8 +111,8 @@
         "title": "ACP: Show Log"
       },
       {
-        "command": "acp.showTraffic",
-        "title": "ACP: Show Protocol Traffic"
+        "command": "acp.exportTraffic",
+        "title": "ACP: Export Protocol Traffic"
       },
       {
         "command": "acp.setMode",
@@ -174,13 +174,13 @@
         "command": "acp.previousReviewFile",
         "title": "Previous File Under Review",
         "icon": "$(arrow-left)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && acp.reviewHasFiles"
       },
       {
         "command": "acp.nextReviewFile",
         "title": "Next File Under Review",
         "icon": "$(arrow-right)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "acp.reviewShown && acp.reviewHasFiles"
       },
       {
         "command": "acp.undoFile",
@@ -392,7 +392,7 @@
           "when": "view == acp-chat"
         },
         {
-          "command": "acp.showTraffic",
+          "command": "acp.exportTraffic",
           "when": "view == acp-chat"
         },
         {
@@ -478,7 +478,7 @@
         "acp.logTraffic": {
           "type": "boolean",
           "default": true,
-          "description": "Log all ACP protocol traffic to the output channel."
+          "description": "Capture ACP protocol traffic in memory for explicit JSONL export."
         },
         "acp.showToolCallDiffs": {
           "type": "boolean",

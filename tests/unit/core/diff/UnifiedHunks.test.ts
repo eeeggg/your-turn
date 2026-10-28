@@ -8,7 +8,7 @@ import { editedTexts } from './editedTexts';
 let warnings: string[] = [];
 beforeEach(() => {
   warnings = [];
-  setLogSink({ log() {}, warn: (message) => warnings.push(message), error() {}, traffic() {} });
+  setLogSink({ trace() {}, debug() {}, info() {}, warn: (message) => warnings.push(message), error() {} });
 });
 afterEach(() => { setLogSink(undefined); });
 

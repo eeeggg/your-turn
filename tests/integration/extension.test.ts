@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import { suite, test } from 'mocha';
 import * as vscode from 'vscode';
+import { getOutputChannel, outputChannelSink } from '@/adapters/OutputChannels';
 
 suite('Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
@@ -16,6 +17,17 @@ suite('Extension Test Suite', () => {
 		assert.strictEqual(ext.isActive, true);
 	});
 
+	test('Routes levelled diagnostics through VS Code LogOutputChannel methods', () => {
+		const channel = getOutputChannel();
+		assert.strictEqual(typeof channel.trace, 'function');
+		assert.strictEqual(typeof channel.debug, 'function');
+		assert.strictEqual(typeof channel.info, 'function');
+		assert.strictEqual(typeof channel.warn, 'function');
+		assert.strictEqual(typeof channel.error, 'function');
+		assert.strictEqual(typeof channel.logLevel, 'number');
+		outputChannelSink.info('Integration check for LogOutputChannel adapter');
+	});
+
 	test('Should register ACP commands', async () => {
 		const commands = await vscode.commands.getCommands(true);
 		const acpCommands = commands.filter(c => c.startsWith('acp.'));
@@ -23,6 +35,8 @@ suite('Extension Test Suite', () => {
 		assert.ok(acpCommands.includes('acp.connectAgent'), 'connectAgent command should exist');
 		assert.ok(acpCommands.includes('acp.newSession'), 'newSession command should exist');
 		assert.ok(acpCommands.includes('acp.openChat'), 'openChat command should exist');
+		assert.ok(acpCommands.includes('acp.exportTraffic'), 'exportTraffic command should exist');
+		assert.ok(!acpCommands.includes('acp.showTraffic'), 'showTraffic command should not exist');
 	});
 
 	test('Contributes no built-in agents', () => {

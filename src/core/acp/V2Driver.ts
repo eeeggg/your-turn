@@ -1,7 +1,7 @@
 import * as Acp from '@agentclientprotocol/sdk/experimental/v2';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { log } from '@/core/Log';
+import { logDebug, logInfo, logTrace } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { logDeviation } from '@/core/StandardDeviations';
 import {
@@ -62,7 +62,7 @@ export class V2Driver implements AcpDriver {
       .onRequest(Acp.methods.client.session.requestPermission, async ({ params, signal }) =>
         permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
       .onNotification(Acp.methods.client.session.update, ({ params }) => {
-        log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
+        logTrace('Received session update', { type: params.update.sessionUpdate, sessionId: params.sessionId });
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
           foreground.report(params.sessionId, params.update);
           return;
@@ -75,9 +75,9 @@ export class V2Driver implements AcpDriver {
     const connection = app.connect(stream);
     connection.signal.addEventListener('abort', () => foreground.close(), { once: true });
 
-    log(`V2Driver: initializing connection to agent ${agentName}`);
+    logDebug('Initializing ACP v2 connection', { agentName });
     const initResponse = await connection.agent.request(Acp.methods.agent.initialize, v2InitializeRequest(clientVersion));
-    log(`V2Driver: initialized. Agent: ${initResponse.info.name} v${initResponse.info.version}`);
+    logInfo('Initialized ACP v2 agent', { agentName: initResponse.info.name, version: initResponse.info.version });
 
     return new V2Driver(connection, permissions, agentDescription(initResponse), foreground, translator);
   }
@@ -137,12 +137,12 @@ export class V2Driver implements AcpDriver {
         sessionId,
         prompt: prompt.map(contentBlock),
       }));
-      log(`Prompt accepted: messageId=${response.messageId}`);
+      logDebug('Prompt accepted', { messageId: response.messageId });
       const idle = await turn.end();
       if (Acp.IdleStateUpdate.isError(idle)) {
         throw turnFailure(idle.error);
       }
-      log(`Turn ended: stopReason=${idle.stopReason ?? 'none'}`);
+      logInfo('Prompt turn ended', { stopReason: idle.stopReason ?? 'none' });
     } finally {
       this.translator.prompting.delete(sessionId);
     }

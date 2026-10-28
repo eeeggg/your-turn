@@ -9,6 +9,8 @@ import type { Reviews } from './Reviews';
 export interface ReviewEditors {
   /** The file in the active editor, when it is one on disk. */
   activePath(): string | undefined;
+  /** Whether this file's ACP review presentation is open in an editor. */
+  isOpen(path: string): boolean;
   open(path: string): Promise<void>;
   /** Opens the file with quick diff's view showing the change after the cursor, once VS Code has diffed it. */
   showChange(path: string): Promise<void>;
@@ -168,6 +170,7 @@ export class ReviewControls {
    */
   async turnEnded(sessionId: string): Promise<void> {
     await this.reviews.settled(sessionId);
+    if (this.reviews.shown()?.files().some((file) => file.current !== null && this.editors.isOpen(file.path))) { return; }
     await this.openReview();
   }
 

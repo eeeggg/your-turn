@@ -15,7 +15,7 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Slash Commands**: Autocomplete popup for agent-provided commands with keyboard navigation
 - **Mode & Model Picker**: Switch agent modes and models directly from the chat toolbar (kept for agents that haven't migrated to Session Config Options yet)
 - **Permission Management**: Configurable auto-approve policies for agent actions
-- **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
+- **Protocol Traffic Export**: Retain recent ACP JSON-RPC messages in memory and export them as JSONL when requested
 - **Agent Registry**: Add an agent from the ACP agent registry, run through `npx` or `uvx` at the version the registry lists
 - **Chat Persistence**: Transcripts are preserved when switching panels
 
@@ -58,7 +58,7 @@ Run through `npx` instead, the same agent is `"command": "npx", "args": ["@openc
 | `acp.agents` | `{}` | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
 | `acp.autoApprovePermissions` | `ask` | How agent permission requests are handled: `ask` or `allowAll`. |
 | `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
-| `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
+| `acp.logTraffic` | `true` | Capture ACP protocol traffic in memory for explicit JSONL export. Turning this off stops new captures but keeps traffic already retained until the extension host stops. |
 
 ## Commands
 
@@ -80,7 +80,7 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 | `ACP: Set Agent Model` | Change the agent's model |
 | `ACP: Refresh Sessions` | Re-fetch the session list for an agent (also on the agent's right-click menu) |
 | `ACP: Show Log` | Open the ACP Client log output channel |
-| `ACP: Show Protocol Traffic` | Open the ACP Traffic output channel |
+| `ACP: Export Protocol Traffic` | Save the retained ACP protocol traffic as a JSONL file |
 
 ## Development
 

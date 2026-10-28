@@ -1,5 +1,5 @@
 import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
-import { log, messageOf } from './Log';
+import { logError } from './Log';
 
 /** `schema` names the driver that passed the update up. */
 export type SessionUpdateListener = (sessionId: string, update: SessionUpdate, schema: AcpSchema) => void;
@@ -24,7 +24,7 @@ export class SessionUpdateHandler {
       try {
         listener(sessionId, update, schema);
       } catch (e) {
-        log(`Error in session update listener: ${messageOf(e)}`);
+        logError('Error in session update listener', e);
       }
     }
   }

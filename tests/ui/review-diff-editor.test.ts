@@ -134,7 +134,7 @@ test('modified review text keeps normal typing, save and undo history after hunk
   await window.screenshot({ path: testInfo.outputPath('review-undo-after-resolution.png') });
 });
 
-test('review header keeps its tools during a turn and navigates files after the turn ends', async ({ window, workspace }, testInfo) => {
+test('review file navigation stays available during a turn while review decisions wait', async ({ window, workspace }, testInfo) => {
   await hideSecondarySideBar(window).click();
   await startReview(window, workspace);
   const prompt = promptInput(window);
@@ -143,8 +143,19 @@ test('review header keeps its tools during a turn and navigates files after the 
   await expect(quickInputRow(window, 'Allow')).toBeVisible();
   for (const action of actions) {
     await expect(reviewTitleAction(window, action)).toBeVisible();
-    await expect(reviewTitleAction(window, action)).toBeDisabled();
+    if (action === 'Previous File Under Review' || action === 'Next File Under Review') {
+      await expect(reviewTitleAction(window, action)).toBeEnabled();
+    } else {
+      await expect(reviewTitleAction(window, action)).toBeDisabled();
+    }
   }
+  await expect(reviewStatus(window)).toBeEnabled();
+  await reviewStatus(window).click();
+  await expect(reviewStatus(window)).toContainText('1 of 1');
+  await reviewTitleAction(window, 'Next File Under Review').click();
+  await expect(reviewStatus(window)).toContainText('1 of 1');
+  await reviewTitleAction(window, 'Previous File Under Review').click();
+  await expect(reviewStatus(window)).toContainText('1 of 1');
   await window.screenshot({ path: testInfo.outputPath('review-toolbar-during-turn.png') });
   await gitOpenFile(window).click();
   await expect(plainFileEditor(window)).toContainText('AGENT changed');

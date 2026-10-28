@@ -2,7 +2,7 @@ import { client as createClientApp, methods, PROTOCOL_VERSION, RequestError } fr
 import type * as Acp from '@agentclientprotocol/sdk';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { log } from '@/core/Log';
+import { logDebug, logInfo, logTrace } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type {
   AcpDriver,
@@ -54,7 +54,7 @@ export class V1Driver implements AcpDriver {
       .onRequest(methods.client.session.requestPermission, async ({ params, signal }) =>
         permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
       .onNotification(methods.client.session.update, ({ params }) => {
-        log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
+        logTrace('Received session update', { type: params.update.sessionUpdate, sessionId: params.sessionId });
         const update = sessionUpdate(params.update);
         if (update) {
           updates.handleUpdate(params.sessionId, update, 'v1');
@@ -62,9 +62,9 @@ export class V1Driver implements AcpDriver {
       });
     const connection = app.connect(stream);
 
-    log(`V1Driver: initializing connection to agent ${agentName}`);
+    logDebug('Initializing ACP v1 connection', { agentName });
     const initResponse = await connection.agent.request(methods.agent.initialize, v1InitializeRequest(clientVersion));
-    log(`V1Driver: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);
+    logInfo('Initialized ACP v1 agent', { agentName: initResponse.agentInfo?.name || 'unknown', version: initResponse.agentInfo?.version || '?' });
 
     return new V1Driver(connection, permissions, agentDescription(initResponse));
   }
@@ -110,7 +110,7 @@ export class V1Driver implements AcpDriver {
       sessionId,
       prompt: prompt.map(contentBlock),
     }));
-    log(`Prompt response: stopReason=${response.stopReason}`);
+    logInfo('Prompt turn ended', { stopReason: response.stopReason });
   }
 
   async cancel(sessionId: string): Promise<void> {

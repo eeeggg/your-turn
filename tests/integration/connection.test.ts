@@ -6,7 +6,8 @@ import type { AcpDriver } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, type AgentProcess } from '@/core/AgentManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { setLogSink, type TrafficDirection } from '@/core/Log';
+import { clearTraffic, getTrafficJsonl, type TrafficDirection } from '@/core/Traffic';
+import { setLogSink } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 
@@ -33,18 +34,22 @@ for (const version of [1, 2]) {
     const textWaiters: { text: string; resolve: () => void }[] = [];
     const exitWaiters: (() => void)[] = [];
     const logs: string[] = [];
-    const traffic: { direction: TrafficDirection; data: unknown }[] = [];
+    const infos: { message: string; context?: Readonly<Record<string, unknown>> }[] = [];
+    const trafficRecords = () => getTrafficJsonl().trimEnd().split('\n').filter(Boolean)
+      .map((line) => JSON.parse(line) as { timestamp: string; direction: TrafficDirection; message: unknown });
 
     suiteSetup(async () => {
+      clearTraffic();
       const config = vscode.workspace.getConfiguration('acp');
       originalAutoApprove = config.get<string>('autoApprovePermissions');
       await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
 
       setLogSink({
-        log: (message) => logs.push(message),
+        trace: (message) => logs.push(message),
+        debug() {},
+        info: (message, context) => infos.push({ message, ...(context === undefined ? {} : { context }) }),
         warn() {},
         error() {},
-        traffic: (direction, data) => traffic.push({ direction, data }),
       });
 
       updates = new SessionUpdateHandler();
@@ -91,6 +96,7 @@ for (const version of [1, 2]) {
       } finally {
         updates?.dispose();
         setLogSink(undefined);
+        clearTraffic();
         const config = vscode.workspace.getConfiguration('acp');
         await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);
       }
@@ -101,14 +107,17 @@ for (const version of [1, 2]) {
     });
 
     test(`Negotiates ACP v${version}`, () => {
-      assert.ok(logs.includes(`ConnectionManager: negotiated ACP v${version} with agent fake-agent`), `logs: ${JSON.stringify(logs)}`);
+      assert.ok(infos.some(({ message, context }) => {
+        const fields = context ?? {};
+        return message === 'Negotiated ACP protocol' && fields['version'] === version && fields['agentName'] === 'fake-agent';
+      }), `infos: ${JSON.stringify(infos)}`);
     });
 
     test('Sends one initialize, asking for v2 with the client version', () => {
-      const initializes = traffic.filter(t => t.direction === 'send' && at(t.data, 'method') === 'initialize');
+      const initializes = trafficRecords().filter(t => t.direction === 'send' && at(t.message, 'method') === 'initialize');
       assert.strictEqual(initializes.length, 1);
-      assert.strictEqual(at(initializes[0]?.data, 'params', 'protocolVersion'), 2);
-      assert.strictEqual(at(initializes[0]?.data, 'params', 'info', 'version'), CLIENT_VERSION);
+      assert.strictEqual(at(initializes[0]?.message, 'params', 'protocolVersion'), 2);
+      assert.strictEqual(at(initializes[0]?.message, 'params', 'info', 'version'), CLIENT_VERSION);
     });
 
     test('Creates a session and sets a config option', async () => {
@@ -133,10 +142,14 @@ for (const version of [1, 2]) {
     });
 
     test('Traffic tap records both directions', () => {
-      const sentMethods = traffic.filter(t => t.direction === 'send').map(t => at(t.data, 'method'));
-      const receivedMethods = traffic.filter(t => t.direction === 'recv').map(t => at(t.data, 'method'));
+      const records = trafficRecords();
+      const sentMethods = records.filter(t => t.direction === 'send').map(t => at(t.message, 'method'));
+      const receivedMethods = records.filter(t => t.direction === 'recv').map(t => at(t.message, 'method'));
       assert.ok(sentMethods.includes('initialize'), `sent: ${JSON.stringify(sentMethods)}`);
       assert.ok(receivedMethods.includes('session/update'), `received: ${JSON.stringify(receivedMethods)}`);
+      assert.ok(records.every(({ timestamp, direction, message }) =>
+        Number.isFinite(Date.parse(timestamp)) && ['send', 'recv'].includes(direction) && typeof message === 'object' && message !== null),
+      `records: ${JSON.stringify(records)}`);
     });
 
     test('Reports the agent exiting after it is killed', async () => {

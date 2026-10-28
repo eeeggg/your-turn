@@ -82,7 +82,7 @@ async function setup() {
   }, 'v1');
   const unused = () => { throw new Error('Unexpected editor interaction'); };
   const controls = new ReviewControls(reviews, {
-    activePath: unused, open: unused, showChange: unused, showChangeOf: unused,
+    activePath: unused, isOpen: unused, open: unused, showChange: unused, showChangeOf: unused,
     closeChange: unused, showError: unused, text: unused, applyEdit: unused, save: unused,
   });
   const adapter = new ReviewTakeovers(new Takeovers(reviews), controls);
