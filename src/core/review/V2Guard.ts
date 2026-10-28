@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { parsePatch, type StructuredPatch } from 'diff';
 import type { FileChange, FileDiff, SessionUpdate, ToolCallStatus } from '@/core/acp/AcpDriver';
-import { log, messageOf } from '@/core/Log';
+import { logWarning, messageOf } from '@/core/Log';
 import { changeSides } from '@/core/ReportedFiles';
 import type { FileContent, ReadFile, Review } from './Review';
 
@@ -59,7 +59,7 @@ export class V2Guard {
     try {
       return await this.readFile(path);
     } catch (e) {
-      log(`Review: ${path} not read, so its change is not reviewed: ${messageOf(e)}`);
+      logWarning('Review change not examined because file could not be read', { path, reason: messageOf(e) });
       return undefined;
     }
   }
@@ -109,5 +109,5 @@ function endPath(filePatch: StructuredPatch): string | undefined {
 }
 
 function leftOut(change: FileChange, reason: string): void {
-  log(`Review: ${change.path}'s change is not reviewed, as ${reason}`);
+  logWarning('Review change not examined', { path: change.path, reason });
 }

@@ -124,7 +124,7 @@ describe('FollowedFiles', () => {
     change('/w/a.ts');
     const messages: string[] = [];
     const failed = new Promise<void>((resolve) => {
-      setLogSink({ log: (message) => { messages.push(message); resolve(); }, warn() {}, error() {}, traffic() {} });
+      setLogSink({ trace() {}, debug() {}, info() {}, warn: (message, context) => { messages.push(`${message}: ${String(context?.['reason'])}`); resolve(); }, error() {} });
     });
     const disposed = subject.dispose();
     const finishedAtDisposal = disposed.then(() => reads.every((read) => read.finished));
@@ -134,7 +134,7 @@ describe('FollowedFiles', () => {
     await disposed;
 
     expect(await finishedAtDisposal).toBe(true);
-    expect(messages).toEqual(['Review: /w/a.ts not read after it changed: EACCES']);
+    expect(messages).toEqual(['Review file could not be read after it changed: EACCES']);
     expect(reads).toHaveLength(2);
     expect(current('/w/a.ts')).toBe('three');
   });
@@ -191,7 +191,7 @@ describe('FollowedFiles', () => {
     review.changed('/w/a.ts', 'one', 'two');
     change('/w/a.ts');
     const failed = new Promise<void>((resolve) => {
-      setLogSink({ log: () => resolve(), warn() {}, error() {}, traffic() {} });
+      setLogSink({ trace() {}, debug() {}, info() {}, warn: () => resolve(), error() {} });
     });
     reads[0]?.fail(new Error('EACCES'));
     await failed;

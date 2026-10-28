@@ -222,6 +222,27 @@ describe('ChatViewController', () => {
   });
 
   describe('session state', () => {
+    it('logs every webview ready handshake at info', async () => {
+      const { controller } = setup();
+      const calls: unknown[][] = [];
+      setLogSink({
+        trace() {},
+        debug() {},
+        info: (...args) => calls.push(['info', ...args]),
+        warn() {},
+        error() {},
+      });
+      onTestFinished(() => { setLogSink(undefined); });
+
+      await controller.handleMessage({ type: 'ready' });
+      await controller.handleMessage({ type: 'ready' });
+
+      expect(calls).toEqual([
+        ['info', 'Chat view ready'],
+        ['info', 'Chat view ready'],
+      ]);
+    });
+
     it('describes the active session when the webview is ready', async () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo({
@@ -629,6 +650,24 @@ describe('ChatViewController', () => {
   });
 
   describe('session controls', () => {
+    it('logs a changed picker selection at debug with its picker ID and value', async () => {
+      const { sessions, controller } = setup();
+      sessions.session = sessionInfo({ configOptions: null, modes });
+      const calls: unknown[][] = [];
+      setLogSink({
+        trace() {},
+        debug: (...args) => calls.push(['debug', ...args]),
+        info() {},
+        warn() {},
+        error() {},
+      });
+      onTestFinished(() => { setLogSink(undefined); });
+
+      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' });
+
+      expect(calls).toEqual([['debug', 'Picker value selected', { pickerId: 'mode', value: 'code' }]]);
+    });
+
     it('cancels the active turn', async () => {
       const { sessions, controller } = setup();
 
@@ -1135,7 +1174,7 @@ describe('ChatViewController', () => {
       const failure = new Error('no editor');
       editor.open.mockRejectedValueOnce(failure);
       const errors: unknown[][] = [];
-      setLogSink({ log() {}, warn() {}, error: (...args) => errors.push(args), traffic() {} });
+      setLogSink({ trace() {}, debug() {}, info() {}, warn() {}, error: (...args) => errors.push(args) });
 
       try {
         await expect(controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 })).resolves.toBeUndefined();

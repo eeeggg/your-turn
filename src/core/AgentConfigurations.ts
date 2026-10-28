@@ -1,7 +1,7 @@
 import { basename } from 'node:path';
 
 import { launchPath, type AgentConfigEntry } from './AgentManager';
-import { logError, messageOf } from './Log';
+import { logError, logWarning, messageOf } from './Log';
 import type { PackageRunner, PackageRunnerCheck } from './PackageRunners';
 import type { RegistryAgent } from './RegistryClient';
 import type { SessionManager } from './SessionManager';
@@ -100,7 +100,7 @@ export class AgentConfigurations {
       this.sources.checkRunner('uvx'),
     ]);
     if ('error' in fetched) {
-      logError('Failed to fetch the ACP registry', fetched.error);
+      logWarning('Failed to fetch the ACP registry', { error: fetched.error });
       const reason = messageOf(fetched.error);
       return [separator, leadsTo(
         { label: '$(warning) The ACP registry could not be fetched', detail: reason },

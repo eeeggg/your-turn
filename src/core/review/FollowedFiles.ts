@@ -1,4 +1,4 @@
-import { log, messageOf } from '@/core/Log';
+import { logWarning, messageOf } from '@/core/Log';
 import type { ReadFile, Review } from './Review';
 
 /** Watches what is at `path`, calling `changed` whenever it may have changed, until disposed. */
@@ -87,7 +87,7 @@ export class FollowedFiles {
         const content = await this.readFile(path);
         if (this.followed.get(path) === file) { this.review.read(path, content); }
       } catch (e) {
-        log(`Review: ${path} not read after it changed: ${messageOf(e)}`);
+        logWarning('Review file could not be read after it changed', { path, reason: messageOf(e) });
       }
     }
     file.reading = false;

@@ -7,7 +7,7 @@ import { editedTexts } from '@tests/unit/core/diff/editedTexts';
 let warnings: string[] = [];
 beforeEach(() => {
   warnings = [];
-  setLogSink({ log() {}, warn: (message) => warnings.push(message), error() {}, traffic() {} });
+  setLogSink({ trace() {}, debug() {}, info() {}, warn: (message) => warnings.push(message), error() {} });
 });
 afterEach(() => { setLogSink(undefined); });
 

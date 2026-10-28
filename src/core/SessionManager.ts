@@ -18,7 +18,7 @@ import {
 import type { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { commandNotFound, type AgentConfigEntry, type AgentLauncher, type AgentProcess, type LaunchError } from './AgentManager';
 import type { SessionHistoryStore } from './SessionHistoryStore';
-import { log, logError, messageOf } from './Log';
+import { logDebug, logError, logInfo, messageOf } from './Log';
 
 /** What sessions need from the workspace the extension runs in. */
 export interface SessionEnvironment {
@@ -177,7 +177,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       await this.disconnectAgent(currentAgent);
     }
 
-    log(`SessionManager: connecting to agent "${agentName}"`);
+    logDebug('Connecting to agent', { agentName });
 
     const agent = await this.ensureAgent(agentName);
     const sessionInfo = await this.createAcpSession(agent, this.environment.workspaceCwd());
@@ -188,7 +188,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.emit('session-added', sessionInfo.sessionId, agentName);
     this.emit('active-session-changed', sessionInfo.sessionId);
 
-    log(`Connected to agent ${agentName}, session ${sessionInfo.sessionId}`);
+    logInfo('Connected to agent', { agentName, sessionId: sessionInfo.sessionId });
     return sessionInfo;
   }
 
@@ -212,7 +212,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   async disconnectAgent(agentName: string): Promise<void> {
     const agent = this.agents.get(agentName);
     if (agent) {
-      log(`Disconnecting agent ${agentName}`);
+      logInfo('Disconnecting agent', { agentName });
       this.stopAgent(agent);
     }
     const session = this.sessionOf(agentName);
@@ -311,9 +311,13 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   private handleAgentExit(agentName: string, agentProcess: AgentProcess, code: number | null): void {
-    log(`Agent ${agentName} closed with code ${String(code)}`);
     // Still registered means nothing here stopped it.
     const unexpected = this.agents.get(agentName)?.process === agentProcess;
+    if (unexpected) {
+      logError('Agent exited unexpectedly', undefined, { agentName, exitCode: code });
+    } else {
+      logDebug('Agent exited', { agentName, exitCode: code });
+    }
     if (unexpected) {
       this.agents.delete(agentName);
     }
@@ -399,7 +403,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       );
     }
 
-    log(`Agent requires authentication. Methods: ${authMethods.map(m => m.name).join(', ')}`);
+    logDebug('Agent requires authentication', { methods: authMethods.map((method) => method.name) });
 
     const selectedMethod = await this.authPrompt.chooseAuthMethod(agent.name, authMethods);
     if (!selectedMethod) {
@@ -408,9 +412,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
 
     try {
-      log(`Authenticating with method: ${selectedMethod.name} (${selectedMethod.id})`);
+      logDebug('Authenticating with method', { methodName: selectedMethod.name, methodId: selectedMethod.id });
       await agent.driver.authenticate(selectedMethod.id);
-      log('Authentication successful');
+      logInfo('Authentication successful', { agentName: agent.name });
     } catch (authErr) {
       logError('Authentication failed', authErr);
       this.stopAgent(agent);
@@ -456,7 +460,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       throw new Error(`No connection for agent: ${session.agentName}`);
     }
 
-    log(`sendPrompt: session=${sessionId}, text="${text.substring(0, 50)}..."`);
+    logDebug('Sending prompt', { sessionId });
 
     const prompt: PromptPart[] = [
       { kind: 'text', text },
@@ -464,7 +468,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     const fileLink = this.environment.activeFileLink();
     if (fileLink) {
-      log(`sendPrompt: attaching active file context: ${fileLink.name}`);
+      logDebug('Attaching active file context', { sessionId });
       prompt.unshift({ kind: 'fileLink', ...fileLink });
     }
 
@@ -490,7 +494,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const driver = this.driverFor(session);
     if (!driver) { return; }
 
-    log(`Cancelling turn for session ${sessionId}`);
+    logDebug('Cancelling turn', { sessionId });
     await driver.cancel(sessionId);
   }
 

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
+import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled } from '@/core/Traffic';
 import { setLogSink } from '@/core/Log';
 import { V1Driver, v1InitializeRequest } from '@/core/acp/V1Driver';
 import { V2Driver, v2InitializeRequest } from '@/core/acp/V2Driver';
@@ -32,20 +33,22 @@ function strictV1Agent(refusal: () => Error): AgentScript {
 const unsupported = (...supported: number[]) => () => new RequestError(-32022, 'Unsupported protocol version', { requested: 2, supported });
 
 describe('negotiation', () => {
-  let sent: unknown[];
-
   beforeEach(() => {
-    sent = [];
-    setLogSink({ log() {}, warn() {}, error() {}, traffic: (direction, data) => { if (direction === 'send') { sent.push(data); } } });
+    clearTraffic();
+    setTrafficCaptureEnabled(true);
   });
 
-  afterEach(() => setLogSink(undefined));
+  afterEach(() => {
+    setLogSink(undefined);
+    setTrafficCaptureEnabled(true);
+    clearTraffic();
+  });
 
   /** The params of each `initialize` sent to the agent. */
-  const initializes = () => sent
-    .filter((message): message is { method: string; params: unknown } =>
-      typeof message === 'object' && message !== null && 'method' in message && message.method === 'initialize')
-    .map((message) => message.params);
+  const initializes = () => getTrafficJsonl().trimEnd().split('\n').filter(Boolean)
+    .map((line) => JSON.parse(line) as { direction: string; message: { method?: string; params?: unknown } })
+    .filter((record) => record.direction === 'send' && record.message.method === 'initialize')
+    .map((record) => record.message.params);
 
   it('speaks v1 with an agent that speaks only v1, which answers the request for v2', async () => {
     const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));

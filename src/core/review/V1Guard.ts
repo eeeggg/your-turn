@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import type { FileDiff, SessionUpdate, ToolCallStatus } from '@/core/acp/AcpDriver';
-import { log, messageOf } from '@/core/Log';
+import { logWarning, messageOf } from '@/core/Log';
 import type { FileContent, ReadFile, Review } from './Review';
 
 type WholeFile = Extract<FileDiff, { kind: 'wholeFile' }>;
@@ -44,7 +44,7 @@ export class V1Guard {
     try {
       return await this.readFile(path);
     } catch (e) {
-      log(`Review: ${path} not read, so its change is not reviewed: ${messageOf(e)}`);
+      logWarning('Review change not examined because file could not be read', { path, reason: messageOf(e) });
       return undefined;
     }
   }

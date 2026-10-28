@@ -100,7 +100,7 @@ describe('Reviews', () => {
     });
     const messages: string[] = [];
     const failed = new Promise<void>((resolve) => {
-      setLogSink({ log: (message) => { messages.push(message); resolve(); }, warn() {}, error() {}, traffic() {} });
+      setLogSink({ trace() {}, debug() {}, info() {}, warn: (message, context) => { messages.push(`${message}: ${String(context?.['path'])} ${String(context?.['reason'])}`); resolve(); }, error() {} });
     });
     onTestFinished(() => { setLogSink(undefined); });
     const evidence = schema === 'v1' ? edited : patched;
@@ -129,7 +129,7 @@ describe('Reviews', () => {
     await handling;
 
     expect(await finishedAtDisposal).toBe(true);
-    expect(messages).toEqual(['Review: /w/a.ts not read, so its change is not reviewed: EACCES']);
+    expect(messages).toEqual(['Review change not examined because file could not be read: /w/a.ts EACCES']);
     expect(watched).toEqual([]);
     expect(heard()).toBe(0);
   });
@@ -161,7 +161,7 @@ describe('Reviews', () => {
     watchers.get('/w/b.ts')?.();
     watchers.get('/w/b.ts')?.();
     const failed = new Promise<void>((resolve) => {
-      setLogSink({ log: () => resolve(), warn() {}, error() {}, traffic() {} });
+      setLogSink({ trace() {}, debug() {}, info() {}, warn: () => resolve(), error() {} });
     });
     onTestFinished(() => { setLogSink(undefined); });
     let siblingFinished = false;

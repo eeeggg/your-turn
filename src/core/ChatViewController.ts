@@ -18,7 +18,7 @@ import type {
 import type { SessionInfo, SessionManager } from './SessionManager';
 import type { AgentTerminals } from './AgentTerminals';
 import { CommandOutputFeed, type ShownContent } from './CommandOutputFeed';
-import { logError, messageOf } from './Log';
+import { logDebug, logError, logInfo, messageOf } from './Log';
 import { openReportedChanges, openReportedFile, type FileEditor } from './ReportedFiles';
 import { ToolCallDiffs, type DiffFile } from './ToolCallDiffs';
 import type { Commands } from './VsCodeApi';
@@ -136,9 +136,11 @@ export class ChatViewController {
         this._queuedPrompts = message.count;
         break;
       case 'pickerValueChosen':
+        logDebug('Picker value selected', { pickerId: message.pickerId, value: message.value });
         await this.choosePickerValue(message.pickerId, message.value);
         break;
       case 'ready':
+        logInfo('Chat view ready');
         this._queuedPrompts = 0;
         this.sendCurrentState();
         this.sendRunningTurn();

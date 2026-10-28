@@ -1,6 +1,6 @@
 import type { PermissionOption, PermissionOutcome, PermissionRequest } from '@/core/acp/AcpDriver';
 import type { Permissions } from './ClientHandlers';
-import { log, logError } from './Log';
+import { logDebug, logError } from './Log';
 
 /** The `acp.autoApprovePermissions` setting. */
 export type AutoApprove = 'ask' | 'allowAll';
@@ -97,7 +97,7 @@ export class PermissionRequests implements Permissions {
     try {
       const title = request.title || 'Permission Request';
       const autoApprove = this.chooser.autoApprove();
-      log(`requestPermission: ${title} (autoApprove=${autoApprove})`);
+      logDebug('Requesting permission', { title, autoApprove });
 
       if (autoApprove === 'allowAll') {
         const allow = request.options.find((option) => option.kind === 'allow_once' || option.kind === 'allow_always');
@@ -120,15 +120,15 @@ export class PermissionRequests implements Permissions {
       if (choice.optionId === undefined) {
         const rejectOnce = request.options.find((option) => option.kind === 'reject_once');
         if (rejectOnce) {
-          log(`Permission dismissed; selecting reject-once: ${rejectOnce.id}`);
+          logDebug('Permission dismissed; selecting reject-once', { optionId: rejectOnce.id });
           this.finish(pending, { kind: 'selected', optionId: rejectOnce.id });
         } else {
-          log('Permission dismissed without reject-once option; cancelling request');
+          logDebug('Permission dismissed without reject-once option; cancelling request');
           this.finish(pending, REQUEST_CANCELLED);
         }
         return;
       }
-      log(`Permission selected: ${choice.optionId}`);
+      logDebug('Permission selected', { optionId: choice.optionId });
       this.finish(pending, { kind: 'selected', optionId: choice.optionId });
     } catch (error) {
       logError('Permission request failed', error);

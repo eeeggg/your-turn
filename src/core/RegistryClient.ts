@@ -1,6 +1,6 @@
 import * as z from 'zod';
 import type { AgentConfigEntry } from './AgentManager';
-import { log, logError } from './Log';
+import { logDebug, logInfo, logWarning } from './Log';
 
 /** An agent in the ACP registry, with what Add Agent needs to configure it. */
 export interface RegistryAgent {
@@ -70,7 +70,7 @@ export async function fetchRegistry(): Promise<RegistryAgent[]> {
   }
 
   try {
-    log('Fetching ACP agent registry...');
+    logDebug('Fetching ACP agent registry');
     const response = await fetch(REGISTRY_URL);
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -78,13 +78,13 @@ export async function fetchRegistry(): Promise<RegistryAgent[]> {
     const data = registryFrom(await response.json());
     cachedRegistry = data;
     cacheTime = now;
-    log(`Registry fetched: ${data.agents.length} agents`);
+    logInfo('Registry fetched', { agentCount: data.agents.length });
     return data.agents;
   } catch (e) {
     if (!cachedRegistry) {
       throw e;
     }
-    logError('Failed to fetch registry; using the last copy', e);
+    logWarning('Failed to fetch registry; using the last copy', { error: e });
     return cachedRegistry.agents;
   }
 }

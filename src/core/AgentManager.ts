@@ -1,7 +1,7 @@
 import { Readable, Writable } from 'node:stream';
 import { execa } from 'execa';
 import which from 'which';
-import { log, logError } from './Log';
+import { logDebug, logError, logTrace } from './Log';
 
 /**
  * Configuration for a single ACP agent.
@@ -81,7 +81,7 @@ export class AgentManager implements AgentLauncher {
 
   launch(name: string, config: AgentConfigEntry, cwd: string, events: AgentProcessEvents): AgentProcess {
     const id = `agent_${this.nextId++}`;
-    log(`Spawning agent "${name}" (${id}): ${config.command} ${(config.args ?? []).join(' ')}`);
+    logDebug('Spawning agent', { agentName: name, processId: id, command: config.command, args: config.args ?? [] });
 
     const subprocess = execa(config.command, config.args ?? [], {
       cwd,
@@ -95,7 +95,7 @@ export class AgentManager implements AgentLauncher {
     subprocess.stderr.on('data', (data: Buffer) => {
       const line = data.toString().trim();
       if (line) {
-        log(`[${name} stderr] ${line}`);
+        logTrace('Agent stderr', { agentName: name, line });
       }
     });
 
@@ -105,7 +105,7 @@ export class AgentManager implements AgentLauncher {
         logError(`Agent "${name}" failed to start`, error);
         events.error(error);
       }
-      log(`Agent "${name}" exited (code=${String(result.exitCode)}, signal=${String(result.signal)})`);
+      logDebug('Agent process exited', { agentName: name, exitCode: result.exitCode, signal: result.signal });
       events.exit(result.exitCode ?? null);
     });
 
@@ -114,7 +114,7 @@ export class AgentManager implements AgentLauncher {
       input: Writable.toWeb(subprocess.stdin) as WritableStream<Uint8Array>,
       output: Readable.toWeb(subprocess.stdout) as ReadableStream<Uint8Array>,
       kill: () => {
-        log(`Killing agent "${name}"`);
+        logDebug('Killing agent', { agentName: name });
         subprocess.kill();
       },
     };
