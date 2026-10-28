@@ -81,12 +81,6 @@ All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
 | `ACP: Refresh Sessions` | Re-fetch the session list for an agent (also on the agent's right-click menu) |
 | `ACP: Show Log` | Open the ACP Client log output channel |
 | `ACP: Show Protocol Traffic` | Open the ACP Traffic output channel |
-## Keyboard Shortcuts
-
-| Shortcut | Action |
-|----------|--------|
-| `Ctrl+Shift+A` (`Cmd+Shift+A` on Mac) | Open Chat View |
-| `Escape` (when turn in progress) | Cancel Current Turn |
 
 ## Development
 

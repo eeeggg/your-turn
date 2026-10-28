@@ -1,5 +1,4 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { hookClasses } from '@tests/hookClasses';
 import { answer, connect, loadChatPage, plan, thought, type ChatPage } from './chatPage';
 
 let page: ChatPage;
@@ -15,17 +14,12 @@ function agentMessages(): string[] {
 }
 
 describe('streaming a turn', () => {
-  it('switches the send button to stop while a prompt runs', () => {
+  it('shows the spinner while a prompt runs', () => {
     page.send({ type: 'promptStart' });
-    const button = page.byId<HTMLButtonElement>('sendStopBtn');
 
-    expect(hookClasses(button)).toBe('send-stop-btn stop');
-    expect(button.textContent).toBe('■ Stop');
     expect(page.byId('status').querySelector('.spinner')).not.toBeNull();
 
     page.send({ type: 'promptEnd' });
-    expect(hookClasses(button)).toBe('send-stop-btn send');
-    expect(button.textContent).toBe('Send');
     expect(page.byId('status').textContent).toBe('');
   });
 

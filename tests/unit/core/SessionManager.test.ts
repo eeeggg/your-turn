@@ -66,7 +66,10 @@ function setup(scripts: Record<string, AgentScript>) {
     activeFileLink: () => fileLink,
   };
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
-  const manager = new SessionManager(agents, new ConnectionManager(updates, '0.0.0-test', () => unusedHandlers), environment, authPrompt);
+  const manager = new SessionManager(agents, new ConnectionManager(updates, '0.0.0-test', () => ({
+    ...unusedHandlers,
+    permissions: { ...unusedHandlers.permissions, cancelSession: () => {} },
+  })), environment, authPrompt);
   onTestFinished(async () => { await manager.dispose(); });
   const sessionHistory = new SessionHistoryStore(memoryStore());
   manager.setHistoryStore(sessionHistory);

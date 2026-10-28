@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type * as Acp from '@agentclientprotocol/sdk';
+import { PermissionRequests, type PermissionChooser } from '@/core/PermissionRequests';
 import { AuthRequired, UnknownSession, type ConfigOption, type SessionUpdate } from '@/core/acp/AcpDriver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { connectedDriver, fakeAgent, type AgentScript } from '@tests/unit/core/InProcessAgents';
@@ -305,19 +306,104 @@ describe('V1Driver', () => {
           }));
         }
         return { stopReason: 'end_turn' };
-      }), { permissions: { requestPermission } });
+      }), { permissions: { requestPermission, cancelSession: vi.fn() } });
 
       await driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
 
       const options = [{ id: 'allow', name: 'Allow', kind: 'allow_once' }, { id: 'reject', name: 'Reject', kind: 'reject_always' }];
       expect(requestPermission.mock.calls).toEqual([
-        [{ sessionId: 's1', title: 'Edit a.ts', description: null, subject: null, options }],
-        [{ sessionId: 's1', title: null, description: null, subject: null, options }],
+        [{ sessionId: 's1', title: 'Edit a.ts', description: null, subject: null, options }, expect.any(AbortSignal)],
+        [{ sessionId: 's1', title: null, description: null, subject: null, options }, expect.any(AbortSignal)],
       ]);
       expect(answers).toEqual([
         { outcome: { outcome: 'selected', optionId: 'allow' } },
         { outcome: { outcome: 'selected', optionId: 'allow' } },
       ]);
+    });
+
+    it('returns the SDK request-cancelled error when permission UI is dismissed without reject-once', async () => {
+      const requestPermission = vi.fn<ClientHandlers['permissions']['requestPermission']>(async () => ({ kind: 'requestCancelled' }));
+      const answers: unknown[] = [];
+      const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {
+        answers.push(await client.request(methods.client.session.requestPermission, {
+          sessionId: 's1',
+          toolCall: { toolCallId: 'c1' },
+          options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        }).catch((error: unknown) => error));
+        return { stopReason: 'end_turn' };
+      }), { permissions: { requestPermission, cancelSession: vi.fn() } });
+
+      await driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
+
+      expect(answers).toEqual([expect.objectContaining({ code: -32800 })]);
+    });
+
+    it('notifies the agent of session cancellation before answering pending permission as cancelled', async () => {
+      const events: string[] = [];
+      let permissionStarted!: () => void;
+      const started = new Promise<void>((resolve) => { permissionStarted = resolve; });
+      const chooser: PermissionChooser = {
+        autoApprove: () => 'ask',
+        choose: (_prompt, _options, signal) => new Promise((resolve) => {
+          permissionStarted();
+          signal.addEventListener('abort', () => resolve(undefined), { once: true });
+        }),
+      };
+      const permissions = new PermissionRequests(chooser);
+      const handlers: ClientHandlers = {
+        permissions: {
+          requestPermission: (permission, signal) => permissions.requestPermission(permission, signal),
+          cancelSession: (sessionId) => {
+            events.push('cancel-pending-permissions');
+            permissions.cancelSession(sessionId);
+          },
+        },
+      };
+      const { driver } = await connectedDriver(() => fakeAgent()
+        .onRequest(methods.agent.session.prompt, async ({ client }) => {
+          const response = await client.request(methods.client.session.requestPermission, {
+            sessionId: 's1',
+            toolCall: { toolCallId: 'c1' },
+            options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+          });
+          events.push(`permission:${response.outcome.outcome}`);
+          return { stopReason: 'cancelled' };
+        })
+        .onNotification(methods.agent.session.cancel, () => { events.push('session-cancel'); }), handlers);
+      const turn = driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
+
+      await started;
+      await driver.cancel('s1');
+      await turn;
+
+      expect(events).toEqual(['session-cancel', 'cancel-pending-permissions', 'permission:cancelled']);
+    });
+
+    it('passes request withdrawal to the permission handler and returns its cancelled-request error', async () => {
+      let permissionStarted!: () => void;
+      const started = new Promise<void>((resolve) => { permissionStarted = resolve; });
+      const permissions = new PermissionRequests({
+        autoApprove: () => 'ask',
+        choose: (_prompt, _options, signal) => new Promise((resolve) => {
+          permissionStarted();
+          signal.addEventListener('abort', () => resolve(undefined), { once: true });
+        }),
+      });
+      const cancellation = new AbortController();
+      const answers: unknown[] = [];
+      const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {
+        const response = client.request(methods.client.session.requestPermission, {
+          sessionId: 's1', toolCall: { toolCallId: 'c1' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        }, { cancellationSignal: cancellation.signal }).catch((error: unknown) => error);
+        await started;
+        cancellation.abort();
+        answers.push(await response);
+        return { stopReason: 'end_turn' };
+      }), { permissions });
+
+      await driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
+
+      expect(answers).toEqual([expect.objectContaining({ code: -32800 })]);
     });
   });
 

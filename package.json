@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.17",
+  "version": "0.3.18-dev.2",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -436,18 +436,6 @@
         }
       ]
     },
-    "keybindings": [
-      {
-        "command": "acp.openChat",
-        "key": "ctrl+shift+a",
-        "mac": "cmd+shift+a"
-      },
-      {
-        "command": "acp.cancelTurn",
-        "key": "escape",
-        "when": "acp.turnInProgress"
-      }
-    ],
     "configurationDefaults": {
       "diffEditor.codeLens": true
     },
@@ -502,7 +490,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && node esbuild.mjs",
+    "compile": "npm run check-types && npm run bundle",
+    "bundle": "node esbuild.mjs",
     "check-types": "tsc -b",
     "package": "npm run check-types && node esbuild.mjs --production",
     "lint": "eslint . --max-warnings 0 && knip",

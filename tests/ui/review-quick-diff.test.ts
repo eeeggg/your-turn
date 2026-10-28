@@ -8,7 +8,6 @@ import {
   quickInputRow,
   reviewQuickDiff,
   reviewStatus,
-  sendPromptButton,
 } from './workbench';
 import { expect, test } from './window';
 
@@ -40,12 +39,11 @@ test("a completed turn opens each already-open reviewed file's first quick diff"
   await expect(editorTab(window, 'a.ts')).toHaveClass(/active/);
 
   await connectFakeAgent(window);
-  await window.keyboard.press('Control+Shift+A');
   await expect(acpContainerControl(window)).toHaveAttribute('aria-selected', 'true');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review-open ${workspace}`);
-  await sendPromptButton(window).click();
+  await prompt.press('Enter');
 
   await expect(reviewStatus(window)).toContainText('1 of 2');
   await expect(editorTab(window, 'a.ts')).toHaveClass(/active/);
@@ -57,7 +55,7 @@ test("a completed turn opens each already-open reviewed file's first quick diff"
   await expect(reviewQuickDiff(window, 'b.ts')).toBeVisible();
 
   await prompt.fill(`again ${workspace}`);
-  await sendPromptButton(window).click();
+  await prompt.press('Enter');
   await expect(reviewStatus(window)).toContainText('1 of 2');
   await expect(editorTab(window, 'a.ts')).toHaveClass(/active/);
   await expect(reviewQuickDiff(window, 'a.ts')).toBeVisible();

@@ -15,7 +15,6 @@ export interface PromptBoxState {
 export type PromptBoxAction =
   | { type: 'promptEdited'; text: string }
   | { type: 'promptSent' }
-  | { type: 'turnCancelled' }
   | { type: 'slashCommandHighlighted'; index: number }
   | { type: 'slashHighlightMoved'; by: 1 | -1 }
   | { type: 'slashCommandChosen'; name: string }
@@ -52,8 +51,6 @@ export function updatePromptBox(
       return stateOnly({ text: action.text, highlighted: 0, dismissed: false });
     case 'promptSent':
       return send(box, box.text, session);
-    case 'turnCancelled':
-      return { state: box, outgoing: [{ type: 'cancelTurn' }] };
     case 'slashCommandHighlighted':
       return stateOnly(action.index === box.highlighted ? box : { ...box, highlighted: action.index });
     case 'slashHighlightMoved': {

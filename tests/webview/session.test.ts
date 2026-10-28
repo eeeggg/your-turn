@@ -132,7 +132,6 @@ describe('session state', () => {
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
     expect(page.byId('messages').contains(page.byId('emptyState'))).toBe(true);
     expect(page.byId('emptyState').style.display).toBe('');
-    expect(page.byId('sendStopBtn').textContent).toBe('Send');
     expect(page.byId('status').textContent).toBe('');
   });
 

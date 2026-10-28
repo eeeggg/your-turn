@@ -47,18 +47,24 @@ process.exitCode = process.env.FAIL_COMMAND && process.env.FAIL_COMMAND === args
   return { run };
 }
 
-it('selects unit files and starts fresh runs without compiling them', async () => {
+it('checks types and lint before selecting unit files without compiling them', async () => {
   const { run } = await fixture();
   const result = await run('test-unit', ['FILES=tests/unit/a.test.ts', 'REPEAT=3']);
   expect(result.code, result.output).toBe(0);
-  expect(result.calls.map(({ args }) => args)).toEqual(Array.from({ length: 3 }, () => ['run', 'test:unit', '--', 'tests/unit/a.test.ts']));
+  expect(result.calls.map(({ args }) => args)).toEqual([
+    ['run', 'check-types'], ['run', 'lint'],
+    ...Array.from({ length: 3 }, () => ['run', 'test:unit', '--', 'tests/unit/a.test.ts']),
+  ]);
 });
 
 it('prepares integration bundles once and translates source paths and job count', async () => {
   const { run } = await fixture();
   const result = await run('test-integration', ['FILES=tests/integration/b.test.ts tests/integration/a.test.ts', 'REPEAT=2', 'JOBS=4'], { ELECTRON_RUN_AS_NODE: '1' });
   expect(result.code, result.output).toBe(0);
-  expect(result.calls.map(({ command, args }) => [command, args])).toEqual([['npm', ['run', 'compile']], ['integration', []], ['integration', []]]);
+  expect(result.calls.map(({ command, args }) => [command, args])).toEqual([
+    ['npm', ['run', 'check-types']], ['npm', ['run', 'lint']], ['npm', ['run', 'bundle']],
+    ['integration', []], ['integration', []],
+  ]);
   for (const call of result.calls.slice(1)) {
     expect(call.files).toBe('b.test.js,a.test.js');
     expect(call.jobs).toBe('4');
@@ -74,7 +80,9 @@ it.each([
   const { run } = await fixture();
   const result = await run(target, [`FILES=${files}`]);
   expect(result.code, result.output).toBe(0);
-  expect(result.calls[0]?.args).toEqual(['run', 'compile']);
+  expect(result.calls.slice(0, 3).map(({ args }) => args)).toEqual([
+    ['run', 'check-types'], ['run', 'lint'], ['run', 'bundle'],
+  ]);
   const last = result.calls.at(-1);
   expect(last?.args).toEqual(['run', script, '--', ...files.split(' ')]);
 });
@@ -111,16 +119,41 @@ it('stops repetitions on the first failure', async () => {
   const { run } = await fixture();
   const result = await run('test-unit', ['REPEAT=3'], { FAIL_COMMAND: 'test:unit' });
   expect(result.code).not.toBe(0);
-  expect(result.calls.map(({ args }) => args)).toEqual([['run', 'test:unit']]);
+  expect(result.calls.map(({ args }) => args)).toEqual([
+    ['run', 'check-types'], ['run', 'lint'], ['run', 'test:unit'],
+  ]);
 });
 
-it.each(['compile', 'lint'])('does not execute tests after %s preparation fails', async (script) => {
+it.each(['check-types', 'lint', 'bundle'])('does not execute tests after %s preparation fails', async (script) => {
   const { run } = await fixture();
   const result = await run('coverage-integration', ['REPEAT=3'], { FAIL_COMMAND: script });
   expect(result.code).not.toBe(0);
-  expect(result.calls.map(({ args }) => args)).toEqual(script === 'compile'
-    ? [['run', 'compile']]
-    : [['run', 'compile'], ['run', 'lint']]);
+  expect(result.calls.map(({ args }) => args)).toEqual(script === 'bundle'
+    ? [['run', 'check-types'], ['run', 'lint'], ['run', 'bundle']]
+    : script === 'lint' ? [['run', 'check-types'], ['run', 'lint']]
+      : [['run', 'check-types']]);
+});
+
+it.each([
+  'test', 'test-vitest', 'test-unit', 'test-webview', 'test-integration', 'test-ui',
+  'coverage', 'coverage-integration',
+])('%s typechecks and lints before target-specific work', async (target) => {
+  const { run } = await fixture();
+  const result = await run(target);
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.slice(0, 2).map(({ args }) => args)).toEqual([
+    ['run', 'check-types'], ['run', 'lint'],
+  ]);
+});
+
+it.each([
+  'test', 'test-vitest', 'test-unit', 'test-webview', 'test-integration', 'test-ui',
+  'coverage', 'coverage-integration',
+])('%s stops before target-specific work when typechecking fails', async (target) => {
+  const { run } = await fixture();
+  const result = await run(target, [], { FAIL_COMMAND: 'check-types' });
+  expect(result.code).not.toBe(0);
+  expect(result.calls.map(({ args }) => args)).toEqual([['run', 'check-types']]);
 });
 
 it('prepares unit coverage once and keeps each repetition focused', async () => {
@@ -138,7 +171,8 @@ it('keeps the full regression gate unfiltered', async () => {
   const result = await run('test');
   expect(result.code, result.output).toBe(0);
   expect(result.calls.map(({ command, args }) => [command, args])).toEqual([
-    ['npm', ['run', 'compile']], ['npm', ['run', 'lint']], ['npm', ['run', 'test:vitest']], ['integration', []],
+    ['npm', ['run', 'check-types']], ['npm', ['run', 'lint']], ['npm', ['run', 'bundle']],
+    ['npm', ['run', 'test:vitest']], ['integration', []],
   ]);
 });
 

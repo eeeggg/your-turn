@@ -8,19 +8,28 @@ export const permissionQuickPick: PermissionChooser = {
     return setting === 'allowAll' ? 'allowAll' : 'ask';
   },
 
-  async choose({ title, detail }, options) {
+  async choose({ title, detail }, options, signal) {
     const items = options.map((option) => ({
       label: `${kindIcon(option)}${option.name}`,
       ...(option.kind === 'other' ? {} : { description: option.kind }),
       optionId: option.id,
     }));
-    const selection = await vscode.window.showQuickPick(items, {
-      placeHolder: title,
-      ...(detail ? { prompt: detail } : {}),
-      title: 'ACP Agent Permission Request',
-      ignoreFocusOut: true,
-    });
-    return selection?.optionId;
+    const cancellation = new vscode.CancellationTokenSource();
+    const abort = () => cancellation.cancel();
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) { cancellation.cancel(); }
+    try {
+      const selection = await vscode.window.showQuickPick(items, {
+        placeHolder: title,
+        ...(detail ? { prompt: detail } : {}),
+        title: 'ACP Agent Permission Request',
+        ignoreFocusOut: true,
+      }, cancellation.token);
+      return selection?.optionId;
+    } finally {
+      signal.removeEventListener('abort', abort);
+      cancellation.dispose();
+    }
   },
 };
 

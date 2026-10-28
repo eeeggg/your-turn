@@ -1,11 +1,11 @@
 import { acpChatWebview, acpContainerControl, promptInput } from './workbench';
 import { expect, test } from './window';
 
-test('Ctrl+Shift+A reveals ACP Chat in a fresh VS Code window', async ({ window }, testInfo) => {
+test('clicking ACP Client reveals ACP Chat in a fresh VS Code window', async ({ window }, testInfo) => {
   const chatWebview = acpChatWebview(window);
   await expect(chatWebview).toBeHidden();
 
-  await window.keyboard.press('Control+Shift+A');
+  await acpContainerControl(window).click();
 
   await expect(acpContainerControl(window)).toHaveAttribute('aria-selected', 'true');
   await expect(chatWebview).toBeVisible();

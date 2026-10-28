@@ -51,15 +51,16 @@ export class V2Driver implements AcpDriver {
     stream: Acp.Stream,
     clientVersion: string,
     updates: SessionUpdateHandler,
-    { permissions }: ClientHandlers,
+    handlers: ClientHandlers,
   ): Promise<V2Driver> {
+    const { permissions } = handlers;
     const foreground = new Foreground();
     const translator = new Translator();
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = Acp.client({ name: 'vscode-acp-client' })
-      .onRequest(Acp.methods.client.session.requestPermission, async ({ params }) =>
-        permissionResponse(await permissions.requestPermission(permissionRequest(params))))
+      .onRequest(Acp.methods.client.session.requestPermission, async ({ params, signal }) =>
+        permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
       .onNotification(Acp.methods.client.session.update, ({ params }) => {
         log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
@@ -78,11 +79,12 @@ export class V2Driver implements AcpDriver {
     const initResponse = await connection.agent.request(Acp.methods.agent.initialize, v2InitializeRequest(clientVersion));
     log(`V2Driver: initialized. Agent: ${initResponse.info.name} v${initResponse.info.version}`);
 
-    return new V2Driver(connection, agentDescription(initResponse), foreground, translator);
+    return new V2Driver(connection, permissions, agentDescription(initResponse), foreground, translator);
   }
 
   private constructor(
     private readonly connection: Acp.ClientConnection,
+    private readonly permissions: ClientHandlers['permissions'],
     readonly agent: AgentDescription,
     private readonly foreground: Foreground,
     private readonly translator: Translator,
@@ -148,6 +150,7 @@ export class V2Driver implements AcpDriver {
 
   async cancel(sessionId: string): Promise<void> {
     await this.connection.agent.notify(Acp.methods.agent.session.cancel, { sessionId });
+    this.permissions.cancelSession(sessionId);
   }
 
   /** A v2 session reports no modes, so none is ever chosen. */
@@ -606,6 +609,9 @@ function permissionOption(option: Acp.PermissionOption): PermissionOption {
 }
 
 function permissionResponse(outcome: PermissionOutcome): Acp.RequestPermissionResponse {
+  if (outcome.kind === 'requestCancelled') {
+    throw Acp.RequestError.requestCancelled();
+  }
   return outcome.kind === 'selected'
     ? { outcome: { outcome: 'selected', optionId: outcome.optionId } }
     : { outcome: { outcome: 'cancelled' } };

@@ -214,7 +214,7 @@ export interface PermissionRequest {
   options: PermissionOption[];
 }
 
-export type PermissionOutcome = { kind: 'selected'; optionId: string } | { kind: 'cancelled' };
+export type PermissionOutcome = { kind: 'selected'; optionId: string } | { kind: 'cancelled' } | { kind: 'requestCancelled' };
 
 /** The agent refuses the request until the user authenticates. */
 export class AuthRequired extends Error {

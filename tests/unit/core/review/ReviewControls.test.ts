@@ -73,6 +73,11 @@ async function controls({ deleted = false, changes = false } = {}) {
     save: async (path) => {
       if (failSave) { throw new Error('disk full'); }
       saved.push(path);
+      const text = documents.get(path);
+      if (text !== undefined) {
+        disk[path] = text;
+        reviews.shown()?.read(path, text);
+      }
     },
   });
   return {
@@ -116,7 +121,7 @@ describe('ReviewControls', () => {
     expect(subject.baseline('/w/a.ts')).toBe('a\n');
     expect(subject.baseline('/w/gone.ts')).toBe('gone\n');
     expect(subject.baseline('/w/other.ts')).toBeUndefined();
-    subject.keepFile('/w/a.ts');
+    await subject.keepFile('/w/a.ts');
     expect(subject.baseline('/w/a.ts')).toBeUndefined();
     reviews.activeSessionChanged('s2');
     expect(subject.baseline('/w/b.ts')).toBeUndefined();
@@ -141,13 +146,23 @@ describe('ReviewControls', () => {
 
   it('keeps the file it is given, or the active editor\'s, and every file with Keep All', async () => {
     const { controls: subject, activate } = await controls();
-    subject.keepFile('/w/a.ts');
+    await subject.keepFile('/w/a.ts');
     expect(subject.reviewedPaths()).toEqual(['/w/b.ts', '/w/c.ts']);
     activate('/w/c.ts');
-    subject.keepFile();
+    await subject.keepFile();
     expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
     subject.keepAll();
     expect(subject.reviewedPaths()).toEqual([]);
+  });
+
+  it('opens the next unresolved file after Keep File removes the active file from review', async () => {
+    const { controls: subject, opened, activate } = await controls();
+    activate('/w/b.ts');
+
+    await subject.keepFile();
+
+    expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/c.ts']);
+    expect(opened).toEqual(['/w/c.ts']);
   });
 
   it("undoes the file it is given, or the active editor's, restoring its baseline", async () => {
@@ -157,6 +172,27 @@ describe('ReviewControls', () => {
     await subject.undoFile();
     expect(restored).toEqual([['/w/a.ts', 'a\n'], ['/w/b.ts', 'b\n']]);
     expect(subject.reviewedPaths()).toEqual(['/w/c.ts']);
+    expect(opened).toEqual(['/w/c.ts']);
+  });
+
+  it('opens the next unresolved file after undoing the active file', async () => {
+    const { controls: subject, opened, activate } = await controls();
+    activate('/w/b.ts');
+
+    await subject.undoFile();
+
+    expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/c.ts']);
+    expect(opened).toEqual(['/w/c.ts']);
+  });
+
+  it('does not advance after a failed Undo File that remains under review', async () => {
+    const { controls: subject, opened, activate, fail } = await controls();
+    activate('/w/b.ts');
+    fail();
+
+    await subject.undoFile();
+
+    expect(subject.reviewedPaths()).toContain('/w/b.ts');
     expect(opened).toEqual([]);
   });
 
@@ -165,6 +201,15 @@ describe('ReviewControls', () => {
     await subject.undoFile('/w/gone.ts');
     expect(restored).toEqual([['/w/gone.ts', 'gone\n']]);
     expect(opened).toEqual(['/w/gone.ts']);
+  });
+
+  it('opens the next unresolved file instead of briefly opening an undone active deletion', async () => {
+    const { controls: subject, opened, activate } = await controls({ deleted: true });
+    activate('/w/gone.ts');
+
+    await subject.undoFile();
+
+    expect(opened).toEqual(['/w/a.ts']);
   });
 
   it('tells the user when an undo fails, keeping the file under review and opening nothing', async () => {
@@ -178,8 +223,8 @@ describe('ReviewControls', () => {
 
   it('does nothing for a file not under review, or with no file at all', async () => {
     const { controls: subject, restored } = await controls();
-    subject.keepFile('/w/other.ts');
-    subject.keepFile();
+    await subject.keepFile('/w/other.ts');
+    await subject.keepFile();
     await subject.undoFile('/w/other.ts');
     await subject.undoFile();
     expect(restored).toEqual([]);
@@ -192,6 +237,46 @@ describe('ReviewControls', () => {
     expect(subject.baseline('/w/m.ts')).toBe(lines('1', 'TWO', '3', '4', '5', '6', '7'));
     expect(documents.get('/w/m.ts')).toBe(twoChanges.after);
     expect(saved).toEqual(['/w/m.ts']);
+  });
+
+  it('opens the next unresolved file only after the last hunk resolves the active file', async () => {
+    const { controls: subject, opened, activate } = await controls({ changes: true });
+    activate('/w/m.ts');
+
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    expect(opened).toEqual([]);
+    expect(subject.reviewedPaths()).toContain('/w/m.ts');
+
+    await subject.keepChange('/w/m.ts', lineChanged(6));
+
+    expect(subject.reviewedPaths()).not.toContain('/w/m.ts');
+    expect(opened).toEqual(['/w/a.ts']);
+  });
+
+  it('opens the next unresolved file after undoing the last hunk of the active file', async () => {
+    const { controls: subject, opened, activate, reviews, documents } = await controls({ changes: true });
+    activate('/w/m.ts');
+
+    await subject.undoChange('/w/m.ts', lineChanged(6));
+    expect(opened).toEqual([]);
+    expect(subject.reviewedPaths()).toContain('/w/m.ts');
+
+    await subject.undoChange('/w/m.ts', lineChanged(1));
+
+    expect(documents.get('/w/m.ts')).toBe(twoChanges.before);
+    expect(reviews.shown()?.file('/w/m.ts')).toBeUndefined();
+    expect(subject.reviewedPaths()).not.toContain('/w/m.ts');
+    expect(opened).toEqual(['/w/a.ts']);
+  });
+
+  it('does not advance after resolving a file other than the active file', async () => {
+    const { controls: subject, opened, activate } = await controls({ changes: true });
+    activate('/w/a.ts');
+
+    await subject.keepChange('/w/m.ts', lineChanged(1));
+    await subject.keepChange('/w/m.ts', lineChanged(6));
+
+    expect(opened).toEqual([]);
   });
 
   it('lets the file go once its last change is kept', async () => {
@@ -283,7 +368,7 @@ describe('ReviewControls', () => {
     await subject.openReview();
     activate('/w/other.ts');
     await subject.openReview();
-    subject.keepFile('/w/a.ts');
+    await subject.keepFile('/w/a.ts');
     await subject.openReview();
     subject.keepAll();
     await subject.openReview();

@@ -57,7 +57,9 @@
 - To verify stability, pass `REPEAT=<n>` (e.g. `REPEAT=3`). Repeated runs stop
   immediately on the first failure; never retry until green.
 - Run unit test coverage with `make coverage` (accepts `FILES` and `REPEAT`).
+- All test and coverage targets, including focused unit runs, typecheck and lint
+  before compiling or running tests; a failed check stops the target.
 - Always report the exact Make command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
-- Before handoff, run `make test-unit` (or the full gate `make test`). Also run
-  `make typecheck` and `make lint` after substantive changes.
+- Before handoff, run `make test-unit` (or the full gate `make test`); both
+  include typecheck and lint before the test run.

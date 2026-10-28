@@ -93,27 +93,37 @@ export class ReviewControls {
   async keepChange(path: string, change: Change): Promise<void> {
     const shown = this.shownChange(path, change);
     if (!shown) { return; }
+    const paths = this.reviewedPaths();
+    const active = this.editors.activePath() === path;
     await this.editors.closeChange(path);
     this.reviews.shown()?.setBaseline(path, keptChange(shown.baseline, shown.document, shown.change));
-    await this.save(path, 'kept');
+    const saved = await this.save(path, 'kept');
     await this.showNextChange(path, shown.change);
+    await this.advanceAfterResolution(path, paths, active, saved && this.changes(path).length === 0);
   }
 
   /** Undoes one change quick diff showed: the document takes the baseline's lines, and the file is saved; then as Keep. */
   async undoChange(path: string, change: Change): Promise<void> {
     const shown = this.shownChange(path, change);
     if (!shown) { return; }
+    const paths = this.reviewedPaths();
+    const active = this.editors.activePath() === path;
     await this.editors.closeChange(path);
     if (!(await this.editors.applyEdit(path, undoneChange(shown.baseline, shown.document, shown.change)))) {
       this.editors.showError(`${basename(path)}: the change could not be undone`);
       return;
     }
-    await this.save(path, 'undone');
+    const saved = await this.save(path, 'undone');
     await this.showNextChange(path, shown.change);
+    await this.advanceAfterResolution(path, paths, active, saved && this.changes(path).length === 0);
   }
 
-  keepFile(path = this.editors.activePath()): void {
-    if (path !== undefined) { this.reviews.shown()?.keepFile(path); }
+  async keepFile(path = this.editors.activePath()): Promise<void> {
+    if (path === undefined) { return; }
+    const paths = this.reviewedPaths();
+    const active = this.editors.activePath() === path;
+    this.reviews.shown()?.keepFile(path);
+    await this.advanceAfterResolution(path, paths, active);
   }
 
   keepAll(): void {
@@ -125,13 +135,17 @@ export class ReviewControls {
     const review = this.reviews.shown();
     const file = path === undefined ? undefined : review?.file(path);
     if (!review || !file) { return; }
+    const paths = this.reviewedPaths();
+    const active = this.editors.activePath() === file.path;
     try {
       await review.undoFile(file.path);
     } catch (e) {
       this.editors.showError(`${basename(file.path)} could not be undone: ${messageOf(e)}`);
       return;
     }
-    if (file.current === null) { await this.editors.open(file.path); }
+    const next = active ? this.nextUnresolved(file.path, paths) : undefined;
+    if (file.current === null && next === undefined) { await this.editors.open(file.path); }
+    await this.advanceAfterResolution(file.path, paths, active);
   }
 
   next(path = this.editors.activePath()): Promise<void> {
@@ -191,11 +205,13 @@ export class ReviewControls {
     return still ? { baseline: text, document, change } : undefined;
   }
 
-  private async save(path: string, done: 'kept' | 'undone'): Promise<void> {
+  private async save(path: string, done: 'kept' | 'undone'): Promise<boolean> {
     try {
       await this.editors.save(path);
+      return true;
     } catch (e) {
       this.editors.showError(`${basename(path)}: the change was ${done} but the file could not be saved: ${messageOf(e)}`);
+      return false;
     }
   }
 
@@ -207,5 +223,33 @@ export class ReviewControls {
     const from = index < 0 ? (step === 1 ? -1 : paths.length) : index;
     const to = paths[(from + step + paths.length) % paths.length];
     if (to !== undefined) { await this.editors.open(to); }
+  }
+
+  /** After the active file leaves review, continue with the next unresolved file in the order before it left. */
+  private async advanceAfterResolution(
+    path: string,
+    before: readonly string[],
+    wasActive: boolean,
+    resolvedByAction = false,
+  ): Promise<void> {
+    if (!wasActive || (!resolvedByAction && this.reviews.shown()?.file(path))) { return; }
+    const index = before.indexOf(path);
+    if (index < 0) { return; }
+    const candidate = this.nextUnresolved(path, before);
+    if (candidate !== undefined) { await this.editors.open(candidate); }
+  }
+
+  private nextUnresolved(path: string, before: readonly string[]): string | undefined {
+    const index = before.indexOf(path);
+    if (index < 0) { return undefined; }
+    const files = this.reviews.shown()?.files() ?? [];
+    const unresolved = new Set(files.filter((file) => file.current !== null).map((file) => file.path));
+    for (let offset = 1; offset < before.length; offset++) {
+      const candidate = before[(index + offset) % before.length];
+      if (candidate !== undefined && candidate !== path && unresolved.has(candidate)) {
+        return candidate;
+      }
+    }
+    return undefined;
   }
 }

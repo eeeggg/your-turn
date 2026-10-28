@@ -197,7 +197,7 @@ suite('Native review diff', () => {
       siblingFinished = true;
       return closed;
     };
-    controls.keepFile(file);
+    await controls.keepFile(file);
     try {
       await closing;
       const disposed = presentation.dispose();
@@ -273,7 +273,7 @@ suite('Native review diff', () => {
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
     const baseline = await vscode.workspace.openTextDocument(diff.original);
-    controls.keepFile(file);
+    await controls.keepFile(file);
     await presentation.settled();
     assert.equal(ownedTabs().length, 0);
     assert.equal(baseline.getText(), before);

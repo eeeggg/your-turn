@@ -14,6 +14,9 @@ and linting.
   inside shared tooling.
 - If a workflow operation is missing, extend and verify the shared tooling first;
   ask when facing meaningful trade-offs.
+- Every test and coverage Make target runs repository typechecking, then linting,
+  before bundling, test preparation, or test execution. A failed check stops
+  the target. Standalone `make typecheck` and `make lint` remain available.
 - Do not create or rely on separate temporary-script verification workflows.
 - Repeated runs stop on the first failure; never retry until green.
 - Always report the exact Make command, scope, repeat count, and results; a
@@ -35,26 +38,31 @@ and linting.
 
 - `make typecheck` — Type-check the repository.
 - `make lint` — Run ESLint and Knip over the repository.
-- `make test` — Unfiltered gate running compile, lint, Vitest (unit and
-  bundled webview), and integration suites. Rejects `FILES`, `REPEAT`, `JOBS`,
-  or inherited legacy selection overrides.
-- `make test-vitest` — Run all Vitest suites (unit and bundled webview).
-- `make test-unit` — Run the in-process Vitest unit suite.
+- `make test` — Unfiltered gate running typecheck, lint, bundle, Vitest (unit
+  and bundled webview), and integration suites in that order. Rejects `FILES`,
+  `REPEAT`, `JOBS`, or inherited legacy selection overrides.
+- `make test-vitest` — Typecheck and lint, bundle, then run all Vitest suites
+  (unit and bundled webview).
+- `make test-unit` — Typecheck and lint, then run the in-process Vitest unit
+  suite.
   Example: `make test-unit FILES='tests/unit/core/AgentManager.test.ts'`
-- `make test-webview` — Run the bundled-webview Vitest suite. Prepares the
-  webview bundle once per batch where needed.
+- `make test-webview` — Typecheck and lint, bundle, then run the bundled-webview
+  Vitest suite. Prepares the webview bundle once per batch where needed.
   Example: `make test-webview FILES='tests/webview/markdown.test.ts'`
-- `make test-integration` — Run the isolated VS Code integration suite under
-  Xvfb. Prepares bundles once per batch where needed.
+- `make test-integration` — Typecheck and lint, bundle, then run the isolated
+  VS Code integration suite under Xvfb. Prepares bundles once per batch where needed.
   Example: `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
-- `make test-ui` — Drive pinned desktop VS Code with Playwright under Xvfb.
-  Prepares bundles once per batch where needed.
+- `make test-ui` — Typecheck and lint, bundle, then drive pinned desktop VS Code
+  with Playwright under Xvfb. Prepares bundles once per batch where needed.
   Example: `make test-ui FILES='tests/ui/reveal-chat.test.ts' REPEAT=3`
-- `make coverage` — Unit test coverage entry point, controlling the same
+- `make coverage` — Typecheck and lint, then unit test coverage entry point, controlling the same
   unit layer and scope controls as `test-unit`.
-- `make coverage-integration` — Integration test coverage entry point,
+- `make coverage-integration` — Typecheck and lint, bundle, then integration test coverage entry point,
   controlling the same integration layer and scope controls (`FILES`, `REPEAT`,
   `JOBS`) as `test-integration`.
+
+All test and coverage targets perform typecheck and lint before any test-layer
+preparation or execution, including focused and repeated runs.
 
 ### Scope and Execution Controls
 
@@ -77,8 +85,9 @@ and linting.
 - For a bug, establish a failing regression before fixing it. Verify decisions
   with deliberate breaks, one at a time. If only the build catches a break,
   use a compiling variant; an undetected break needs a test or exposes dead code.
-- Run `make test` for the unfiltered compile, lint, unit/webview and integration
-  gate. Run `make test-ui` separately for rendered workbench behavior. These
+- Run `make test` for the unfiltered typecheck, lint, bundle, unit/webview and
+  integration gate. Run `make test-ui` separately for
+  rendered workbench behavior; it also performs typecheck and lint first. These
   isolated runs must not touch the user's Stable or Insiders windows.
 - Await observable completion. Do not add sleeps, polling delays or arbitrary
   synchronization yields. Timeouts protect wall-clock execution, not readiness.

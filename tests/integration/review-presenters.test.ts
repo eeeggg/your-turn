@@ -40,7 +40,6 @@ function recording() {
 
 const open = async (file: string) => vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
 const activeFile = () => vscode.window.activeTextEditor?.document.uri.fsPath;
-const activeText = () => vscode.window.activeTextEditor?.document.getText();
 
 suite('Review presenters', () => {
   let folder: string;
@@ -96,7 +95,7 @@ suite('Review presenters', () => {
   test("shows the buttons while a session is shown, enabled for a file on the shown review's files only", async () => {
     assert.strictEqual(shown.buttons, true);
     assert.deepStrictEqual(shown.files, [vscode.Uri.file(a).toString(), vscode.Uri.file(b).toString()]);
-    controls.keepFile(a);
+    await controls.keepFile(a);
     assert.deepStrictEqual(shown.files, [vscode.Uri.file(b).toString()]);
     reviews.activeSessionChanged('s2');
     assert.strictEqual(shown.buttons, true);
@@ -277,7 +276,7 @@ suite('Review presenters', () => {
     }
   });
 
-  test("shows the active file's place among the files under review, a dash for another file, and 0 of 0 with none", async () => {
+  test("shows the active file's place among the files under review and advances after keeping it", async () => {
     await open(a);
     assert.strictEqual(shown.position, '1 of 2');
     await open(b);
@@ -288,8 +287,9 @@ suite('Review presenters', () => {
     assert.strictEqual(shown.position, '– of 2');
     await vscode.window.showTextDocument(vscode.Uri.file(b));
     assert.strictEqual(shown.position, '2 of 2');
-    controls.keepFile(b);
-    assert.strictEqual(shown.position, '– of 1');
+    await controls.keepFile(b);
+    assert.strictEqual(activeFile(), a);
+    assert.strictEqual(shown.position, '1 of 1');
     controls.keepAll();
     assert.strictEqual(shown.position, '0 of 0');
     reviews.activeSessionChanged(null);
@@ -316,8 +316,7 @@ suite('Review presenters', () => {
     await controls.undoFile();
 
     assert.strictEqual(fs.readFileSync(gone, 'utf8'), 'gone\n');
-    assert.strictEqual(activeFile(), gone);
-    assert.strictEqual(activeText(), 'gone\n');
+    assert.strictEqual(activeFile(), a);
     assert.deepStrictEqual(controls.reviewedPaths(), [a, b]);
   });
 });

@@ -78,15 +78,6 @@ describe('sending', () => {
 
     expect(view.box().text).toBe('draft');
   });
-
-  it('asks the extension to cancel the turn', () => {
-    const view = chatView();
-    view.connect();
-
-    view.send({ type: 'turnCancelled' });
-
-    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
-  });
 });
 
 describe('the slash command popup', () => {

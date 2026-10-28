@@ -6,7 +6,6 @@ import { InputArea } from '@/webview/views/InputArea';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
-import { hookClasses } from '@tests/hookClasses';
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
@@ -47,7 +46,6 @@ function renderInputArea() {
     send,
     part,
     prompt,
-    button: () => part<HTMLButtonElement>('#sendStopBtn'),
     items: () => [...container.querySelectorAll<HTMLElement>('.slash-popup-item')],
     popupOpen: () => part('#slashPopup').classList.contains('open'),
     connect: (session: Partial<SessionSnapshot> = {}) =>
@@ -65,14 +63,14 @@ function renderInputArea() {
 describe('input area', () => {
   it('is disabled without a session and while one loads', () => {
     const view = renderInputArea();
-    const disabled = () => [view.part('#inputArea').classList.contains('disabled'), view.prompt().disabled, view.button().disabled];
-    expect(disabled()).toEqual([true, true, true]);
+    const disabled = () => [view.part('#inputArea').classList.contains('disabled'), view.prompt().disabled];
+    expect(disabled()).toEqual([true, true]);
 
     view.connect();
-    expect(disabled()).toEqual([false, false, false]);
+    expect(disabled()).toEqual([false, false]);
 
     view.send({ type: 'loadSessionStart' });
-    expect(disabled()).toEqual([true, true, true]);
+    expect(disabled()).toEqual([true, true]);
   });
 
   it('shows what is typed and sends it on Enter, but not on Shift+Enter or while composing', () => {
@@ -101,22 +99,6 @@ describe('input area', () => {
       expect(view.press(key)).toBe(true);
     }
     expect(view.takePosted()).toEqual([]);
-  });
-
-  it('turns Send into Stop while a turn runs, each doing its own job', () => {
-    const view = renderInputArea();
-    view.connect();
-    view.type('hello');
-
-    view.send({ type: 'promptStart' });
-    expect([hookClasses(view.button()), view.button().textContent]).toEqual(['send-stop-btn stop', '■ Stop']);
-    fireEvent.click(view.button());
-    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
-
-    view.send({ type: 'promptEnd' });
-    expect([hookClasses(view.button()), view.button().textContent]).toEqual(['send-stop-btn send', 'Send']);
-    fireEvent.click(view.button());
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
   });
 
   it('shows the placeholder for the session', () => {

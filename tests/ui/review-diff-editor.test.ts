@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import {
   acpContainerControl, editorSelection, editorTab, gitDiffEditor, gitOpenChanges, gitOpenFile, gitWorkingTreeChange, hideSecondarySideBar, modifiedReviewEditor, modifiedReviewLine, navigateDiff, plainFileEditor, plainFileTab,
   promptInput, quickInput, quickInputRow, reviewChangeStatus, reviewDiffEditor, reviewLens, reviewStatus,
-  reviewTitleAction, sendPromptButton, sourceControl,
+  reviewTitleAction, sourceControl,
 } from './workbench';
 import { expect, test } from './window';
 
@@ -16,11 +16,10 @@ async function startReview(window: Parameters<typeof editorTab>[0], workspace: s
   const agent = window.getByRole('treeitem', { name: /fake-v1/ });
   await agent.hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
-  await window.keyboard.press('Control+Shift+A');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review-diff ${workspace}`);
-  await sendPromptButton(window).click();
+  await prompt.press('Enter');
   await expect(reviewStatus(window)).toContainText('1 of 1');
   await expect(reviewDiffEditor(window)).toBeVisible();
 }
@@ -140,7 +139,7 @@ test('review header keeps its tools during a turn and navigates files after the 
   await startReview(window, workspace);
   const prompt = promptInput(window);
   await prompt.fill('hold turn');
-  await sendPromptButton(window).click();
+  await prompt.press('Enter');
   await expect(quickInputRow(window, 'Allow')).toBeVisible();
   for (const action of actions) {
     await expect(reviewTitleAction(window, action)).toBeVisible();
@@ -162,7 +161,7 @@ test('review header keeps its tools during a turn and navigates files after the 
     writeFile(join(workspace, 'b.ts'), 'one\n2\n3\n4\n5\n6\n7\n8\n9\n10\nb before\n'),
   ]);
   await prompt.fill(`review-open ${workspace}`);
-  await sendPromptButton(window).click();
+  await prompt.press('Enter');
   await expect(reviewStatus(window)).toContainText('1 of 3');
   await expect(reviewTitleAction(window, 'Next File Under Review')).toBeEnabled();
   await reviewTitleAction(window, 'Next File Under Review').click();
@@ -174,10 +173,20 @@ test('review header keeps its tools during a turn and navigates files after the 
   await reviewTitleAction(window, 'Previous File Under Review').click();
   await expect(reviewStatus(window)).toContainText('2 of 3');
   await expect(modifiedReviewEditor(window)).toContainText('a after');
+  await reviewTitleAction(window, 'Previous File Under Review').click();
+  await expect(reviewStatus(window)).toContainText('1 of 3');
+  await expect(reviewLens(window, 'Keep Change')).toHaveCount(3);
+  await reviewLens(window, 'Keep Change', 'Change 1 of 3').click();
+  await expect(reviewLens(window, 'Keep Change')).toHaveCount(2);
+  await reviewLens(window, 'Keep Change', 'Change 1 of 2').click();
+  await expect(reviewLens(window, 'Keep Change')).toHaveCount(1);
+  await reviewLens(window, 'Keep Change', 'Change 1 of 1').click();
+  await expect(reviewStatus(window)).toContainText('1 of 2');
+  await expect(modifiedReviewEditor(window)).toContainText('a after');
+  await reviewTitleAction(window, 'Undo File').click();
+  await expect(reviewStatus(window)).toContainText('1 of 1');
+  await expect(modifiedReviewEditor(window)).toContainText('b after');
   await reviewTitleAction(window, 'Keep File').click();
-  await expect(editorTab(window, 'a.ts')).toHaveCount(0);
-  await expect(reviewStatus(window)).toHaveText(/of 2$/);
-  await reviewTitleAction(window, 'Keep All').click();
   await expect(reviewStatus(window)).toContainText('0 of 0');
   await expect(reviewDiffEditor(window)).toHaveCount(0);
   await openFile(window);
@@ -212,7 +221,7 @@ test('explicit review entry reopens the first unresolved file without taking ove
     writeFile(join(workspace, 'b.ts'), 'one\n2\n3\n4\n5\n6\n7\n8\n9\n10\nb before\n'),
   ]);
   await promptInput(window).fill(`review-open ${workspace}`);
-  await sendPromptButton(window).click();
+  await promptInput(window).press('Enter');
   await expect(reviewStatus(window)).toContainText('1 of 3');
   await reviewTitleAction(window, 'Next File Under Review').click();
   await expect(reviewStatus(window)).toContainText('2 of 3');

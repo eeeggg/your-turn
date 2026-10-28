@@ -57,21 +57,9 @@ describe('sending prompts', () => {
 
     page.typePrompt('   ');
     page.pressKey('Enter');
-    page.byId('sendStopBtn').click();
 
     expect(page.takePosted()).toEqual([]);
     expect(userMessages()).toEqual([]);
-  });
-
-  it('sends from the Send button', () => {
-    page = loadChatPage();
-    connect(page);
-    page.takePosted();
-
-    page.typePrompt('hello');
-    page.byId('sendStopBtn').click();
-
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
   });
 
   it('does not send on Enter while an input method is composing', () => {
@@ -86,16 +74,13 @@ describe('sending prompts', () => {
     expect(promptInput().value).toBe('にほん');
   });
 
-  it('cancels from the Stop button while a prompt runs, and on Enter holds the prompt until the turn ends', () => {
+  it('on Enter while a prompt runs, holds the prompt until the turn ends', () => {
     page = loadChatPage();
     connect(page);
     page.send({ type: 'promptStart' });
     page.takePosted();
 
     page.typePrompt('follow-up');
-    page.byId('sendStopBtn').click();
-    expect(page.takePosted()).toEqual([{ type: 'cancelTurn' }]);
-
     page.pressKey('Enter');
     expect(page.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
     expect(promptInput().value).toBe('');
@@ -107,14 +92,14 @@ describe('sending prompts', () => {
 });
 
 describe('when the prompt box can be used', () => {
-  function usable(): boolean[] {
-    return [promptInput().disabled, page.byId<HTMLButtonElement>('sendStopBtn').disabled].map((disabled) => !disabled);
+  function usable(): boolean {
+    return !promptInput().disabled;
   }
 
-  it('disables the prompt box and Send without a session, and sends nothing', () => {
+  it('disables the prompt box without a session, and sends nothing', () => {
     page = loadChatPage();
     page.takePosted();
-    expect(usable()).toEqual([false, false]);
+    expect(usable()).toBe(false);
 
     page.typePrompt('hello');
     page.pressKey('Enter');
@@ -122,22 +107,22 @@ describe('when the prompt box can be used', () => {
     expect(userMessages()).toEqual([]);
 
     connect(page);
-    expect(usable()).toEqual([true, true]);
+    expect(usable()).toBe(true);
   });
 
-  it('disables them while a session loads, and sends nothing until it has loaded', () => {
+  it('disables it while a session loads, and sends nothing until it has loaded', () => {
     page = loadChatPage();
     connect(page);
     page.send({ type: 'loadSessionStart' });
     page.takePosted();
-    expect(usable()).toEqual([false, false]);
+    expect(usable()).toBe(false);
 
     page.typePrompt('hello');
     page.pressKey('Enter');
     expect(page.takePosted()).toEqual([]);
 
     page.send({ type: 'loadSessionEnd', ok: true });
-    expect(usable()).toEqual([true, true]);
+    expect(usable()).toBe(true);
     page.pressKey('Enter');
     expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
   });

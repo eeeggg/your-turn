@@ -10,6 +10,7 @@ function handlers() {
   return {
     permissions: {
       requestPermission: vi.fn<ClientHandlers['permissions']['requestPermission']>(async () => ({ kind: 'cancelled' as const })),
+      cancelSession: vi.fn<ClientHandlers['permissions']['cancelSession']>(),
     },
   } satisfies ClientHandlers;
 }

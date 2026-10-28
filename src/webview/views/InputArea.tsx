@@ -8,11 +8,7 @@ import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 const MIN_HEIGHT = 90;
 const MAX_HEIGHT = 400;
 
-const sendButton =
-  'send bg-primary text-primary-foreground hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50';
-const stopButton = 'stop border border-destructive-border bg-destructive text-destructive-foreground hover:opacity-90';
-
-/** Everything below the transcript: the slash command popup, the pickers, the prompt box, and Send/Stop. */
+/** Everything below the transcript: the slash command popup, the pickers, and the prompt box. */
 export function InputArea() {
   const session = useSelector((state) => state.activeSession);
   const box = useSelector((state) => state.promptBox);
@@ -22,7 +18,6 @@ export function InputArea() {
   const [height, setHeight] = useState<number | null>(null);
 
   const usable = canPrompt(session);
-  const turnRunning = session?.turnRunning ?? false;
   const matches = matchingCommands(box, session);
   const highlighted = highlightedIndex(box, matches);
 
@@ -84,7 +79,7 @@ export function InputArea() {
       <div className={`input-toolbar flex flex-none flex-wrap items-center gap-1 px-3 pt-1 ${inactive}`} id="inputToolbar">
         <InputToolbar />
       </div>
-      <div className={`input-editor-wrap flex min-h-0 flex-1 px-3 ${inactive}`}>
+      <div className={`input-editor-wrap flex min-h-0 flex-1 px-3 pb-2 ${inactive}`}>
         <textarea
           className="min-h-9.5 flex-1 resize-none rounded-md border border-input-border bg-input px-2.5 py-2 leading-[1.4] text-input-foreground outline-none placeholder:text-input-placeholder focus:border-ring"
           id="promptInput"
@@ -96,16 +91,6 @@ export function InputArea() {
           onChange={(event) => dispatch({ type: 'promptEdited', text: event.target.value })}
           onKeyDown={onKeyDown}
         />
-      </div>
-      <div className={`input-send-row flex flex-none items-center justify-end gap-1.5 px-3 pt-1 pb-2 ${inactive}`}>
-        <button
-          className={`send-stop-btn ${turnRunning ? stopButton : sendButton} inline-flex h-6.5 min-w-15 cursor-pointer items-center justify-center gap-1 rounded-xl px-3.5 py-1 font-medium whitespace-nowrap transition-colors`}
-          id="sendStopBtn"
-          disabled={!usable}
-          onClick={() => dispatch({ type: turnRunning ? 'turnCancelled' : 'promptSent' })}
-        >
-          {turnRunning ? '■ Stop' : 'Send'}
-        </button>
       </div>
     </div>
   );

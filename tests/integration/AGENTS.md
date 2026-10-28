@@ -66,6 +66,8 @@
 
 - Make is the supported developer entry point. Do not invoke runner script files,
   framework CLIs (Mocha), or `npm` directly.
+- Every test and coverage Make target runs typecheck and lint before preparation
+  or test execution; a failed check stops the target.
 - During development, run targeted integration test files with:
   `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
 - `FILES` accepts explicit whitespace-separated repo-relative source test paths
@@ -80,10 +82,10 @@
   (accepts `FILES`, `REPEAT`, and `JOBS`).
 - Legacy `ACP_TEST_*` environment variables are internal diagnostic controls;
   use Make entry points and controls instead.
-- `make test` is the unfiltered gate running compile, lint, Vitest (unit and
-  bundled webview), and integration suites. It rejects `FILES`, `REPEAT`,
-  `JOBS`, or inherited legacy selection overrides.
+- `make test` is the unfiltered gate running typecheck, lint, bundle, Vitest
+  (unit and bundled webview), and integration suites in that order. It rejects
+  `FILES`, `REPEAT`, `JOBS`, or inherited legacy selection overrides.
 - Always report the exact Make command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
-- Before handoff, run `make test-integration` (or full gate `make test`).
-  Also run `make typecheck` and `make lint` after substantive changes.
+- Before handoff, run `make test-integration` (or full gate `make test`); both
+  typecheck and lint before running their test suites.

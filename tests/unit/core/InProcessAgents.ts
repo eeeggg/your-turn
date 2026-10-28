@@ -18,7 +18,7 @@ const unused = (): never => {
 
 /** Client handlers for agents that never call them. */
 export const unusedHandlers: ClientHandlers = {
-  permissions: { requestPermission: unused },
+  permissions: { requestPermission: unused, cancelSession: unused },
 };
 
 /** An editor for chat views that never open a tool call's files. */

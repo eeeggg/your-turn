@@ -28,12 +28,12 @@ suite('PermissionQuickPick Test Suite', () => {
   });
 
   test("Asks under the request's title, with the detail as the prompt, marking what each option does", async () => {
-    interface Shown { items: readonly vscode.QuickPickItem[]; options: vscode.QuickPickOptions | undefined }
+    interface Shown { items: readonly vscode.QuickPickItem[]; options: vscode.QuickPickOptions | undefined; token?: vscode.CancellationToken }
     const shown: Shown[] = [];
     const window = vscode.window as { showQuickPick: unknown };
     const original = window.showQuickPick;
-    window.showQuickPick = async (items: readonly vscode.QuickPickItem[], options?: vscode.QuickPickOptions) => {
-      shown.push({ items, options });
+    window.showQuickPick = async (items: readonly vscode.QuickPickItem[], options?: vscode.QuickPickOptions, token?: vscode.CancellationToken) => {
+      shown.push({ items, options, ...(token ? { token } : {}) });
       return items[2];
     };
     try {
@@ -43,8 +43,8 @@ suite('PermissionQuickPick Test Suite', () => {
         { id: 'sandbox', name: 'Run in the sandbox', kind: 'other' },
       ] as const;
 
-      const chosen = await permissionQuickPick.choose({ title: 'Run command?', detail: 'npm test in /work — Needs the network' }, options);
-      await permissionQuickPick.choose({ title: 'Edit a.ts', detail: null }, options);
+      const chosen = await permissionQuickPick.choose({ title: 'Run command?', detail: 'npm test in /work — Needs the network' }, options, new AbortController().signal);
+      await permissionQuickPick.choose({ title: 'Edit a.ts', detail: null }, options, new AbortController().signal);
 
       assert.strictEqual(chosen, 'sandbox');
       assert.deepStrictEqual(shown.map(({ items }) => items.map(({ label, description }) => [label, description])), [
@@ -57,6 +57,33 @@ suite('PermissionQuickPick Test Suite', () => {
       ]);
     } finally {
       window.showQuickPick = original;
+    }
+  });
+
+  test('closes the Quick Pick when its request cancellation signal aborts', async () => {
+    const window = vscode.window as { showQuickPick: unknown };
+    const original = window.showQuickPick;
+    let token: vscode.CancellationToken | undefined;
+    let resolvePick: ((item: vscode.QuickPickItem | undefined) => void) | undefined;
+    window.showQuickPick = (_items: readonly vscode.QuickPickItem[], _options?: vscode.QuickPickOptions, cancellation?: vscode.CancellationToken) => {
+      token = cancellation;
+      return new Promise((resolve) => { resolvePick = resolve; });
+    };
+    const controller = new AbortController();
+    try {
+      const choice = permissionQuickPick.choose(
+        { title: 'Run command?', detail: null },
+        [{ id: 'allow', name: 'Allow', kind: 'allow_once' }],
+        controller.signal,
+      );
+      controller.abort();
+
+      assert.strictEqual(token?.isCancellationRequested, true);
+      resolvePick?.(undefined);
+      assert.strictEqual(await choice, undefined);
+    } finally {
+      window.showQuickPick = original;
+      resolvePick?.(undefined);
     }
   });
 });

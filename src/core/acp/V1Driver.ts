@@ -1,4 +1,4 @@
-import { client as createClientApp, methods, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { client as createClientApp, methods, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type * as Acp from '@agentclientprotocol/sdk';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
@@ -45,13 +45,14 @@ export class V1Driver implements AcpDriver {
     stream: Acp.Stream,
     clientVersion: string,
     updates: SessionUpdateHandler,
-    { permissions }: ClientHandlers,
+    handlers: ClientHandlers,
   ): Promise<V1Driver> {
+    const { permissions } = handlers;
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = createClientApp({ name: 'vscode-acp-client' })
-      .onRequest(methods.client.session.requestPermission, async ({ params }) =>
-        permissionResponse(await permissions.requestPermission(permissionRequest(params))))
+      .onRequest(methods.client.session.requestPermission, async ({ params, signal }) =>
+        permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
       .onNotification(methods.client.session.update, ({ params }) => {
         log(`sessionUpdate: type=${params.update.sessionUpdate}, sessionId=${params.sessionId}`);
         const update = sessionUpdate(params.update);
@@ -65,11 +66,12 @@ export class V1Driver implements AcpDriver {
     const initResponse = await connection.agent.request(methods.agent.initialize, v1InitializeRequest(clientVersion));
     log(`V1Driver: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);
 
-    return new V1Driver(connection, agentDescription(initResponse));
+    return new V1Driver(connection, permissions, agentDescription(initResponse));
   }
 
   private constructor(
     private readonly connection: Acp.ClientConnection,
+    private readonly permissions: ClientHandlers['permissions'],
     readonly agent: AgentDescription,
   ) {}
 
@@ -113,6 +115,7 @@ export class V1Driver implements AcpDriver {
 
   async cancel(sessionId: string): Promise<void> {
     await this.connection.agent.notify(methods.agent.session.cancel, { sessionId });
+    this.permissions.cancelSession(sessionId);
   }
 
   async setMode(sessionId: string, modeId: string): Promise<void> {
@@ -212,6 +215,9 @@ function permissionRequest(params: Acp.RequestPermissionRequest): PermissionRequ
 }
 
 function permissionResponse(outcome: PermissionOutcome): Acp.RequestPermissionResponse {
+  if (outcome.kind === 'requestCancelled') {
+    throw RequestError.requestCancelled();
+  }
   return outcome.kind === 'selected'
     ? { outcome: { outcome: 'selected', optionId: outcome.optionId } }
     : { outcome: { outcome: 'cancelled' } };

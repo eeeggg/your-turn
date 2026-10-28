@@ -98,18 +98,14 @@ async function run(command, args, ownsJobs = false) {
 const npm = (script, args = []) => run(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', script, ...(args.length ? ['--', ...args] : [])]);
 
 try {
-  let code = 0;
+  let code = await npm('check-types');
+  if (code === 0) { code = await npm('lint'); }
   if (full) {
-    code = await npm('compile');
-    if (code === 0) { code = await npm('lint'); }
+    if (code === 0) { code = await npm('bundle'); }
     if (code === 0) { code = await npm('test:vitest'); }
     if (code === 0) { code = await run(process.execPath, [join(root, 'tools', 'run-integration.mjs')], true); }
   } else {
-    if (target !== 'test-unit' && target !== 'coverage') { code = await npm('compile'); }
-    if (code === 0 && (target === 'coverage' || target === 'coverage-integration')) {
-      if (target === 'coverage') { code = await npm('check-types'); }
-      if (code === 0) { code = await npm('lint'); }
-    }
+    if (code === 0 && target !== 'test-unit' && target !== 'coverage') { code = await npm('bundle'); }
     for (let iteration = 1; code === 0 && iteration <= repeat; iteration += 1) {
       console.log(`Test batch: ${target}, run ${iteration}/${repeat}, files: ${files.join(' ') || 'all'}`);
       if (integration) {

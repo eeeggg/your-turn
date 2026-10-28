@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionUpdate, type ToolCallContent } from '@/core/acp/AcpDriver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import { PermissionRequests } from '@/core/PermissionRequests';
 import { setLogSink } from '@/core/Log';
 import { connectedDriver, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
@@ -220,15 +221,19 @@ describe('V2Driver', () => {
       const logins: V2.LoginAuthRequest[] = [];
       let cancelled: (sessionId: string) => void = () => {};
       const cancel = new Promise<string>((resolve) => { cancelled = resolve; });
+      const cancelSession = vi.fn<ClientHandlers['permissions']['cancelSession']>();
       const { driver } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.auth.login, ({ params }) => { logins.push(params); })
-        .onNotification(V2.methods.agent.session.cancel, ({ params }) => cancelled(params.sessionId)));
+        .onNotification(V2.methods.agent.session.cancel, ({ params }) => cancelled(params.sessionId)), {
+        permissions: { requestPermission: vi.fn(), cancelSession },
+      });
 
       await driver.authenticate('token');
       await driver.cancel('s1');
 
       expect(logins).toEqual([{ methodId: 'token' }]);
       expect(await cancel).toBe('s1');
+      expect(cancelSession).toHaveBeenCalledExactlyOnceWith('s1');
     });
   });
 
@@ -819,7 +824,7 @@ describe('V2Driver', () => {
           received.push(await client.request(V2.methods.client.session.requestPermission, { sessionId: 's1', ...request }));
         }
         return { sessionId: 's1' };
-      }), { permissions: { requestPermission } });
+      }), { permissions: { requestPermission, cancelSession: vi.fn() } });
       await driver.newSession('/work');
       return { requests: requestPermission.mock.calls.map(([request]) => request), received };
     }
@@ -865,6 +870,69 @@ describe('V2Driver', () => {
         options: [allow, { optionId: 'sandbox', name: 'Run in the sandbox', kind: '_vendor_sandboxed' }],
       });
       expect(requests[0]?.options).toEqual([{ id: 'allow', name: 'Allow', kind: 'allow_once' }, { id: 'sandbox', name: 'Run in the sandbox', kind: 'other' }]);
+    });
+
+    it('returns the SDK request-cancelled error when permission UI is dismissed without reject-once', async () => {
+      let permissionStarted!: () => void;
+      const started = new Promise<void>((resolve) => { permissionStarted = resolve; });
+      const cancellation = new AbortController();
+      const permissions = new PermissionRequests({
+        autoApprove: () => 'ask',
+        choose: (_prompt, _options, signal) => new Promise((resolve) => {
+          permissionStarted();
+          signal.addEventListener('abort', () => resolve(undefined), { once: true });
+        }),
+      });
+      const received: unknown[] = [];
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
+        const response = client.request(V2.methods.client.session.requestPermission, {
+          sessionId: 's1',
+          title: 'Run command?',
+          options: [allow],
+        }, { cancellationSignal: cancellation.signal }).catch((error: unknown) => error);
+        await started;
+        cancellation.abort();
+        received.push(await response);
+        return { sessionId: 's1' };
+      }), { permissions });
+
+      await driver.newSession('/work');
+
+      expect(received).toEqual([expect.objectContaining({ code: -32800 })]);
+    });
+
+    it('notifies the agent before resolving its pending permission request as cancelled', async () => {
+      const events: string[] = [];
+      let resolvePermission!: (outcome: PermissionOutcome) => void;
+      let permissionStarted!: () => void;
+      const started = new Promise<void>((resolve) => { permissionStarted = resolve; });
+      const requestPermission = vi.fn<ClientHandlers['permissions']['requestPermission']>(() => new Promise((resolve) => {
+        resolvePermission = resolve;
+        permissionStarted();
+      }));
+      const cancelSession = vi.fn<ClientHandlers['permissions']['cancelSession']>(() => {
+        events.push('cancel-pending-permissions');
+        resolvePermission({ kind: 'cancelled' });
+      });
+      const { driver } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.new, async ({ client }) => {
+          const response = await client.request(V2.methods.client.session.requestPermission, {
+            sessionId: 's1', title: 'Run command?', options: [allow],
+          });
+          events.push(`permission:${response.outcome.outcome}`);
+          return { sessionId: 's1' };
+        })
+        .onNotification(V2.methods.agent.session.cancel, () => { events.push('session-cancel'); }), {
+        permissions: { requestPermission, cancelSession },
+      });
+      const session = driver.newSession('/work');
+
+      await started;
+      await driver.cancel('s1');
+      await session;
+
+      expect(events).toEqual(['session-cancel', 'cancel-pending-permissions', 'permission:cancelled']);
+      expect(cancelSession).toHaveBeenCalledExactlyOnceWith('s1');
     });
   });
 

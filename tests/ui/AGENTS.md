@@ -47,6 +47,8 @@
 
 - Make is the supported developer entry point. Do not invoke Playwright, Electron,
   framework CLIs, or runner scripts directly.
+- Every test and coverage Make target runs typecheck and lint before preparation
+  or test execution; a failed check stops the target.
 - During development, run targeted UI test files with:
   `make test-ui FILES='tests/ui/reveal-chat.test.ts' REPEAT=3`
 - `FILES` accepts explicit whitespace-separated repo-relative source test paths
@@ -60,10 +62,10 @@
   `test-results/ui/`.
 - Keep retries disabled while measuring reliability. Ensure full cleanup runs
   when fixture setup, the test body, or diagnostics fail.
-- `make test` is the unfiltered gate running compile, lint, Vitest (unit and
-  bundled webview), and integration suites. It rejects `FILES`, `REPEAT`,
-  `JOBS`, or inherited legacy selection overrides.
+- `make test` is the unfiltered gate running typecheck, lint, bundle, Vitest
+  (unit and bundled webview), and integration suites in that order. It rejects
+  `FILES`, `REPEAT`, `JOBS`, or inherited legacy selection overrides.
 - Always report the exact Make command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
-- Before handoff, run `make test-ui`. The full gate `make test` does not run UI tests.
-  Also run `make typecheck` and `make lint` after substantive changes.
+- Before handoff, run `make test-ui`; the full gate `make test` does not run UI
+  tests. Both commands typecheck and lint before running their test suites.
