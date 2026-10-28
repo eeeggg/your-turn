@@ -134,7 +134,7 @@ test('modified review text keeps normal typing, save and undo history after hunk
   await window.screenshot({ path: testInfo.outputPath('review-undo-after-resolution.png') });
 });
 
-test('review file navigation stays available during a turn while review decisions wait', async ({ window, workspace }, testInfo) => {
+test('review navigation stays available during turns without stealing focus from a normal file tab', async ({ window, workspace }, testInfo) => {
   await hideSecondarySideBar(window).click();
   await startReview(window, workspace);
   const prompt = promptInput(window);
@@ -164,6 +164,9 @@ test('review file navigation stays available during a turn while review decision
   await expect(reviewTitleAction(window, 'Open ACP Review')).toBeDisabled();
   await quickInputRow(window, 'Allow').click();
   await expect(prompt).toBeEnabled();
+  await expect(plainFileEditor(window)).toBeVisible();
+  await expect(reviewTitleAction(window, 'Open ACP Review')).toBeEnabled();
+  await reviewTitleAction(window, 'Open ACP Review').click();
   await expect(reviewDiffEditor(window)).toBeVisible();
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toBeEnabled(); }
 

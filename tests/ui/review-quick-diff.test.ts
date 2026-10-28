@@ -28,7 +28,7 @@ async function connectFakeAgent(window: Parameters<typeof editorTab>[0]): Promis
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
 }
 
-test("a completed turn opens each already-open reviewed file's first quick diff", async ({ window, workspace }, testInfo) => {
+test("a completed turn preserves the already-open reviewed file's quick diff", async ({ window, workspace }, testInfo) => {
   await Promise.all([
     writeFile(join(workspace, 'a.ts'), 'one\n2\n3\n4\n5\n6\n7\n8\n9\n10\na before\n'),
     writeFile(join(workspace, 'b.ts'), 'one\n2\n3\n4\n5\n6\n7\n8\n9\n10\nb before\n'),
@@ -56,10 +56,9 @@ test("a completed turn opens each already-open reviewed file's first quick diff"
 
   await prompt.fill(`again ${workspace}`);
   await prompt.press('Enter');
-  await expect(reviewStatus(window)).toContainText('1 of 2');
-  await expect(editorTab(window, 'a.ts')).toHaveClass(/active/);
-  await expect(reviewQuickDiff(window, 'a.ts')).toBeVisible();
-  await expect(reviewQuickDiff(window, 'a.ts')).toContainText('1 of 2 changes');
+  await expect(reviewStatus(window)).toContainText('2 of 2');
+  await expect(editorTab(window, 'b.ts')).toHaveClass(/active/);
+  await expect(reviewQuickDiff(window, 'b.ts')).toBeVisible();
 
   await editorTab(window, 'b.ts').click();
   await expect(reviewQuickDiff(window, 'b.ts')).toBeVisible();
