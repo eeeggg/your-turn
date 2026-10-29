@@ -193,3 +193,8 @@ export function texts(...items: string[]): ToolCallContent[] {
 export function plan(page: ChatPage, ...steps: PlanStep[]): void {
   page.send({ type: 'plan', steps });
 }
+
+/** The text an element shows; for a message, its content without the labels of its copy controls. */
+export function shownText(element: Element): string {
+  return (element.querySelector(':scope > .message-content') ?? element).textContent;
+}
