@@ -1,6 +1,9 @@
 import { useEffect, useState, type ComponentProps } from 'react';
 import { defaultComponents, Streamdown, type Components, type ExtraProps } from 'streamdown';
 
+export const copyFeedbackDuration = 2000;
+const DefaultLink = defaultComponents.a;
+
 // Its modal opens links with `window.open`, which a webview ignores; a plain link's click goes to VS Code, which opens it.
 const linkSafety = { enabled: false };
 const components: Components = { a: Link };
@@ -13,9 +16,6 @@ export function Markdown({ text, streaming }: { text: string; streaming: boolean
     </Streamdown>
   );
 }
-
-const DefaultLink = defaultComponents.a;
-const copiedFor = 2000;
 
 function Link(props: ComponentProps<'a'> & ExtraProps) {
   const { href, className } = props;
@@ -38,7 +38,7 @@ function CopyLinkButton({ href }: { href: string }) {
     if (!copied) {
       return;
     }
-    const timer = setTimeout(() => setCopied(false), copiedFor);
+    const timer = setTimeout(() => setCopied(false), copyFeedbackDuration);
     return () => clearTimeout(timer);
   }, [copied]);
 

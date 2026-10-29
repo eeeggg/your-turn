@@ -1,7 +1,7 @@
-import { memo, useLayoutEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 import type { ToolCallStatus } from '@/shared/WebviewMessages';
-import { Markdown } from '@/webview/views/Markdown';
+import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
 import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
@@ -47,7 +47,12 @@ export function TranscriptView() {
 
   return (
     <div className="transcript relative flex min-h-0 flex-1 flex-col" id="transcript">
-      <div className="transcript-scroll flex-1 overflow-y-auto" id="transcriptScroll" ref={scrollRef}>
+      <div
+        className="transcript-scroll flex-1 overflow-y-auto"
+        id="transcriptScroll"
+        ref={scrollRef}
+        data-vscode-context='{"preventDefaultContextMenuItems":true}'
+      >
         <div className="messages flex min-h-full flex-col gap-2 p-3" id="messages" ref={contentRef}>
           <EmptyState shown={empty} />
           {entries.map((entry) => (
@@ -98,7 +103,15 @@ const plainText = 'whitespace-pre-wrap wrap-anywhere';
 const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
   switch (entry.kind) {
     case 'prompt':
-      return <div className={`message user ${messageBox} ${plainText} self-end bg-primary text-primary-foreground`}>{entry.text}</div>;
+      return (
+        <CopyableMessage
+          author="user"
+          markdown={entry.text}
+          className={`${messageBox} ${plainText} self-end bg-primary text-primary-foreground`}
+        >
+          {entry.text}
+        </CopyableMessage>
+      );
     case 'turn':
       return <TurnView turn={entry} />;
     case 'error':
@@ -183,11 +196,173 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
 
 const AgentMessageView = memo(function AgentMessageView({ message, streaming }: { message: AgentMessage; streaming: boolean }) {
   return (
-    <div className={`message agent ${messageBox} self-start border border-border bg-card wrap-anywhere`}>
+    <CopyableMessage author="agent" markdown={message.text} className={`${messageBox} self-start border border-border bg-card wrap-anywhere`}>
       <Markdown text={message.text} streaming={streaming} />
-    </div>
+    </CopyableMessage>
   );
 });
+
+function CopyableMessage({
+  author,
+  markdown,
+  className,
+  children,
+}: {
+  author: 'agent' | 'user';
+  markdown: string;
+  className: string;
+  children: ReactNode;
+}) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  return (
+    <div
+      className={`message ${author} group relative pr-8 ${className}`}
+    >
+      <div ref={contentRef} className="message-content">{children}</div>
+      <CopyMessageButton author={author} markdown={markdown} contentRef={contentRef} />
+    </div>
+  );
+}
+
+function CopyMessageButton({
+  author,
+  markdown,
+  contentRef,
+}: {
+  author: 'agent' | 'user';
+  markdown: string;
+  contentRef: RefObject<HTMLDivElement | null>;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [announcement, setAnnouncement] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuId = useId();
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!menuOpen) {
+      return;
+    }
+    const closeOutside = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node) && !triggerRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, [menuOpen]);
+
+  const copy = async (text: string, format: 'text' | 'Markdown') => {
+    if (timer.current !== null) {
+      clearTimeout(timer.current);
+      timer.current = null;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setAnnouncement(`Copied ${format}`);
+      timer.current = setTimeout(() => {
+        setCopied(false);
+        timer.current = null;
+      }, copyFeedbackDuration);
+    } catch {
+      setCopied(false);
+      setAnnouncement('Could not copy message');
+    }
+  };
+
+  const copyText = () => copy(contentRef.current?.innerText || contentRef.current?.textContent || '', 'text');
+  const copyMarkdown = () => copy(markdown, 'Markdown');
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label={author === 'agent' ? 'Copy options' : 'Copy message'}
+        aria-expanded={author === 'agent' ? menuOpen : undefined}
+        aria-controls={author === 'agent' ? menuId : undefined}
+        title={author === 'agent' ? 'Copy options' : 'Copy message'}
+        className="message-copy absolute top-1 right-1 z-10 inline-flex size-6 cursor-pointer items-center justify-center rounded-sm bg-transparent text-current opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-hover:pointer-events-auto pointer-events-none hover:bg-transparent focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring motion-reduce:transition-none"
+        onClick={() => author === 'agent' ? setMenuOpen((open) => !open) : void copyText()}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && menuOpen) {
+            event.preventDefault();
+            setMenuOpen(false);
+          }
+        }}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          className={`transition-transform duration-150 motion-reduce:transition-none ${copied ? 'scale-100' : 'scale-90'}`}
+        >
+          {copied ? (
+            <path d="M20 6 9 17l-5-5" />
+          ) : (
+            <>
+              <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
+              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 0.9 2 2" />
+            </>
+          )}
+        </svg>
+      </button>
+      {author === 'agent' && <div
+        ref={menuRef}
+        id={menuId}
+        role="group"
+        aria-label="Copy options"
+        className={`${menuOpen ? 'flex' : 'hidden'} absolute top-8 right-1 z-20 min-w-32 flex-col rounded-sm border border-popover-border bg-popover p-1 text-control text-popover-foreground shadow-popover`}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape') {
+            event.preventDefault();
+            setMenuOpen(false);
+            triggerRef.current?.focus();
+          }
+        }}
+      >
+        <button
+          type="button"
+          className="cursor-pointer rounded-sm px-2 py-1 text-left hover:bg-hover focus-visible:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => {
+            setMenuOpen(false);
+            triggerRef.current?.focus();
+            void copyText();
+          }}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          className="cursor-pointer rounded-sm px-2 py-1 text-left hover:bg-hover focus-visible:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
+          onClick={() => {
+            setMenuOpen(false);
+            triggerRef.current?.focus();
+            void copyMarkdown();
+          }}
+        >
+          Copy Markdown
+        </button>
+      </div>}
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</span>
+    </>
+  );
+}
 
 const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turnId: EntryId; index: PartIndex; group: ToolCallGroup }) {
   const dispatch = useDispatch();

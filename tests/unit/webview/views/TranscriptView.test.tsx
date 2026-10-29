@@ -8,7 +8,10 @@ import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 /** A file as the extension sends it; by default one it reported no lines of. */
 const diffFile = (file: Partial<DiffFile> & Pick<DiffFile, 'operation' | 'path'>): DiffFile => ({
@@ -147,7 +150,8 @@ describe('the queue', () => {
     view.all('#queuedPrompts > .queued-prompt').map((item) => [item.querySelector('.queued-label')?.textContent, item.querySelector('.queued-text')?.textContent, item.title]);
   const prompt = (view: ReturnType<typeof renderChatView>, value: string) =>
     view.send({ type: 'promptEdited', text: value }, { type: 'promptSent' });
-  const userMessages = (view: ReturnType<typeof renderChatView>) => view.all('#messages > .message.user').map((message) => message.textContent);
+  const userMessages = (view: ReturnType<typeof renderChatView>) =>
+    view.all('#messages > .message.user').map((message) => message.querySelector('.message-content')?.textContent);
 
   it('is not shown while no prompt is queued', () => {
     const view = renderChatView();
@@ -268,6 +272,39 @@ describe('the empty state', () => {
 });
 
 describe('transcript entries', () => {
+  it('copies a user message directly without offering Markdown options', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'promptEdited', text: 'user message' }, { type: 'promptSent' });
+
+    const message = view.part('.message.user');
+    expect(message.querySelector('[aria-label="Copy options"]')).toBeNull();
+    expect(message.querySelector('[aria-label="Copy message"]')).not.toBeNull();
+    expect(message.querySelector('[role="group"]')).toBeNull();
+
+    const copyButton = message.querySelector<HTMLButtonElement>('[aria-label="Copy message"]');
+    assert.exists(copyButton);
+    await act(async () => fireEvent.click(copyButton));
+    expect(writeText).toHaveBeenCalledWith('user message');
+  });
+
+  it('keeps agent copy options while using an unboxed icon button', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'promptStart' });
+    view.answer('agent response');
+
+    const message = view.part('.message.agent');
+    const trigger = message.querySelector<HTMLButtonElement>('[aria-label="Copy options"]');
+    assert.exists(trigger);
+    expect(trigger.className).toContain('bg-transparent');
+    expect(trigger.className).not.toContain('shadow-');
+    fireEvent.click(trigger);
+    expect(message.querySelector('[role="group"]')?.textContent).toContain('Copy Markdown');
+  });
+
   it('draws prompts, turns and errors in order, with their classes, and a plan inside its turn', () => {
     const view = renderChatView();
     view.connect();
@@ -283,7 +320,11 @@ describe('transcript entries', () => {
     view.send({ type: 'error', message: 'boom' });
 
     const entries = [...view.part('#messages').children].filter((child) => child.id !== 'emptyState');
-    expect(entries.map((entry) => `${hookClasses(entry)}: ${entry.textContent}`)).toEqual([
+    expect(entries.map((entry) => {
+      const text = entry.cloneNode(true) as HTMLElement;
+      text.querySelectorAll('.message-copy, [role="group"], [role="status"]').forEach((control) => control.remove());
+      return `${hookClasses(entry)}: ${text.textContent}`;
+    })).toEqual([
       'message user: question',
       'turn: answerPlan✅ done⬜ <b>next</b>',
       'message error: boom',
