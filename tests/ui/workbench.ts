@@ -7,6 +7,16 @@ export function acpContainerControl(window: Page): Locator {
   return window.getByRole('tab', { name: 'ACP Client', exact: true });
 }
 
+/** VS Code's Explorer control in the activity bar, whose accessible name continues with its shortcut. */
+export function explorerControl(window: Page): Locator {
+  return window.getByRole('tab', { name: /^Explorer\b/ });
+}
+
+/** A row of the Agents view, an agent or one of its sessions, by the label it shows; its accessible name is its tooltip. */
+export function agentsViewRow(window: Page, label: string): Locator {
+  return window.getByRole('tree', { name: 'Agents', exact: true }).getByRole('treeitem').filter({ hasText: label });
+}
+
 /**
  * VS Code hosts extension webviews in an outer workbench iframe and an
  * `#active-frame` iframe. The extension ID distinguishes ACP Chat from the

@@ -6,8 +6,7 @@
   Electron. Use them only for behavior that unit, webview and integration
   tests cannot observe: rendered workbench UI, focus, layout and interaction
   across VS Code and the extension's webview.
-- Each test names one user-visible risk. It does not replace a live check
-  unless the user explicitly changes that gate.
+- Each test names one user-visible risk.
 - Add one test at a time. Deliberately break its behavior, confirm the intended
   assertion fails, restore it and establish a repeated-run baseline before
   adding another.

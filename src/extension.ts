@@ -7,7 +7,7 @@ import { checkPackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionReferences, WorkspaceState } from '@/core/PersistedState';
-import { SessionList } from '@/core/SessionList';
+import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
 import type { Change } from '@/core/review/Hunks';
@@ -32,7 +32,7 @@ import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { createWorkspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
-import { getAgentNames } from '@/adapters/AgentConfig';
+import { getAgentConfigs, getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel } from '@/adapters/OutputChannels';
 import { registerTrafficAdapter } from '@/adapters/Traffic';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
@@ -76,6 +76,10 @@ export interface ExtensionTestApi {
    * global-state value after a write, which this instance reconciles, and another instance is in effect another window.
    */
   readonly sessionReferences: SessionReferences;
+  /** What the Agents view shows under an agent, which VS Code cannot read back from a tree. */
+  sessionsOf(agentName: string): Promise<AgentSessions>;
+  /** Fires whenever what the Agents view would show under any agent changes. */
+  readonly sessionsChanged: vscode.Event<void>;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -104,6 +108,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
   const sessionList = new SessionList(sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget());
+  const sessionsChanged = new vscode.EventEmitter<void>();
+  context.subscriptions.push(sessionsChanged);
+  sessionList.on('changed', () => sessionsChanged.fire());
   const sessionTreeProvider = new SessionTreeProvider(sessionList);
   const persistedStateCommands = new PersistedStateCommands(
     context.workspaceState,
@@ -124,15 +131,26 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const treeVisibilityChanged = treeView.onDidChangeVisibility(({ visible }) => {
     if (visible) {
       sessionTreeProvider.refresh();
+      void sessionList.refreshAll();
     }
     tickAges(visible);
+  });
+  const windowFocused = vscode.window.onDidChangeWindowState(({ focused }) => {
+    if (focused) {
+      void sessionList.refreshAll();
+    }
   });
   // The Agents view's welcome is shown on this rather than on the tree being empty, which VS Code assumes until the
   // tree's first items arrive; `when` clauses cannot test the `acp.agents` object for emptiness themselves.
   const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'acp.noAgentsConfigured', getAgentNames().length === 0);
   markNoAgentsConfigured();
+  // The change event carries no previous value, so renames are found against the map as it was last read.
+  let agentConfigs = getAgentConfigs();
   const agentsChanged = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration('acp.agents')) {
+      const previous = agentConfigs;
+      agentConfigs = getAgentConfigs();
+      sessionManager.agentsChanged(previous, agentConfigs);
       markNoAgentsConfigured();
       sessionTreeProvider.refresh();
     }
@@ -265,6 +283,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   context.subscriptions.push(
     treeView,
     treeVisibilityChanged,
+    windowFocused,
     { dispose: () => tickAges(false) },
     agentsChanged,
     chatViewRegistration,
@@ -282,10 +301,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.commands.registerCommand('acp.openChat', focusChatView),
     vscode.commands.registerCommand('acp.sendPrompt', focusChatView),
     vscode.commands.registerCommand('acp.showLog', () => getOutputChannel().show()),
-    vscode.commands.registerCommand('acp.refreshSessions', (arg?: unknown) => {
+    vscode.commands.registerCommand('acp.refreshSessions', async (arg?: unknown) => {
       const agentName = agentNameOf(arg);
       if (agentName) {
-        sessionList.invalidate(agentName);
+        await sessionList.startOver(agentName);
       }
     }),
     vscode.commands.registerCommand('acp.loadMoreSessions', async (agentName?: string) => {
@@ -386,6 +405,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     },
     storage: { workspaceState: context.workspaceState },
     sessionReferences,
+    sessionsOf: (agentName) => sessionList.sessionsOf(agentName),
+    sessionsChanged: sessionsChanged.event,
   };
 }
 

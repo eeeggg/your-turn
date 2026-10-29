@@ -15,9 +15,12 @@ import { Readable, Writable } from 'node:stream';
  * call's diff: its `changes` and a `git_patch` in ACP's form, with absolute paths and no `a/` or `b/`. A prompt of "run"
  * reports a command it runs in a terminal of its own, as `run` describes. A prompt of "review <dir>" changes files
  * there for `review.test.ts`, as `changeForReview` describes; "again <dir>" then changes `a.ts` once more, and "three <dir>" changes `m.ts` there in three places.
+ * A prompt of "switch <model>" makes it switch its model option to that value itself.
+ * It lists sessions, as its session capability says: one, new each time it is asked, titled "Listed <n>".
  */
 
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
+let listings = 0;
 
 function modelOption(currentValue: string): SessionConfigOption {
   return {
@@ -278,6 +281,10 @@ agent({ name: 'fake-agent' })
     capabilities: { session: {} },
     authMethods: [],
   }))
+  .onRequest(methods.agent.session.list, ({ params }) => {
+    listings += 1;
+    return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
+  })
   .onRequest(methods.agent.session.new, () => ({
     sessionId: SESSION_ID,
     configOptions: [modelOption('model-a')],
@@ -309,6 +316,15 @@ agent({ name: 'fake-agent' })
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         await changeThree(client, params.sessionId, text.slice('three '.length));
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text.startsWith('switch ')) {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await client.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'config_option_update', configOptions: [modelOption(text.slice('switch '.length))] },
+        });
         await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
       })();
     } else if (text === 'run') {

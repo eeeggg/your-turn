@@ -20,8 +20,8 @@ export interface SessionAddress {
   readonly workspaceUri: string;
 }
 
-/** The last confirmed selections of a session, reapplied when it is loaded. */
-interface Selections {
+/** A session's options as last displayed, reapplied when it is loaded. */
+export interface Selections {
   /** Only for agents using the separate modes API; a mode config option belongs in `options`. */
   readonly modeId?: string;
   readonly options: Readonly<Record<string, string | boolean>>;
@@ -45,10 +45,6 @@ export interface ReferenceId {
   readonly configuredName: string;
   readonly sessionId: string;
 }
-
-export type Selection =
-  | { readonly kind: 'mode'; readonly modeId: string }
-  | { readonly kind: 'option'; readonly optionId: string; readonly value: string | boolean };
 
 /** A session list one configuration's agent gave on one host. */
 export interface ObservedListing {
@@ -127,14 +123,9 @@ export class SessionReferences extends EventEmitter<{ changed: [] }> {
     return this.upsert(address, (reference) => withTitle(reference, title));
   }
 
-  /** A selection was confirmed; only its own key changes, so saved values not yet restored are kept. */
-  saveSelection(address: SessionAddress, selection: Selection): Promise<void> {
-    return this.upsert(address, (reference) => ({
-      ...reference,
-      selections: selection.kind === 'mode'
-        ? { ...reference.selections, modeId: selection.modeId }
-        : { ...reference.selections, options: { ...reference.selections.options, [selection.optionId]: selection.value } },
-    }));
+  /** The session's displayed options changed; they replace those saved. */
+  saveSelections(address: SessionAddress, selections: Selections): Promise<void> {
+    return this.upsert(address, (reference) => ({ ...reference, selections }));
   }
 
   /** Refresh the cached titles of referenced sessions the agent listed, and prune by a complete listing. */
@@ -190,6 +181,31 @@ export class SessionReferences extends EventEmitter<{ changed: [] }> {
     this.epoch = Math.max(this.epoch, epochFrom(value?.['epoch'])) + 1;
     this.kept.clear();
     return this.store({ schemaVersion: REFERENCES_VERSION, epoch: this.epoch, references: [], removed: [] });
+  }
+
+  /**
+   * A configuration was renamed: its references on `host` move to the new name. One that is already referenced under
+   * the new name keeps whichever of the two was active more recently, with its title and selections.
+   */
+  rebind(host: string, from: string, to: string): Promise<void> {
+    return this.change((references) => {
+      const moving = references.filter((reference) => reference.host === host && reference.configuredName === from);
+      if (moving.length === 0) {
+        return undefined;
+      }
+      const next = references.filter((reference) => !moving.includes(reference));
+      for (const reference of moving) {
+        const rebound = { ...reference, configuredName: to };
+        const index = next.findIndex((other) => identifies(idOf(rebound), other));
+        const existing = next[index];
+        if (!existing) {
+          next.push(rebound);
+        } else if (Date.parse(rebound.lastActiveAt) > Date.parse(existing.lastActiveAt)) {
+          next[index] = rebound;
+        }
+      }
+      return next;
+    });
   }
 
   remove(id: ReferenceId): Promise<void> {
@@ -394,6 +410,12 @@ export class WorkspaceState {
 
   setWorkspaceTarget({ uri, host }: WorkspaceTarget): Promise<void> {
     return this.change({ workspaceTarget: { uri, host } });
+  }
+
+  /** A configuration was renamed: the last active session moves to the new name if it was used through the old. */
+  rebind(from: string, to: string): Promise<void> {
+    const last = this.read().stored.lastActiveSession;
+    return last?.configuredName === from ? this.change({ lastActiveSession: { ...last, configuredName: to } }) : Promise.resolve();
   }
 
   /** Delete what earlier versions kept, without reading it. */

@@ -16,9 +16,13 @@ import { Readable, Writable } from 'node:stream';
  * A prompt of "review <dir>" changes files there for `review.test.ts`, one of them other than it reports; "again <dir>"
  * then changes `a.ts` once more, "review-open <dir>" changes two existing files for the UI journey, and "three <dir>"
  * changes `m.ts` there in three places.
+ * A prompt of "switch <model>" makes it switch its model option to that value itself.
+ * With `ACP_TEST_LISTS_SESSIONS` set, it lists sessions: one, new each time it is asked, titled "Listed <n>".
  */
 
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
+const LISTS_SESSIONS = process.env['ACP_TEST_LISTS_SESSIONS'] !== undefined;
+let listings = 0;
 
 function modelOption(currentValue: string): SessionConfigOption {
   return {
@@ -183,10 +187,14 @@ function run(client: AgentContext, sessionId: string): Promise<void> {
 agent({ name: 'fake-agent' })
   .onRequest(methods.agent.initialize, () => ({
     protocolVersion: PROTOCOL_VERSION,
-    agentCapabilities: { loadSession: false },
+    agentCapabilities: { loadSession: false, ...(LISTS_SESSIONS ? { sessionCapabilities: { list: {} } } : {}) },
     authMethods: [],
     agentInfo: { name: 'FakeAgent', version: '0.0.1' },
   }))
+  .onRequest(methods.agent.session.list, ({ params }) => {
+    listings += 1;
+    return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
+  })
   .onRequest(methods.agent.session.new, () => ({
     sessionId: SESSION_ID,
     configOptions: [modelOption('model-a')],
@@ -222,6 +230,13 @@ agent({ name: 'fake-agent' })
     }
     if (text === 'run') {
       await run(client, params.sessionId);
+      return { stopReason: 'end_turn' };
+    }
+    if (text.startsWith('switch ')) {
+      await client.notify(methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: { sessionUpdate: 'config_option_update', configOptions: [modelOption(text.slice('switch '.length))] },
+      });
       return { stopReason: 'end_turn' };
     }
     const say = (text: string) => client.notify(methods.client.session.update, {

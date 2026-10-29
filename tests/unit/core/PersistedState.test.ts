@@ -118,7 +118,7 @@ describe('SessionReferences', () => {
       await before.used(address('a'));
       await before.used(address('b'));
       await before.setTitle(address('b'), 'Fix the build');
-      await before.saveSelection(address('a'), { kind: 'option', optionId: 'model', value: 'big' });
+      await before.saveSelections(address('a'), { options: { model: 'big' } });
 
       const after = new SessionReferences(globalState);
 
@@ -173,7 +173,7 @@ describe('SessionReferences', () => {
 
       await references.used(address('a'));
       await references.setTitle(address('a'), 'Title');
-      await references.saveSelection(address('a'), { kind: 'mode', modeId: 'plan' });
+      await references.saveSelections(address('a'), { modeId: 'plan', options: {} });
       await references.remove({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' });
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([]);
@@ -310,7 +310,7 @@ describe('SessionReferences', () => {
       await references.used(address('b'));
 
       await references.setTitle(address('a'), 'Renamed');
-      await references.saveSelection(address('a'), { kind: 'mode', modeId: 'plan' });
+      await references.saveSelections(address('a'), { modeId: 'plan', options: {} });
       expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['b', 'a']);
 
       await references.used(address('a'));
@@ -321,7 +321,7 @@ describe('SessionReferences', () => {
       const references = new SessionReferences(memoryStore(), ticking());
 
       await references.setTitle(address('titled'), 'Titled');
-      await references.saveSelection(address('selected'), { kind: 'option', optionId: 'brave', value: true });
+      await references.saveSelections(address('selected'), { options: { brave: true } });
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([
         expect.objectContaining({ sessionId: 'selected', selections: { options: { brave: true } } }),
@@ -338,16 +338,14 @@ describe('SessionReferences', () => {
       expect(references.get({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' })).not.toHaveProperty('title');
     });
 
-    it('saves each selection under its own key, keeping the others', async () => {
+    it('replaces the saved selections as a whole', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
 
-      await references.saveSelection(address('a'), { kind: 'option', optionId: 'model', value: 'big' });
-      await references.saveSelection(address('a'), { kind: 'option', optionId: 'effort', value: 'high' });
-      await references.saveSelection(address('a'), { kind: 'mode', modeId: 'plan' });
-      await references.saveSelection(address('a'), { kind: 'option', optionId: 'model', value: 'small' });
+      await references.saveSelections(address('a'), { modeId: 'plan', options: { model: 'big', effort: 'high' } });
+      await references.saveSelections(address('a'), { options: { model: 'small' } });
 
       expect(references.get({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' })?.selections)
-        .toEqual({ modeId: 'plan', options: { model: 'small', effort: 'high' } });
+        .toEqual({ options: { model: 'small' } });
     });
 
     it('keeps at most its capacity, dropping the least recently active', async () => {
@@ -404,6 +402,52 @@ describe('SessionReferences', () => {
       await new SessionReferences(failing, ticking()).used(address('a'));
 
       expect(errors).toEqual(['Failed to save session references']);
+    });
+  });
+
+  describe('rebinding', () => {
+    it("moves one configuration's references on one host to its new name, with all they hold", async () => {
+      const references = new SessionReferences(memoryStore(), ticking());
+      const under = (configuredName: string, host = devenv) => ids(references.list(host, configuredName, '/home/me/work'));
+      await references.used(address('a'));
+      await references.setTitle(address('a'), 'Kept title');
+      await references.saveSelections(address('a'), { options: { model: 'big' } });
+      await references.used(address('b', { workspaceUri: LOCAL }));
+      await references.used(address('c', { configuredName: 'Claude' }));
+      const before = references.get(idOf('a'));
+
+      await references.rebind(devenv, 'OpenCode', 'oc');
+
+      expect([under('oc'), under('OpenCode'), under('OpenCode', 'local'), under('Claude')]).toEqual([['a'], [], ['b'], ['c']]);
+      expect(references.get({ ...idOf('a'), configuredName: 'oc' })).toEqual({ ...before, configuredName: 'oc' });
+    });
+
+    it('merges with a reference already under the new name, keeping the more recently active', async () => {
+      const references = new SessionReferences(memoryStore(), ticking());
+      await references.setTitle(address('x', { configuredName: 'oc' }), 'Older under the new name');
+      await references.setTitle(address('x'), 'Newer under the old name');
+      await references.setTitle(address('y'), 'Older under the old name');
+      await references.saveSelections(address('y', { configuredName: 'oc' }), { options: { model: 'small' } });
+
+      await references.rebind(devenv, 'OpenCode', 'oc');
+
+      const rebound = (sessionId: string) => references.get({ ...idOf(sessionId), configuredName: 'oc' });
+      expect(rebound('x')).toMatchObject({ title: 'Newer under the old name' });
+      expect(rebound('y')).toMatchObject({ selections: { options: { model: 'small' } } });
+      expect(rebound('y')).not.toHaveProperty('title');
+      expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([]);
+    });
+
+    it('changes nothing when applied again', async () => {
+      const references = new SessionReferences(memoryStore(), ticking());
+      await references.used(address('a'));
+      await references.rebind(devenv, 'OpenCode', 'oc');
+      let announced = 0;
+      references.on('changed', () => { announced++; });
+
+      await references.rebind(devenv, 'OpenCode', 'oc');
+
+      expect(announced).toBe(0);
     });
   });
 
@@ -773,6 +817,18 @@ describe('WorkspaceState', () => {
     expect(state.lastActiveSession()).toBeUndefined();
     expect(state.workspaceTarget()).toBeUndefined();
     expect(workspaceState.values.get(WORKSPACE_KEY)).toBe(later);
+  });
+
+  it('rebinds the last active session to the new name of its configuration, and no other', async () => {
+    const workspaceState = memoryStore();
+    const state = new WorkspaceState(workspaceState);
+    await state.setLastActiveSession(address('a'));
+
+    await state.rebind('Claude', 'cc');
+    expect(state.lastActiveSession()).toEqual(address('a'));
+
+    await state.rebind('OpenCode', 'oc');
+    expect(state.lastActiveSession()).toEqual(address('a', { configuredName: 'oc' }));
   });
 
   it('deletes the session history earlier versions kept, leaving its own state', async () => {

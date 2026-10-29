@@ -170,6 +170,18 @@ function sessionAgent(id = 's1', extend: (app: AgentApp) => AgentApp = (app) => 
 
 describe('SessionManager', () => {
   describe('connecting', () => {
+    it('tells whether an agent is running, without starting it', async () => {
+      const { manager, agents } = setup({ fake: sessionAgent().script });
+      expect(manager.isRunning('fake')).toBe(false);
+      expect(agents.launched).toHaveLength(0);
+
+      await manager.ensureConnected('fake');
+      expect(manager.isRunning('fake')).toBe(true);
+
+      await manager.disconnectAgent('fake');
+      expect(manager.isRunning('fake')).toBe(false);
+    });
+
     it('creates a session in the workspace and makes it active', async () => {
       const fake = sessionAgent();
       const { manager, reference, workspace, takeEvents } = setup({ fake: fake.script });
@@ -522,17 +534,18 @@ describe('SessionManager', () => {
       expect(manager.getSession('s1')?.configOptions).toEqual([modelConfig('b')]);
     });
 
-    it('keeps no config options when the agent responds with null ones', async () => {
+    it('keeps the config options, with the value asked for, when the agent answers without them', async () => {
       const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.setConfigOption, () => (
         { configOptions: null } as unknown as { configOptions: SessionConfigOption[] }
       )));
-      const { manager } = setup({ fake: fake.script });
+      const { manager, reference } = setup({ fake: fake.script });
       await manager.connectToAgent('fake');
 
       const options = await manager.setConfigOption('s1', 'model', 'b');
 
       expect(options).toBeNull();
-      expect(manager.getSession('s1')?.configOptions).toBeNull();
+      expect(manager.getSession('s1')?.configOptions).toEqual([modelConfig('b')]);
+      expect(reference('s1')?.selections).toEqual({ options: { model: 'b' } });
     });
 
     it('sets the model through the model config option', async () => {
@@ -702,6 +715,273 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('selections', () => {
+    const effortOption = (currentValue: string): SessionConfigOption => ({
+      id: 'effort', name: 'Effort', category: 'thought_level', type: 'select', currentValue,
+      options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }],
+    });
+    const fastOption = (currentValue: boolean): SessionConfigOption => ({ id: 'fast', name: 'Fast', type: 'boolean', currentValue });
+    const modes = (currentModeId: string) => ({ availableModes: [{ id: 'ask', name: 'Ask' }, { id: 'code', name: 'Code' }], currentModeId });
+    const caps = { agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
+
+    /**
+     * An agent whose sessions, `s1` first, start with model `a`, effort `low` and a boolean option off. Setting the model
+     * to `b` resets the effort to `medium`. A prompt makes it change the effort and the boolean option itself. A load
+     * replays two model changes, then answers with model `b`; a resume answers with model `b`.
+     */
+    function selectingAgent() {
+      let created = 0;
+      const defaults = { model: 'a', effort: 'low', fast: false };
+      const options = { ...defaults };
+      const all = () => [modelOption(options.model), effortOption(options.effort), fastOption(options.fast)];
+      const script: AgentScript = () => fakeAgent(caps)
+        .onRequest(methods.agent.session.new, () => {
+          Object.assign(options, defaults);
+          return { sessionId: `s${++created}`, configOptions: all() };
+        })
+        .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
+          if (params.configId === 'model') {
+            options.model = String(params.value);
+            if (options.model === 'b') { options.effort = 'medium'; }
+          }
+          return { configOptions: all() };
+        })
+        .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
+          await client.notify(methods.client.session.update, {
+            sessionId: params.sessionId,
+            update: { sessionUpdate: 'config_option_update', configOptions: [modelOption(options.model), effortOption('medium'), fastOption(true)] },
+          });
+          return { stopReason: 'end_turn' };
+        })
+        .onRequest(methods.agent.session.load, async ({ params, client }) => {
+          const notify = (update: SessionNotification['update']) => client.notify(methods.client.session.update, { sessionId: params.sessionId, update });
+          await notify({ sessionUpdate: 'config_option_update', configOptions: [modelOption('a')] });
+          await notify({ sessionUpdate: 'config_option_update', configOptions: [modelOption('b')] });
+          return { configOptions: [modelOption('b')] };
+        })
+        .onRequest(methods.agent.session.resume, () => ({ configOptions: [modelOption('b')] }));
+      return script;
+    }
+
+    /**
+     * An agent using the separate modes API and no config options, whose session `s1` starts in mode `ask`. A prompt
+     * makes it switch to `ask` itself; a load replays a switch to `code`, then answers in mode `code`.
+     */
+    function modesAgent() {
+      const script: AgentScript = () => fakeAgent(caps)
+        .onRequest(methods.agent.session.new, () => ({ sessionId: 's1', modes: modes('ask') }))
+        .onRequest(methods.agent.session.setMode, () => ({}))
+        .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
+          await client.notify(methods.client.session.update, {
+            sessionId: params.sessionId, update: { sessionUpdate: 'current_mode_update', currentModeId: 'ask' },
+          });
+          return { stopReason: 'end_turn' };
+        })
+        .onRequest(methods.agent.session.load, async ({ params, client }) => {
+          await client.notify(methods.client.session.update, {
+            sessionId: params.sessionId, update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' },
+          });
+          return { modes: modes('code') };
+        });
+      return script;
+    }
+
+    it('saves every option as the agent answers the user, with the changes it brings about', async () => {
+      const { manager, reference } = setup({ fake: selectingAgent() });
+      await manager.connectToAgent('fake');
+
+      await manager.setConfigOption('s1', 'model', 'b');
+
+      expect(reference('s1')?.selections).toEqual({ options: { model: 'b', effort: 'medium', fast: false } });
+    });
+
+    it('saves what the agent answers, not the value asked for', async () => {
+      const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.setConfigOption, () => ({ configOptions: [modelOption('a')] })));
+      const { manager, reference } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+
+      await manager.setConfigOption('s1', 'model', 'b');
+
+      expect(reference('s1')?.selections).toEqual({ options: { model: 'a' } });
+    });
+
+    it('saves nothing for a change still pending, nor for one the agent rejects', async () => {
+      let received: () => void = () => {};
+      const requested = new Promise<void>((resolve) => { received = resolve; });
+      let answer: () => void = () => {};
+      const answered = new Promise<void>((resolve) => { answer = resolve; });
+      const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.setConfigOption, async () => {
+        received();
+        await answered;
+        throw RequestError.invalidParams(undefined, 'unknown value');
+      }));
+      const { manager, reference } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+
+      const setting = manager.setConfigOption('s1', 'model', 'b');
+      await requested;
+      expect(reference('s1')?.selections).toEqual({ options: {} });
+      answer();
+
+      await expect(setting).rejects.toThrow('unknown value');
+      expect(reference('s1')?.selections).toEqual({ options: {} });
+    });
+
+    it('saves every option when the agent changes them itself', async () => {
+      const { manager, reference, received, receivedAtLeast } = setup({ fake: selectingAgent() });
+      await manager.connectToAgent('fake');
+      const reported = receivedAtLeast(received.length + 1);
+
+      await manager.sendPrompt('s1', 'hello');
+      await reported;
+
+      expect(reference('s1')?.selections).toEqual({ options: { model: 'a', effort: 'medium', fast: true } });
+    });
+
+    it('saves the mode of an agent using the modes API as the user sets it, then as the agent switches it', async () => {
+      const { manager, reference, received, receivedAtLeast } = setup({ fake: modesAgent() });
+      await manager.connectToAgent('fake');
+
+      await manager.setMode('s1', 'code');
+      expect(reference('s1')?.selections).toEqual({ modeId: 'code', options: {} });
+
+      const reported = receivedAtLeast(received.length + 1);
+      await manager.sendPrompt('s1', 'hello');
+      await reported;
+      expect(reference('s1')?.selections).toEqual({ modeId: 'ask', options: {} });
+    });
+
+    it('saves nothing from the state a session is created with, nor from updates while it is created', async () => {
+      const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, async ({ client }) => {
+        const update = (configOptions: SessionConfigOption[]) => client.notify(methods.client.session.update, {
+          sessionId: 's1', update: { sessionUpdate: 'config_option_update', configOptions },
+        });
+        await update([modelOption('a')]);
+        await update([modelOption('b')]);
+        return { sessionId: 's1', configOptions: [modelOption('b')], modes: modes('ask') };
+      });
+      const { manager, reference, receivedAtLeast } = setup({ fake: script });
+      const updated = receivedAtLeast(2);
+
+      await manager.connectToAgent('fake');
+      await updated;
+
+      expect(reference('s1')?.selections).toEqual({ options: {} });
+    });
+
+    it('starts a new session with the selections its agent supplies, not those saved for another', async () => {
+      const { manager, reference } = setup({ fake: selectingAgent() });
+      await manager.connectToAgent('fake');
+      await manager.setConfigOption('s1', 'model', 'b');
+
+      const created = await manager.newSession();
+
+      expect(created?.sessionId).toBe('s2');
+      expect(reference('s2')?.selections).toEqual({ options: {} });
+      expect(created?.configOptions?.find((option) => option.id === 'model')?.current).toBe('a');
+    });
+
+    it('saves no mode for a session with config options, as they replace its modes', async () => {
+      const script: AgentScript = () => fakeAgent()
+        .onRequest(methods.agent.session.new, () => ({ sessionId: 's1', configOptions: [modelOption('a')], modes: modes('ask') }));
+      const { manager, reference } = setup({ fake: script });
+      await manager.connectToAgent('fake');
+
+      manager.applyCurrentMode('s1', 'code');
+
+      expect(reference('s1')?.selections).toEqual({ options: { model: 'a' } });
+    });
+
+    it('keeps what was saved for a session when it is loaded or resumed, saving nothing it opens with or replays', async () => {
+      const { manager, reference, references } = setup({ fake: selectingAgent() });
+      const saved = { options: { model: 'a', effort: 'low' } };
+      for (const sessionId of ['loaded', 'resumed']) {
+        await references.saveSelections(address(sessionId), saved);
+      }
+
+      await manager.loadSession('fake', 'loaded');
+      await manager.resumeSession('fake', 'resumed');
+
+      expect(reference('loaded')?.selections).toEqual(saved);
+      expect(reference('resumed')?.selections).toEqual(saved);
+    });
+
+    it('keeps the mode saved for a session of an agent using the modes API when it is loaded', async () => {
+      const { manager, reference, references } = setup({ fake: modesAgent() });
+      await references.saveSelections(address('loaded'), { modeId: 'ask', options: {} });
+
+      await manager.loadSession('fake', 'loaded');
+
+      expect(reference('loaded')?.selections).toEqual({ modeId: 'ask', options: {} });
+    });
+
+    it('saves the changes the agent makes once a loaded session has opened', async () => {
+      const { manager, reference } = setup({ fake: selectingAgent() });
+      await manager.loadSession('fake', 'loaded');
+
+      manager.applyConfigOptions('loaded', [modelConfig('a')]);
+
+      expect(reference('loaded')?.selections).toEqual({ options: { model: 'a' } });
+    });
+  });
+
+  describe('renamed configurations', () => {
+    const fakeConfig = { command: 'fake' };
+
+    it("rebinds this host's references and this workspace's last active session to the new name", async () => {
+      const { manager, references, workspace, reference } = setup({ fake: sessionAgent().script });
+      await manager.connectToAgent('fake');
+      await manager.recordsSettled();
+
+      manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+      await references.settled();
+      await workspace.settled();
+
+      expect(reference('s1')).toBeUndefined();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'renamed', sessionId: 's1' })).toBeDefined();
+      expect(workspace.lastActiveSession()?.configuredName).toBe('renamed');
+    });
+
+    it('records a session still running under the old name under the new one', async () => {
+      const { manager, references, reference } = setup({ fake: sessionAgent().script });
+      await manager.connectToAgent('fake');
+
+      manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+      manager.applySessionInfoUpdate('s1', { title: 'After the rename' });
+      await manager.recordsSettled();
+      await references.settled();
+
+      expect(reference('s1')).toBeUndefined();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'renamed', sessionId: 's1' })?.title).toBe('After the rename');
+    });
+
+    it('records a session still running under its first name under the last, after two renames', async () => {
+      const { manager, references } = setup({ fake: sessionAgent().script });
+      await manager.connectToAgent('fake');
+
+      manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+      manager.agentsChanged({ renamed: fakeConfig }, { again: fakeConfig });
+      manager.applySessionInfoUpdate('s1', { title: 'After both' });
+      await manager.recordsSettled();
+      await references.settled();
+
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'again', sessionId: 's1' })?.title).toBe('After both');
+    });
+
+    it('records under the old name again once a configuration has it again', async () => {
+      const { manager, references, reference } = setup({ fake: sessionAgent().script });
+      await manager.connectToAgent('fake');
+      manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+
+      manager.agentsChanged({ renamed: fakeConfig }, { renamed: fakeConfig, fake: { command: 'other' } });
+      manager.applySessionInfoUpdate('s1', { title: 'Under the old name' });
+      await manager.recordsSettled();
+      await references.settled();
+
+      expect(reference('s1')?.title).toBe('Under the old name');
+    });
+  });
+
   describe('listing sessions', () => {
     const listingCaps = { agentCapabilities: { loadSession: true, sessionCapabilities: { list: {}, resume: {} } } };
 
@@ -858,6 +1138,20 @@ describe('SessionManager', () => {
         ['session-load-start', 'old', 'fake'],
         ['session-load-end', 'old', 'fake', true],
       ]);
+    });
+
+    it('tells how each session was opened once it has been, and nothing of one that failed to open', async () => {
+      const { manager } = setup({ fake: replayingAgent() });
+      const opened: unknown[] = [];
+      manager.on('session-opened', (...args) => opened.push(args));
+
+      await manager.connectToAgent('fake');
+      await manager.loadSession('fake', 'loaded');
+      await manager.resumeSession('fake', 'resumed');
+      await expect(manager.loadSession('fake', 'gone')).rejects.toThrow('Resource not found');
+      await expect(manager.resumeSession('fake', 'gone')).rejects.toThrow('Resource not found');
+
+      expect(opened).toEqual([['fresh', 'fake', 'created'], ['loaded', 'fake', 'loaded'], ['resumed', 'fake', 'resumed']]);
     });
 
     it('records a loaded or resumed session as used and as the last active session in the workspace', async () => {
