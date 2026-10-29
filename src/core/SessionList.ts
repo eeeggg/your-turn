@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { formatDistanceStrict } from 'date-fns';
 import type { AgentCapabilities, ListedSession } from '@/core/acp/AcpDriver';
 import { logError, messageOf } from './Log';
-import type { SessionHistoryStore } from './SessionHistoryStore';
+import type { SessionReferences, WorkspaceTarget } from './PersistedState';
 import { AuthenticationCancelled, type SessionManager } from './SessionManager';
 
 export interface AgentEntry {
@@ -48,6 +48,8 @@ interface SinceListed {
 }
 
 const NO_MORE: MoreSessions = { kind: 'none' };
+/** The label of a session without a title, as titles are never derived from what was said in it. */
+const UNTITLED = 'Untitled';
 const SESSION_EVENTS = ['session-added', 'session-removed', 'active-session-changed'] as const;
 
 /**
@@ -77,9 +79,10 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
 
   constructor(
     private readonly sessions: SessionManager,
-    private readonly history: SessionHistoryStore,
+    private readonly references: SessionReferences,
     private readonly agentNames: () => string[],
     private readonly workspaceCwd: () => string | undefined,
+    private readonly workspaceTarget: () => WorkspaceTarget | undefined,
     private readonly now: () => number = Date.now,
   ) {
     super();
@@ -88,7 +91,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     }
     sessions.on('session-info-changed', this.infoChanged);
     sessions.on('turn-ended', this.turnEnded);
-    history.on('changed', this.announce);
+    references.on('changed', this.announce);
   }
 
   agents(): AgentEntry[] {
@@ -118,11 +121,11 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     }
     if (caps.load || caps.resume) {
       const activeId = this.sessions.getActiveSessionId();
-      const rows = this.historyOf(agentName).map((entry) => this.row(agentName, {
-        sessionId: entry.sessionId,
-        label: entry.title?.trim() || truncate(entry.firstPrompt?.trim() ?? '', 60) || shortSessionId(entry.sessionId),
-        cwd: entry.cwd,
-        lastActiveAt: entry.lastActiveAt,
+      const rows = this.historyOf(agentName).map((reference) => this.row(agentName, {
+        sessionId: reference.sessionId,
+        label: reference.title?.trim() || UNTITLED,
+        cwd: reference.cwd,
+        lastActiveAt: reference.lastActiveAt,
       }, 'history', activeId));
       return { kind: 'listed', source: 'history', rows, more: NO_MORE };
     }
@@ -160,7 +163,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     }
     this.sessions.off('session-info-changed', this.infoChanged);
     this.sessions.off('turn-ended', this.turnEnded);
-    this.history.off('changed', this.announce);
+    this.references.off('changed', this.announce);
     this.removeAllListeners();
   }
 
@@ -175,7 +178,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       const info = { ...listed, ...known?.get(listed.sessionId) };
       return this.row(agentName, {
         sessionId: info.sessionId,
-        label: info.title?.trim() || shortSessionId(info.sessionId),
+        label: info.title?.trim() || UNTITLED,
         cwd: info.cwd,
         lastActiveAt: info.updatedAt ?? undefined,
       }, 'agent', activeId);
@@ -212,8 +215,11 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     this.announce();
   }
 
+  /** Session history for this window's host and cwd; a window with no workspace target has none. */
   private historyOf(agentName: string) {
-    return this.history.list(agentName, this.workspaceCwd());
+    const target = this.workspaceTarget();
+    const cwd = this.workspaceCwd();
+    return target && cwd ? this.references.list(target.host, agentName, cwd) : [];
   }
 
   private row(
@@ -244,14 +250,6 @@ function listed(sessions: readonly ListedSession[], nextCursor: string | undefin
 
 function failure(e: unknown): Failure {
   return e instanceof AuthenticationCancelled ? { kind: 'auth-required' } : { kind: 'failed', message: messageOf(e) };
-}
-
-function shortSessionId(id: string): string {
-  return id.length <= 14 ? id : `${id.slice(0, 8)}…${id.slice(-4)}`;
-}
-
-function truncate(text: string, max: number): string {
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 function relativeTime(iso: string | undefined, now: number): string | undefined {

@@ -28,15 +28,20 @@ suite('Extension Test Suite', () => {
 		outputChannelSink.info('Integration check for LogOutputChannel adapter');
 	});
 
-	test('Should register ACP commands', async () => {
-		const commands = await vscode.commands.getCommands(true);
-		const acpCommands = commands.filter(c => c.startsWith('acp.'));
-		assert.ok(acpCommands.length > 0, 'ACP commands should be registered');
-		assert.ok(acpCommands.includes('acp.connectAgent'), 'connectAgent command should exist');
-		assert.ok(acpCommands.includes('acp.newSession'), 'newSession command should exist');
-		assert.ok(acpCommands.includes('acp.openChat'), 'openChat command should exist');
-		assert.ok(acpCommands.includes('acp.exportTraffic'), 'exportTraffic command should exist');
-		assert.ok(!acpCommands.includes('acp.showTraffic'), 'showTraffic command should not exist');
+	test('Registers exactly the commands it contributes, and its menus and keybindings name only those', async () => {
+		const ext = vscode.extensions.getExtension('formulahendry.acp-client');
+		assert.ok(ext);
+		await ext.activate();
+		const { commands, menus, keybindings = [] } = (ext.packageJSON as { contributes: {
+			commands: { command: string }[];
+			menus: Record<string, { command?: string }[]>;
+			keybindings?: { command: string }[];
+		} }).contributes;
+		const contributed = commands.map(({ command }) => command);
+		const registered = (await vscode.commands.getCommands(true)).filter((command) => command.startsWith('acp.'));
+		assert.deepStrictEqual([...registered].sort(), [...contributed].sort());
+		const named = [...Object.values(menus).flat().flatMap(({ command }) => command ?? []), ...keybindings.map(({ command }) => command)];
+		assert.deepStrictEqual(named.filter((command) => command.startsWith('acp.') && !contributed.includes(command)), []);
 	});
 
 	test('Contributes no built-in agents', () => {

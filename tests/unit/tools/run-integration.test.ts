@@ -3,9 +3,9 @@ import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
-import { expect, it, onTestFinished } from 'vitest';
+import { assert, expect, it, onTestFinished } from 'vitest';
 
 interface JobEvent {
   event: string;
@@ -13,9 +13,26 @@ interface JobEvent {
   leader: number;
   config: string;
   profile: string;
+  files: string[];
+  workspaceFolder: string | null;
+  /** Whether the job's folder existed when its window started; null for a window with no folder. */
+  folderExisted: boolean | null;
 }
 
-async function launchRunner(coverage = false, failGroup = '', throughMake = true) {
+/** Compiled tests: two for the window with no folder, one for the folder window. */
+const TESTS = ['alpha.test.js', 'beta.test.js', 'folder/gamma.test.js'];
+
+interface RunnerOptions {
+  coverage?: boolean;
+  failGroup?: string;
+  throughMake?: boolean;
+  jobs?: number;
+  /** Jobs report and finish at once instead of running until they are stopped. */
+  finishAtOnce?: boolean;
+  tests?: string[];
+}
+
+async function launchRunner({ coverage = false, failGroup = '', throughMake = true, jobs = 2, finishAtOnce = coverage, tests = TESTS }: RunnerOptions = {}) {
   const root = await mkdtemp(join(tmpdir(), 'acp-runner-test-'));
   const events: JobEvent[] = [];
   const changed = new EventEmitter();
@@ -26,10 +43,14 @@ async function launchRunner(coverage = false, failGroup = '', throughMake = true
   await mkdir(join(root, 'dist', 'test'), { recursive: true });
   await cp(resolve(import.meta.dirname, '../../../tools/run-integration.mjs'), join(root, 'tools', 'run-integration.mjs'));
   await cp(resolve(import.meta.dirname, '../../../tools/run-tests.mjs'), join(root, 'tools', 'run-tests.mjs'));
+  await cp(resolve(import.meta.dirname, '../../../tools/integration-windows.mjs'), join(root, 'tools', 'integration-windows.mjs'));
   await cp(resolve(import.meta.dirname, '../../../Makefile'), join(root, 'Makefile'));
   await writeFile(join(root, 'package.json'), '{"version":"0.0.0"}');
   await writeFile(join(root, '.vscode-test.mjs'), `export default { coverage: { include: [${JSON.stringify(join(root, 'dist/**'))}], exclude: [], reporter: ['text', 'html'] } };`);
-  await Promise.all(['alpha', 'beta'].map((name) => writeFile(join(root, 'dist', 'test', `${name}.test.js`), '')));
+  for (const test of tests) {
+    await mkdir(dirname(join(root, 'dist', 'test', test)), { recursive: true });
+    await writeFile(join(root, 'dist', 'test', test), '');
+  }
   const cli = join(root, 'node_modules', '@vscode', 'test-cli', 'out', 'bin.mjs');
   await mkdir(dirname(cli), { recursive: true });
   const descendant = `
@@ -50,7 +71,7 @@ async function launchRunner(coverage = false, failGroup = '', throughMake = true
   `;
   await writeFile(cli, `
     import { spawn } from 'node:child_process';
-    import { mkdirSync, writeFileSync } from 'node:fs';
+    import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
     import { pathToFileURL } from 'node:url';
     const config = process.argv[process.argv.indexOf('--config') + 1];
     const settings = (await import(pathToFileURL(config).href)).default;
@@ -60,16 +81,21 @@ async function launchRunner(coverage = false, failGroup = '', throughMake = true
       writeFileSync(output + '/index.html', '<html>coverage</html>');
       writeFileSync(output + '/config.json', JSON.stringify(settings));
     }
-    const profile = settings.tests[0].launchArgs[0].slice('--user-data-dir='.length);
+    const [test] = settings.tests;
+    const profile = test.launchArgs[0].slice('--user-data-dir='.length);
     mkdirSync(profile, { recursive: true });
-    if (process.env.COVERAGE_FIXTURE === '1') {
+    const workspaceFolder = test.workspaceFolder ?? null;
+    const details = {
+      group: process.env.VSCODE_TEST_GROUP, leader: process.pid, config, profile, files: test.files, workspaceFolder,
+      folderExisted: workspaceFolder === null ? null : existsSync(workspaceFolder),
+    };
+    if (process.env.FINISH_AT_ONCE === '1') {
+      console.log(JSON.stringify({ ...details, event: 'finished' }));
       console.log('1 passing');
       process.exitCode = process.env.FAIL_GROUP === process.env.VSCODE_TEST_GROUP ? 1 : 0;
     } else { spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {
       stdio: ['ignore', 'inherit', 'inherit'],
-      env: { ...process.env, JOB_DETAILS: JSON.stringify({
-        group: process.env.VSCODE_TEST_GROUP, leader: process.pid, config, profile,
-      }) },
+      env: { ...process.env, JOB_DETAILS: JSON.stringify(details) },
     }); }
   `);
   const bin = join(root, 'bin');
@@ -77,10 +103,10 @@ async function launchRunner(coverage = false, failGroup = '', throughMake = true
   await writeFile(join(bin, 'xvfb-run'), '#!/bin/sh\nshift\nexec "$@"\n', { mode: 0o755 });
   await writeFile(join(bin, 'npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   const runner = spawn(throughMake ? 'make' : process.execPath, throughMake
-    ? ['--no-print-directory', coverage ? 'coverage-integration' : 'test-integration', 'JOBS=2', `REPEAT=${coverage ? 2 : 1}`]
+    ? ['--no-print-directory', coverage ? 'coverage-integration' : 'test-integration', `JOBS=${jobs}`, `REPEAT=${coverage ? 2 : 1}`]
     : [join(root, 'tools', 'run-integration.mjs')], {
     cwd: root,
-    env: { ...process.env, MAKEFLAGS: '', MFLAGS: '', MAKELEVEL: '', FILES: '', REPEAT: '', JOBS: '', PATH: bin + delimiter + (process.env['PATH'] ?? ''), ACP_TEST_JOBS: throughMake ? '' : '2', ACP_TEST_FILES: throughMake ? '' : 'alpha.test.js,beta.test.js', COVERAGE_FIXTURE: coverage ? '1' : '', FAIL_GROUP: failGroup },
+    env: { ...process.env, MAKEFLAGS: '', MFLAGS: '', MAKELEVEL: '', FILES: '', REPEAT: '', JOBS: '', PATH: bin + delimiter + (process.env['PATH'] ?? ''), ACP_TEST_JOBS: throughMake ? '' : String(jobs), ACP_TEST_FILES: throughMake ? '' : 'alpha.test.js,beta.test.js', FINISH_AT_ONCE: finishAtOnce ? '1' : '', FAIL_GROUP: failGroup },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -116,14 +142,14 @@ async function launchRunner(coverage = false, failGroup = '', throughMake = true
   const observe = (name: string) => new Promise<JobEvent[]>((resolveObserved, reject) => {
     const check = () => {
       const matching = events.filter((event) => event.event === name);
-      if (matching.length === 2) {
+      if (matching.length === jobs) {
         cleanup();
         resolveObserved(matching);
       }
     };
     const exited = () => {
       cleanup();
-      reject(new Error(`Runner exited before both jobs reported ${name}:\n${output}`));
+      reject(new Error(`Runner exited before all ${jobs} jobs reported ${name}:\n${output}`));
     };
     const cleanup = () => {
       changed.off('record', check);
@@ -134,7 +160,7 @@ async function launchRunner(coverage = false, failGroup = '', throughMake = true
     check();
     if (runner.exitCode !== null || runner.signalCode !== null) { exited(); }
   });
-  return { root, runner, closed, observe, output: () => output };
+  return { root, runner, closed, observe, events, output: () => output };
 }
 
 it.each([
@@ -145,7 +171,7 @@ it.each([
 ] as const)(
   '%s stops every isolated job and awaits descendants before removing their profiles (Make entry: %s)',
   async (signal, throughMake, expected) => {
-    const { root, runner, closed, observe, output } = await launchRunner(false, '', throughMake);
+    const { root, runner, closed, observe, output } = await launchRunner({ throughMake });
     const ready = await observe('ready');
 
     if (runner.pid !== undefined) { process.kill(-runner.pid, signal); }
@@ -190,21 +216,68 @@ it('force-stops descendants that do not finish after SIGTERM', { timeout: 15000 
 });
 
 it.each(['', '2'])('preserves separate coverage reports and job mapping when failed group is %s', async (failGroup) => {
-  const { root, closed } = await launchRunner(true, failGroup);
+  const { root, closed } = await launchRunner({ coverage: true, failGroup });
   expect((await closed).code).toBe(failGroup ? 2 : 0);
   const reports = join(root, 'test-results/integration/coverage');
   const runs = await readdir(reports);
   expect(runs).toHaveLength(failGroup ? 1 : 2);
   for (const directory of runs) {
     const run = join(reports, directory);
-    const jobs = JSON.parse(await readFile(join(run, 'jobs.json'), 'utf8')) as { files: string[]; report: string }[];
-    expect(jobs.flatMap((job) => job.files).sort()).toEqual(['alpha.test.js', 'beta.test.js']);
+    const jobs = JSON.parse(await readFile(join(run, 'jobs.json'), 'utf8')) as { files: string[]; window: string; report: string }[];
+    expect(jobs.map(({ files, window }) => ({ files, window }))).toEqual([
+      { files: ['alpha.test.js', 'beta.test.js'], window: 'empty' },
+      { files: ['folder/gamma.test.js'], window: 'folder' },
+    ]);
     expect(new Set(jobs.map((job) => job.report)).size).toBe(2);
     for (const job of jobs) {
       expect(await readFile(join(run, job.report), 'utf8')).toBe('<html>coverage</html>');
-      const config = JSON.parse(await readFile(join(run, dirname(job.report), 'config.json'), 'utf8')) as { coverage: unknown; tests: { mocha: { timeout: number } }[] };
+      const config = JSON.parse(await readFile(join(run, dirname(job.report), 'config.json'), 'utf8')) as { coverage: unknown; tests: { mocha: { timeout: number }; workspaceFolder?: string }[] };
       expect(config.coverage).toEqual({ include: [join(root, 'dist/**')], exclude: [], reporter: ['text', 'html'] });
       expect(config.tests[0]?.mocha.timeout).toBe(0);
+      expect(config.tests[0]?.workspaceFolder !== undefined).toBe(job.window === 'folder');
     }
   }
+});
+
+/** Each job's files, relative to the compiled tests, and the folder its window opened. */
+function jobsOf(root: string, finished: JobEvent[]) {
+  return finished
+    .map(({ files, workspaceFolder, folderExisted }) => ({ files: files.map((file) => relative(join(root, 'dist', 'test'), file)), workspaceFolder, folderExisted }))
+    .sort((a, b) => (a.files[0] ?? '').localeCompare(b.files[0] ?? ''));
+}
+
+it("opens each job's window as its files' window kind requires, sharing jobs out by kind", async () => {
+  const { root, closed, events, output } = await launchRunner({ jobs: 3, finishAtOnce: true });
+
+  expect((await closed).code, output()).toBe(0);
+  const jobs = jobsOf(root, events);
+  expect(jobs.map(({ files, folderExisted }) => ({ files, folderExisted }))).toEqual([
+    { files: ['alpha.test.js'], folderExisted: null },
+    { files: ['beta.test.js'], folderExisted: null },
+    { files: ['folder/gamma.test.js'], folderExisted: true },
+  ]);
+  const folder = jobs[2]?.workspaceFolder;
+  assert(folder);
+  expect(relative(root, folder).startsWith('..')).toBe(true);
+  expect(existsSync(folder)).toBe(false);
+});
+
+it('runs at most JOBS windows at once, even with fewer jobs than window kinds', async () => {
+  const { root, closed, events, output } = await launchRunner({ jobs: 1, finishAtOnce: true });
+
+  expect((await closed).code, output()).toBe(0);
+  expect(jobsOf(root, events).map(({ files }) => files)).toEqual([['alpha.test.js', 'beta.test.js'], ['folder/gamma.test.js']]);
+  const lines = output().split('\n');
+  const firstPassed = lines.findIndex((line) => line.startsWith('[integration 1] 1 passing'));
+  const secondStarted = lines.findIndex((line) => line.startsWith('[integration 2] Starting'));
+  expect(firstPassed).toBeGreaterThan(-1);
+  expect(secondStarted).toBeGreaterThan(firstPassed);
+});
+
+it('rejects compiled tests in a directory that is no window kind, before starting any window', async () => {
+  const { closed, events, output } = await launchRunner({ finishAtOnce: true, tests: [...TESTS, 'other/delta.test.js'] });
+
+  expect((await closed).code).not.toBe(0);
+  expect(output()).toContain('other/delta.test.js');
+  expect(events).toEqual([]);
 });

@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.19-dev.2",
+  "version": "0.3.19-dev.5",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -115,6 +115,14 @@
         "title": "ACP: Export Protocol Traffic"
       },
       {
+        "command": "acp.showPersistedState",
+        "title": "ACP (Developer): Show Persisted State"
+      },
+      {
+        "command": "acp.resetPersistedState",
+        "title": "ACP (Developer): Reset Persisted State"
+      },
+      {
         "command": "acp.setMode",
         "title": "ACP: Set Agent Mode"
       },
@@ -144,8 +152,8 @@
         "title": "Copy Session ID"
       },
       {
-        "command": "acp.forgetSession",
-        "title": "Forget Session"
+        "command": "acp.removeFromHistory",
+        "title": "Remove from History"
       },
       {
         "command": "acp.restartAgent",
@@ -256,7 +264,7 @@
           "when": "false"
         },
         {
-          "command": "acp.forgetSession",
+          "command": "acp.removeFromHistory",
           "when": "false"
         },
         {
@@ -430,7 +438,7 @@
           "group": "session@1"
         },
         {
-          "command": "acp.forgetSession",
+          "command": "acp.removeFromHistory",
           "when": "view == acp-sessions && viewItem == session-local",
           "group": "session@2"
         }

@@ -12,7 +12,10 @@ async function fixture() {
   await cp(resolve(import.meta.dirname, '../../../Makefile'), join(root, 'Makefile'));
   await cp(resolve(import.meta.dirname, '../../../tools'), join(root, 'tools'), { recursive: true });
   await writeFile(join(root, 'package.json'), '{"version":"0.0.0"}');
-  const files = ['tests/unit/a.test.ts', 'tests/unit/b.test.ts', 'tests/webview/a.test.ts', 'tests/integration/a.test.ts', 'tests/integration/b.test.ts', 'tests/ui/a.test.ts'];
+  const files = [
+    'tests/unit/a.test.ts', 'tests/unit/b.test.ts', 'tests/webview/a.test.ts', 'tests/integration/a.test.ts', 'tests/integration/b.test.ts',
+    'tests/integration/folder/c.test.ts', 'tests/integration/other/d.test.ts', 'tests/ui/a.test.ts',
+  ];
   for (const file of files) {
     await mkdir(join(root, file, '..'), { recursive: true });
     await writeFile(join(root, file), '');
@@ -59,14 +62,14 @@ it('checks types and lint before selecting unit files without compiling them', a
 
 it('prepares integration bundles once and translates source paths and job count', async () => {
   const { run } = await fixture();
-  const result = await run('test-integration', ['FILES=tests/integration/b.test.ts tests/integration/a.test.ts', 'REPEAT=2', 'JOBS=4'], { ELECTRON_RUN_AS_NODE: '1' });
+  const result = await run('test-integration', ['FILES=tests/integration/b.test.ts tests/integration/folder/c.test.ts tests/integration/a.test.ts', 'REPEAT=2', 'JOBS=4'], { ELECTRON_RUN_AS_NODE: '1' });
   expect(result.code, result.output).toBe(0);
   expect(result.calls.map(({ command, args }) => [command, args])).toEqual([
     ['npm', ['run', 'check-types']], ['npm', ['run', 'lint']], ['npm', ['run', 'bundle']],
     ['integration', []], ['integration', []],
   ]);
   for (const call of result.calls.slice(1)) {
-    expect(call.files).toBe('b.test.js,a.test.js');
+    expect(call.files).toBe('b.test.js,folder/c.test.js,a.test.js');
     expect(call.jobs).toBe('4');
     expect(call.electron).toBeUndefined();
   }
@@ -93,6 +96,7 @@ it.each([
   ['test-unit', 'FILES=tests/webview/a.test.ts'],
   ['test-integration', 'FILES=tests/integration/*.test.ts'],
   ['test-integration', 'FILES=tests/integration/../../package.json'],
+  ['test-integration', 'FILES=tests/integration/other/d.test.ts'],
   ['test-unit', 'REPEAT=0'],
   ['test-unit', 'REPEAT=2junk'],
   ['test-integration', 'JOBS=-1'],

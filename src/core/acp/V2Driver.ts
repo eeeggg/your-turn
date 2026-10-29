@@ -120,7 +120,7 @@ export class V2Driver implements AcpDriver {
   }
 
   private async resume(sessionId: string, cwd: string, replayFrom: Acp.ReplayFrom | null): Promise<SessionState> {
-    const response = await sessionChecked(this.connection.agent.request(Acp.methods.agent.session.resume, {
+    const response = await sessionChecked(sessionId, this.connection.agent.request(Acp.methods.agent.session.resume, {
       sessionId,
       cwd,
       ...(replayFrom ? { replayFrom } : {}),

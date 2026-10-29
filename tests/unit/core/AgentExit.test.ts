@@ -29,7 +29,7 @@ function setup() {
   const manager = new SessionManager(
     agents,
     new ConnectionManager(updates, '0.0.0-test', () => unusedHandlers),
-    { workspaceCwd: () => '/work', agentConfigs: () => ({ fake: { command: 'fake' } }), activeFileLink: () => undefined },
+    { workspaceCwd: () => '/work', workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ fake: { command: 'fake' } }), activeFileLink: () => undefined },
     { chooseAuthMethod: vi.fn() },
   );
   onTestFinished(async () => { await manager.dispose(); });

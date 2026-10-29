@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
-import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { activeFileLink } from '@/adapters/WorkspaceEnvironment';
 
 suite('IncludeActiveFile Setting Test Suite', () => {
   let originalSetting: boolean | undefined;
@@ -29,7 +29,7 @@ suite('IncludeActiveFile Setting Test Suite', () => {
     const doc = await vscode.workspace.openTextDocument({ content: 'test code', language: 'typescript' });
     await vscode.window.showTextDocument(doc);
 
-    const link = workspaceEnvironment.activeFileLink();
+    const link = activeFileLink();
     assert.ok(link);
     assert.strictEqual(link.uri, doc.uri.toString());
     assert.strictEqual(link.mimeType, 'text/plain');

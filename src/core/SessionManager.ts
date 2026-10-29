@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events';
 
 import {
   AuthRequired,
-  UnknownSession,
   type AcpDriver,
   type AgentCapabilities,
   type AuthMethod,
@@ -17,13 +16,23 @@ import {
 } from '@/core/acp/AcpDriver';
 import type { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { commandNotFound, type AgentConfigEntry, type AgentLauncher, type AgentProcess, type LaunchError } from './AgentManager';
-import type { SessionHistoryStore } from './SessionHistoryStore';
+import { Writes, type SessionAddress, type SessionReferences, type WorkspaceState, type WorkspaceTarget } from './PersistedState';
 import { logDebug, logError, logInfo, messageOf } from './Log';
 
 /** What sessions need from the workspace the extension runs in. */
 export interface SessionEnvironment {
   /** Working directory for agents and their sessions. */
   workspaceCwd(): string;
+  /**
+   * The workspace sessions are recorded against, as the window holds it; undefined when this window has none it could
+   * open again, or is a remote window that has not yet learned it.
+   */
+  workspaceTarget(): WorkspaceTarget | undefined;
+  /**
+   * Settles with the workspace target once it is known: at once, unless this is a remote window that has yet to learn
+   * it. Settles with undefined when this window has none.
+   */
+  workspaceTargetKnown(): Promise<WorkspaceTarget | undefined>;
   agentConfigs(): Record<string, AgentConfigEntry>;
   /** The file to link at the start of each prompt, or undefined when none applies. */
   activeFileLink(): FileLink | undefined;
@@ -60,6 +69,12 @@ interface RunningAgent {
   driver: AcpDriver;
   /** Settles once the process's exit has been handled. */
   exited: Promise<void>;
+}
+
+/** Where the sessions used in this window are recorded. */
+interface PersistedState {
+  references: SessionReferences;
+  workspace: WorkspaceState;
 }
 
 const NO_SESSION_STATE: SessionState = { modes: null, configOptions: null, commands: null };
@@ -133,8 +148,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    */
   private capabilities = new Map<string, AgentCapabilities>();
 
-  /** Client-side session history (optional — only used for tier-2 tree). */
-  private historyStore: SessionHistoryStore | null = null;
+  private persisted: PersistedState | null = null;
+  /** Changes waiting for a workspace target this window has yet to learn. */
+  private readonly waitingForTarget = new Writes();
+  private endWaits: () => void = () => {};
+  private readonly waitsEnded = new Promise<undefined>((resolve) => { this.endWaits = () => resolve(undefined); });
 
   constructor(
     private readonly launcher: AgentLauncher,
@@ -145,9 +163,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     super();
   }
 
-  /** Wire in the persistent session-history store (called once at startup). */
-  setHistoryStore(store: SessionHistoryStore): void {
-    this.historyStore = store;
+  /**
+   * Wire in where the sessions used in this window are recorded (called once at startup). The manager is their writer,
+   * so it disposes them with itself.
+   */
+  setPersistedState(references: SessionReferences, workspace: WorkspaceState): void {
+    this.persisted = { references, workspace };
   }
 
   /**
@@ -358,7 +379,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
 
     const sessionInfo = this.registerSession(agent, response.sessionId, cwd, response);
-    this.historyStore?.upsertNew(agent.name, cwd, sessionInfo.sessionId);
+    this.recordOpened(sessionInfo);
     return sessionInfo;
   }
 
@@ -372,7 +393,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       throw new Error('Session manager is disposed.');
     }
     // Known for a session reopened from the tree; updates drained below override it.
-    const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? this.historyStore?.get(agent.name, sessionId)?.title;
+    const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? this.referenceOf(agent.name, sessionId)?.title;
     const sessionInfo: SessionInfo = {
       sessionId,
       agentId: agent.process.id,
@@ -597,7 +618,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /**
    * Apply a session info update: patches title / updatedAt on
-   * the in-memory session and on the persistent history store.
+   * the in-memory session and caches the title in its session reference.
    */
   applySessionInfoUpdate(sessionId: string, update: { title?: string | null; updatedAt?: string | null }): void {
     const session = this.sessions.get(sessionId);
@@ -607,33 +628,31 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       } else if (typeof update.title === 'string') {
         session.title = update.title;
       }
+      const { title } = update;
+      if (title !== undefined) {
+        this.record(session, (address, { references }) => void references.setTitle(address, title));
+      }
     } else if (typeof update.title === 'string') {
       // Session not registered yet — buffer for drain.
       this.pendingTitles.set(sessionId, update.title);
     }
-    // Mirror onto the history store regardless of whether session is live.
-    if (this.historyStore && session) {
-      this.historyStore.setTitle(session.agentName, sessionId, update.title);
-    }
     this.emit('session-info-changed', sessionId, update);
   }
 
-  /**
-   * Record the first user prompt of a session so the history-store tree can
-   * use it as a label fallback when no title arrives.
-   */
-  recordFirstPrompt(sessionId: string, prompt: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || !this.historyStore) { return; }
-    this.historyStore.setFirstPromptIfMissing(session.agentName, sessionId, prompt);
-  }
-
-  /** A turn of the session ended: bump its `lastActiveAt` in the history store, and tell the session list. */
+  /** A turn of the session ended: record it as used, and tell the session list. */
   recordTurnEnded(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (!session) { return; }
-    this.historyStore?.touch(session.agentName, sessionId);
+    this.record(session, (address, { references }) => void references.used(address));
     this.emit('turn-ended', sessionId, session.agentName);
+  }
+
+  /** Remove a session from session history in this window's host; the agent keeps the session itself. */
+  async removeFromHistory(agentName: string, sessionId: string): Promise<void> {
+    const host = (this.environment.workspaceTarget() ?? await this.targetKnown())?.host;
+    if (host) {
+      await this.persisted?.references.remove({ host, configuredName: agentName, sessionId });
+    }
   }
 
   /**
@@ -670,12 +689,18 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
     this.listedTitles.set(agentName, titles);
 
-    // Only a complete list shows which session history entries the agent no longer knows.
-    if (this.historyStore && !opts.cursor && !response.nextCursor) {
-      this.historyStore.reconcileFromAgent(
-        agentName,
-        new Set(sessions.map(s => s.sessionId)),
-      );
+    const persisted = this.persisted;
+    if (persisted) {
+      // Only a complete list of a cwd shows which sessions the agent no longer keeps there.
+      const complete = opts.cwd !== undefined && !opts.cursor && !response.nextCursor
+        ? { cwd: opts.cwd, openInThisWindow: new Set(this.sessions.keys()) }
+        : undefined;
+      this.withTarget((target) => void persisted.references.observeListing({
+        host: target.host,
+        configuredName: agentName,
+        sessions,
+        ...(complete ? { complete } : {}),
+      }));
     }
     return response;
   }
@@ -721,12 +746,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       this.removeSession(session);
       this.emit('session-load-end', sessionId, agentName, /*ok=*/false);
       this.emit('active-session-changed', null);
-      this.forgetIfUnknown(agentName, sessionId, e);
       throw e;
     }
 
     this.emit('session-load-end', sessionId, agentName, /*ok=*/true);
-    this.historyStore?.touch(agentName, sessionId);
+    this.recordOpened(session);
     return session;
   }
 
@@ -744,13 +768,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.dropActiveSessionUnless(sessionId);
 
     const cwd = this.environment.workspaceCwd();
-    let response: SessionState;
-    try {
-      response = await agent.driver.resumeSession(sessionId, cwd);
-    } catch (e) {
-      this.forgetIfUnknown(agentName, sessionId, e);
-      throw e;
-    }
+    const response = await agent.driver.resumeSession(sessionId, cwd);
 
     const sessionInfo = this.registerSession(agent, sessionId, cwd, response);
     this.agentSessions.set(agentName, sessionId);
@@ -758,7 +776,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.emit('session-added', sessionId, agentName);
     this.emit('active-session-changed', sessionId);
 
-    this.historyStore?.touch(agentName, sessionId);
+    this.recordOpened(sessionInfo);
     return sessionInfo;
   }
 
@@ -795,11 +813,46 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.emit('session-removed', session.sessionId, session.agentName);
   }
 
-  /** Prune a session the agent no longer knows from local history, so it doesn't reappear. */
-  private forgetIfUnknown(agentName: string, sessionId: string, e: unknown): void {
-    if (e instanceof UnknownSession) {
-      this.historyStore?.forget(agentName, sessionId);
+  private referenceOf(agentName: string, sessionId: string) {
+    const host = this.environment.workspaceTarget()?.host;
+    return host ? this.persisted?.references.get({ host, configuredName: agentName, sessionId }) : undefined;
+  }
+
+  /** The session was created, loaded or resumed here, which also makes it this workspace's last active session. */
+  private recordOpened(session: SessionInfo): void {
+    this.record(session, (address, { references, workspace }) => {
+      void references.used(address);
+      void workspace.setLastActiveSession(address);
+    });
+  }
+
+  /** Record a change to a session open here, when this window has a workspace target to record it against. */
+  private record(session: SessionInfo, change: (address: SessionAddress, persisted: PersistedState) => void): void {
+    const persisted = this.persisted;
+    if (persisted) {
+      this.withTarget((target) =>
+        change({ configuredName: session.agentName, sessionId: session.sessionId, cwd: session.cwd, host: target.host, workspaceUri: target.uri }, persisted));
     }
+  }
+
+  /** Use the workspace target now when it is known, otherwise once it is, unless disposal begins first. */
+  private withTarget(use: (target: WorkspaceTarget) => void): void {
+    const target = this.environment.workspaceTarget();
+    if (target) {
+      use(target);
+      return;
+    }
+    void this.waitingForTarget.track(this.targetKnown().then((known) => { if (known) { use(known); } }));
+  }
+
+  /** The workspace target once it is known, or undefined once disposal begins first. */
+  private targetKnown(): Promise<WorkspaceTarget | undefined> {
+    return Promise.race([this.environment.workspaceTargetKnown(), this.waitsEnded]);
+  }
+
+  /** Settles once every change waiting for the workspace target has been recorded, or dropped as disposal began. */
+  recordsSettled(): Promise<void> {
+    return this.waitingForTarget.settled();
   }
 
   getSession(sessionId: string): SessionInfo | undefined {
@@ -832,6 +885,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   dispose(): Promise<void> {
     if (this.disposal) { return this.disposal; }
     this.disposed = true;
+    this.endWaits();
     this.agents.clear();
     this.sessions.clear();
     this.agentSessions.clear();
@@ -843,6 +897,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       // Closing the processes also releases initialize requests in flight.
       await Promise.allSettled(this.launching.values());
       this.activeSessionId = null;
+      // Requests in flight as shutdown began may still record; once their agents are gone, none can.
+      await this.waitingForTarget.dispose();
+      await Promise.all([this.persisted?.references.dispose(), this.persisted?.workspace.dispose()]);
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to stop agent processes.');

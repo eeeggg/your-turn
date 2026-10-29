@@ -96,12 +96,12 @@ export class V1Driver implements AcpDriver {
   }
 
   async loadSession(sessionId: string, cwd: string): Promise<SessionState> {
-    const response = await sessionChecked(this.connection.agent.request(methods.agent.session.load, { sessionId, cwd, mcpServers: [] }));
+    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.load, { sessionId, cwd, mcpServers: [] }));
     return sessionState(response);
   }
 
   async resumeSession(sessionId: string, cwd: string): Promise<SessionState> {
-    const response = await sessionChecked(this.connection.agent.request(methods.agent.session.resume, { sessionId, cwd, mcpServers: [] }));
+    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.resume, { sessionId, cwd, mcpServers: [] }));
     return sessionState(response);
   }
 

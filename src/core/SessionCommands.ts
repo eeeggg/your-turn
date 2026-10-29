@@ -1,3 +1,4 @@
+import { UnknownSession } from '@/core/acp/AcpDriver';
 import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { ChatViewController } from './ChatViewController';
 import { logError, messageOf } from './Log';
@@ -19,6 +20,8 @@ interface Switch {
 }
 
 const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+
+const REMOVE_FROM_HISTORY = 'Remove from History';
 
 /** The commands that start, switch, open, and control sessions. */
 export class SessionCommands {
@@ -171,7 +174,16 @@ export class SessionCommands {
         void this.window.showErrorMessage(`Agent "${agentName}" does not support loading or resuming sessions.`);
       }
     } catch (e) {
-      this.report('Failed to open session', e);
+      if (!(e instanceof UnknownSession)) {
+        this.report('Failed to open session', e);
+        return;
+      }
+      // Removal is the user's choice, as the agent may know the session again, such as once a store it uses is back.
+      logError('Failed to open session', e);
+      const choice = await this.window.showErrorMessage(`Failed to open session: ${messageOf(e)}`, REMOVE_FROM_HISTORY);
+      if (choice === REMOVE_FROM_HISTORY) {
+        await this.sessions.removeFromHistory(agentName, sessionId);
+      }
     }
   }
 

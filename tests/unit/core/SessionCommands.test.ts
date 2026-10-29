@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
+import { SessionReferences, WorkspaceState, type KeyValueStore } from '@/core/PersistedState';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -45,6 +46,17 @@ function sessionAgent(name: string, init: Partial<InitializeResponse> = {}, exte
   return { script, requests, nextRequest };
 }
 
+function memoryStore(): KeyValueStore {
+  const values = new Map<string, unknown>();
+  return {
+    get: <T>(key: string) => values.get(key) as T | undefined,
+    update: async (key, value) => { values.set(key, value); },
+  };
+}
+
+/** A remote window's workspace file saved on the client, so its URI and host differ. */
+const WORKSPACE = { uri: 'file:///Users/me/work.code-workspace', host: 'vscode-remote://ssh-remote+devenv' };
+
 function setup(scripts: Record<string, AgentScript>) {
   const agents = new InProcessAgents(scripts);
   const manager = new SessionManager(
@@ -52,11 +64,15 @@ function setup(scripts: Record<string, AgentScript>) {
     new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
     {
       workspaceCwd: () => '/work',
+      workspaceTarget: () => WORKSPACE,
+      workspaceTargetKnown: () => Promise.resolve(WORKSPACE),
       agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
       activeFileLink: () => undefined,
     },
     { chooseAuthMethod: async () => undefined },
   );
+  const references = new SessionReferences(memoryStore());
+  manager.setPersistedState(references, new WorkspaceState(memoryStore()));
   const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn() };
   /** The session each Keep All was made in. */
   const keptIn: (string | null)[] = [];
@@ -70,7 +86,7 @@ function setup(scripts: Record<string, AgentScript>) {
   };
   const user = new ScriptedUser();
   const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts));
-  return { agents, manager, transcript, review, keptIn, user, commands };
+  return { agents, manager, references, transcript, review, keptIn, user, commands };
 }
 
 const underReview = (count: string) => `${count} still under review, kept until this session is opened again in this window.`;
@@ -614,6 +630,37 @@ describe('SessionCommands', () => {
         progress('Loading session…'),
         { call: 'showErrorMessage', message: 'Failed to open session: Invalid params: Session not found' },
       ]);
+    });
+
+    describe('that the agent reports unknown', () => {
+      const unknown = () => fakeAgent(loads).onRequest(methods.agent.session.load, ({ params }) => {
+        throw new RequestError(-32002, 'Resource not found', { sessionId: params.sessionId });
+      });
+      const offered: Call = { call: 'showErrorMessage', message: 'Failed to open session: Resource not found', items: ['Remove from History'] };
+      const referenced = (references: SessionReferences, sessionId: string) =>
+        references.get({ host: WORKSPACE.host, configuredName: 'one', sessionId });
+
+      it('offers to remove it from session history, and removes it when asked', async () => {
+        const { references, user, commands } = setup({ one: unknown });
+        await references.used({ configuredName: 'one', sessionId: 'gone', cwd: '/work', host: WORKSPACE.host, workspaceUri: WORKSPACE.uri });
+        user.answer('Remove from History');
+
+        await commands.open('one', 'gone');
+
+        expect(user.take()).toEqual([focusChatView, progress('Loading session…'), offered]);
+        expect(referenced(references, 'gone')).toBeUndefined();
+      });
+
+      it('keeps it in session history when the offer is dismissed', async () => {
+        const { references, user, commands } = setup({ one: unknown });
+        await references.used({ configuredName: 'one', sessionId: 'gone', cwd: '/work', host: WORKSPACE.host, workspaceUri: WORKSPACE.uri });
+        user.answer(undefined);
+
+        await commands.open('one', 'gone');
+
+        expect(user.take()).toEqual([focusChatView, progress('Loading session…'), offered]);
+        expect(referenced(references, 'gone')).toBeDefined();
+      });
     });
 
     it('reports a missing agent or session', async () => {

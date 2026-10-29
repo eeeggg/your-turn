@@ -408,19 +408,19 @@ describe('V1Driver', () => {
   });
 
   describe('errors', () => {
-    const failing: AgentScript = () => fakeAgent()
-      .onRequest(methods.agent.session.new, () => {
-        throw RequestError.authRequired();
-      })
+    /** An agent refusing every load and resume with what `refusal` makes of the session asked for. */
+    const refusing = (refusal: (sessionId: string) => RequestError): AgentScript => () => fakeAgent()
       .onRequest(methods.agent.session.load, ({ params }) => {
-        throw RequestError.invalidParams(undefined, `Session not found: ${params.sessionId}`);
+        throw refusal(params.sessionId);
       })
-      .onRequest(methods.agent.session.resume, () => {
-        throw RequestError.internalError(undefined, 'disk full');
+      .onRequest(methods.agent.session.resume, ({ params }) => {
+        throw refusal(params.sessionId);
       });
 
     it("reports the agent's refusal until the user authenticates as AuthRequired, with the agent's message", async () => {
-      const { driver } = await connectedDriver(failing);
+      const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.new, () => {
+        throw RequestError.authRequired();
+      }));
 
       const error = await driver.newSession('/work').catch((e: unknown) => e);
 
@@ -428,16 +428,33 @@ describe('V1Driver', () => {
       expect(error).toHaveProperty('message', expect.stringContaining('Authentication required'));
     });
 
-    it('reports a session the agent does not know as UnknownSession, and other failures as they are', async () => {
-      const { driver } = await connectedDriver(failing);
+    it("reports a load or resume of a session the agent does not know, as ACP reports it, as UnknownSession with the agent's message", async () => {
+      const { driver } = await connectedDriver(refusing((sessionId) => new RequestError(-32002, 'Resource not found', { sessionId })));
 
-      const unknown = await driver.loadSession('gone', '/work').catch((e: unknown) => e);
-      const other = await driver.resumeSession('old', '/work').catch((e: unknown) => e);
+      const loaded = await driver.loadSession('gone', '/work').catch((e: unknown) => e);
+      const resumed = await driver.resumeSession('gone', '/work').catch((e: unknown) => e);
 
-      expect(unknown).toBeInstanceOf(UnknownSession);
-      expect(unknown).toHaveProperty('message', expect.stringContaining('Session not found: gone'));
-      expect(other).not.toBeInstanceOf(UnknownSession);
-      expect(other).toHaveProperty('message', expect.stringContaining('disk full'));
+      expect(loaded).toBeInstanceOf(UnknownSession);
+      expect(loaded).toHaveProperty('message', expect.stringContaining('Resource not found'));
+      expect(resumed).toBeInstanceOf(UnknownSession);
+    });
+
+    it.each<[string, (sessionId: string) => RequestError]>([
+      ['a missing resource naming another session', () => new RequestError(-32002, 'Resource not found', { sessionId: 'other' })],
+      ['a missing resource naming no session', () => RequestError.resourceNotFound('file:///work/missing')],
+      ['a missing resource without data', () => new RequestError(-32002, 'Resource not found')],
+      ['invalid params whose message says the session was not found', (sessionId) => RequestError.invalidParams(undefined, `Session not found: ${sessionId}`)],
+      ['the session being in use by another client', () => RequestError.invalidRequest(undefined, 'This session is in use by another client')],
+      ['an internal error', () => RequestError.internalError(undefined, 'disk full')],
+    ])('reports a refusal with %s as it is, not as UnknownSession', async (_, refusal) => {
+      const { driver } = await connectedDriver(refusing(refusal));
+
+      const loaded = await driver.loadSession('gone', '/work').catch((e: unknown) => e);
+      const resumed = await driver.resumeSession('gone', '/work').catch((e: unknown) => e);
+
+      expect(loaded).toBeInstanceOf(RequestError);
+      expect(loaded).toHaveProperty('message', refusal('gone').message);
+      expect(resumed).toBeInstanceOf(RequestError);
     });
   });
 });

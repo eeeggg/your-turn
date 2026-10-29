@@ -2,13 +2,19 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod as AcpAuthMethod, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import type { AuthMethod, ConfigOption, FileLink, SessionUpdate } from '@/core/acp/AcpDriver';
+import { UnknownSession, type AuthMethod, type ConfigOption, type FileLink, type SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
-import { SessionHistoryStore, type KeyValueStore } from '@/core/SessionHistoryStore';
-import { AuthenticationCancelled, SessionManager, type AuthPrompt, type SessionEnvironment, type SessionManagerEvents } from '@/core/SessionManager';
+import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress, type WorkspaceTarget } from '@/core/PersistedState';
+import {
+  AuthenticationCancelled,
+  SessionManager,
+  type AuthPrompt,
+  type SessionEnvironment,
+  type SessionManagerEvents,
+} from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
 
@@ -19,6 +25,13 @@ function memoryStore(): KeyValueStore {
     update: async (key, value) => { values.set(key, value); },
   };
 }
+
+/** A remote window's workspace file saved on the client, so its URI and host differ. */
+const WORKSPACE: WorkspaceTarget = { uri: 'file:///Users/me/work.code-workspace', host: 'vscode-remote://ssh-remote+devenv' };
+
+/** Where session `sessionId` of agent `fake` lives in the test workspace. */
+const address = (sessionId: string): SessionAddress =>
+  ({ configuredName: 'fake', sessionId, cwd: '/work', host: WORKSPACE.host, workspaceUri: WORKSPACE.uri });
 
 const EVENTS = [
   'session-added',
@@ -60,8 +73,12 @@ function setup(scripts: Record<string, AgentScript>) {
   const agents = new InProcessAgents(scripts);
   const updates = new SessionUpdateHandler();
   let fileLink: FileLink | undefined;
+  let target: WorkspaceTarget | undefined = WORKSPACE;
+  let known: Promise<WorkspaceTarget | undefined> | undefined;
   const environment: SessionEnvironment = {
     workspaceCwd: () => '/work',
+    workspaceTarget: () => target,
+    workspaceTargetKnown: () => known ?? Promise.resolve(target),
     agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
     activeFileLink: () => fileLink,
   };
@@ -71,8 +88,9 @@ function setup(scripts: Record<string, AgentScript>) {
     permissions: { ...unusedHandlers.permissions, cancelSession: () => {} },
   })), environment, authPrompt);
   onTestFinished(async () => { await manager.dispose(); });
-  const sessionHistory = new SessionHistoryStore(memoryStore());
-  manager.setHistoryStore(sessionHistory);
+  const references = new SessionReferences(memoryStore(), () => Date.now());
+  const workspace = new WorkspaceState(memoryStore());
+  manager.setPersistedState(references, workspace);
 
   // As in the extension, the chat view applies session updates to the sessions.
   const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
@@ -107,11 +125,29 @@ function setup(scripts: Record<string, AgentScript>) {
     agents,
     manager,
     chatView,
-    sessionHistory,
+    references,
+    workspace,
+    /** The reference to session `sessionId` of agent `fake` on the test workspace's host. */
+    reference: (sessionId: string) => references.get({ host: WORKSPACE.host, configuredName: 'fake', sessionId }),
     authPrompt,
     received,
     events,
     linkActiveFile(link: FileLink) { fileLink = link; },
+    /** As in a window with no folder, or an untitled multi-root workspace. */
+    withoutWorkspaceTarget() { target = undefined; },
+    /** As in a remote window that has yet to learn its workspace URI; the function returned makes it known. */
+    withPendingWorkspaceTarget(): () => void {
+      target = undefined;
+      let learn: () => void = () => {};
+      known = new Promise((resolve) => {
+        learn = () => {
+          target = WORKSPACE;
+          known = undefined;
+          resolve(WORKSPACE);
+        };
+      });
+      return learn;
+    },
     receivedAtLeast(count: number): Promise<void> {
       if (received.length >= count) { return Promise.resolve(); }
       return new Promise((resolve) => receivedWaiters.push({ count, resolve }));
@@ -136,7 +172,7 @@ describe('SessionManager', () => {
   describe('connecting', () => {
     it('creates a session in the workspace and makes it active', async () => {
       const fake = sessionAgent();
-      const { manager, sessionHistory, takeEvents } = setup({ fake: fake.script });
+      const { manager, reference, workspace, takeEvents } = setup({ fake: fake.script });
 
       const session = await manager.connectToAgent('fake');
 
@@ -152,7 +188,37 @@ describe('SessionManager', () => {
       expect(manager.getActiveSessionId()).toBe('s1');
       expect(manager.hasSession('fake')).toBe(true);
       expect(takeEvents()).toEqual([['session-added', 's1', 'fake'], ['active-session-changed', 's1']]);
-      expect(sessionHistory.get('fake', 's1')).toMatchObject({ cwd: '/work' });
+      expect(reference('s1')).toMatchObject(address('s1'));
+      expect(workspace.lastActiveSession()).toEqual(address('s1'));
+    });
+
+    it('records nothing about a session in a window with no workspace target', async () => {
+      const { manager, references, workspace, withoutWorkspaceTarget } = setup({ fake: sessionAgent().script });
+      withoutWorkspaceTarget();
+
+      await manager.connectToAgent('fake');
+      manager.applySessionInfoUpdate('s1', { title: 'Named' });
+      manager.recordTurnEnded('s1');
+
+      expect(manager.getSession('s1')?.title).toBe('Named');
+      expect(references.list(WORKSPACE.host, 'fake', '/work')).toEqual([]);
+      expect(workspace.lastActiveSession()).toBeUndefined();
+    });
+
+    it('records nothing while the workspace target is pending, and records the session once it is known', async () => {
+      const { manager, references, reference, workspace, withPendingWorkspaceTarget } = setup({ fake: sessionAgent().script });
+      const learn = withPendingWorkspaceTarget();
+
+      await manager.connectToAgent('fake');
+      manager.applySessionInfoUpdate('s1', { title: 'Named' });
+      manager.recordTurnEnded('s1');
+      expect(references.list(WORKSPACE.host, 'fake', '/work')).toEqual([]);
+      expect(workspace.lastActiveSession()).toBeUndefined();
+
+      learn();
+      await manager.recordsSettled();
+      expect(reference('s1')).toMatchObject({ ...address('s1'), title: 'Named' });
+      expect(workspace.lastActiveSession()).toEqual(address('s1'));
     });
 
     it('reuses the live session when connecting to the same agent again', async () => {
@@ -588,17 +654,20 @@ describe('SessionManager', () => {
       expect(manager.getSession('s1')?.configOptions).toEqual([]);
     });
 
-    it('records titles in the session history and clears them on null', async () => {
-      const { manager, sessionHistory } = setup({ fake: sessionAgent().script });
+    it("caches titles in the session's reference and clears them on null", async () => {
+      const { manager, reference } = setup({ fake: sessionAgent().script });
       await manager.connectToAgent('fake');
 
       manager.applySessionInfoUpdate('s1', { title: 'Named' });
       expect(manager.getSession('s1')?.title).toBe('Named');
-      expect(sessionHistory.get('fake', 's1')?.title).toBe('Named');
+      expect(reference('s1')?.title).toBe('Named');
+
+      manager.applySessionInfoUpdate('s1', { updatedAt: '2026-10-18T10:00:00Z' });
+      expect(reference('s1')?.title).toBe('Named');
 
       manager.applySessionInfoUpdate('s1', { title: null });
       expect(manager.getSession('s1')).not.toHaveProperty('title');
-      expect(sessionHistory.get('fake', 's1')).not.toHaveProperty('title');
+      expect(reference('s1')).not.toHaveProperty('title');
     });
 
     it('records the mode the agent switches to itself', async () => {
@@ -614,29 +683,19 @@ describe('SessionManager', () => {
       expect(manager.getSession('s1')?.modes?.current).toBe('code');
     });
 
-    it('records only the first prompt in the session history', async () => {
-      const { manager, sessionHistory } = setup({ fake: sessionAgent().script });
-      await manager.connectToAgent('fake');
-
-      manager.recordFirstPrompt('s1', 'first');
-      manager.recordFirstPrompt('s1', 'second');
-
-      expect(sessionHistory.get('fake', 's1')?.firstPrompt).toBe('first');
-    });
-
     it('moves the session to the top of the session history when a turn ends', async () => {
       vi.useFakeTimers({ now: Date.parse('2026-10-18T10:00:00Z'), toFake: ['Date'] });
       try {
         const fake = sessionAgent('s1', (app) => app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })));
-        const { manager, chatView, sessionHistory } = setup({ fake: fake.script });
+        const { manager, chatView, references } = setup({ fake: fake.script });
         await manager.connectToAgent('fake');
         vi.setSystemTime(Date.parse('2026-10-18T11:00:00Z'));
-        sessionHistory.upsertNew('fake', '/work', 'newer');
+        await references.used(address('newer'));
         vi.setSystemTime(Date.parse('2026-10-18T12:00:00Z'));
 
         await chatView.handleMessage({ type: 'sendPrompt', text: 'hello' });
 
-        expect(sessionHistory.list('fake').map((e) => e.sessionId)).toEqual(['s1', 'newer']);
+        expect(references.list(WORKSPACE.host, 'fake', '/work').map((r) => r.sessionId)).toEqual(['s1', 'newer']);
       } finally {
         vi.useRealTimers();
       }
@@ -648,14 +707,16 @@ describe('SessionManager', () => {
 
     function listingAgent(pages: Record<string, { ids: string[]; nextCursor?: string }>) {
       const requests: unknown[] = [];
-      const script: AgentScript = () => fakeAgent(listingCaps).onRequest(methods.agent.session.list, ({ params }) => {
-        requests.push(params);
-        const page = pages[params.cursor ?? ''] ?? { ids: [] };
-        return {
-          sessions: page.ids.map((sessionId) => ({ sessionId, cwd: '/work', title: `Title ${sessionId}` })),
-          ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
-        };
-      });
+      const script: AgentScript = () => fakeAgent(listingCaps)
+        .onRequest(methods.agent.session.list, ({ params }) => {
+          requests.push(params);
+          const page = pages[params.cursor ?? ''] ?? { ids: [] };
+          return {
+            sessions: page.ids.map((sessionId) => ({ sessionId, cwd: '/work', title: `Title ${sessionId}` })),
+            ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
+          };
+        })
+        .onRequest(methods.agent.session.load, () => ({}));
       return { script, requests };
     }
 
@@ -681,27 +742,72 @@ describe('SessionManager', () => {
       expect(result).not.toHaveProperty('nextCursor');
     });
 
-    it('forgets session history entries the agent no longer lists, once it lists them all', async () => {
-      const fake = listingAgent({ '': { ids: ['a'] } });
-      const { manager, sessionHistory } = setup({ fake: fake.script });
-      sessionHistory.upsertNew('fake', '/work', 'a');
-      sessionHistory.upsertNew('fake', '/work', 'gone');
+    it("refreshes the titles of listed sessions' references, without referencing the others", async () => {
+      const fake = listingAgent({ '': { ids: ['a', 'b'] } });
+      const { manager, references, reference } = setup({ fake: fake.script });
+      await references.used(address('a'));
 
       await manager.listSessions('fake');
 
-      expect(sessionHistory.get('fake', 'a')).toBeDefined();
-      expect(sessionHistory.get('fake', 'gone')).toBeUndefined();
+      expect(reference('a')?.title).toBe('Title a');
+      expect(reference('b')).toBeUndefined();
     });
 
-    it('keeps session history entries while the agent has more pages to list', async () => {
-      const fake = listingAgent({ '': { ids: ['a'], nextCursor: 'page2' }, page2: { ids: ['later'] } });
-      const { manager, sessionHistory } = setup({ fake: fake.script });
-      sessionHistory.upsertNew('fake', '/work', 'later');
+    it('removes the references of sessions the agent no longer lists, once it lists all of the cwd', async () => {
+      const fake = listingAgent({ '': { ids: ['a'] } });
+      const { manager, references, reference } = setup({ fake: fake.script });
+      await references.used(address('a'));
+      await references.used(address('gone'));
+
+      await manager.listSessions('fake', { cwd: '/work' });
+
+      expect(reference('a')).toBeDefined();
+      expect(reference('gone')).toBeUndefined();
+    });
+
+    it('keeps references while the agent has more pages to list', async () => {
+      const fake = listingAgent({ '': { ids: ['a'], nextCursor: 'page2' }, page2: { ids: ['b'] } });
+      const { manager, references, reference } = setup({ fake: fake.script });
+      await references.used(address('later'));
+
+      await manager.listSessions('fake', { cwd: '/work' });
+      await manager.listSessions('fake', { cwd: '/work', cursor: 'page2' });
+
+      expect(reference('later')).toBeDefined();
+    });
+
+    it('keeps references when the agent lists sessions of every cwd', async () => {
+      const fake = listingAgent({ '': { ids: [] } });
+      const { manager, references, reference } = setup({ fake: fake.script });
+      await references.used(address('elsewhere'));
 
       await manager.listSessions('fake');
-      await manager.listSessions('fake', { cursor: 'page2' });
 
-      expect(sessionHistory.get('fake', 'later')).toBeDefined();
+      expect(reference('elsewhere')).toBeDefined();
+    });
+
+    it('refreshes the titles of listed sessions once a pending workspace target is known', async () => {
+      const fake = listingAgent({ '': { ids: ['a'] } });
+      const { manager, references, reference, withPendingWorkspaceTarget } = setup({ fake: fake.script });
+      await references.used(address('a'));
+      const learn = withPendingWorkspaceTarget();
+
+      await manager.listSessions('fake');
+      expect(reference('a')?.title).toBeUndefined();
+
+      learn();
+      await manager.recordsSettled();
+      expect(reference('a')?.title).toBe('Title a');
+    });
+
+    it('keeps the reference of a session open in this window that the agent does not list', async () => {
+      const fake = listingAgent({ '': { ids: [] } });
+      const { manager, reference } = setup({ fake: fake.script });
+      await manager.loadSession('fake', 'open');
+
+      await manager.listSessions('fake', { cwd: '/work' });
+
+      expect(reference('open')).toBeDefined();
     });
 
     it('refuses to list when the agent does not support it', async () => {
@@ -720,7 +826,7 @@ describe('SessionManager', () => {
         .onRequest(methods.agent.session.load, async ({ params, client }) => {
           onLoad(params.sessionId);
           if (params.sessionId === 'gone') {
-            throw RequestError.invalidParams(undefined, 'Session not found');
+            throw new RequestError(-32002, 'Resource not found', { sessionId: params.sessionId });
           }
           await client.notify(methods.client.session.update, {
             sessionId: params.sessionId,
@@ -730,7 +836,7 @@ describe('SessionManager', () => {
         })
         .onRequest(methods.agent.session.resume, ({ params }) => {
           if (params.sessionId === 'gone') {
-            throw RequestError.invalidParams(undefined, 'Session not found');
+            throw new RequestError(-32002, 'Resource not found', { sessionId: params.sessionId });
           }
           return { configOptions: [modelOption('a')] };
         });
@@ -754,15 +860,28 @@ describe('SessionManager', () => {
       ]);
     });
 
-    it('drops a session the agent no longer has, from the chat view and the session history', async () => {
-      const { manager, sessionHistory, takeEvents } = setup({ fake: replayingAgent() });
-      sessionHistory.upsertNew('fake', '/work', 'gone');
+    it('records a loaded or resumed session as used and as the last active session in the workspace', async () => {
+      const { manager, reference, workspace } = setup({ fake: replayingAgent() });
 
-      await expect(manager.loadSession('fake', 'gone')).rejects.toThrow('Session not found');
+      await manager.loadSession('fake', 'loaded');
+      expect(reference('loaded')).toMatchObject(address('loaded'));
+      expect(workspace.lastActiveSession()).toEqual(address('loaded'));
+
+      await manager.resumeSession('fake', 'resumed');
+      expect(reference('resumed')).toMatchObject(address('resumed'));
+      expect(workspace.lastActiveSession()).toEqual(address('resumed'));
+    });
+
+    it('drops a session the agent no longer has from the chat view, keeping its reference', async () => {
+      const { manager, references, reference, workspace, takeEvents } = setup({ fake: replayingAgent() });
+      await references.used(address('gone'));
+
+      await expect(manager.loadSession('fake', 'gone')).rejects.toThrow(UnknownSession);
 
       expect(manager.getActiveSessionId()).toBeNull();
       expect(manager.getSession('gone')).toBeUndefined();
-      expect(sessionHistory.get('fake', 'gone')).toBeUndefined();
+      expect(reference('gone')).toBeDefined();
+      expect(workspace.lastActiveSession()).toBeUndefined();
       expect(takeEvents()).toEqual([
         ['session-added', 'gone', 'fake'],
         ['active-session-changed', 'gone'],
@@ -813,13 +932,37 @@ describe('SessionManager', () => {
       expect(takeEvents()).toEqual([['session-added', 'old', 'fake'], ['active-session-changed', 'old']]);
     });
 
-    it('forgets a session the agent cannot resume', async () => {
-      const { manager, sessionHistory } = setup({ fake: replayingAgent() });
-      sessionHistory.upsertNew('fake', '/work', 'gone');
+    it('keeps the reference of a session the agent cannot resume', async () => {
+      const { manager, references, reference } = setup({ fake: replayingAgent() });
+      await references.used(address('gone'));
 
-      await expect(manager.resumeSession('fake', 'gone')).rejects.toThrow('Session not found');
+      await expect(manager.resumeSession('fake', 'gone')).rejects.toThrow(UnknownSession);
 
-      expect(sessionHistory.get('fake', 'gone')).toBeUndefined();
+      expect(reference('gone')).toBeDefined();
+    });
+
+    it('removes a session from the session history on request', async () => {
+      const { manager, references, reference } = setup({ fake: replayingAgent() });
+      await references.used(address('a'));
+      await references.used(address('b'));
+
+      await manager.removeFromHistory('fake', 'a');
+
+      expect(reference('a')).toBeUndefined();
+      expect(reference('b')).toBeDefined();
+    });
+
+    it('removes a session from the session history once a pending workspace target is known', async () => {
+      const { manager, references, reference, withPendingWorkspaceTarget } = setup({ fake: replayingAgent() });
+      await references.used(address('a'));
+      const learn = withPendingWorkspaceTarget();
+
+      const removing = manager.removeFromHistory('fake', 'a');
+      expect(reference('a')).toBeDefined();
+
+      learn();
+      await removing;
+      expect(reference('a')).toBeUndefined();
     });
   });
 
@@ -876,9 +1019,8 @@ describe('SessionManager', () => {
     it('titles a resumed session from the session history when the agent does not list sessions', async () => {
       const script: AgentScript = () => fakeAgent({ agentCapabilities: { sessionCapabilities: { resume: {} } } })
         .onRequest(methods.agent.session.resume, () => ({}));
-      const { manager, sessionHistory } = setup({ fake: script });
-      sessionHistory.upsertNew('fake', '/work', 'old');
-      sessionHistory.setTitle('fake', 'old', 'Remembered title');
+      const { manager, references } = setup({ fake: script });
+      await references.setTitle(address('old'), 'Remembered title');
 
       const session = await manager.resumeSession('fake', 'old');
 
@@ -894,9 +1036,8 @@ describe('SessionManager', () => {
           });
           return {};
         });
-      const { manager, sessionHistory } = setup({ fake: script });
-      sessionHistory.upsertNew('fake', '/work', 'old');
-      sessionHistory.setTitle('fake', 'old', 'Remembered title');
+      const { manager, references } = setup({ fake: script });
+      await references.setTitle(address('old'), 'Remembered title');
 
       const session = await manager.resumeSession('fake', 'old');
 
@@ -1033,7 +1174,7 @@ describe('SessionManager', () => {
         const manager = new SessionManager(
           new AgentManager(),
           new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
-          { workspaceCwd: () => process.cwd(), agentConfigs: () => ({ broken: config }), activeFileLink: () => undefined },
+          { workspaceCwd: () => process.cwd(), workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ broken: config }), activeFileLink: () => undefined },
           { chooseAuthMethod: vi.fn() },
         );
         onTestFinished(async () => { await manager.dispose(); });
@@ -1170,6 +1311,63 @@ describe('SessionManager', () => {
         await agents.launched[0]?.crash();
         await connecting;
       }
+    });
+
+    it('keeps what a request in flight as shutdown begins records, then records nothing more', async () => {
+      let requested: () => void = () => {};
+      const started = new Promise<void>((resolve) => { requested = resolve; });
+      let answer: () => void = () => {};
+      const reply = new Promise<void>((resolve) => { answer = resolve; });
+      const script: AgentScript = () => fakeAgent({ agentCapabilities: { sessionCapabilities: { list: {} } } })
+        .onRequest(methods.agent.session.list, async () => {
+          requested();
+          await reply;
+          return { sessions: [{ sessionId: 'a', cwd: '/work', title: 'Listed during shutdown' }] };
+        });
+      const { agents, manager, references, workspace, reference } = setup({ fake: script });
+      await references.used(address('a'));
+      const listing = manager.listSessions('fake', { cwd: '/work' });
+      await started;
+      const process = agents.launched[0]?.process;
+      if (!process) { throw new Error('Agent was not launched.'); }
+      const kill = vi.spyOn(process, 'kill').mockImplementation(() => {});
+      try {
+        const disposed = manager.dispose();
+        answer();
+        await listing;
+        await agents.launched[0]?.crash();
+        await disposed;
+
+        expect(reference('a')?.title).toBe('Listed during shutdown');
+        await references.used(address('after'));
+        await workspace.setLastActiveSession(address('after'));
+        expect(reference('after')).toBeUndefined();
+        expect(workspace.lastActiveSession()).toBeUndefined();
+      } finally {
+        kill.mockRestore();
+        answer();
+        await agents.launched[0]?.crash();
+        await listing.catch(() => {});
+      }
+    });
+
+    it('ends what waits for a pending workspace target on disposal, recording and removing nothing once it is known', async () => {
+      const { manager, references, reference, workspace, withPendingWorkspaceTarget } = setup({ fake: sessionAgent().script });
+      await references.used(address('kept'));
+      const learn = withPendingWorkspaceTarget();
+      await manager.connectToAgent('fake');
+      const removing = manager.removeFromHistory('fake', 'kept');
+
+      await manager.dispose();
+      await manager.recordsSettled();
+      await removing;
+      learn();
+      await references.settled();
+      await workspace.settled();
+
+      expect(reference('s1')).toBeUndefined();
+      expect(reference('kept')).toBeDefined();
+      expect(workspace.lastActiveSession()).toBeUndefined();
     });
 
     it('stops and awaits a process whose initialize request is still pending', async () => {

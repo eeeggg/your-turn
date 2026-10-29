@@ -14,7 +14,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   /** Each message delivered to the webview. */
   readonly onDidPost = this.posted.event;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  /** `webviewChanged` is given the view's webview when it resolves, and `undefined` once the view is disposed. */
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly webviewChanged: (webview: vscode.Webview | undefined) => void,
+  ) {}
 
   resolveWebviewView(
     webviewView: vscode.WebviewView,
@@ -36,7 +40,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
 
     webviewView.onDidDispose(() => {
       this.view = undefined;
+      this.webviewChanged(undefined);
     });
+    this.webviewChanged(webviewView.webview);
   }
 
   post(message: ExtensionToWebviewMessage): void {

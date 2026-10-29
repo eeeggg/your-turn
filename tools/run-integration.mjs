@@ -1,9 +1,10 @@
 import { availableParallelism } from 'node:os';
 import { readdir, readFile, readlink, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { windowKinds } from './integration-windows.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const testDirectory = join(root, 'dist', 'test');
@@ -54,22 +55,43 @@ const requestedJobs = Number.parseInt(process.env['ACP_TEST_JOBS'] ?? '', 10);
 const jobs = Number.isInteger(requestedJobs) && requestedJobs > 0 ? requestedJobs : detectedJobs;
 
 const requestedFiles = process.env['ACP_TEST_FILES']?.split(',').filter(Boolean);
-const testFiles = (await readdir(testDirectory))
+const testFiles = (await readdir(testDirectory, { recursive: true }))
   .filter((file) => file.endsWith('.test.js'))
   .filter((file) => !requestedFiles || requestedFiles.includes(file))
-  .sort()
-  .map((file) => join(testDirectory, file));
+  .sort();
 
 if (testFiles.length === 0) {
   throw new Error(`No compiled integration tests found in ${testDirectory}; run make compile first`);
 }
 
-const groupCount = Math.min(jobs, testFiles.length);
-const groups = Array.from({ length: groupCount }, () => /** @type {string[]} */ ([]));
-testFiles.forEach((file, index) => {
-  const group = groups[index % groups.length];
-  if (!group) { throw new Error(`No integration group for ${file}`); }
-  group.push(file);
+/** @param {string} file */
+const kindOf = (file) => windowKinds.find(({ directory }) => dirname(file) === (directory || '.'));
+const unplaced = testFiles.filter((file) => !kindOf(file));
+if (unplaced.length > 0) {
+  throw new Error(`Compiled integration tests in no window kind's directory: ${unplaced.join(', ')}`);
+}
+
+/** @typedef {{ kind: typeof windowKinds[number], files: string[] }} Group */
+const byKind = windowKinds
+  .map((kind) => ({ kind, files: testFiles.filter((file) => kindOf(file) === kind) }))
+  .filter(({ files }) => files.length > 0);
+// Each kind present gets a job; each further job goes to the kind with the most files per job.
+const jobCounts = byKind.map(() => 1);
+for (let total = byKind.length; total < jobs; total += 1) {
+  let busiest = -1;
+  byKind.forEach(({ files }, index) => {
+    const count = jobCounts[index] ?? 1;
+    const busiestLoad = busiest === -1 ? 0 : (byKind[busiest]?.files.length ?? 0) / (jobCounts[busiest] ?? 1);
+    if (count < files.length && files.length / count > busiestLoad) { busiest = index; }
+  });
+  if (busiest === -1) { break; }
+  jobCounts[busiest] = (jobCounts[busiest] ?? 1) + 1;
+}
+/** @type {Group[]} */
+const groups = byKind.flatMap(({ kind, files }, index) => {
+  const kindGroups = Array.from({ length: jobCounts[index] ?? 1 }, () => /** @type {Group} */ ({ kind, files: [] }));
+  files.forEach((file, fileIndex) => { kindGroups[fileIndex % kindGroups.length]?.files.push(join(testDirectory, file)); });
+  return kindGroups;
 });
 const profiles = await mkdtemp(join(tmpdir(), 'acp-integration-'));
 const configDirectory = await mkdtemp(join(root, '.vscode-test', 'parallel-config-'));
@@ -100,21 +122,24 @@ process.on('SIGTERM', terminate);
 
 /** @typedef {{ code: number, output: string }} RunResult */
 
-/** @param {string[]} group @param {number} index */
-function runGroup(group, index) {
+/** @param {Group} group @param {number} index */
+async function runGroup({ kind, files }, index) {
   const profile = join(profiles, `profile-${index}`);
   const config = join(configDirectory, `config-${index}.mjs`);
-  const files = JSON.stringify(group);
   const launchArgs = JSON.stringify([
     `--user-data-dir=${profile}`,
     '--disable-extensions',
   ]);
+  // Under the run's temporary directory, so outside any Git worktree, and removed with the profiles.
+  const workspaceFolder = kind.opensFolder ? join(profiles, `folder-${index}`) : undefined;
+  if (workspaceFolder !== undefined) { await mkdir(workspaceFolder); }
   const configText = `import base from ${JSON.stringify(pathToFileURL(join(root, '.vscode-test.mjs')).href)};
 export default {
   ...base,
   tests: [{
-    files: ${files},
-    extensionDevelopmentPath: ${JSON.stringify(root)},
+    files: ${JSON.stringify(files)},
+    extensionDevelopmentPath: ${JSON.stringify(root)},${workspaceFolder === undefined ? '' : `
+    workspaceFolder: ${JSON.stringify(workspaceFolder)},`}
     launchArgs: ${launchArgs},
     mocha: { timeout: 0 },
   }],
@@ -123,6 +148,7 @@ export default {
   /** @returns {Promise<RunResult>} */
   const run = () => new Promise((resolveRun) => {
     if (stopping) { resolveRun({ code: 1, output: '' }); return; }
+    console.log(`[integration ${index + 1}] Starting ${kind.name} window for ${files.map((file) => relative(testDirectory, file)).join(' ')}`);
     const command = process.platform === 'linux' ? 'xvfb-run' : process.execPath;
     const display = 1000 + (process.pid % 50000) + index;
     const coverageArgs = coverageDirectory === undefined
@@ -197,7 +223,32 @@ export default {
       resolveRun({ code: timedOut || failed ? 1 : code ?? 1, output: completeOutput });
     });
   });
-  return writeFile(config, configText).then(run);
+  await writeFile(config, configText);
+  return run();
+}
+
+/** Run every group, at most `jobs` at once, settling in group order. */
+async function runGroups() {
+  /** @type {PromiseSettledResult<RunResult>[]} */
+  const settled = [];
+  let next = 0;
+  const worker = async () => {
+    while (next < groups.length) {
+      const index = next;
+      next += 1;
+      const group = groups[index];
+      if (!group) { throw new Error(`No integration group ${index}`); }
+      settled[index] = await runGroup(group, index).then(
+        (value) => /** @type {const} */ ({ status: 'fulfilled', value }),
+        /** @param {unknown} reason */ (reason) => {
+          stopJobs();
+          return /** @type {const} */ ({ status: 'rejected', reason });
+        },
+      );
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(jobs, groups.length) }, worker));
+  return settled;
 }
 
 try {
@@ -205,8 +256,9 @@ try {
     const reports = join(root, 'test-results', 'integration', 'coverage');
     await mkdir(reports, { recursive: true });
     coverageDirectory = await mkdtemp(join(reports, 'run-'));
-    await writeFile(join(coverageDirectory, 'jobs.json'), JSON.stringify(groups.map((group, index) => ({
-      files: group.map((file) => basename(file)),
+    await writeFile(join(coverageDirectory, 'jobs.json'), JSON.stringify(groups.map(({ kind, files }, index) => ({
+      files: files.map((file) => relative(testDirectory, file)),
+      window: kind.name,
       report: `job-${index + 1}/index.html`,
     })), null, 2));
     console.log(`Per-job coverage reports (not combined): ${coverageDirectory}`);
@@ -214,11 +266,8 @@ try {
   const inotifyDetails = inotify.limit === undefined
     ? ''
     : `, ${inotify.used}/${inotify.limit} inotify instances already used, budgeting ${inotifyInstancesPerJob} per job`;
-  console.log(`Running ${testFiles.length} integration files in ${groups.length} VS Code jobs (default ${detectedJobs}, ${availableParallelism()} available CPUs${inotifyDetails})`);
-  const settled = await Promise.allSettled(groups.map((group, index) => runGroup(group, index).catch(/** @param {unknown} error */ (error) => {
-    stopJobs();
-    throw error;
-  })));
+  console.log(`Running ${testFiles.length} integration files in ${groups.length} VS Code jobs, at most ${jobs} at once (default ${detectedJobs}, ${availableParallelism()} available CPUs${inotifyDetails})`);
+  const settled = await runGroups();
   const errors = settled.filter((result) => result.status === 'rejected');
   if (errors.length > 0) { throw new AggregateError(errors.map((result) => /** @type {unknown} */ (result.reason)), 'Integration jobs could not run'); }
   const results = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);

@@ -68,11 +68,13 @@ preparation or execution, including focused and repeated runs.
 
 - `FILES` — Whitespace-separated explicit repo-relative test file paths. Every
   path is validated against the chosen test layer; an unmatched or cross-layer
-  selection produces an error.
+  selection produces an error. Integration paths may name a window kind's
+  directory, such as `tests/integration/folder/persisted-state.test.ts`.
 - `REPEAT` — Positive integer repeat count, default `1`. Repeated runs stop on
   the first failure.
-- `JOBS` — Positive integer parallel job count, supported for `test-integration`
-  and `coverage-integration` only; other targets preserve their default.
+- `JOBS` — Positive integer cap on VS Code windows running at once, supported
+  for `test-integration` and `coverage-integration` only; other targets
+  preserve their default.
 - Bundle preparation — Executed once per batch where needed by the Make targets
   (`test-vitest`, `test-webview`, `test-integration`, `test-ui`, `coverage-integration`).
 - Legacy environment variables — `ACP_TEST_FILES` and `ACP_TEST_JOBS` are
@@ -121,8 +123,9 @@ Vitest provides the fast in-process test system. Run all Vitest projects with
 ### VS Code integration
 
 `tests/integration/` exercises behavior that requires the real VS Code API or
-extension host without driving the rendered workbench. Run it with
-`make test-integration`. Read
+extension host without driving the rendered workbench. Its files run in a
+window with no folder, or on a temporary folder when they are in
+`tests/integration/folder/`. Run it with `make test-integration`. Read
 `tests/integration/AGENTS.md` before changing its tests, fixtures or runner.
 
 ### Desktop UI

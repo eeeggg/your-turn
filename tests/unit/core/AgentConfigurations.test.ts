@@ -52,7 +52,7 @@ function setup(userAgents: Agents, { workspace = {}, defaults = {}, registry = a
   const manager = new SessionManager(
     launcher,
     new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
-    { workspaceCwd: () => '/work', agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
+    { workspaceCwd: () => '/work', workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
     { chooseAuthMethod: async () => undefined },
   );
   const user = new ScriptedUser();

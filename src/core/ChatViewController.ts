@@ -32,7 +32,6 @@ export type ChatSessions = Pick<
   | 'cancelTurn'
   | 'setMode'
   | 'setConfigOption'
-  | 'recordFirstPrompt'
   | 'recordTurnEnded'
   | 'applyAvailableCommands'
   | 'applyConfigOptions'
@@ -281,9 +280,6 @@ export class ChatViewController {
       this.post({ type: 'error', message: 'No active session. Create a session first.' });
       return;
     }
-
-    // The history store uses the first prompt as a label until the agent supplies a title.
-    this.sessions.recordFirstPrompt(activeId, text);
 
     this.runningTurns.add(activeId);
     this.post({ type: 'promptStart' });

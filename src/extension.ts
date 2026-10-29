@@ -6,7 +6,7 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { checkPackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
-import { SessionHistoryStore } from '@/core/SessionHistoryStore';
+import { SessionReferences, WorkspaceState } from '@/core/PersistedState';
 import { SessionList } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
@@ -29,7 +29,8 @@ import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
-import { workspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { createWorkspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel } from '@/adapters/OutputChannels';
@@ -63,6 +64,18 @@ export interface ExtensionTestApi {
   turnEndShown(): Promise<void>;
   /** Settles once the latest quick-diff presentation caused by changing tabs does. */
   reviewPresentationSettled(): Promise<void>;
+  /**
+   * Settles once every write the extension started to its storage has, including those waiting for the workspace
+   * target, as nothing it does waits for them.
+   */
+  persistedStateSettled(): Promise<void>;
+  /** The extension's workspace storage, which only its own context reaches. */
+  readonly storage: { readonly workspaceState: vscode.Memento };
+  /**
+   * The extension's own session references, the only way tests reach global state: VS Code can serve an earlier
+   * global-state value after a write, which this instance reconciles, and another instance is in effect another window.
+   */
+  readonly sessionReferences: SessionReferences;
 }
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
@@ -77,22 +90,27 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     (context.extension.packageJSON as { version: string }).version,
     () => ({ permissions: new PermissionRequests(permissionQuickPick) }),
   );
+  const sessionReferences = new SessionReferences(context.globalState);
+  const workspaceState = new WorkspaceState(context.workspaceState);
+  void workspaceState.discardRetired();
+  const workspaceEnvironment = createWorkspaceEnvironment(workspaceState);
   const sessionManager = new SessionManager(
     agentManager,
     connectionManager,
     workspaceEnvironment,
     authMethodPicker,
   );
-
-  // Session history: the session list's source for agents that can load or
-  // resume sessions but cannot list them.
-  const historyStore = new SessionHistoryStore(context.workspaceState);
-  sessionManager.setHistoryStore(historyStore);
-  context.subscriptions.push({ dispose: () => historyStore.dispose() });
+  sessionManager.setPersistedState(sessionReferences, workspaceState);
 
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const sessionList = new SessionList(sessionManager, historyStore, getAgentNames, workspaceCwd);
+  const sessionList = new SessionList(sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget());
   const sessionTreeProvider = new SessionTreeProvider(sessionList);
+  const persistedStateCommands = new PersistedStateCommands(
+    context.workspaceState,
+    context.globalState,
+    sessionReferences,
+    () => workspaceEnvironment.workspaceTarget(),
+  );
   const treeView = vscode.window.createTreeView('acp-sessions', {
     treeDataProvider: sessionTreeProvider,
   });
@@ -120,7 +138,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
 
-  const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri);
+  const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, (webview) => workspaceEnvironment.useWebview(webview));
   const reportedFileEditor = new ReportedFileEditor();
   const agentTerminals = new AgentTerminals(pseudoterminalDisplays);
   const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals);
@@ -280,9 +298,16 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       await vscode.env.clipboard.writeText(arg.sessionId);
       void vscode.window.showInformationMessage(`Copied session ID: ${arg.sessionId}`);
     }),
-    vscode.commands.registerCommand('acp.forgetSession', (arg?: SessionArgument) => {
+    vscode.commands.registerCommand('acp.removeFromHistory', async (arg?: SessionArgument) => {
       if (arg?.agentName && arg.sessionId) {
-        historyStore.forget(arg.agentName, arg.sessionId);
+        await sessionManager.removeFromHistory(arg.agentName, arg.sessionId);
+      }
+    }),
+    persistedStateCommands,
+    vscode.commands.registerCommand('acp.showPersistedState', () => persistedStateCommands.show()),
+    vscode.commands.registerCommand('acp.resetPersistedState', async () => {
+      if (await persistedStateCommands.reset()) {
+        sessionTreeProvider.refresh();
       }
     }),
     vscode.commands.registerCommand('acp.addAgent', () => agentConfigurations.add()),
@@ -354,6 +379,13 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reviewListedFiles: () => reviewSourceControl.listedFiles(),
     turnEndShown: () => turnEndShown,
     reviewPresentationSettled: async () => { await reviewPresenters.settled(); await reviewDiffs.settled(); },
+    persistedStateSettled: async () => {
+      await sessionManager.recordsSettled();
+      await sessionReferences.settled();
+      await workspaceState.settled();
+    },
+    storage: { workspaceState: context.workspaceState },
+    sessionReferences,
   };
 }
 
