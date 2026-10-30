@@ -408,6 +408,15 @@ export class ChatViewController {
         return { type: 'plan', steps: update.steps.map(planStep) };
       case 'commands':
         return { type: 'commands', commands: update.commands.map(slashCommand) };
+      case 'usage':
+        return {
+          type: 'usage',
+          usage: {
+            used: update.used,
+            size: update.size,
+            cost: update.cost ? { amount: update.cost.amount, currency: update.cost.currency } : null,
+          },
+        };
       case 'configOptions':
       case 'currentMode': {
         const session = this.sessions.getSession(sessionId);

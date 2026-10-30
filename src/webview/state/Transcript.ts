@@ -4,6 +4,7 @@ import type {
   ExtensionToWebviewMessage,
   PlanStep,
   PlanStepStatus,
+  SessionUsage,
   ToolCallContent,
   ToolCallStatus,
   WebviewToExtensionMessage,
@@ -99,6 +100,8 @@ export interface TranscriptState {
   readonly entries: readonly TranscriptEntry[];
   /** The session's terminals by ID, which its tool calls show, whichever was reported first. */
   readonly terminals: ReadonlyMap<string, Terminal>;
+  /** The latest reported context and session cost; null until reported, retained with an ended session's transcript. */
+  readonly usage: SessionUsage | null;
   readonly nextId: EntryId;
   /** The turn the agent's work goes into, until the turn ends. */
   readonly currentTurn: EntryId | null;
@@ -121,6 +124,7 @@ export const initialTranscript: TranscriptState = {
   sessionEnded: false,
   entries: [],
   terminals: new Map(),
+  usage: null,
   nextId: 1,
   currentTurn: null,
   queued: [],
@@ -332,6 +336,8 @@ export function updateTranscript(
     }
     case 'plan':
       return stateOnly(withPlan(transcript, { kind: 'plan', steps: action.steps }, now));
+    case 'usage':
+      return stateOnly({ ...transcript, usage: action.usage });
     case 'thoughtToggled':
       return stateOnly(
         withTurn(transcript, action.turnId, (turn) =>
@@ -568,7 +574,7 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
   const empty =
-    transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.currentTurn === null && transcript.queued.length === 0;
+    transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
     : {
@@ -577,6 +583,7 @@ function cleared(transcript: TranscriptState, sessionId: string | null): Transcr
       sessionEnded: false,
       entries: [],
       terminals: new Map(),
+      usage: null,
       currentTurn: null,
       queued: [],
       followRequests: transcript.followRequests + 1,

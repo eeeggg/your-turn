@@ -771,6 +771,50 @@ describe('ChatViewController', () => {
       expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', title: 'Read' }]);
     });
 
+    it('delivers reported usage immediately in the webview contract without changing its values', () => {
+      const { environment, controller } = setup();
+
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } });
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 15000, size: 100000, cost: null });
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } });
+
+      expect(environment.take()).toEqual([
+        { type: 'usage', usage: { used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } } },
+        { type: 'usage', usage: { used: 15000, size: 100000, cost: null } },
+        { type: 'usage', usage: { used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } } },
+      ]);
+    });
+
+    it('drops other-session usage and reports received without an active session', () => {
+      const { sessions, environment, controller } = setup();
+
+      controller.handleSessionUpdate('other', { kind: 'usage', used: 999, size: 200000, cost: null });
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 1000, size: 200000, cost: null });
+      sessions.activeId = null;
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 2000, size: 200000, cost: null });
+
+      expect(environment.take()).toEqual([{ type: 'usage', usage: { used: 1000, size: 200000, cost: null } }]);
+    });
+
+    it('delivers fresh usage during load replay without replaying a cached snapshot', () => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 90000, size: 200000, cost: { amount: 1.25, currency: 'USD' } });
+      environment.take();
+
+      controller.notifyLoadSessionStart('s1');
+      controller.notifyLoadSessionEnd(true);
+      expect(environment.take()).toEqual([{ type: 'loadSessionStart' }, { type: 'loadSessionEnd', ok: true }]);
+
+      controller.notifyLoadSessionStart('s1');
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 15000, size: 100000, cost: null });
+      controller.notifyLoadSessionEnd(true);
+      expect(environment.take()).toEqual([
+        { type: 'loadSessionStart' },
+        { type: 'usage', usage: { used: 15000, size: 100000, cost: null } },
+        { type: 'loadSessionEnd', ok: true },
+      ]);
+    });
+
     it("passes on text, tool calls, the plan and slash commands in the webview's terms", () => {
       expect(translated({ kind: 'agentText', messageId: 'm1', text: 'Hi' })).toEqual([{ type: 'agentText', messageId: 'm1', text: 'Hi' }]);
       expect(translated({ kind: 'thoughtText', messageId: null, text: 'Hm' })).toEqual([{ type: 'thoughtText', messageId: null, text: 'Hm' }]);

@@ -101,6 +101,16 @@ export interface Picker {
   groups: PickerValueGroup[];
 }
 
+/** The latest agent-reported context and cumulative session cost, replacing the previous snapshot. */
+export interface SessionUsage {
+  /** Tokens currently in context. */
+  used: number;
+  /** The current effective context-window limit in tokens. */
+  size: number;
+  /** Null when no cost was reported in this snapshot. */
+  cost: { amount: number; currency: string } | null;
+}
+
 /** The active session as the chat view shows it. */
 export interface SessionSnapshot {
   sessionId: string;
@@ -142,6 +152,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'plan'; steps: PlanStep[] }
   | { type: 'commands'; commands: SlashCommand[] }
   | { type: 'pickers'; pickers: Picker[] }
+  | { type: 'usage'; usage: SessionUsage }
   /** The active session's title, null when it has none. */
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }

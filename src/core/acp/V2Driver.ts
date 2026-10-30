@@ -345,6 +345,14 @@ class Translator {
     if (updates.isConfigOptionUpdate(update)) {
       return { kind: 'configOptions', options: configOptions(update.configOptions) };
     }
+    if (updates.isUsageUpdate(update)) {
+      return {
+        kind: 'usage',
+        used: update.used,
+        size: update.size,
+        cost: update.cost ? { amount: update.cost.amount, currency: update.cost.currency } : null,
+      };
+    }
     if (updates.isSessionInfoUpdate(update)) {
       return {
         kind: 'sessionInfo',

@@ -192,6 +192,122 @@ describe('the transcript and its session', () => {
   });
 });
 
+describe('session usage', () => {
+  const report: Action = { type: 'usage', usage: { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } } };
+
+  it('has no usage until a report arrives, then stores it without adding transcript entries or requesting anything', () => {
+    const view = chatView();
+    view.connect();
+    expect(view.transcript()).toHaveProperty('usage', null);
+    const before = view.transcript();
+
+    view.send(report);
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+    expect(view.transcript().entries).toBe(before.entries);
+    expect(view.transcript().currentTurn).toBeNull();
+    expect(view.transcript().followRequests).toBe(before.followRequests);
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it('replaces snapshots rather than accumulating context or cost, including a lower usage and changed limit', () => {
+    const view = chatView();
+    view.connect();
+    view.send(report);
+
+    view.send({ type: 'usage', usage: { used: 15000, size: 100000, cost: { amount: 0.234567891, currency: 'EUR' } } });
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 15000, size: 100000, cost: { amount: 0.234567891, currency: 'EUR' } });
+  });
+
+  it('removes the previous cost when the latest snapshot reports none', () => {
+    const view = chatView();
+    view.connect();
+    view.send(report, { type: 'usage', usage: { used: 16000, size: 100000, cost: null } });
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 16000, size: 100000, cost: null });
+  });
+
+  it('preserves reported zero context and cost', () => {
+    const view = chatView();
+    view.connect();
+    view.send(report, { type: 'usage', usage: { used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } } });
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } });
+  });
+
+  it('keeps usage for the same session across turn boundaries and session metadata changes', () => {
+    const view = chatView();
+    view.connect();
+    view.send(report, { type: 'promptStart' }, promptEnd);
+    view.connect({ title: 'Renamed' });
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+  });
+
+  it.each([
+    ['another session', { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
+    ['a disconnect', { type: 'state', activeSessionId: null, session: null }],
+    ['a load', { type: 'loadSessionStart' }],
+    ['an explicit clear', { type: 'clearTranscript' }],
+  ] satisfies [string, Action][])('clears a usage-only snapshot on %s', (_name, clear) => {
+    const view = chatView();
+    view.connect();
+    view.send(report);
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+
+    view.send(clear);
+
+    expect(view.transcript()).toHaveProperty('usage', null);
+  });
+
+  it('can clear a usage-only snapshot even when its session ID is already null', () => {
+    const view = chatView();
+    view.send(report);
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+
+    view.send({ type: 'clearTranscript' });
+
+    expect(view.transcript()).toHaveProperty('usage', null);
+  });
+
+  it('does not restore usage from replayed transcript entries or load completion without a fresh report', () => {
+    const view = chatView();
+    view.connect();
+    view.send(report);
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+    view.send({ type: 'loadSessionStart' });
+    view.replayed('question');
+    view.answer('answer');
+    view.send({ type: 'loadSessionEnd', ok: true });
+
+    expect(view.transcript()).toHaveProperty('usage', null);
+  });
+
+  it('accepts a fresh usage report during replay and retains it when the load ends', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+    view.replayed('question');
+    view.send(report);
+    view.answer('answer');
+    view.send({ type: 'loadSessionEnd', ok: true });
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+  });
+
+  it('retains usage with the transcript when the agent exits, until an explicit clear', () => {
+    const view = chatView();
+    view.connect();
+    view.send(report, { type: 'sessionEnded', message: 'Fake exited.' }, { type: 'state', activeSessionId: null, session: null });
+
+    expect(view.transcript()).toHaveProperty('usage', { used: 90000, size: 200000, cost: { amount: 0.123456789, currency: 'EUR' } });
+
+    view.send({ type: 'clearTranscript' });
+    expect(view.transcript()).toHaveProperty('usage', null);
+  });
+});
+
 describe('a session whose agent exited', () => {
   const ended: Action = { type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' };
   const noSession: Action = { type: 'state', activeSessionId: null, session: null };

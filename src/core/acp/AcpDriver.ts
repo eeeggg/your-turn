@@ -159,6 +159,16 @@ export interface SlashCommand {
   hint: string | null;
 }
 
+/** The agent's latest context and cumulative session-cost snapshot; successive reports replace it, not add to it. */
+interface SessionUsage {
+  /** Tokens currently in context. */
+  used: number;
+  /** The current effective context-window limit in tokens. */
+  size: number;
+  /** Null when the agent reports no cost. */
+  cost: { amount: number; currency: string } | null;
+}
+
 /** The ACP schema a driver speaks, which names the driver, as each speaks one; its session updates are tagged with it. */
 export type AcpSchema = 'v1' | 'v2';
 
@@ -200,6 +210,7 @@ export type SessionUpdate =
   | { kind: 'configOptions'; options: ConfigOption[] }
   /** The agent switched the session's mode itself. */
   | { kind: 'currentMode'; modeId: string }
+  | ({ kind: 'usage' } & SessionUsage)
   /** A null title clears the session's title; a missing one leaves it unchanged. */
   | { kind: 'sessionInfo'; title?: string | null; updatedAt?: string | null };
 

@@ -845,6 +845,43 @@ describe('V2Driver', () => {
       ]);
     });
 
+    it('passes on reported context usage and cumulative cost without rounding or protocol metadata', async () => {
+      expect(await updatesFor({
+        sessionUpdate: 'usage_update',
+        used: 123456,
+        size: 200001,
+        cost: { amount: 0.123456789, currency: 'EUR', _meta: { vendor: 'cost metadata' } },
+        _meta: { vendor: 'usage metadata' },
+      })).toEqual([{ kind: 'usage', used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } }]);
+    });
+
+    it('reports no cost for both absent and null cost', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'usage_update', used: 1000, size: 200000 },
+        { sessionUpdate: 'usage_update', used: 1000, size: 200000, cost: null },
+      )).toEqual([
+        { kind: 'usage', used: 1000, size: 200000, cost: null },
+        { kind: 'usage', used: 1000, size: 200000, cost: null },
+      ]);
+    });
+
+    it('preserves zero context and cost values', async () => {
+      expect(await updatesFor({ sessionUpdate: 'usage_update', used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } }))
+        .toEqual([{ kind: 'usage', used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } }]);
+    });
+
+    it('passes on successive snapshots unchanged when context shrinks, the limit changes and cost is no longer reported', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'usage_update', used: 90000, size: 200000, cost: { amount: 1.25, currency: 'USD' } },
+        { sessionUpdate: 'usage_update', used: 15000, size: 100000, cost: { amount: 1.5, currency: 'USD' } },
+        { sessionUpdate: 'usage_update', used: 16000, size: 100000 },
+      )).toEqual([
+        { kind: 'usage', used: 90000, size: 200000, cost: { amount: 1.25, currency: 'USD' } },
+        { kind: 'usage', used: 15000, size: 100000, cost: { amount: 1.5, currency: 'USD' } },
+        { kind: 'usage', used: 16000, size: 100000, cost: null },
+      ]);
+    });
+
     it("passes up the session's commands, config options and info, and drops the updates the interface has no place for", async () => {
       expect(await updatesFor(
         { sessionUpdate: 'available_commands_update', availableCommands: [{ type: 'command', name: 'web', description: 'Search the web', input: { type: 'text', hint: '' } }] },

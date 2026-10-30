@@ -2,16 +2,18 @@ import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent,
 import type { SlashCommand } from '@/shared/WebviewMessages';
 import { canPrompt } from '@/webview/state/ActiveSession';
 import { InputToolbar } from '@/webview/views/InputToolbar';
+import { Usage } from '@/webview/views/Usage';
 import { highlightedIndex, historyMoves, matchingCommands, placeholder } from '@/webview/state/PromptBox';
 import { useCurrentState, useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 const MIN_HEIGHT = 90;
 const MAX_HEIGHT = 400;
 
-/** Everything below the transcript: the slash command popup, the pickers, and the prompt box. */
+/** Everything below the transcript: the slash command popup, pickers, prompt box and session usage. */
 export function InputArea() {
   const session = useSelector((state) => state.activeSession);
   const box = useSelector((state) => state.promptBox);
+  const usage = useSelector((state) => state.transcript.usage);
   const dispatch = useDispatch();
   const currentState = useCurrentState();
   const areaRef = useRef<HTMLDivElement>(null);
@@ -70,7 +72,7 @@ export function InputArea() {
 
   return (
     <div
-      className={`input-area ${usable ? '' : 'disabled '}relative flex flex-col border-t border-border bg-background`}
+      className={`input-area ${usable ? '' : 'disabled '}relative flex min-h-fit flex-none flex-col border-t border-border bg-background`}
       id="inputArea"
       ref={areaRef}
       style={height === null ? undefined : { height }}
@@ -98,7 +100,7 @@ export function InputArea() {
       </div>
       <div className={`input-editor-wrap flex min-h-0 flex-1 px-3 pb-2 ${inactive}`}>
         <textarea
-          className="min-h-9.5 flex-1 resize-none rounded-md border border-input-border bg-input px-2.5 py-2 leading-[1.4] text-input-foreground outline-none placeholder:text-input-placeholder focus:border-ring"
+          className="min-h-9.5 min-w-0 flex-1 resize-none rounded-md border border-input-border bg-input px-2.5 py-2 leading-[1.4] text-input-foreground outline-none placeholder:text-input-placeholder focus:border-ring"
           id="promptInput"
           ref={promptRef}
           rows={2}
@@ -109,6 +111,7 @@ export function InputArea() {
           onKeyDown={onKeyDown}
         />
       </div>
+      {usage && <Usage usage={usage} />}
       <span className="sr-only" id="promptHistoryStatus" role="status" aria-live="polite" aria-atomic="true">
         {box.announcement}
       </span>

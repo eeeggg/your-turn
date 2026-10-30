@@ -448,7 +448,7 @@ describe('tool calls', () => {
     await toggle(call as HTMLDetailsElement);
     await toggle(onlyDiffs as HTMLDetailsElement);
 
-    expect([...call.querySelectorAll('.tc-body-content > *')].map((block) => block.className.split(' ')[0])).toEqual(['tc-body-block', 'tc-diff', 'tc-body-block']);
+    expect([...call.querySelectorAll('.tc-body-inner > *')].map((block) => block.className.split(' ')[0])).toEqual(['tc-body-block', 'tc-diff', 'tc-body-block']);
     expect(onlyDiffs.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
     const header = call.querySelector('.tc-diff-header');
     expect([...(header?.children ?? [])].map((part) => part.textContent)).toEqual(['Modified', 'src/a.ts', '+1', '−1']);

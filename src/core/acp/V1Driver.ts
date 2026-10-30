@@ -277,6 +277,13 @@ function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
       return { kind: 'configOptions', options: update.configOptions.map(configOption) };
     case 'current_mode_update':
       return { kind: 'currentMode', modeId: update.currentModeId };
+    case 'usage_update':
+      return {
+        kind: 'usage',
+        used: update.used,
+        size: update.size,
+        cost: update.cost ? { amount: update.cost.amount, currency: update.cost.currency } : null,
+      };
     case 'session_info_update':
       return {
         kind: 'sessionInfo',

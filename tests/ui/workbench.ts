@@ -65,6 +65,14 @@ export function promptInput(window: Page): Locator {
   return acpChatFrame(window).locator('#promptInput');
 }
 
+export function sessionUsage(window: Page): Locator {
+  return acpChatFrame(window).getByRole('button', { name: 'Session usage', exact: true });
+}
+
+export function sessionUsageDetails(window: Page): Locator {
+  return acpChatFrame(window).getByRole('region', { name: 'Session usage details', exact: true });
+}
+
 /** The prompts ACP Chat's transcript shows, by the webview's own classes. */
 export function chatUserMessages(window: Page): Locator {
   return acpChatFrame(window).locator('.message.user');

@@ -303,6 +303,13 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+    if (text === 'usage') {
+      await client.notify(methods.client.session.update, {
+        sessionId: params.sessionId,
+        update: { sessionUpdate: 'usage_update', used: 254264, size: 272000, cost: { amount: 11.931669815, currency: 'USD' } },
+      });
+      return { stopReason: 'end_turn' };
+    }
     if (text.startsWith('noted ')) {
       return { stopReason: 'end_turn' };
     }

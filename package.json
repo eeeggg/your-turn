@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.20-dev.1",
+  "version": "0.3.20-dev.3",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -644,6 +644,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.1.0",
     "@xterm/headless": "^6.0.0",
+    "currency-codes": "^2.2.0",
     "date-fns": "^4.4.0",
     "diff": "^9.0.0",
     "execa": "^10.2.0",
