@@ -17,10 +17,12 @@ interface JobEvent {
   workspaceFolder: string | null;
   /** Whether the job's folder existed when its window started; null for a window with no folder. */
   folderExisted: boolean | null;
+  /** What the window was given to open, as it was when the window started, with the folders a workspace file lists. */
+  opened: { path: string; existed: boolean; folders: { path: string; existed: boolean }[] | null }[];
 }
 
-/** Compiled tests: two for the window with no folder, one for the folder window. */
-const TESTS = ['alpha.test.js', 'beta.test.js', 'folder/gamma.test.js'];
+/** Compiled tests: two for the folder window, one for the window with no folder. */
+const TESTS = ['alpha.test.js', 'beta.test.js', 'empty/gamma.test.js'];
 
 interface RunnerOptions {
   coverage?: boolean;
@@ -71,7 +73,7 @@ async function launchRunner({ coverage = false, failGroup = '', throughMake = tr
   `;
   await writeFile(cli, `
     import { spawn } from 'node:child_process';
-    import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+    import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
     import { pathToFileURL } from 'node:url';
     const config = process.argv[process.argv.indexOf('--config') + 1];
     const settings = (await import(pathToFileURL(config).href)).default;
@@ -85,9 +87,17 @@ async function launchRunner({ coverage = false, failGroup = '', throughMake = tr
     const profile = test.launchArgs[0].slice('--user-data-dir='.length);
     mkdirSync(profile, { recursive: true });
     const workspaceFolder = test.workspaceFolder ?? null;
+    const paths = [...test.launchArgs.filter((arg) => !arg.startsWith('--')), ...(workspaceFolder === null ? [] : [workspaceFolder])];
+    const opened = paths.map((path) => ({
+      path,
+      existed: existsSync(path),
+      folders: path.endsWith('.code-workspace') && existsSync(path)
+        ? JSON.parse(readFileSync(path, 'utf8')).folders.map(({ path }) => ({ path, existed: existsSync(path) }))
+        : null,
+    }));
     const details = {
       group: process.env.VSCODE_TEST_GROUP, leader: process.pid, config, profile, files: test.files, workspaceFolder,
-      folderExisted: workspaceFolder === null ? null : existsSync(workspaceFolder),
+      folderExisted: workspaceFolder === null ? null : existsSync(workspaceFolder), opened,
     };
     if (process.env.FINISH_AT_ONCE === '1') {
       console.log(JSON.stringify({ ...details, event: 'finished' }));
@@ -225,8 +235,8 @@ it.each(['', '2'])('preserves separate coverage reports and job mapping when fai
     const run = join(reports, directory);
     const jobs = JSON.parse(await readFile(join(run, 'jobs.json'), 'utf8')) as { files: string[]; window: string; report: string }[];
     expect(jobs.map(({ files, window }) => ({ files, window }))).toEqual([
-      { files: ['alpha.test.js', 'beta.test.js'], window: 'empty' },
-      { files: ['folder/gamma.test.js'], window: 'folder' },
+      { files: ['alpha.test.js', 'beta.test.js'], window: 'folder' },
+      { files: ['empty/gamma.test.js'], window: 'empty' },
     ]);
     expect(new Set(jobs.map((job) => job.report)).size).toBe(2);
     for (const job of jobs) {
@@ -252,21 +262,51 @@ it("opens each job's window as its files' window kind requires, sharing jobs out
   expect((await closed).code, output()).toBe(0);
   const jobs = jobsOf(root, events);
   expect(jobs.map(({ files, folderExisted }) => ({ files, folderExisted }))).toEqual([
-    { files: ['alpha.test.js'], folderExisted: null },
-    { files: ['beta.test.js'], folderExisted: null },
-    { files: ['folder/gamma.test.js'], folderExisted: true },
+    { files: ['alpha.test.js'], folderExisted: true },
+    { files: ['beta.test.js'], folderExisted: true },
+    { files: ['empty/gamma.test.js'], folderExisted: null },
   ]);
-  const folder = jobs[2]?.workspaceFolder;
-  assert(folder);
-  expect(relative(root, folder).startsWith('..')).toBe(true);
-  expect(existsSync(folder)).toBe(false);
+  const folders = jobs.slice(0, 2).map(({ workspaceFolder }) => workspaceFolder);
+  expect(new Set(folders).size).toBe(2);
+  for (const folder of folders) {
+    assert(folder);
+    expect(relative(root, folder).startsWith('..')).toBe(true);
+    expect(existsSync(folder)).toBe(false);
+  }
+});
+
+it("builds each job's fresh folders before its window starts, opening two as an unsaved workspace or through a workspace file it writes", async () => {
+  const tests = [...TESTS, 'untitled-workspace/delta.test.js', 'saved-workspace/epsilon.test.js'];
+  const { root, closed, events, output } = await launchRunner({ jobs: 4, finishAtOnce: true, tests });
+
+  expect((await closed).code, output()).toBe(0);
+  const jobs = events
+    .map(({ files, workspaceFolder, opened }) => ({
+      files: files.map((file) => relative(join(root, 'dist', 'test'), file)),
+      workspaceFolder: workspaceFolder !== null,
+      opened: opened.map(({ path, existed, folders }) => ({ file: path.endsWith('.code-workspace'), existed, folders: folders?.map((folder) => folder.existed) ?? null })),
+    }))
+    .sort((a, b) => (a.files[0] ?? '').localeCompare(b.files[0] ?? ''));
+  const folder = { file: false, existed: true, folders: null };
+  expect(jobs).toEqual([
+    { files: ['alpha.test.js', 'beta.test.js'], workspaceFolder: true, opened: [folder] },
+    { files: ['empty/gamma.test.js'], workspaceFolder: false, opened: [] },
+    { files: ['saved-workspace/epsilon.test.js'], workspaceFolder: true, opened: [{ file: true, existed: true, folders: [true, true] }] },
+    { files: ['untitled-workspace/delta.test.js'], workspaceFolder: false, opened: [folder, folder] },
+  ]);
+  const paths = events.flatMap(({ opened }) => opened.flatMap(({ path, folders }) => [path, ...(folders ?? []).map((listed) => listed.path)]));
+  expect(new Set(paths).size).toBe(6);
+  for (const path of paths) {
+    expect(relative(root, path).startsWith('..')).toBe(true);
+    expect(existsSync(path)).toBe(false);
+  }
 });
 
 it('runs at most JOBS windows at once, even with fewer jobs than window kinds', async () => {
   const { root, closed, events, output } = await launchRunner({ jobs: 1, finishAtOnce: true });
 
   expect((await closed).code, output()).toBe(0);
-  expect(jobsOf(root, events).map(({ files }) => files)).toEqual([['alpha.test.js', 'beta.test.js'], ['folder/gamma.test.js']]);
+  expect(jobsOf(root, events).map(({ files }) => files)).toEqual([['alpha.test.js', 'beta.test.js'], ['empty/gamma.test.js']]);
   const lines = output().split('\n');
   const firstPassed = lines.findIndex((line) => line.startsWith('[integration 1] 1 passing'));
   const secondStarted = lines.findIndex((line) => line.startsWith('[integration 2] Starting'));

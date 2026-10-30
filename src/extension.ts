@@ -29,7 +29,7 @@ import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
-import { createWorkspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { createWorkspaceEnvironment, workspaceUnavailability } from '@/adapters/WorkspaceEnvironment';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentConfigs, getAgentNames } from '@/adapters/AgentConfig';
@@ -84,6 +84,17 @@ export interface ExtensionTestApi {
 
 export function activate(context: vscode.ExtensionContext): ExtensionTestApi | undefined {
   setLogSink(outputChannelSink);
+  const unavailability = workspaceUnavailability(vscode.workspace);
+  if (unavailability) {
+    logInfo('ACP Client is unavailable in this window', { unavailability });
+    void vscode.commands.executeCommand('setContext', 'acp.workspaceUnavailable', unavailability);
+    // Without a provider, a tree view says that none is registered beside its welcome content.
+    context.subscriptions.push(
+      vscode.window.registerTreeDataProvider('acp-sessions', { getChildren: () => [], getTreeItem: (item: never) => item }),
+      { dispose: disposeChannels },
+    );
+    return undefined;
+  }
   registerTrafficAdapter(context.subscriptions);
   logInfo('ACP Client extension activating');
 
@@ -263,7 +274,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     vscode.window,
     {
       fetchRegistry,
-      checkRunner: (runner) => checkPackageRunner(agentManager, runner, workspaceEnvironment.workspaceCwd()),
+      checkRunner: (runner) => checkPackageRunner(agentManager, runner, workspaceEnvironment.workspaceRoots().cwd),
       findOnPath,
       platform: registryPlatform(),
     },

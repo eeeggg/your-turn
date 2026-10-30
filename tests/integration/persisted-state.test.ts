@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { suite, suiteSetup, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
-import { createWorkspaceEnvironment, hostOf, windowWorkspaceUri, type WorkspaceView } from '@/adapters/WorkspaceEnvironment';
+import { createWorkspaceEnvironment, hostOf, windowWorkspaceUri, workspaceUnavailability, type WorkspaceView } from '@/adapters/WorkspaceEnvironment';
 import { SessionReferences, WorkspaceState, type SessionAddress } from '@/core/PersistedState';
 import type { ExtensionTestApi } from '@/extension';
 import { cleanup } from './cleanup';
@@ -17,9 +17,11 @@ const address = (sessionId: string): SessionAddress =>
   ({ configuredName: 'persisted-state-agent', sessionId, cwd: '/home/me/work', host: DEVENV, workspaceUri: REMOTE_FOLDER });
 
 /** A workspace as an extension host sees it, which in a remote window has its folders on the remote as `file:` URIs. */
-function workspaceView(folders: string[], workspaceFile?: vscode.Uri): WorkspaceView {
+function workspaceView(folders: (string | vscode.Uri)[], workspaceFile?: vscode.Uri): WorkspaceView {
   return {
-    workspaceFolders: folders.length ? folders.map((path, index) => ({ uri: vscode.Uri.file(path), name: path, index })) : undefined,
+    workspaceFolders: folders.length
+      ? folders.map((folder, index) => ({ uri: typeof folder === 'string' ? vscode.Uri.file(folder) : folder, name: folder.toString(), index }))
+      : undefined,
     workspaceFile,
   };
 }
@@ -165,11 +167,6 @@ suite('Persisted state', () => {
     assert.strictEqual(windowWorkspaceUri(folder, webviewMaking('vscode-remote+devenv.vscode-resource.vscode-cdn.net', 'http')), undefined);
   });
 
-  test('has no workspace target in a window without a folder', () => {
-    assert.strictEqual(vscode.workspace.workspaceFolders, undefined);
-    assert.strictEqual(createWorkspaceEnvironment(new WorkspaceState(storage.workspaceState)).workspaceTarget(), undefined);
-  });
-
   /** The target a remote window on `view` learns from a webview of a window on `devenv`. */
   function learned(view: WorkspaceView, state = new WorkspaceState(storage.workspaceState)) {
     const environment = createWorkspaceEnvironment(state, 'ssh-remote', view);
@@ -206,6 +203,47 @@ suite('Persisted state', () => {
     assert.deepStrictEqual(local(workspaceView(['/home/me/work', '/home/me/other'], workspaceFile)), { uri: workspaceFile.toString(), host: 'file://' });
   });
 
+  test('gives sessions the first folder as their cwd and the other folders on disk as their additional directories', () => {
+    const roots = (view: WorkspaceView) => createWorkspaceEnvironment(new WorkspaceState(storage.workspaceState), undefined, view).workspaceRoots();
+    const virtual = vscode.Uri.from({ scheme: 'vscode-vfs', authority: 'github', path: '/me/repo' });
+    const workspaceFile = vscode.Uri.file('/home/me/all.code-workspace');
+
+    assert.deepStrictEqual(roots(workspaceView(['/home/me/work'])), { cwd: vscode.Uri.file('/home/me/work').fsPath, additionalDirectories: [] });
+    assert.deepStrictEqual(roots(workspaceView(['/home/me/work', virtual, '/home/me/other'], workspaceFile)), {
+      cwd: vscode.Uri.file('/home/me/work').fsPath,
+      additionalDirectories: [vscode.Uri.file('/home/me/other').fsPath],
+    });
+    assert.throws(() => roots(workspaceView([])), /first workspace folder on disk/);
+    assert.throws(() => roots(workspaceView([virtual, '/home/me/work'], workspaceFile)), /first workspace folder on disk/);
+  });
+
+  test('is unavailable with no folder, in an unsaved workspace, or when the first folder is not on disk', () => {
+    const virtual = vscode.Uri.from({ scheme: 'vscode-vfs', authority: 'github', path: '/me/repo' });
+    const saved = vscode.Uri.file('/home/me/all.code-workspace');
+    const untitled = vscode.Uri.from({ scheme: 'untitled', path: 'Untitled-1' });
+    assert.deepStrictEqual([
+      workspaceView([]),
+      workspaceView([], saved),
+      workspaceView(['/home/me/work', '/home/me/other']),
+      workspaceView(['/home/me/work', '/home/me/other'], untitled),
+      workspaceView(['/home/me/work'], untitled),
+      workspaceView([virtual]),
+      workspaceView([virtual, '/home/me/work'], saved),
+      workspaceView([virtual, '/home/me/work'], untitled),
+    ].map((view) => workspaceUnavailability(view)), ['empty', 'empty', 'untitled', 'untitled', 'untitled', 'virtual', 'virtual', 'virtual']);
+  });
+
+  test('is available in a single folder or a saved workspace whose first folder is on disk, as this window is', () => {
+    const virtual = vscode.Uri.from({ scheme: 'vscode-vfs', authority: 'github', path: '/me/repo' });
+    const saved = vscode.Uri.file('/home/me/all.code-workspace');
+    assert.deepStrictEqual([
+      workspaceView(['/home/me/work']),
+      workspaceView(['/home/me/work'], saved),
+      workspaceView(['/home/me/work', virtual], saved),
+      vscode.workspace,
+    ].map((view) => workspaceUnavailability(view)), [undefined, undefined, undefined, undefined]);
+  });
+
   test('in a remote window, starts with the workspace target an earlier startup learned, only for the same workspace', async () => {
     const view = workspaceView(['/home/me/work'], onClient('/Users/me/Desktop/both.code-workspace'));
     const earlier = new WorkspaceState(storage.workspaceState);
@@ -238,7 +276,7 @@ suite('Persisted state', () => {
     // Global state is shown as VS Code's copy holds it, which may briefly be an earlier value, so only its shape is fixed.
     const first = await shown() as Record<string, unknown>;
     assert.deepStrictEqual([first['window'], first['workspaceState']], [
-      { workspaceTarget: null, host: null },
+      { workspaceTarget: vscode.workspace.workspaceFolders?.[0]?.uri.toString(), host: 'file://' },
       {
         'acp.sessionHistory.v1': { version: 1, entries: [] },
         'acp.workspace': { schemaVersion: 2, lastActiveSession: address('shown') },
@@ -290,6 +328,9 @@ suite('Persisted state', () => {
     await reset('Reset');
     assert.deepStrictEqual([storage.workspaceState.keys(), listed()], [[], []]);
     const state = JSON.parse(vscode.window.activeTextEditor?.document.getText() ?? '') as Record<string, unknown>;
-    assert.deepStrictEqual([state['window'], state['workspaceState']], [{ workspaceTarget: null, host: null }, {}]);
+    assert.deepStrictEqual([state['window'], state['workspaceState']], [
+      { workspaceTarget: vscode.workspace.workspaceFolders?.[0]?.uri.toString(), host: 'file://' },
+      {},
+    ]);
   });
 });

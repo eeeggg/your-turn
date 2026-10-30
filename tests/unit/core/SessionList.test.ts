@@ -6,7 +6,7 @@ import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddr
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionManager, type AuthPrompt } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
 
@@ -33,7 +33,7 @@ function setup(scripts: Record<string, AgentScript>) {
     agents,
     new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
     {
-      workspaceCwd: () => '/work',
+      workspaceRoots: () => work,
       workspaceTarget: () => target,
       workspaceTargetKnown: () => Promise.resolve(target),
       agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),

@@ -5,7 +5,7 @@ import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled } from '@/core/
 import { setLogSink } from '@/core/Log';
 import { V1Driver, v1InitializeRequest } from '@/core/acp/V1Driver';
 import { V2Driver, v2InitializeRequest } from '@/core/acp/V2Driver';
-import { connectedDriver, fakeAgent, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
+import { connectedDriver, fakeAgent, fakeV2Agent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const v2Request = {
   protocolVersion: 2,
@@ -55,7 +55,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V1Driver);
     expect(initializes()).toEqual([v2Request]);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
   it('speaks v2 with an agent that speaks only v2', async () => {
@@ -63,7 +63,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V2Driver);
     expect(initializes()).toEqual([v2Request]);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
   it('speaks v2 with an agent that speaks both', async () => {
@@ -72,7 +72,7 @@ describe('negotiation', () => {
       .withV2(fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's2' }))));
 
     expect(driver).toBeInstanceOf(V2Driver);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's2' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's2' });
   });
 
   it("speaks v1 with a v1 agent behind a router, which is told the client's name and offered no file access or terminals", async () => {
@@ -105,7 +105,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V1Driver);
     expect(initializes()).toEqual([v2Request, v1Request]);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
   it.each([
@@ -141,7 +141,7 @@ describe('negotiation', () => {
       })
       .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
 
-    await driver.newSession('/work');
+    await driver.newSession(work);
 
     expect(updates).toEqual([]);
   });

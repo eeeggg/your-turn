@@ -19,6 +19,7 @@ import type {
   PlanStepStatus,
   PromptPart,
   SessionPage,
+  SessionRoots,
   SessionState,
   SessionUpdate,
   SlashCommand,
@@ -79,8 +80,19 @@ export class V1Driver implements AcpDriver {
     return this.connection.signal.aborted;
   }
 
-  async newSession(cwd: string): Promise<NewSession> {
-    const response = await authChecked(this.connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [] }));
+  /** The directories beyond `cwd` that a session setup request carries. */
+  private additionalDirectories({ additionalDirectories }: SessionRoots): { additionalDirectories?: string[] } {
+    if (additionalDirectories.length === 0) { return {}; }
+    if (!this.agent.capabilities.additionalDirectories) {
+      logInfo('Agent does not support additional directories; sending only the cwd', { additionalDirectories });
+      return {};
+    }
+    return { additionalDirectories: [...additionalDirectories] };
+  }
+
+  async newSession(roots: SessionRoots): Promise<NewSession> {
+    const request: Acp.NewSessionRequest = { cwd: roots.cwd, ...this.additionalDirectories(roots), mcpServers: [] };
+    const response = await authChecked(this.connection.agent.request(methods.agent.session.new, request));
     return { sessionId: response.sessionId, ...sessionState(response) };
   }
 
@@ -95,13 +107,15 @@ export class V1Driver implements AcpDriver {
     };
   }
 
-  async loadSession(sessionId: string, cwd: string): Promise<SessionState> {
-    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.load, { sessionId, cwd, mcpServers: [] }));
+  async loadSession(sessionId: string, roots: SessionRoots): Promise<SessionState> {
+    const request: Acp.LoadSessionRequest = { sessionId, cwd: roots.cwd, ...this.additionalDirectories(roots), mcpServers: [] };
+    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.load, request));
     return sessionState(response);
   }
 
-  async resumeSession(sessionId: string, cwd: string): Promise<SessionState> {
-    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.resume, { sessionId, cwd, mcpServers: [] }));
+  async resumeSession(sessionId: string, roots: SessionRoots): Promise<SessionState> {
+    const request: Acp.ResumeSessionRequest = { sessionId, cwd: roots.cwd, ...this.additionalDirectories(roots), mcpServers: [] };
+    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.resume, request));
     return sessionState(response);
   }
 
@@ -142,6 +156,7 @@ function agentDescription(response: Acp.InitializeResponse): AgentDescription {
       list: !!caps?.sessionCapabilities?.list,
       load: !!caps?.loadSession,
       resume: !!caps?.sessionCapabilities?.resume,
+      additionalDirectories: !!caps?.sessionCapabilities?.additionalDirectories,
     },
     authMethods: (response.authMethods ?? []).map((method) => ({ id: method.id, name: method.name, description: method.description ?? null })),
   };

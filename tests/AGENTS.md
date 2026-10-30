@@ -69,7 +69,7 @@ preparation or execution, including focused and repeated runs.
 - `FILES` — Whitespace-separated explicit repo-relative test file paths. Every
   path is validated against the chosen test layer; an unmatched or cross-layer
   selection produces an error. Integration paths may name a window kind's
-  directory, such as `tests/integration/folder/persisted-state.test.ts`.
+  directory, such as `tests/integration/empty/unavailable.test.ts`.
 - `REPEAT` — Positive integer repeat count, default `1`. Repeated runs stop on
   the first failure.
 - `JOBS` — Positive integer cap on VS Code windows running at once, supported
@@ -84,9 +84,16 @@ preparation or execution, including focused and repeated runs.
 
 ## Verification and the Release Gate
 
-- For a bug, establish a failing regression before fixing it. Verify decisions
-  with deliberate breaks, one at a time. If only the build catches a break,
-  use a compiling variant; an undetected break needs a test or exposes dead code.
+- For a bug, establish a failing regression before fixing it. Write a
+  feature's tests first and watch each fail for the intended reason.
+- Then verify with deliberate breaks, one at a time, only what that failure
+  did not already show: a test that passed when first run, cases within one
+  test that failed together, assertions loose enough to pass for the wrong
+  reason (prefixes, filters, membership), and ways to get the behavior wrong
+  other than leaving it out. Skip a break that would only trip the assertion
+  the failing-first run already tripped, and say so when reporting. If only
+  the build catches a break, use a compiling variant; an undetected break
+  needs a test or exposes dead code.
 - Run `make test` for the unfiltered typecheck, lint, bundle, unit/webview and
   integration gate. Run `make test-ui` separately for
   rendered workbench behavior; it also performs typecheck and lint first. These
@@ -124,8 +131,9 @@ Vitest provides the fast in-process test system. Run all Vitest projects with
 
 `tests/integration/` exercises behavior that requires the real VS Code API or
 extension host without driving the rendered workbench. Its files run in a
-window with no folder, or on a temporary folder when they are in
-`tests/integration/folder/`. Run it with `make test-integration`. Read
+window on a temporary folder, or in the workspace shape their directory under
+`tests/integration/` names: `empty/`, `untitled-workspace/` or
+`saved-workspace/`. Run it with `make test-integration`. Read
 `tests/integration/AGENTS.md` before changing its tests, fixtures or runner.
 
 ### Desktop UI

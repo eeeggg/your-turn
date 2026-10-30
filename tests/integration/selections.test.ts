@@ -22,7 +22,7 @@ for (const version of [1, 2]) {
       original = config().inspect('agents')?.globalValue;
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, '..', 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
         vscode.ConfigurationTarget.Global,
       );
     });

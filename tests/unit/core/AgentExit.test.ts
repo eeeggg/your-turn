@@ -9,7 +9,7 @@ import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { showsEmptyState } from '@/webview/state/Transcript';
-import { fakeAgent, InProcessAgents, unusedEditor, unusedHandlers, type ExitOrder } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedEditor, unusedHandlers, work, type ExitOrder } from './InProcessAgents';
 
 /** The extension and the chat view's store, wired as `extension.ts` wires them, with a real agent behind them. */
 function setup() {
@@ -29,7 +29,7 @@ function setup() {
   const manager = new SessionManager(
     agents,
     new ConnectionManager(updates, '0.0.0-test', () => unusedHandlers),
-    { workspaceCwd: () => '/work', workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ fake: { command: 'fake' } }), activeFileLink: () => undefined },
+    { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ fake: { command: 'fake' } }), activeFileLink: () => undefined },
     { chooseAuthMethod: vi.fn() },
   );
   onTestFinished(async () => { await manager.dispose(); });

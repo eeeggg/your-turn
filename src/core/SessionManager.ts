@@ -11,6 +11,7 @@ import {
   type NewSession,
   type PromptPart,
   type SessionPage,
+  type SessionRoots,
   type SessionState,
   type SlashCommand,
 } from '@/core/acp/AcpDriver';
@@ -35,8 +36,8 @@ import { logDebug, logError, logInfo, messageOf } from './Log';
 
 /** What sessions need from the workspace the extension runs in. */
 export interface SessionEnvironment {
-  /** Working directory for agents and their sessions. */
-  workspaceCwd(): string;
+  /** The directories agents run in and their sessions work in: the workspace's first folder as `cwd`, and its others. */
+  workspaceRoots(): SessionRoots;
   /**
    * The workspace sessions are recorded against, as the window holds it; undefined when this window has none it could
    * open again, or is a remote window that has not yet learned it.
@@ -261,7 +262,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     logDebug('Connecting to agent', { agentName });
 
     const agent = await this.ensureAgent(agentName);
-    const sessionInfo = await this.createAcpSession(agent, this.environment.workspaceCwd());
+    const sessionInfo = await this.createAcpSession(agent, this.environment.workspaceRoots());
 
     this.agentSessions.set(agentName, sessionInfo.sessionId);
     this.activeSessionId = sessionInfo.sessionId;
@@ -341,7 +342,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     let exitHandled!: () => void;
     const exited = new Promise<void>((resolve) => { exitHandled = resolve; });
     const outcome: { launchError?: LaunchError; exitCode?: number | null } = {};
-    const agentProcess = this.launcher.launch(agentName, config, this.environment.workspaceCwd(), {
+    const agentProcess = this.launcher.launch(agentName, config, this.environment.workspaceRoots().cwd, {
       error: (error) => { outcome.launchError = error; },
       exit: (code) => {
         outcome.exitCode = code;
@@ -416,8 +417,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   /** Create the ACP session, authenticating first if the agent requires it. */
-  private async createAcpSession(agent: RunningAgent, cwd: string): Promise<SessionInfo> {
-    const requestSession = () => agent.driver.newSession(cwd);
+  private async createAcpSession(agent: RunningAgent, roots: SessionRoots): Promise<SessionInfo> {
+    const requestSession = () => agent.driver.newSession(roots);
 
     let response: NewSession;
     try {
@@ -438,7 +439,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       }
     }
 
-    const sessionInfo = this.registerSession(agent, response.sessionId, cwd, response);
+    const sessionInfo = this.registerSession(agent, response.sessionId, roots.cwd, response);
     this.recordOpened(sessionInfo, 'created');
     return sessionInfo;
   }
@@ -791,10 +792,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     this.dropActiveSessionUnless(sessionId);
 
-    const cwd = this.environment.workspaceCwd();
+    const roots = this.environment.workspaceRoots();
     // Registered and made active before the request, so the transcript the
     // agent replays during the load reaches the webview.
-    const session = this.registerSession(agent, sessionId, cwd);
+    const session = this.registerSession(agent, sessionId, roots.cwd);
     this.agentSessions.set(agentName, sessionId);
     this.activeSessionId = sessionId;
     // Emit active-session-changed BEFORE session-load-start so the webview
@@ -808,7 +809,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     try {
       // The response carries the latest snapshot of the session's state; a v1
       // response has no commands, which only the replayed updates report.
-      const state = await agent.driver.loadSession(sessionId, cwd);
+      const state = await agent.driver.loadSession(sessionId, roots);
       session.modes = state.modes;
       session.configOptions = state.configOptions;
       if (state.commands) {
@@ -841,10 +842,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     this.dropActiveSessionUnless(sessionId);
 
-    const cwd = this.environment.workspaceCwd();
-    const response = await agent.driver.resumeSession(sessionId, cwd);
+    const roots = this.environment.workspaceRoots();
+    const response = await agent.driver.resumeSession(sessionId, roots);
 
-    const sessionInfo = this.registerSession(agent, sessionId, cwd, response);
+    const sessionInfo = this.registerSession(agent, sessionId, roots.cwd, response);
     this.agentSessions.set(agentName, sessionId);
     this.activeSessionId = sessionId;
     this.emit('session-added', sessionId, agentName);

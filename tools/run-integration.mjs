@@ -126,13 +126,18 @@ process.on('SIGTERM', terminate);
 async function runGroup({ kind, files }, index) {
   const profile = join(profiles, `profile-${index}`);
   const config = join(configDirectory, `config-${index}.mjs`);
+  // Under the run's temporary directory, so outside any Git worktree, and removed with the profiles.
+  const folders = Array.from({ length: kind.folders }, (_, folder) => join(profiles, `folder-${index}-${folder + 1}`));
+  await Promise.all(folders.map((folder) => mkdir(folder)));
+  const workspaceFile = kind.saved ? join(profiles, `workspace-${index}.code-workspace`) : undefined;
+  if (workspaceFile !== undefined) { await writeFile(workspaceFile, JSON.stringify({ folders: folders.map((path) => ({ path })) })); }
+  // The test CLI opens one path; several folders on the command line open as an unsaved workspace.
+  const workspaceFolder = workspaceFile ?? (folders.length === 1 ? folders[0] : undefined);
   const launchArgs = JSON.stringify([
     `--user-data-dir=${profile}`,
     '--disable-extensions',
+    ...(workspaceFolder === undefined ? folders : []),
   ]);
-  // Under the run's temporary directory, so outside any Git worktree, and removed with the profiles.
-  const workspaceFolder = kind.opensFolder ? join(profiles, `folder-${index}`) : undefined;
-  if (workspaceFolder !== undefined) { await mkdir(workspaceFolder); }
   const configText = `import base from ${JSON.stringify(pathToFileURL(join(root, '.vscode-test.mjs')).href)};
 export default {
   ...base,

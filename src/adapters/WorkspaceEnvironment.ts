@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { WorkspaceState, WorkspaceTarget } from '@/core/PersistedState';
+import { logInfo } from '@/core/Log';
 import type { SessionEnvironment } from '@/core/SessionManager';
 import { getAgentConfigs } from './AgentConfig';
 
@@ -11,6 +12,22 @@ export function hostOf(uri: string): string {
 
 /** The window's workspace as its extension host sees it. */
 export type WorkspaceView = Pick<typeof vscode.workspace, 'workspaceFile' | 'workspaceFolders'>;
+
+/** Why the extension is unavailable in a window: no folder, an unsaved workspace, or a first folder not on disk. */
+export type WorkspaceUnavailability = 'empty' | 'untitled' | 'virtual';
+
+/**
+ * Agents run in the first folder, which must be a path on the extension host, and sessions are found again by a
+ * workspace the window can reopen, which an unsaved workspace's `untitled:` file is not. VS Code restarts extensions
+ * when the first folder changes or the window enters a saved workspace, so this holds for the whole activation.
+ */
+export function workspaceUnavailability({ workspaceFile, workspaceFolders = [] }: WorkspaceView): WorkspaceUnavailability | undefined {
+  const [first] = workspaceFolders;
+  if (!first) { return 'empty'; }
+  if (first.uri.scheme !== 'file') { return 'virtual'; }
+  const unsaved = workspaceFile ? workspaceFile.scheme === 'untitled' : workspaceFolders.length > 1;
+  return unsaved ? 'untitled' : undefined;
+}
 
 /**
  * The workspace URI as the window holds it, which for a remote workspace carries the authority its extension host
@@ -128,9 +145,19 @@ export function createWorkspaceEnvironment(
       }
     },
 
-    workspaceCwd() {
-      const cwd = workspace.workspaceFolders?.[0]?.uri.fsPath;
-      return cwd || process.cwd();
+    workspaceRoots() {
+      const [first, ...others] = workspace.workspaceFolders ?? [];
+      if (first?.uri.scheme !== 'file') {
+        throw new Error('Agent sessions need a first workspace folder on disk');
+      }
+      const elsewhere = others.filter(({ uri }) => uri.scheme !== 'file');
+      if (elsewhere.length > 0) {
+        logInfo('Leaving workspace folders that are not on disk out of agent sessions', { folders: elsewhere.map(({ uri }) => uri.toString()) });
+      }
+      return {
+        cwd: first.uri.fsPath,
+        additionalDirectories: others.filter(({ uri }) => uri.scheme === 'file').map(({ uri }) => uri.fsPath),
+      };
     },
 
     workspaceTarget,

@@ -7,7 +7,7 @@ import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ProgressLocation } from '@/core/VsCodeApi';
-import { fakeAgent, InProcessAgents, unusedHandlers, type AgentScript } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
 import { ScriptedUser, type Call } from './ScriptedUser';
 
 const progress = (title: string): Call => ({ call: 'withProgress', options: { location: ProgressLocation.Notification, title, cancellable: false } });
@@ -63,7 +63,7 @@ function setup(scripts: Record<string, AgentScript>) {
     agents,
     new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
     {
-      workspaceCwd: () => '/work',
+      workspaceRoots: () => work,
       workspaceTarget: () => WORKSPACE,
       workspaceTargetKnown: () => Promise.resolve(WORKSPACE),
       agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),

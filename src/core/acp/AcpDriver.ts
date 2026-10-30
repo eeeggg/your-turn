@@ -10,6 +10,15 @@ export interface AgentCapabilities {
   list: boolean;
   load: boolean;
   resume: boolean;
+  /** Whether a session can be given directories beyond its `cwd` when it is created, loaded or resumed. */
+  additionalDirectories: boolean;
+}
+
+/** The directories a session works in: `cwd`, the base for relative paths, and any others it may use. */
+export interface SessionRoots {
+  cwd: string;
+  /** Sent only to an agent that supports them. */
+  additionalDirectories: readonly string[];
 }
 
 export interface AuthMethod {
@@ -236,11 +245,11 @@ export interface AcpDriver {
   readonly agent: AgentDescription;
   /** The connection can close before the agent's exit is reported. */
   readonly closed: boolean;
-  newSession(cwd: string): Promise<NewSession>;
+  newSession(roots: SessionRoots): Promise<NewSession>;
   listSessions(query: { cwd?: string | undefined; cursor?: string | undefined }): Promise<SessionPage>;
   /** The agent replays the session's transcript as session updates before this resolves. */
-  loadSession(sessionId: string, cwd: string): Promise<SessionState>;
-  resumeSession(sessionId: string, cwd: string): Promise<SessionState>;
+  loadSession(sessionId: string, roots: SessionRoots): Promise<SessionState>;
+  resumeSession(sessionId: string, roots: SessionRoots): Promise<SessionState>;
   /** Resolves when the turn ends. */
   prompt(sessionId: string, prompt: PromptPart[]): Promise<void>;
   cancel(sessionId: string): Promise<void>;

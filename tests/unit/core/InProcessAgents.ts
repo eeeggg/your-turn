@@ -2,7 +2,7 @@ import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprot
 import type { AgentApp, AgentConnector, InitializeResponse } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { onTestFinished } from 'vitest';
-import type { AcpDriver, AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
+import type { AcpDriver, AcpSchema, SessionRoots, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
@@ -15,6 +15,9 @@ export type AgentScript = () => AgentConnector;
 const unused = (): never => {
   throw new Error('not used by these tests');
 };
+
+/** A session's directories when only its `cwd` matters. */
+export const work: SessionRoots = { cwd: '/work', additionalDirectories: [] };
 
 /** Client handlers for agents that never call them. */
 export const unusedHandlers: ClientHandlers = {

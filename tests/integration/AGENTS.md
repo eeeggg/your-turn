@@ -12,13 +12,18 @@
   each job's window as its window kind requires, but must not know about named
   suites, "light" or "dedicated" jobs, protocol versions or a hardcoded
   expected test count.
-- A file's directory sets its window kind. Files directly in
-  `tests/integration/` run in a window with no folder; files in
-  `tests/integration/folder/` run in a window on a fresh temporary folder the
-  runner creates for the job and removes afterwards. Add a kind only for a
-  workspace shape the extension behaves differently in, never to isolate or
-  schedule particular files. The folder belongs to the job: files must not
-  depend on its contents, and remove whatever they create in it.
+- A file's directory sets its window kind, listed in
+  `tools/integration-windows.mjs`. Files directly in `tests/integration/` run
+  in a window on a fresh temporary folder the runner creates for the job and
+  removes afterwards. Files in `tests/integration/empty/` run in a window with
+  no folder, and those in `tests/integration/untitled-workspace/` in an
+  unsaved workspace of two fresh folders; the extension is unavailable in
+  both. Files in `tests/integration/saved-workspace/` run in a workspace of
+  two fresh folders saved in a `.code-workspace` file the runner writes. Add
+  a kind only for a workspace shape the extension behaves differently in,
+  never to isolate or schedule particular files. The folders belong to the
+  job: files must not depend on their contents, and remove whatever they
+  create in them.
 - Do not use Mocha's `--parallel`. Parallelism comes from isolated VS Code
   processes because Mocha workers do not receive VS Code's injected API.
 
@@ -80,7 +85,7 @@
   `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
 - `FILES` accepts explicit whitespace-separated repo-relative source test paths
   (no globs or unmatched paths), including those in a window kind's directory,
-  such as `tests/integration/folder/persisted-state.test.ts`.
+  such as `tests/integration/empty/unavailable.test.ts`.
 - `REPEAT` runs fresh sequential executions (positive integer, default `1`) and
   stops immediately on the first failure. Bundles and extension are prepared
   once per batch.

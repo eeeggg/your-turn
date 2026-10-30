@@ -2,7 +2,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, AuthMethod as AcpAuthMethod, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { UnknownSession, type AuthMethod, type ConfigOption, type FileLink, type SessionUpdate } from '@/core/acp/AcpDriver';
+import { UnknownSession, type AuthMethod, type ConfigOption, type FileLink, type SessionRoots, type SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { AgentTerminals } from '@/core/AgentTerminals';
@@ -16,7 +16,7 @@ import {
   type SessionManagerEvents,
 } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, type AgentScript, type ExitOrder } from './InProcessAgents';
+import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, work, type AgentScript, type ExitOrder } from './InProcessAgents';
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -75,8 +75,9 @@ function setup(scripts: Record<string, AgentScript>) {
   let fileLink: FileLink | undefined;
   let target: WorkspaceTarget | undefined = WORKSPACE;
   let known: Promise<WorkspaceTarget | undefined> | undefined;
+  let roots: SessionRoots = work;
   const environment: SessionEnvironment = {
-    workspaceCwd: () => '/work',
+    workspaceRoots: () => roots,
     workspaceTarget: () => target,
     workspaceTargetKnown: () => known ?? Promise.resolve(target),
     agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
@@ -133,6 +134,8 @@ function setup(scripts: Record<string, AgentScript>) {
     received,
     events,
     linkActiveFile(link: FileLink) { fileLink = link; },
+    /** As in a multi-root workspace whose other folders are these. */
+    withOtherFolders(...additionalDirectories: string[]) { roots = { ...work, additionalDirectories }; },
     /** As in a window with no folder, or an untitled multi-root workspace. */
     withoutWorkspaceTarget() { target = undefined; },
     /** As in a remote window that has yet to learn its workspace URI; the function returned makes it known. */
@@ -204,6 +207,27 @@ describe('SessionManager', () => {
       expect(workspace.lastActiveSession()).toEqual(address('s1'));
     });
 
+    it("launches the agent in the workspace's first folder, and gives the sessions it creates, loads and resumes the others", async () => {
+      const init = { agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, additionalDirectories: {} } } };
+      const fake = sessionAgent('s1', (app) => app
+        .onRequest(methods.agent.session.load, ({ params }) => { fake.requests.push({ method: 'session/load', params }); return {}; })
+        .onRequest(methods.agent.session.resume, ({ params }) => { fake.requests.push({ method: 'session/resume', params }); return {}; }), init);
+      const { manager, agents, withOtherFolders } = setup({ fake: fake.script });
+      withOtherFolders('/more', '/other');
+
+      await manager.connectToAgent('fake');
+      await manager.loadSession('fake', 'old');
+      await manager.resumeSession('fake', 'older');
+
+      expect(agents.launched.map((launched) => launched.cwd)).toEqual(['/work']);
+      const additionalDirectories = ['/more', '/other'];
+      expect(fake.requests).toEqual([
+        { method: 'session/new', params: { cwd: '/work', additionalDirectories, mcpServers: [] } },
+        { method: 'session/load', params: { sessionId: 'old', cwd: '/work', additionalDirectories, mcpServers: [] } },
+        { method: 'session/resume', params: { sessionId: 'older', cwd: '/work', additionalDirectories, mcpServers: [] } },
+      ]);
+    });
+
     it('records nothing about a session in a window with no workspace target', async () => {
       const { manager, references, workspace, withoutWorkspaceTarget } = setup({ fake: sessionAgent().script });
       withoutWorkspaceTarget();
@@ -273,7 +297,7 @@ describe('SessionManager', () => {
       const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } });
       const { manager } = setup({ fake: script });
 
-      expect(await manager.ensureConnected('fake')).toEqual({ list: false, load: true, resume: false });
+      expect(await manager.ensureConnected('fake')).toEqual({ list: false, load: true, resume: false, additionalDirectories: false });
     });
 
     it('disconnects an agent launched only to list its sessions', async () => {
@@ -1009,7 +1033,7 @@ describe('SessionManager', () => {
       expect(fake.requests).toEqual([{ cwd: '/work' }]);
       expect(result.sessions.map((s) => s.sessionId)).toEqual(['a', 'b']);
       expect(result.nextCursor).toBe('page2');
-      expect(manager.getCachedCapabilities('fake')).toEqual({ list: true, load: true, resume: true });
+      expect(manager.getCachedCapabilities('fake')).toEqual({ list: true, load: true, resume: true, additionalDirectories: false });
     });
 
     it('leaves the cursor out on the last page', async () => {
@@ -1468,7 +1492,7 @@ describe('SessionManager', () => {
         const manager = new SessionManager(
           new AgentManager(),
           new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
-          { workspaceCwd: () => process.cwd(), workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ broken: config }), activeFileLink: () => undefined },
+          { workspaceRoots: () => ({ cwd: process.cwd(), additionalDirectories: [] }), workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ broken: config }), activeFileLink: () => undefined },
           { chooseAuthMethod: vi.fn() },
         );
         onTestFinished(async () => { await manager.dispose(); });

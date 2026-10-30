@@ -11,7 +11,7 @@ suite('Renaming an agent configuration in a folder window', () => {
   const before = `fake-rename-before-${group}`;
   const after = `fake-rename-after-${group}`;
   const sessionId = `rename-${group}`;
-  const entry = { command: process.execPath, args: [join(__dirname, '..', 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } };
+  const entry = { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } };
   const config = () => vscode.workspace.getConfiguration('acp');
   let api: ExtensionTestApi;
   let original: unknown;

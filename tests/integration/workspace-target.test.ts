@@ -14,7 +14,7 @@ import type { ExtensionTestApi } from '@/extension';
 import { cleanup } from '@tests/integration/cleanup';
 import { remoteWebview } from '@tests/integration/webviews';
 
-suite('Persisted state in a folder window', () => {
+suite("The window's workspace target", () => {
   const agentName = 'fake-persisted-folder';
   const sessionId = `persisted-folder-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}`;
   const config = () => vscode.workspace.getConfiguration('acp');
@@ -43,7 +43,7 @@ suite('Persisted state in a folder window', () => {
     original = config().inspect('agents')?.globalValue;
     await config().update(
       'agents',
-      { [agentName]: { command: process.execPath, args: [join(__dirname, '..', 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
+      { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
       vscode.ConfigurationTarget.Global,
     );
   });

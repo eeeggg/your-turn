@@ -1,6 +1,6 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk/experimental/v2';
 import type { AgentContext, ContentBlock, SessionConfigOption, SessionUpdate, StateUpdate } from '@agentclientprotocol/sdk/experimental/v2';
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 
@@ -17,10 +17,19 @@ import { Readable, Writable } from 'node:stream';
  * there for `review.test.ts`, as `changeForReview` describes; "again <dir>" then changes `a.ts` once more, and "three <dir>" changes `m.ts` there in three places.
  * A prompt of "switch <model>" makes it switch its model option to that value itself.
  * It lists sessions, as its session capability says: one, new each time it is asked, titled "Listed <n>".
+ * With `ACP_TEST_RECORDS` set to a file, it takes additional directories, resumes any session, and appends each
+ * session it creates or resumes to that file as a line of JSON: its method, directories and any replay asked for.
  */
 
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
+const RECORDS = process.env['ACP_TEST_RECORDS'];
 let listings = 0;
+
+function record(method: string, { cwd, additionalDirectories, replayFrom }: { cwd: string; additionalDirectories?: string[] | undefined; replayFrom?: { type: string } | null | undefined }): void {
+  if (RECORDS) {
+    appendFileSync(RECORDS, `${JSON.stringify({ method, cwd, additionalDirectories: additionalDirectories ?? null, ...(replayFrom ? { replayFrom: replayFrom.type } : {}) })}\n`);
+  }
+}
 
 function modelOption(currentValue: string): SessionConfigOption {
   return {
@@ -278,17 +287,21 @@ agent({ name: 'fake-agent' })
   .onRequest(methods.agent.initialize, () => ({
     protocolVersion: PROTOCOL_VERSION,
     info: { name: 'FakeAgent', version: '0.0.1' },
-    capabilities: { session: {} },
+    capabilities: { session: RECORDS ? { additionalDirectories: {} } : {} },
     authMethods: [],
   }))
   .onRequest(methods.agent.session.list, ({ params }) => {
     listings += 1;
     return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
-  .onRequest(methods.agent.session.new, () => ({
-    sessionId: SESSION_ID,
-    configOptions: [modelOption('model-a')],
-  }))
+  .onRequest(methods.agent.session.new, ({ params }) => {
+    record('session/new', params);
+    return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
+  })
+  .onRequest(methods.agent.session.resume, ({ params }) => {
+    record('session/resume', params);
+    return {};
+  })
   .onRequest(methods.agent.session.setConfigOption, ({ params }) => ({
     configOptions: [modelOption(String(params.value))],
   }))
