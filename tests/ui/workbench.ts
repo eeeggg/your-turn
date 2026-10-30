@@ -65,6 +65,11 @@ export function promptInput(window: Page): Locator {
   return acpChatFrame(window).locator('#promptInput');
 }
 
+/** The prompts ACP Chat's transcript shows, by the webview's own classes. */
+export function chatUserMessages(window: Page): Locator {
+  return acpChatFrame(window).locator('.message.user');
+}
+
 /** VS Code's quick-input control, used by the command palette and file picker. */
 export function quickInput(window: Page): Locator {
   return window.locator('.quick-input-widget:visible input');

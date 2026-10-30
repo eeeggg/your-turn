@@ -2,6 +2,15 @@ import type { SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMe
 import { canPrompt, type ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
+import { promptHistory, type TranscriptState } from '@/webview/state/Transcript';
+
+/** The prompt the text was recalled from, counted back from the newest of its session's history. */
+interface Recall {
+  readonly index: number;
+  readonly sessionId: string;
+  /** Where the caret goes once the text shows: the start after an older prompt, the end after a newer one. */
+  readonly caret: 'start' | 'end';
+}
 
 /** What the user is writing, and the slash command popup over it. */
 export interface PromptBoxState {
@@ -10,6 +19,10 @@ export interface PromptBoxState {
   readonly highlighted: number;
   /** Escape closed the popup; editing the text reopens it. */
   readonly dismissed: boolean;
+  /** Null while not browsing the history. An edit keeps it, so clearing the edit moves on from where it was. */
+  readonly recall: Recall | null;
+  /** What the latest history move said, for a screen reader; empty once the text is edited. */
+  readonly announcement: string;
 }
 
 export type PromptBoxAction =
@@ -18,9 +31,10 @@ export type PromptBoxAction =
   | { type: 'slashCommandHighlighted'; index: number }
   | { type: 'slashHighlightMoved'; by: 1 | -1 }
   | { type: 'slashCommandChosen'; name: string }
-  | { type: 'slashPopupDismissed' };
+  | { type: 'slashPopupDismissed' }
+  | { type: 'historyMoved'; to: 'older' | 'newer' };
 
-export const initialPromptBox: PromptBoxState = { text: '', highlighted: 0, dismissed: false };
+export const initialPromptBox: PromptBoxState = { text: '', highlighted: 0, dismissed: false, recall: null, announcement: '' };
 
 /** The commands whose names start with what follows the `/`; none while the popup is closed. */
 export function matchingCommands(box: PromptBoxState, session: ActiveSession | null): readonly SlashCommand[] {
@@ -42,13 +56,15 @@ export function placeholder(session: ActiveSession | null): string {
 }
 
 export function updatePromptBox(
-  box: PromptBoxState,
+  previous: PromptBoxState,
   action: Action,
   session: ActiveSession | null,
+  transcript: TranscriptState,
 ): Transition<PromptBoxState, WebviewToExtensionMessage> {
+  const box = withRecallKept(previous, action, session);
   switch (action.type) {
     case 'promptEdited':
-      return stateOnly({ text: action.text, highlighted: 0, dismissed: false });
+      return stateOnly({ text: action.text, highlighted: 0, dismissed: false, recall: box.recall, announcement: '' });
     case 'promptSent':
       return send(box, box.text, session);
     case 'slashCommandHighlighted':
@@ -64,14 +80,54 @@ export function updatePromptBox(
         return stateOnly(box);
       }
       return command.takesInput
-        ? stateOnly({ text: `/${command.name} `, highlighted: 0, dismissed: false })
+        ? stateOnly({ ...initialPromptBox, text: `/${command.name} ` })
         : send(box, `/${command.name}`, session);
     }
     case 'slashPopupDismissed':
       return stateOnly(box.dismissed ? box : { ...box, dismissed: true });
+    case 'historyMoved':
+      return stateOnly(moved(box, action.to, session, promptHistory(transcript)));
     default:
       return stateOnly(box);
   }
+}
+
+/** Whether a move through the history would change the text, so the key that asks for it is not left to the textarea. */
+export function historyMoves(box: PromptBoxState, to: 'older' | 'newer', session: ActiveSession | null, transcript: TranscriptState): boolean {
+  return moved(box, to, session, promptHistory(transcript)) !== box;
+}
+
+/** Browsing ends when the history it was in goes: on another session or none, which a cleared transcript is, or a load. */
+function withRecallKept(box: PromptBoxState, action: Action, session: ActiveSession | null): PromptBoxState {
+  const { recall } = box;
+  const gone = recall !== null && (recall.sessionId !== session?.sessionId || action.type === 'loadSessionStart');
+  return gone ? { ...box, recall: null } : box;
+}
+
+/**
+ * Moves through the history, newest first, unless the text is a draft or an edit of the recalled prompt: text other
+ * than the prompt the move starts from, which is the newest when not browsing. Newer than the newest is an empty box.
+ */
+function moved(box: PromptBoxState, to: 'older' | 'newer', session: ActiveSession | null, history: readonly string[]): PromptBoxState {
+  if (!canPrompt(session)) {
+    return box;
+  }
+  const at = box.recall?.index ?? -1;
+  const from = history[history.length - 1 - Math.max(at, 0)];
+  const next = to === 'older' ? at + 1 : at - 1;
+  if ((box.text !== '' && box.text !== from) || next >= history.length || next < -1 || (at === -1 && to === 'newer')) {
+    return box;
+  }
+  if (next === -1) {
+    return { ...initialPromptBox, announcement: 'Empty prompt' };
+  }
+  return {
+    text: history[history.length - 1 - next] ?? '',
+    highlighted: 0,
+    dismissed: true,
+    recall: { index: next, sessionId: session.sessionId, caret: to === 'older' ? 'start' : 'end' },
+    announcement: `Prompt ${history.length - next} of ${history.length}`,
+  };
 }
 
 function send(

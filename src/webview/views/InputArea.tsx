@@ -2,8 +2,8 @@ import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent,
 import type { SlashCommand } from '@/shared/WebviewMessages';
 import { canPrompt } from '@/webview/state/ActiveSession';
 import { InputToolbar } from '@/webview/views/InputToolbar';
-import { highlightedIndex, matchingCommands, placeholder } from '@/webview/state/PromptBox';
-import { useDispatch, useSelector } from '@/webview/views/StoreContext';
+import { highlightedIndex, historyMoves, matchingCommands, placeholder } from '@/webview/state/PromptBox';
+import { useCurrentState, useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 const MIN_HEIGHT = 90;
 const MAX_HEIGHT = 400;
@@ -13,6 +13,7 @@ export function InputArea() {
   const session = useSelector((state) => state.activeSession);
   const box = useSelector((state) => state.promptBox);
   const dispatch = useDispatch();
+  const currentState = useCurrentState();
   const areaRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const [height, setHeight] = useState<number | null>(null);
@@ -20,6 +21,15 @@ export function InputArea() {
   const usable = canPrompt(session);
   const matches = matchingCommands(box, session);
   const highlighted = highlightedIndex(box, matches);
+
+  const { recall } = box;
+  useLayoutEffect(() => {
+    const input = promptRef.current;
+    if (input && recall) {
+      const at = recall.caret === 'start' ? 0 : input.value.length;
+      input.setSelectionRange(at, at);
+    }
+  }, [recall]);
 
   const choose = (command: SlashCommand) => {
     dispatch({ type: 'slashCommandChosen', name: command.name });
@@ -46,6 +56,13 @@ export function InputArea() {
     } else if (enter) {
       event.preventDefault();
       dispatch({ type: 'promptSent' });
+    } else if (atHistoryEdge(event)) {
+      const to = event.key === 'ArrowUp' ? 'older' : 'newer';
+      const { promptBox, activeSession, transcript } = currentState();
+      if (historyMoves(promptBox, to, activeSession, transcript)) {
+        event.preventDefault();
+        dispatch({ type: 'historyMoved', to });
+      }
     }
   };
 
@@ -92,8 +109,24 @@ export function InputArea() {
           onKeyDown={onKeyDown}
         />
       </div>
+      <span className="sr-only" id="promptHistoryStatus" role="status" aria-live="polite" aria-atomic="true">
+        {box.announcement}
+      </span>
     </div>
   );
+}
+
+/**
+ * Up with the caret at the start of the text, or Down with it at the end, unmodified and with nothing selected. The
+ * textarea itself brings the caret there from the first or last visual line, so every other press stays its own.
+ */
+function atHistoryEdge(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
+  const { key, shiftKey, altKey, ctrlKey, metaKey, currentTarget } = event;
+  const { selectionStart, selectionEnd, value } = currentTarget;
+  if ((key !== 'ArrowUp' && key !== 'ArrowDown') || shiftKey || altKey || ctrlKey || metaKey || selectionStart !== selectionEnd) {
+    return false;
+  }
+  return key === 'ArrowUp' ? selectionStart === 0 : selectionEnd === value.length;
 }
 
 function SlashCommandItem({

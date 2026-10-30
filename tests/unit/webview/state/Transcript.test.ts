@@ -12,6 +12,7 @@ import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import {
   planStepIcon,
+  promptHistory,
   showsEmptyState,
   shownContent,
   statusGlyph,
@@ -944,6 +945,58 @@ describe('loading a session', () => {
     view.send({ type: 'loadSessionStart' }, { type: 'loadSessionEnd', ok: false });
 
     expect(view.summary()).toEqual(['error: Failed to load session.']);
+  });
+});
+
+describe('the prompt history', () => {
+  it('is the replayed prompts, each as last revised, then the prompts sent after the load, oldest first', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('before the load');
+    view.send(promptEnd, { type: 'loadSessionStart' });
+    view.wholePrompt('Fix', 'u1');
+    view.answer('a1');
+    view.wholePrompt('Fix the build', 'u1');
+    view.replayed('q', 'u2');
+    view.replayed('2', 'u2');
+    view.answer('a2');
+    view.send({ type: 'loadSessionEnd', ok: true });
+
+    view.prompt('q3');
+
+    expect(promptHistory(view.transcript())).toEqual(['Fix the build', 'q2', 'q3']);
+  });
+
+  it('leaves out a replayed prompt with no more than whitespace', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' });
+    view.replayed('q1', 'u1');
+    view.replayed(' \n', 'u2');
+
+    expect(promptHistory(view.transcript())).toEqual(['q1']);
+  });
+
+  it('takes in a queued prompt only once it is sent', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('q1');
+    view.prompt('q2');
+    expect(promptHistory(view.transcript())).toEqual(['q1']);
+
+    view.send(promptEnd);
+
+    expect(promptHistory(view.transcript())).toEqual(['q1', 'q2']);
+  });
+
+  it('belongs to the session, empty once another replaces it', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('q1');
+
+    view.connect({ sessionId: 's2' });
+
+    expect(promptHistory(view.transcript())).toEqual([]);
   });
 });
 

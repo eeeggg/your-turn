@@ -303,6 +303,9 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+    if (text.startsWith('noted ')) {
+      return { stopReason: 'end_turn' };
+    }
     if (text.startsWith('edit ')) {
       await edit(client, params.sessionId, text.slice('edit '.length));
       return { stopReason: 'end_turn' };
