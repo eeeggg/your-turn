@@ -151,9 +151,9 @@ describe('V2Driver', () => {
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({
         sessionId: 's1',
         availableCommands: [
-          { name: 'web', description: 'Search the web', input: { type: 'text', hint: 'query' } },
-          { name: 'pick', description: 'Pick a file', input: { type: '_vendor_file' } },
-          { name: 'plan', description: 'Make a plan' },
+          { type: 'command', name: 'web', description: 'Search the web', input: { type: 'text', hint: 'query' } },
+          { type: 'command', name: 'pick', description: 'Pick a file', input: { type: '_vendor_file', hint: 'not text input' } },
+          { type: 'command', name: 'plan', description: 'Make a plan' },
         ],
       })));
 
@@ -847,7 +847,7 @@ describe('V2Driver', () => {
 
     it("passes up the session's commands, config options and info, and drops the updates the interface has no place for", async () => {
       expect(await updatesFor(
-        { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'web', description: 'Search the web', input: { type: 'text', hint: '' } }] },
+        { sessionUpdate: 'available_commands_update', availableCommands: [{ type: 'command', name: 'web', description: 'Search the web', input: { type: 'text', hint: '' } }] },
         { sessionUpdate: 'config_option_update', configOptions: [modelOption] },
         { sessionUpdate: 'session_info_update', title: 'Fix the build', updatedAt: null },
         { sessionUpdate: 'session_info_update' },

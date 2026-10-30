@@ -103,7 +103,11 @@ describe('tool calls', () => {
     toolCall(page, { toolCallId: 't1', status: 'completed', content: texts('first', 'second') });
 
     expect(blocks('t1')).toEqual(['first', 'second']);
-    expect(shown('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
+    const body = shown('t1').querySelector<HTMLElement>('.tc-body');
+    expect(body?.style.display).toBe('');
+    const scroll = body?.querySelector<HTMLElement>('.tc-body-content');
+    expect(scroll?.classList.contains('overflow-y-auto')).toBe(true);
+    expect(scroll?.querySelector('.tc-body-inner')).not.toBeNull();
   });
 
   it('keeps existing output when a report has none', () => {

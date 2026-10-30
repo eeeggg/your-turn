@@ -587,7 +587,9 @@ function planStepStatus(status: Acp.PlanEntryStatus): PlanStepStatus {
 }
 
 function slashCommand(command: Acp.AvailableCommand): SlashCommand {
-  const hint = command.input && Acp.AvailableCommandInput.isText(command.input) ? command.input.hint : null;
+  const input = command.input;
+  const hint = input && typeof input === 'object' && 'type' in input && input.type === 'text'
+    && 'hint' in input && typeof input.hint === 'string' ? input.hint : null;
   return { name: command.name, description: command.description, takesInput: !!command.input, hint: hint || null };
 }
 

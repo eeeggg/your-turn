@@ -684,7 +684,7 @@ describe('SessionManager', () => {
       ['resuming', (manager: SessionManager) => manager.resumeSession('fake', 's1')],
       ['loading', (manager: SessionManager) => manager.loadSession('fake', 's1')],
     ])('takes the slash commands a v2 session state carries, on %s the session', async (_, open) => {
-      const availableCommands = [{ name: 'init', description: 'Init' }];
+      const availableCommands: V2.AvailableCommand[] = [{ type: 'command', name: 'init', description: 'Init' }];
       const script: AgentScript = () => fakeV2Agent()
         .onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1', availableCommands }))
         .onRequest(V2.methods.agent.session.resume, () => ({ availableCommands }));

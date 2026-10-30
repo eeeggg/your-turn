@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.19",
+  "version": "0.3.20-dev.1",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -642,7 +642,7 @@
     "coverage:integration": "npm run compile && npm run lint && node tools/run-integration.mjs --coverage"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^2.0.0",
+    "@agentclientprotocol/sdk": "^2.1.0",
     "@xterm/headless": "^6.0.0",
     "date-fns": "^4.4.0",
     "diff": "^9.0.0",
@@ -672,7 +672,7 @@
     "@vitest/coverage-v8": "^5.0.5",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^3.7.1",
+    "@vscode/vsce": "^4.1.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",

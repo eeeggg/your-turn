@@ -6,14 +6,14 @@ directory when one exists.
 
 ## Tooling Policy
 
-Make is the supported developer entry point for tests, coverage, type checking,
-and linting.
+Use the supported Make targets for tests, coverage, type checking and linting.
 
 - Do not directly invoke `npm`, `npx`, framework CLIs (Vitest, Mocha,
-  Playwright), or runner script files as workflow commands; commands belong
-  inside shared tooling.
-- If a workflow operation is missing, extend and verify the shared tooling first;
-  ask when facing meaningful trade-offs.
+  Playwright) or runner script files for an operation provided by a Make
+  target; those commands belong inside shared tooling. `npm`/`npx` may be used
+  directly for operations without a Make target when appropriate.
+- If a test or verification workflow operation is missing, extend and verify
+  the shared tooling first; ask when facing meaningful trade-offs.
 - Every test and coverage Make target runs repository typechecking, then linting,
   before bundling, test preparation, or test execution. A failed check stops
   the target. Standalone `make typecheck` and `make lint` remain available.

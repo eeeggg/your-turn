@@ -23,4 +23,5 @@ tools/**
 .nvmrc
 CHANGELOG.md
 GLOSSARY.md
+AGENTS.md
 resources/icon-ext.svg
