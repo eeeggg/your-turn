@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { answer, connect, loadChatPage, replayed, toolCall, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, replayed, shownText, toolCall, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -10,7 +10,7 @@ beforeEach(() => {
 });
 
 function messages(): string[] {
-  return [...page.document.querySelectorAll('.message')].map((el) => `${hookClasses(el)}: ${el.textContent}`);
+  return [...page.document.querySelectorAll('.message')].map((el) => `${hookClasses(el)}: ${shownText(el)}`);
 }
 
 function replay(turns: [user: string, agent: string][]): void {

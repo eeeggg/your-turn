@@ -7,6 +7,43 @@ export function acpContainerControl(window: Page): Locator {
   return window.getByRole('tab', { name: 'ACP Client', exact: true });
 }
 
+/** VS Code's Explorer control in the activity bar, whose accessible name continues with its shortcut. */
+export function explorerControl(window: Page): Locator {
+  return window.getByRole('tab', { name: /^Explorer\b/ });
+}
+
+/** A row of the Agents view, an agent or one of its sessions, by the label it shows; its accessible name is its tooltip. */
+export function agentsViewRow(window: Page, label: string): Locator {
+  return window.getByRole('tree', { name: 'Agents', exact: true }).getByRole('treeitem').filter({ hasText: label });
+}
+
+/**
+ * VS Code's private pane DOM holds a view's header, with its title and title actions, and its body, with its
+ * tree or welcome content. The view's icon in the header identifies the Agents pane under either of its titles.
+ */
+function agentsPane(window: Page): Locator {
+  return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-hubot') });
+}
+
+export function agentsViewTitle(window: Page): Locator {
+  return agentsPane(window).locator('.pane-header > .title');
+}
+
+/** VS Code displays a pane's title actions only while the pane is hovered or focused. */
+export function agentsViewAction(window: Page, name: string): Locator {
+  return agentsPane(window).locator('.pane-header .actions').getByRole('button', { name, exact: true });
+}
+
+/** The names of the Agents view's title actions, which VS Code renders together, whether or not it displays them. */
+export function agentsViewActionNames(window: Page): Promise<string[]> {
+  return agentsPane(window).locator('.pane-header .actions .action-label')
+    .evaluateAll((labels) => labels.map((label) => label.getAttribute('aria-label') ?? ''));
+}
+
+export function agentsViewWelcome(window: Page): Locator {
+  return agentsPane(window).locator('.welcome-view-content');
+}
+
 /**
  * VS Code hosts extension webviews in an outer workbench iframe and an
  * `#active-frame` iframe. The extension ID distinguishes ACP Chat from the
@@ -26,6 +63,11 @@ export function acpChatWebview(window: Page): Locator {
 
 export function promptInput(window: Page): Locator {
   return acpChatFrame(window).locator('#promptInput');
+}
+
+/** The prompts ACP Chat's transcript shows, by the webview's own classes. */
+export function chatUserMessages(window: Page): Locator {
+  return acpChatFrame(window).locator('.message.user');
 }
 
 /** VS Code's quick-input control, used by the command palette and file picker. */

@@ -1,8 +1,10 @@
 import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { windowKinds } from './integration-windows.mjs';
 
 const root = resolve(import.meta.dirname, '..');
+const windowDirectories = new Set(windowKinds.map(({ directory }) => directory));
 const target = process.argv[2] ?? '';
 const files = (process.env['FILES'] ?? '').trim().split(/\s+/).filter(Boolean);
 const repeatText = (process.env['REPEAT'] ?? '').trim();
@@ -39,7 +41,7 @@ for (const file of files) {
   const extension = parts.at(-1) ?? '';
   if (parts[0] !== 'tests' || !layers.includes(parts[1] ?? '') || parts.some((part) => part === '' || part === '.' || part === '..')
     || !/^[\w./-]+$/.test(file) || !/\.test\.tsx?$/.test(extension)
-    || (integration && (parts.length !== 3 || !extension.endsWith('.test.ts')))
+    || (integration && (!windowDirectories.has(parts.slice(2, -1).join('/')) || !extension.endsWith('.test.ts')))
     || (target === 'test-ui' && (parts.length !== 3 || !extension.endsWith('.test.ts')))
     || !(await stat(join(root, file)).catch(() => undefined))?.isFile()) {
     throw new Error(`FILES contains an invalid or unmatched ${layers.join('/')} test path: ${file}`);

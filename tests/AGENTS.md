@@ -68,11 +68,13 @@ preparation or execution, including focused and repeated runs.
 
 - `FILES` — Whitespace-separated explicit repo-relative test file paths. Every
   path is validated against the chosen test layer; an unmatched or cross-layer
-  selection produces an error.
+  selection produces an error. Integration paths may name a window kind's
+  directory, such as `tests/integration/empty/unavailable.test.ts`.
 - `REPEAT` — Positive integer repeat count, default `1`. Repeated runs stop on
   the first failure.
-- `JOBS` — Positive integer parallel job count, supported for `test-integration`
-  and `coverage-integration` only; other targets preserve their default.
+- `JOBS` — Positive integer cap on VS Code windows running at once, supported
+  for `test-integration` and `coverage-integration` only; other targets
+  preserve their default.
 - Bundle preparation — Executed once per batch where needed by the Make targets
   (`test-vitest`, `test-webview`, `test-integration`, `test-ui`, `coverage-integration`).
 - Legacy environment variables — `ACP_TEST_FILES` and `ACP_TEST_JOBS` are
@@ -82,9 +84,16 @@ preparation or execution, including focused and repeated runs.
 
 ## Verification and the Release Gate
 
-- For a bug, establish a failing regression before fixing it. Verify decisions
-  with deliberate breaks, one at a time. If only the build catches a break,
-  use a compiling variant; an undetected break needs a test or exposes dead code.
+- For a bug, establish a failing regression before fixing it. Write a
+  feature's tests first and watch each fail for the intended reason.
+- Break deliberately, one at a time, only where a wrong implementation could
+  still pass: a test that passed when first run, an assertion loose enough to
+  pass for the wrong reason (prefixes, filters, membership), or a check that
+  only a fake's behavior makes meaningful (a fake that ignores or rejects a
+  request, for instance). A test that failed first because the behavior did
+  not exist yet needs no breaks; say which breaks were skipped and why when
+  reporting. If only the build catches a break, use a compiling variant; an
+  undetected break needs a test or exposes dead code.
 - Run `make test` for the unfiltered typecheck, lint, bundle, unit/webview and
   integration gate. Run `make test-ui` separately for
   rendered workbench behavior; it also performs typecheck and lint first. These
@@ -121,8 +130,10 @@ Vitest provides the fast in-process test system. Run all Vitest projects with
 ### VS Code integration
 
 `tests/integration/` exercises behavior that requires the real VS Code API or
-extension host without driving the rendered workbench. Run it with
-`make test-integration`. Read
+extension host without driving the rendered workbench. Its files run in a
+window on a temporary folder, or in the workspace shape their directory under
+`tests/integration/` names: `empty/`, `untitled-workspace/` or
+`saved-workspace/`. Run it with `make test-integration`. Read
 `tests/integration/AGENTS.md` before changing its tests, fixtures or runner.
 
 ### Desktop UI

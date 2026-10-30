@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.19-dev.2",
+  "version": "0.3.19",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -29,7 +29,9 @@
     "coding agent",
     "copilot"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "viewsContainers": {
@@ -53,7 +55,8 @@
           "id": "acp-chat",
           "name": "Chat",
           "type": "webview",
-          "icon": "$(comment-discussion)"
+          "icon": "$(comment-discussion)",
+          "when": "!acp.workspaceUnavailable"
         }
       ]
     },
@@ -61,7 +64,27 @@
       {
         "view": "acp-sessions",
         "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\n[Detect Agents](command:acp.detectAgents)\nDetect Agents looks on your PATH for agents from the ACP registry.",
-        "when": "acp.noAgentsConfigured"
+        "when": "!acp.showingOtherWorkspaces && acp.noAgentsConfigured"
+      },
+      {
+        "view": "acp-sessions",
+        "contents": "ACP Client runs agents in a folder, and this window has none.\n[Open Folder](command:workbench.action.files.openFolder)",
+        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == empty"
+      },
+      {
+        "view": "acp-sessions",
+        "contents": "ACP Client needs this workspace saved, so its sessions can be found when it is opened again.\n[Save Workspace As...](command:workbench.action.saveWorkspaceAs)",
+        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == untitled"
+      },
+      {
+        "view": "acp-sessions",
+        "contents": "ACP Client runs agents in the workspace's first folder, which must be on disk. This one is in a virtual file system.\n[Open Folder](command:workbench.action.files.openFolder)",
+        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == virtual"
+      },
+      {
+        "view": "acp-sessions",
+        "contents": "No sessions in other workspaces yet.\nSessions used in other workspaces appear here, and open in their workspace's window.",
+        "when": "acp.showingOtherWorkspaces"
       }
     ],
     "commands": [
@@ -99,6 +122,20 @@
         "icon": "$(add)"
       },
       {
+        "command": "acp.showOtherWorkspaces",
+        "title": "ACP: Show Other Workspaces",
+        "icon": "$(multiple-windows)"
+      },
+      {
+        "command": "acp.showAgents",
+        "title": "ACP: Show This Workspace's Agents",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "acp.openSessionInWorkspace",
+        "title": "ACP: Open Session in Its Workspace"
+      },
+      {
         "command": "acp.detectAgents",
         "title": "ACP: Detect Agents"
       },
@@ -113,6 +150,14 @@
       {
         "command": "acp.exportTraffic",
         "title": "ACP: Export Protocol Traffic"
+      },
+      {
+        "command": "acp.showPersistedState",
+        "title": "ACP (Developer): Show Persisted State"
+      },
+      {
+        "command": "acp.resetPersistedState",
+        "title": "ACP (Developer): Reset Persisted State"
       },
       {
         "command": "acp.setMode",
@@ -144,8 +189,8 @@
         "title": "Copy Session ID"
       },
       {
-        "command": "acp.forgetSession",
-        "title": "Forget Session"
+        "command": "acp.removeFromHistory",
+        "title": "Remove from History"
       },
       {
         "command": "acp.restartAgent",
@@ -228,8 +273,76 @@
     "menus": {
       "commandPalette": [
         {
+          "command": "acp.connectAgent",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.newSession",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.sendPrompt",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.cancelTurn",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.disconnectAgent",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.openChat",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.addAgent",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.detectAgents",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.removeAgent",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.showLog",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.exportTraffic",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.showPersistedState",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.resetPersistedState",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.setMode",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.setModel",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.attachFile",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
+          "command": "acp.restartAgent",
+          "when": "!acp.workspaceUnavailable"
+        },
+        {
           "command": "acp.openReview",
-          "when": "acp.reviewShown && acp.reviewHasFiles"
+          "when": "!acp.workspaceUnavailable && acp.reviewShown && acp.reviewHasFiles"
         },
         {
           "command": "acp.keepDiffChange",
@@ -241,6 +354,18 @@
         },
         {
           "command": "acp.refreshSessions",
+          "when": "false"
+        },
+        {
+          "command": "acp.showOtherWorkspaces",
+          "when": "false"
+        },
+        {
+          "command": "acp.showAgents",
+          "when": "false"
+        },
+        {
+          "command": "acp.openSessionInWorkspace",
           "when": "false"
         },
         {
@@ -256,7 +381,7 @@
           "when": "false"
         },
         {
-          "command": "acp.forgetSession",
+          "command": "acp.removeFromHistory",
           "when": "false"
         },
         {
@@ -315,32 +440,32 @@
       "editor/title": [
         {
           "command": "acp.openReview",
-          "when": "config.acp.review.presentation == diffEditor && acp.reviewShown && acp.reviewHasFiles && activeEditor == workbench.editors.files.textFileEditor && isFileSystemResource && !textCompareEditorActive",
+          "when": "!acp.workspaceUnavailable && config.acp.review.presentation == diffEditor && acp.reviewShown && acp.reviewHasFiles && activeEditor == workbench.editors.files.textFileEditor && isFileSystemResource && !textCompareEditorActive",
           "group": "navigation@-1"
         },
         {
           "command": "acp.previousReviewFile",
-          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-5"
         },
         {
           "command": "acp.nextReviewFile",
-          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-4"
         },
         {
           "command": "acp.undoFile",
-          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-3"
         },
         {
           "command": "acp.keepFile",
-          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-2"
         },
         {
           "command": "acp.keepAllFiles",
-          "when": "config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor",
+          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-1"
         }
       ],
@@ -363,8 +488,18 @@
       ],
       "view/title": [
         {
+          "command": "acp.showOtherWorkspaces",
+          "when": "view == acp-sessions && !acp.showingOtherWorkspaces",
+          "group": "navigation@0"
+        },
+        {
+          "command": "acp.showAgents",
+          "when": "view == acp-sessions && acp.showingOtherWorkspaces",
+          "group": "navigation@0"
+        },
+        {
           "command": "acp.addAgent",
-          "when": "view == acp-sessions",
+          "when": "!acp.workspaceUnavailable && !acp.showingOtherWorkspaces && view == acp-sessions",
           "group": "navigation@1"
         },
         {
@@ -430,7 +565,7 @@
           "group": "session@1"
         },
         {
-          "command": "acp.forgetSession",
+          "command": "acp.removeFromHistory",
           "when": "view == acp-sessions && viewItem == session-local",
           "group": "session@2"
         }

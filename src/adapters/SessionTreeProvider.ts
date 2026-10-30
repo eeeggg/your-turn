@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import { otherWorkspaces, type OtherSession, type OtherWorkspace, type WorkspaceConfiguration } from '@/core/OtherWorkspaces';
+import type { SessionAddress, SessionReferences } from '@/core/PersistedState';
+import type { WorkspaceOpening } from '@/core/WorkspaceOpening';
 import type { AgentSessions, SessionList, SessionRow } from '@/core/SessionList';
 
 /** Tier 1: a configured agent, expandable to its session list. */
@@ -114,16 +117,71 @@ class InfoTreeItem extends vscode.TreeItem {
   }
 }
 
-type TreeNode = AgentTreeItem | SessionTreeItem | InfoTreeItem;
+/** Other Workspaces mode, tier 1: a workspace sessions were used in, expandable to its configurations. */
+class WorkspaceTreeItem extends vscode.TreeItem {
+  constructor(public readonly workspace: OtherWorkspace) {
+    super(workspace.label, vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = 'other-workspace';
+    this.iconPath = new vscode.ThemeIcon('folder');
+    if (workspace.description !== undefined) {
+      this.description = workspace.description;
+    }
+    this.tooltip = workspace.uri;
+  }
+}
 
-/** The ACP Agents view: configured agents, each with its session list. */
+/** Other Workspaces mode, tier 2: a configuration sessions in the workspace were used through. */
+class ConfigurationTreeItem extends vscode.TreeItem {
+  constructor(public readonly configuration: WorkspaceConfiguration) {
+    super(configuration.configuredName, vscode.TreeItemCollapsibleState.Collapsed);
+    this.contextValue = 'other-workspace-agent';
+    this.iconPath = new vscode.ThemeIcon('hubot');
+  }
+}
+
+/** Other Workspaces mode, tier 3: a session used through the configuration in the workspace. */
+class OtherSessionTreeItem extends vscode.TreeItem {
+  constructor(public readonly session: OtherSession) {
+    super(session.label, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = 'other-session';
+    this.iconPath = new vscode.ThemeIcon('comment-discussion');
+    if (session.age !== undefined) {
+      this.description = session.age;
+    }
+    this.tooltip = session.tooltip;
+    this.command = { command: 'acp.openSessionInWorkspace', title: 'Open Session in Its Workspace', arguments: [session.reference] };
+  }
+}
+
+type TreeNode = AgentTreeItem | SessionTreeItem | InfoTreeItem | WorkspaceTreeItem | ConfigurationTreeItem | OtherSessionTreeItem;
+
+/** This workspace's agents, or the sessions of other workspaces. */
+export type AgentsViewMode = 'agents' | 'otherWorkspaces';
+
+/**
+ * The ACP Agents view: configured agents, each with its session list, or in Other Workspaces mode, the workspaces in
+ * the session references other than this window's. A window where the extension is unavailable has no agents.
+ */
 export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   private readonly changes = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this.changes.event;
   private readonly redraw = () => this.changes.fire();
+  private readonly agentsChanged = () => { if (this.mode === 'agents') { this.redraw(); } };
+  private readonly referencesChanged = () => { if (this.mode === 'otherWorkspaces') { this.redraw(); } };
+  private mode: AgentsViewMode = 'agents';
 
-  constructor(private readonly sessionList: SessionList) {
-    sessionList.on('changed', this.redraw);
+  constructor(
+    private readonly sessionList: SessionList | undefined,
+    private readonly references: Pick<SessionReferences, 'all' | 'on' | 'off'>,
+    private readonly thisWorkspaceUri: () => string | undefined,
+  ) {
+    sessionList?.on('changed', this.agentsChanged);
+    references.on('changed', this.referencesChanged);
+  }
+
+  show(mode: AgentsViewMode): void {
+    this.mode = mode;
+    this.redraw();
   }
 
   refresh(): void {
@@ -136,22 +194,76 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
 
   async getChildren(element?: TreeNode): Promise<TreeNode[]> {
     if (!element) {
-      return this.sessionList.agents().map((agent) => new AgentTreeItem(
-        agent.name,
-        agent.hasSession,
-        agent.expandable ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
-      ));
+      return this.mode === 'otherWorkspaces' ? this.otherWorkspaces() : this.agents();
     }
-    if (element instanceof AgentTreeItem) {
+    if (element instanceof AgentTreeItem && this.sessionList) {
       return childrenOf(element.agentName, await this.sessionList.sessionsOf(element.agentName));
+    }
+    if (element instanceof WorkspaceTreeItem) {
+      return element.workspace.configurations.map((configuration) => new ConfigurationTreeItem(configuration));
+    }
+    if (element instanceof ConfigurationTreeItem) {
+      return element.configuration.sessions.map((session) => new OtherSessionTreeItem(session));
     }
     return [];
   }
 
   dispose(): void {
-    this.sessionList.off('changed', this.redraw);
+    this.sessionList?.off('changed', this.agentsChanged);
+    this.references.off('changed', this.referencesChanged);
     this.changes.dispose();
   }
+
+  private agents(): AgentTreeItem[] {
+    return (this.sessionList?.agents() ?? []).map((agent) => new AgentTreeItem(
+      agent.name,
+      agent.hasSession,
+      agent.expandable ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
+    ));
+  }
+
+  /** Read from the references each time, as other windows change them and no event says so. */
+  private otherWorkspaces(): WorkspaceTreeItem[] {
+    return otherWorkspaces(this.references.all(), this.thisWorkspaceUri(), Date.now()).map((workspace) => new WorkspaceTreeItem(workspace));
+  }
+}
+
+/**
+ * The Agents view, starting in this workspace's agents mode, with the commands switching it to other workspaces and
+ * back, and opening another workspace's session there. It redraws when shown and when the window regains focus, as
+ * other windows may have used sessions meanwhile.
+ */
+export function createAgentsView(
+  sessionList: SessionList | undefined,
+  references: Pick<SessionReferences, 'all' | 'on' | 'off'>,
+  thisWorkspaceUri: () => string | undefined,
+  opening: Pick<WorkspaceOpening, 'open'>,
+): { provider: SessionTreeProvider; treeView: vscode.TreeView<TreeNode>; disposable: vscode.Disposable } {
+  const provider = new SessionTreeProvider(sessionList, references, thisWorkspaceUri);
+  const treeView = vscode.window.createTreeView('acp-sessions', { treeDataProvider: provider });
+  const show = (mode: AgentsViewMode) => {
+    provider.show(mode);
+    treeView.title = mode === 'otherWorkspaces' ? 'Other Workspaces' : 'Agents';
+    return vscode.commands.executeCommand('setContext', 'acp.showingOtherWorkspaces', mode === 'otherWorkspaces');
+  };
+  const disposable = vscode.Disposable.from(
+    treeView,
+    vscode.commands.registerCommand('acp.showOtherWorkspaces', () => show('otherWorkspaces')),
+    vscode.commands.registerCommand('acp.showAgents', () => show('agents')),
+    vscode.commands.registerCommand('acp.openSessionInWorkspace', (address?: SessionAddress) => address && opening.open(address)),
+    treeView.onDidChangeVisibility(({ visible }) => {
+      if (visible) {
+        provider.refresh();
+      }
+    }),
+    vscode.window.onDidChangeWindowState(({ focused }) => {
+      if (focused) {
+        provider.refresh();
+      }
+    }),
+    { dispose: () => provider.dispose() },
+  );
+  return { provider, treeView, disposable };
 }
 
 function childrenOf(agentName: string, sessions: AgentSessions): (SessionTreeItem | InfoTreeItem)[] {

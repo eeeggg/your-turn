@@ -74,30 +74,20 @@ suite('Workspace files', () => {
     assert.strictEqual(editor.document.getText(), 'user\nagent\n');
   });
 
-  test('restores a file shown with no unsaved edits on disk, and its editor follows', async () => {
+  // VS Code reloads a clean document once its watcher, started some time after the editor opens, sees the disk change;
+  // nothing reports that watcher ready, so the test reloads the document itself, as reverting it would.
+  test("restores a clean open document's file on disk, leaving the document clean to reload it", async () => {
     const file = path.join(folder, 'a.txt');
     fs.writeFileSync(file, 'agent\n');
     const { document } = await vscode.window.showTextDocument(await vscode.workspace.openTextDocument(file));
-    const report = (phase: string) => {
-      console.info('[workspace-files]', phase, JSON.stringify({ text: document.getText(), dirty: document.isDirty, closed: document.isClosed, disk: fs.readFileSync(file, 'utf8') }));
-    };
-    report('clean document opened');
-    const written = 'agent changed\n';
-    const followed = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === written ? true : undefined));
-    await vscode.workspace.fs.writeFile(vscode.Uri.file(file), Buffer.from(written));
-    report('disk changed');
-    await followed;
-    report('editor followed disk');
-    assert.strictEqual(document.getText(), written, 'the editor never followed the disk');
 
-    const restored = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === 'baseline\n' ? true : undefined));
     await workspaceFiles.restore(file, 'baseline\n');
 
     assert.strictEqual(fs.readFileSync(file, 'utf8'), 'baseline\n');
-    report('disk restored');
-    await restored;
-    report('editor followed restoration');
-    assert.strictEqual(document.getText(), 'baseline\n');
+    assert.strictEqual(document.isDirty, false);
+    const reloaded = observed(vscode.workspace.onDidChangeTextDocument, () => (document.getText() === 'baseline\n' ? true : undefined));
+    await vscode.commands.executeCommand('workbench.action.files.revert');
+    await reloaded;
     assert.strictEqual(document.isDirty, false);
   });
 

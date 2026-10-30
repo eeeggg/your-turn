@@ -121,7 +121,7 @@ for (const version of [1, 2]) {
     });
 
     test('Creates a session and sets a config option', async () => {
-      const created = await driver.newSession(__dirname);
+      const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
       assert.strictEqual(created.sessionId, 'fake-session');
       assert.strictEqual(created.configOptions?.[0]?.category, 'model');
 

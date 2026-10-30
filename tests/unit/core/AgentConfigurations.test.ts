@@ -7,7 +7,7 @@ import type { RegistryAgent } from '@/core/RegistryClient';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ConfigurationTarget, QuickPickItemKind, type WorkspaceConfiguration } from '@/core/VsCodeApi';
-import { fakeAgent, InProcessAgents, unusedHandlers } from './InProcessAgents';
+import { fakeAgent, InProcessAgents, unusedHandlers, work } from './InProcessAgents';
 import { ScriptedUser } from './ScriptedUser';
 
 type Agents = Record<string, AgentConfigEntry>;
@@ -52,7 +52,7 @@ function setup(userAgents: Agents, { workspace = {}, defaults = {}, registry = a
   const manager = new SessionManager(
     launcher,
     new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
-    { workspaceCwd: () => '/work', agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
+    { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
     { chooseAuthMethod: async () => undefined },
   );
   const user = new ScriptedUser();

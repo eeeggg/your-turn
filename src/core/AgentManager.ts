@@ -17,6 +17,46 @@ export interface AgentConfigEntry {
   displayName?: string;
 }
 
+export interface AgentRename {
+  readonly from: string;
+  readonly to: string;
+}
+
+/**
+ * The configurations renamed between two `acp.agents` maps: a removed name and an added name whose entries launch the
+ * same command with the same arguments and environment, that entry being the only one of its kind on each side.
+ * Anything ambiguous is no rename, as nothing can tell which name took which sessions.
+ */
+export function renamesBetween(before: Readonly<Record<string, AgentConfigEntry>>, after: Readonly<Record<string, AgentConfigEntry>>): AgentRename[] {
+  const removed = namesByLaunch(before, (name) => !(name in after));
+  const added = namesByLaunch(after, (name) => !(name in before));
+  const renames: AgentRename[] = [];
+  for (const [launch, [from, ...others]] of removed) {
+    const [to, ...alsoAdded] = added.get(launch) ?? [];
+    if (from !== undefined && to !== undefined && others.length === 0 && alsoAdded.length === 0) {
+      renames.push({ from, to });
+    }
+  }
+  return renames;
+}
+
+function namesByLaunch(entries: Readonly<Record<string, AgentConfigEntry>>, include: (name: string) => boolean): Map<string, string[]> {
+  const names = new Map<string, string[]>();
+  for (const [name, entry] of Object.entries(entries)) {
+    if (include(name)) {
+      const launch = launchOf(entry);
+      names.set(launch, [...names.get(launch) ?? [], name]);
+    }
+  }
+  return names;
+}
+
+/** What launching an entry runs, the same however its environment is ordered. */
+function launchOf(entry: AgentConfigEntry): string {
+  const env = Object.entries(entry.env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return JSON.stringify([entry.command, entry.args ?? [], env]);
+}
+
 /** A running agent's stdin and stdout, which carry newline-delimited ACP messages. */
 export interface AgentStreams {
   readonly input: WritableStream<Uint8Array>;

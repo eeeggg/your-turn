@@ -5,7 +5,7 @@ import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled } from '@/core/
 import { setLogSink } from '@/core/Log';
 import { V1Driver, v1InitializeRequest } from '@/core/acp/V1Driver';
 import { V2Driver, v2InitializeRequest } from '@/core/acp/V2Driver';
-import { connectedDriver, fakeAgent, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
+import { connectedDriver, fakeAgent, fakeV2Agent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const v2Request = {
   protocolVersion: 2,
@@ -15,7 +15,7 @@ const v2Request = {
 const v1Request = {
   protocolVersion: 1,
   clientInfo: { name: 'vscode-acp-client', version: '0.0.0-test' },
-  clientCapabilities: {},
+  clientCapabilities: { session: { configOptions: { boolean: {} } } },
 };
 
 /** An ACP v1 agent that refuses any `initialize` but one asking for 1, with `refusal`. */
@@ -55,7 +55,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V1Driver);
     expect(initializes()).toEqual([v2Request]);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
   it('speaks v2 with an agent that speaks only v2', async () => {
@@ -63,7 +63,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V2Driver);
     expect(initializes()).toEqual([v2Request]);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
   it('speaks v2 with an agent that speaks both', async () => {
@@ -72,7 +72,7 @@ describe('negotiation', () => {
       .withV2(fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's2' }))));
 
     expect(driver).toBeInstanceOf(V2Driver);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's2' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's2' });
   });
 
   it("speaks v1 with a v1 agent behind a router, which is told the client's name and offered no file access or terminals", async () => {
@@ -105,7 +105,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V1Driver);
     expect(initializes()).toEqual([v2Request, v1Request]);
-    expect(await driver.newSession('/work')).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
   it.each([
@@ -141,16 +141,18 @@ describe('negotiation', () => {
       })
       .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
 
-    await driver.newSession('/work');
+    await driver.newSession(work);
 
     expect(updates).toEqual([]);
   });
 
-  it("sends each version's request saying the same thing, as the replay answers one with the other's answer", () => {
+  // v2 clients support boolean config options without saying so; v1 clients say so, as the SDK's router does for one.
+  it("sends each version's request saying the same thing in its own terms, as the replay answers one with the other's answer", () => {
     const v1 = v1InitializeRequest('1.2.3');
     const v2 = v2InitializeRequest('1.2.3');
 
     expect([v1.protocolVersion, v2.protocolVersion]).toEqual([1, 2]);
-    expect({ identity: v1.clientInfo, capabilities: v1.clientCapabilities }).toEqual({ identity: v2.info, capabilities: v2.capabilities });
+    expect(v1.clientInfo).toEqual(v2.info);
+    expect([v1.clientCapabilities, v2.capabilities]).toEqual([{ session: { configOptions: { boolean: {} } } }, {}]);
   });
 });

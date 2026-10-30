@@ -21,3 +21,8 @@ export function useSelector<T>(select: (state: RootState) => T): T {
 export function useDispatch(): (action: Action) => void {
   return useStore().dispatch;
 }
+
+/** The state as it is when called, for an event handler to decide by; unlike `useSelector`, it renders nothing again. */
+export function useCurrentState(): () => RootState {
+  return useStore().getSnapshot;
+}

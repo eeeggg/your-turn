@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionUpdate, type ToolCallContent } from '@/core/acp/AcpDriver';
+import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionRoots, type SessionUpdate, type ToolCallContent } from '@/core/acp/AcpDriver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { setLogSink } from '@/core/Log';
-import { connectedDriver, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
+import { connectedDriver, fakeV2Agent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const go: PromptPart[] = [{ kind: 'text', text: 'go' }];
 
@@ -26,7 +26,7 @@ async function passedUp(...sent: [string, V2.SessionUpdate][]): Promise<[string,
       return { sessionId: 's1' };
     })
     .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
-  await driver.newSession('/work');
+  await driver.newSession(work);
   // A round trip after the answer, by which time the driver has taken in the updates sent before it.
   await driver.listSessions({});
   return updates;
@@ -87,7 +87,7 @@ async function turnAgent(...beforeAnswer: V2.StateUpdate[]) {
 /** The config options of a session the agent creates with these. */
 async function configOptionsOf(...options: V2.SessionConfigOption[]): Promise<ConfigOption[] | null> {
   const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1', configOptions: options })));
-  return (await driver.newSession('/work')).configOptions;
+  return (await driver.newSession(work)).configOptions;
 }
 
 const modelOption: V2.SessionConfigOption = {
@@ -113,7 +113,7 @@ describe('V2Driver', () => {
 
       expect(driver.agent).toEqual({
         displayName: 'Fake Agent',
-        capabilities: { list: true, load: true, resume: true },
+        capabilities: { list: true, load: true, resume: true, additionalDirectories: false },
         authMethods: [
           { id: 'token', name: 'Token', description: 'Paste an API token' },
           { id: 'browser', name: 'Browser', description: null },
@@ -125,7 +125,13 @@ describe('V2Driver', () => {
       const { driver } = await connectedDriver(() => fakeV2Agent({ info: { name: 'fake-agent', version: '1' }, capabilities: {} }));
 
       expect(driver.agent.displayName).toBe('fake-agent');
-      expect(driver.agent.capabilities).toEqual({ list: false, load: false, resume: false });
+      expect(driver.agent.capabilities).toEqual({ list: false, load: false, resume: false, additionalDirectories: false });
+    });
+
+    it('supports additional directories when its session capabilities advertise them', async () => {
+      const { driver } = await connectedDriver(() => fakeV2Agent({ capabilities: { session: { additionalDirectories: {} } } }));
+
+      expect(driver.agent.capabilities.additionalDirectories).toBe(true);
     });
   });
 
@@ -137,7 +143,7 @@ describe('V2Driver', () => {
         return { sessionId: 's1' };
       }));
 
-      expect(await driver.newSession('/work')).toEqual({ sessionId: 's1', modes: null, configOptions: null, commands: null });
+      expect(await driver.newSession(work)).toEqual({ sessionId: 's1', modes: null, configOptions: null, commands: null });
       expect(received).toEqual([{ cwd: '/work' }]);
     });
 
@@ -151,7 +157,7 @@ describe('V2Driver', () => {
         ],
       })));
 
-      expect((await driver.newSession('/work')).commands).toEqual([
+      expect((await driver.newSession(work)).commands).toEqual([
         { name: 'web', description: 'Search the web', takesInput: true, hint: 'query' },
         { name: 'pick', description: 'Pick a file', takesInput: true, hint: null },
         { name: 'plan', description: 'Make a plan', takesInput: false, hint: null },
@@ -186,8 +192,8 @@ describe('V2Driver', () => {
         return { configOptions: [modelOption] };
       }));
 
-      const loaded = await driver.loadSession('old', '/work');
-      const resumed = await driver.resumeSession('old', '/work');
+      const loaded = await driver.loadSession('old', work);
+      const resumed = await driver.resumeSession('old', work);
 
       expect(received).toEqual([
         { sessionId: 'old', cwd: '/work', replayFrom: { type: 'start' } },
@@ -196,6 +202,41 @@ describe('V2Driver', () => {
       expect(loaded).toEqual(resumed);
       expect(loaded.modes).toBeNull();
       expect(loaded.configOptions?.map((option) => option.id)).toEqual(['model']);
+    });
+
+    describe('additional directories', () => {
+      const roots = { cwd: '/work', additionalDirectories: ['/more', '/other'] };
+
+      /** The `session/new` and `session/resume` requests a driver for this agent makes to create, load and resume with `given`. */
+      async function setupRequests(capabilities: V2.SessionCapabilities, given: SessionRoots = roots): Promise<unknown[]> {
+        const received: unknown[] = [];
+        const { driver } = await connectedDriver(() => fakeV2Agent({ capabilities: { session: capabilities } })
+          .onRequest(V2.methods.agent.session.new, ({ params }) => { received.push(params); return { sessionId: 's1' }; })
+          .onRequest(V2.methods.agent.session.resume, ({ params }) => { received.push(params); return {}; }));
+        await driver.newSession(given);
+        await driver.loadSession('s1', given);
+        await driver.resumeSession('s1', given);
+        return received;
+      }
+
+      it('gives a session its other directories on creation, load and resume when the agent supports them', async () => {
+        expect(await setupRequests({ additionalDirectories: {} })).toEqual([
+          { cwd: '/work', additionalDirectories: ['/more', '/other'] },
+          { sessionId: 's1', cwd: '/work', additionalDirectories: ['/more', '/other'], replayFrom: { type: 'start' } },
+          { sessionId: 's1', cwd: '/work', additionalDirectories: ['/more', '/other'] },
+        ]);
+      });
+
+      it('sends only the cwd to an agent that does not support them, and when there are none', async () => {
+        const onlyCwd = [
+          { cwd: '/work' },
+          { sessionId: 's1', cwd: '/work', replayFrom: { type: 'start' } },
+          { sessionId: 's1', cwd: '/work' },
+        ];
+
+        expect(await setupRequests({})).toEqual(onlyCwd);
+        expect(await setupRequests({ additionalDirectories: {} }, work)).toEqual(onlyCwd);
+      });
     });
 
     it('sets a config option to a value by its ID, and reports the options the agent returns', async () => {
@@ -209,6 +250,18 @@ describe('V2Driver', () => {
 
       expect(received).toEqual([{ sessionId: 's1', configId: 'model', type: 'id', value: 'b' }]);
       expect(options).toEqual([expect.objectContaining({ id: 'model', current: 'b' })]);
+    });
+
+    it('sets a boolean config option with its type', async () => {
+      const received: V2.SetSessionConfigOptionRequest[] = [];
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.setConfigOption, ({ params }) => {
+        received.push(params);
+        return { configOptions: [] };
+      }));
+
+      await driver.setConfigOption('s1', 'fast', true);
+
+      expect(received).toEqual([{ sessionId: 's1', configId: 'fast', type: 'boolean', value: true }]);
     });
 
     it('has no modes to set', async () => {
@@ -408,7 +461,7 @@ describe('V2Driver', () => {
           return { sessionId: 's1' };
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
-      await driver.newSession('/work');
+      await driver.newSession(work);
       await driver.listSessions({});
       expect(schemas).toEqual(['v2', 'v2']);
     });
@@ -460,11 +513,11 @@ describe('V2Driver', () => {
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
 
-      await driver.loadSession('s1', '/work');
+      await driver.loadSession('s1', work);
       // As the user's prompt does, this one comes after the driver has taken in the replay.
       await driver.listSessions({});
       await driver.prompt('s1', go);
-      await driver.loadSession('s1', '/work');
+      await driver.loadSession('s1', work);
       await driver.listSessions({});
 
       const replay: [string, SessionUpdate][] = [
@@ -486,7 +539,7 @@ describe('V2Driver', () => {
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
 
       await driver.prompt('s1', go).catch(() => {});
-      await driver.loadSession('s1', '/work');
+      await driver.loadSession('s1', work);
       await driver.listSessions({});
 
       expect(updates).toEqual([['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }]]);
@@ -825,7 +878,7 @@ describe('V2Driver', () => {
         }
         return { sessionId: 's1' };
       }), { permissions: { requestPermission, cancelSession: vi.fn() } });
-      await driver.newSession('/work');
+      await driver.newSession(work);
       return { requests: requestPermission.mock.calls.map(([request]) => request), received };
     }
 
@@ -896,7 +949,7 @@ describe('V2Driver', () => {
         return { sessionId: 's1' };
       }), { permissions });
 
-      await driver.newSession('/work');
+      await driver.newSession(work);
 
       expect(received).toEqual([expect.objectContaining({ code: -32800 })]);
     });
@@ -925,7 +978,7 @@ describe('V2Driver', () => {
         .onNotification(V2.methods.agent.session.cancel, () => { events.push('session-cancel'); }), {
         permissions: { requestPermission, cancelSession },
       });
-      const session = driver.newSession('/work');
+      const session = driver.newSession(work);
 
       await started;
       await driver.cancel('s1');
@@ -947,43 +1000,57 @@ describe('V2Driver', () => {
         return { sessionId: 's1' };
       }));
 
-      await driver.newSession('/work');
+      await driver.newSession(work);
 
       expect(await answer).toHaveProperty('code', -32601);
     });
   });
 
   describe('errors', () => {
-    const failing: AgentScript = () => fakeV2Agent()
-      .onRequest(V2.methods.agent.session.new, () => {
-        throw V2.RequestError.authRequired();
-      })
+    /** An agent refusing every resume, replaying or not, with what `refusal` makes of the session asked for. */
+    const refusing = (refusal: (sessionId: string) => V2.RequestError): AgentScript => () => fakeV2Agent()
       .onRequest(V2.methods.agent.session.resume, ({ params }) => {
-        if (params.replayFrom) {
-          throw new V2.RequestError(-32002, `Session not found: ${params.sessionId}`);
-        }
-        throw V2.RequestError.internalError(undefined, 'disk full');
+        throw refusal(params.sessionId);
       });
 
     it("reports the agent's refusal until the user authenticates as AuthRequired, with the agent's message", async () => {
-      const { driver } = await connectedDriver(failing);
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => {
+        throw V2.RequestError.authRequired();
+      }));
 
-      const error = await driver.newSession('/work').catch((e: unknown) => e);
+      const error = await driver.newSession(work).catch((e: unknown) => e);
 
       expect(error).toBeInstanceOf(AuthRequired);
       expect(error).toHaveProperty('message', expect.stringContaining('Authentication required'));
     });
 
-    it('reports a session the agent does not know as UnknownSession, and other failures as they are', async () => {
-      const { driver } = await connectedDriver(failing);
+    it("reports a load or resume of a session the agent does not know, as ACP reports it, as UnknownSession with the agent's message", async () => {
+      const { driver } = await connectedDriver(refusing((sessionId) => new V2.RequestError(-32002, 'Resource not found', { sessionId })));
 
-      const unknown = await driver.loadSession('gone', '/work').catch((e: unknown) => e);
-      const other = await driver.resumeSession('old', '/work').catch((e: unknown) => e);
+      const loaded = await driver.loadSession('gone', work).catch((e: unknown) => e);
+      const resumed = await driver.resumeSession('gone', work).catch((e: unknown) => e);
 
-      expect(unknown).toBeInstanceOf(UnknownSession);
-      expect(unknown).toHaveProperty('message', expect.stringContaining('Session not found: gone'));
-      expect(other).not.toBeInstanceOf(UnknownSession);
-      expect(other).toHaveProperty('message', expect.stringContaining('disk full'));
+      expect(loaded).toBeInstanceOf(UnknownSession);
+      expect(loaded).toHaveProperty('message', expect.stringContaining('Resource not found'));
+      expect(resumed).toBeInstanceOf(UnknownSession);
+    });
+
+    it.each<[string, (sessionId: string) => V2.RequestError]>([
+      ['a missing resource naming another session', () => new V2.RequestError(-32002, 'Resource not found', { sessionId: 'other' })],
+      ['a missing resource naming no session', () => V2.RequestError.resourceNotFound('file:///work/missing')],
+      ['a missing resource without data', () => new V2.RequestError(-32002, 'Resource not found')],
+      ['invalid params whose message says the session was not found', (sessionId) => V2.RequestError.invalidParams(undefined, `Session not found: ${sessionId}`)],
+      ['the session being in use by another client', () => V2.RequestError.invalidRequest(undefined, 'This session is in use by another client')],
+      ['an internal error', () => V2.RequestError.internalError(undefined, 'disk full')],
+    ])('reports a refusal with %s as it is, not as UnknownSession', async (_, refusal) => {
+      const { driver } = await connectedDriver(refusing(refusal));
+
+      const loaded = await driver.loadSession('gone', work).catch((e: unknown) => e);
+      const resumed = await driver.resumeSession('gone', work).catch((e: unknown) => e);
+
+      expect(loaded).toBeInstanceOf(V2.RequestError);
+      expect(loaded).toHaveProperty('message', refusal('gone').message);
+      expect(resumed).toBeInstanceOf(V2.RequestError);
     });
   });
 });

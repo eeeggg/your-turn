@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { answer, connect, loadChatPage, plan, thought, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, plan, shownText, thought, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -10,7 +10,7 @@ beforeEach(() => {
 });
 
 function agentMessages(): string[] {
-  return [...page.document.querySelectorAll('.message.agent')].map((el) => el.textContent);
+  return [...page.document.querySelectorAll('.message.agent')].map(shownText);
 }
 
 describe('streaming a turn', () => {

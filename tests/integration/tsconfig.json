@@ -2,7 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "lib": ["es2022"],
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@/*": ["../../src/*"],
+      "@tests/*": ["../*"]
+    }
   },
   "include": ["./**/*.ts", "../../src/core/diff/*.d.ts"]
 }

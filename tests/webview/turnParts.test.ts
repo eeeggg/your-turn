@@ -1,6 +1,6 @@
 import { assert, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { answer, connect, loadChatPage, plan, thought, toolCall, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, plan, shownText, thought, toolCall, type ChatPage } from './chatPage';
 
 let page: ChatPage;
 
@@ -13,7 +13,7 @@ beforeEach(() => {
 /** Each part of the only turn as `hook classes: text`. */
 function parts(): string[] {
   const turn = page.document.querySelector('.turn');
-  return [...(turn?.children ?? [])].map((el) => `${hookClasses(el)}: ${el.textContent}`);
+  return [...(turn?.children ?? [])].map((el) => `${hookClasses(el)}: ${shownText(el)}`);
 }
 
 describe('the parts of a turn', () => {

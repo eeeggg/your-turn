@@ -23,6 +23,7 @@ import {
   type PlanStepStatus,
   type PromptPart,
   type SessionPage,
+  type SessionRoots,
   type SessionState,
   type SessionUpdate,
   type SlashCommand,
@@ -94,8 +95,19 @@ export class V2Driver implements AcpDriver {
     return this.connection.signal.aborted;
   }
 
-  async newSession(cwd: string): Promise<NewSession> {
-    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.new, { cwd }));
+  /** The directories beyond `cwd` that a session setup request carries. */
+  private additionalDirectories({ additionalDirectories }: SessionRoots): { additionalDirectories?: string[] } {
+    if (additionalDirectories.length === 0) { return {}; }
+    if (!this.agent.capabilities.additionalDirectories) {
+      logInfo('Agent does not support additional directories; sending only the cwd', { additionalDirectories });
+      return {};
+    }
+    return { additionalDirectories: [...additionalDirectories] };
+  }
+
+  async newSession(roots: SessionRoots): Promise<NewSession> {
+    const request: Acp.NewSessionRequest = { cwd: roots.cwd, ...this.additionalDirectories(roots) };
+    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.new, request));
     return { sessionId: response.sessionId, ...sessionState(response) };
   }
 
@@ -111,18 +123,19 @@ export class V2Driver implements AcpDriver {
   }
 
   /** ACP v2 has no `session/load`; a resume replaying from the start is one. */
-  async loadSession(sessionId: string, cwd: string): Promise<SessionState> {
-    return this.resume(sessionId, cwd, { type: 'start' });
+  async loadSession(sessionId: string, roots: SessionRoots): Promise<SessionState> {
+    return this.resume(sessionId, roots, { type: 'start' });
   }
 
-  async resumeSession(sessionId: string, cwd: string): Promise<SessionState> {
-    return this.resume(sessionId, cwd, null);
+  async resumeSession(sessionId: string, roots: SessionRoots): Promise<SessionState> {
+    return this.resume(sessionId, roots, null);
   }
 
-  private async resume(sessionId: string, cwd: string, replayFrom: Acp.ReplayFrom | null): Promise<SessionState> {
-    const response = await sessionChecked(this.connection.agent.request(Acp.methods.agent.session.resume, {
+  private async resume(sessionId: string, roots: SessionRoots, replayFrom: Acp.ReplayFrom | null): Promise<SessionState> {
+    const response = await sessionChecked(sessionId, this.connection.agent.request(Acp.methods.agent.session.resume, {
       sessionId,
-      cwd,
+      cwd: roots.cwd,
+      ...this.additionalDirectories(roots),
       ...(replayFrom ? { replayFrom } : {}),
     }));
     return sessionState(response);
@@ -158,8 +171,11 @@ export class V2Driver implements AcpDriver {
     throw new Error('ACP v2 sessions have no modes');
   }
 
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null> {
-    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.setConfigOption, { sessionId, configId, type: 'id', value }));
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<ConfigOption[] | null> {
+    const request: Acp.SetSessionConfigOptionRequest = typeof value === 'boolean'
+      ? { sessionId, configId, type: 'boolean', value }
+      : { sessionId, configId, type: 'id', value };
+    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.setConfigOption, request));
     return configOptions(response.configOptions);
   }
 
@@ -622,7 +638,7 @@ function agentDescription(response: Acp.InitializeResponse): AgentDescription {
   const sessions = !!response.capabilities?.session;
   return {
     displayName: response.info.title || response.info.name || null,
-    capabilities: { list: sessions, load: sessions, resume: sessions },
+    capabilities: { list: sessions, load: sessions, resume: sessions, additionalDirectories: !!response.capabilities?.session?.additionalDirectories },
     authMethods: (response.authMethods ?? []).flatMap(authMethod),
   };
 }

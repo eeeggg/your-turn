@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { answer, connect, loadChatPage, plan, texts, thought, toolCall, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, plan, shownText, texts, thought, toolCall, type ChatPage } from './chatPage';
 
 function open(savedState?: unknown): ChatPage {
   return loadChatPage(savedState === undefined ? {} : { savedState });
@@ -70,7 +70,8 @@ describe('saved state', () => {
     const page = open();
     runTurn(page);
 
-    expect(page.byId('messages').querySelector('.turn > .message.agent')?.textContent).toBe('answer');
+    const message = page.byId('messages').querySelector('.turn > .message.agent');
+    expect(message && shownText(message)).toBe('answer');
     expect(page.savedState()).toBeUndefined();
   });
 });

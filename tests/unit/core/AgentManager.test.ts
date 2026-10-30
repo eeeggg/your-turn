@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, watch, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { AgentManager, findOnPath, type AgentConfigEntry, type AgentProcess } from '@/core/AgentManager';
+import { AgentManager, findOnPath, renamesBetween, type AgentConfigEntry, type AgentProcess } from '@/core/AgentManager';
 
 /** Launch a Node script as the agent and record what the launcher reports. */
 function launch(script: string, options: { env?: Record<string, string>; cwd?: string } = {}) {
@@ -153,5 +153,33 @@ describe('findOnPath', () => {
 
     expect(await findOnPath('opencode')).toBeUndefined();
     expect(await findOnPath('notes')).toBeUndefined();
+  });
+});
+
+describe('renamesBetween', () => {
+  const opencode: AgentConfigEntry = { command: 'opencode', args: ['acp'], env: { A: '1', B: '2' } };
+  const claude: AgentConfigEntry = { command: 'claude-code-acp' };
+
+  it('finds a rename in a removed and an added name with the same command, arguments and environment', () => {
+    const renamed = { command: 'opencode', args: ['acp'], env: { B: '2', A: '1' }, displayName: 'OpenCode' };
+
+    expect(renamesBetween({ OpenCode: opencode, Claude: claude }, { Claude: claude, oc: renamed })).toEqual([{ from: 'OpenCode', to: 'oc' }]);
+  });
+
+  it('finds a rename beside an unchanged name with the same entry', () => {
+    expect(renamesBetween({ OpenCode: opencode, other: opencode }, { oc: opencode, other: opencode })).toEqual([{ from: 'OpenCode', to: 'oc' }]);
+  });
+
+  it.each<[string, Record<string, AgentConfigEntry>, Record<string, AgentConfigEntry>]>([
+    ['the command changed', { OpenCode: opencode }, { oc: { ...opencode, command: 'opencode-beta' } }],
+    ['the arguments changed', { OpenCode: opencode }, { oc: { ...opencode, args: ['acp', '--verbose'] } }],
+    ['the environment changed', { OpenCode: opencode }, { oc: { ...opencode, env: { A: '1', B: '3' } } }],
+    ['two names take the entry', { OpenCode: opencode }, { oc: opencode, oc2: opencode }],
+    ['two names with the entry are removed', { OpenCode: opencode, other: opencode }, { oc: opencode }],
+    ['a name is only removed', { OpenCode: opencode, Claude: claude }, { Claude: claude }],
+    ['a name is only added', { Claude: claude }, { Claude: claude, OpenCode: opencode }],
+    ['a name resolves to another entry', { OpenCode: opencode }, { OpenCode: claude }],
+  ])('finds none when %s', (_, before, after) => {
+    expect(renamesBetween(before, after)).toEqual([]);
   });
 });

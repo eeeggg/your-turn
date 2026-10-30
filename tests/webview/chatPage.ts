@@ -26,7 +26,8 @@ export interface ChatPage {
   send(message: ExtensionToWebviewMessage): void;
   byId<T extends HTMLElement = HTMLElement>(id: string): T;
   typePrompt(text: string): void;
-  pressKey(key: string, init?: KeyboardEventInit): void;
+  /** Press a key in the prompt box; false when the page prevented what the textarea itself would do. */
+  pressKey(key: string, init?: KeyboardEventInit): boolean;
   close(): void;
 }
 
@@ -143,7 +144,7 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     },
     pressKey(key, init = {}) {
-      byId('promptInput').dispatchEvent(
+      return byId('promptInput').dispatchEvent(
         new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }),
       );
     },
@@ -192,4 +193,9 @@ export function texts(...items: string[]): ToolCallContent[] {
 
 export function plan(page: ChatPage, ...steps: PlanStep[]): void {
   page.send({ type: 'plan', steps });
+}
+
+/** The text an element shows; for a message, its content without the labels of its copy controls. */
+export function shownText(element: Element): string {
+  return (element.querySelector(':scope > .message-content') ?? element).textContent;
 }

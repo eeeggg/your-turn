@@ -137,6 +137,11 @@ export function showsEmptyState(transcript: TranscriptState, session: ActiveSess
   return session === null && transcript.entries.length === 0;
 }
 
+/** The session's prompts the agent has, oldest first: those it was sent, a queued one once it goes, and those a load replayed. */
+export function promptHistory(transcript: TranscriptState): string[] {
+  return transcript.entries.flatMap((entry) => (entry.kind === 'prompt' && entry.text.trim() !== '' ? [entry.text] : []));
+}
+
 /** A part is drawn only once it has something to show, so whitespace before the answer leaves no trace. */
 export function partShown(part: TurnPart): boolean {
   return part.kind !== 'message' || part.text.trim() !== '';

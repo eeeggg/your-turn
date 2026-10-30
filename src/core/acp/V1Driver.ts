@@ -19,6 +19,7 @@ import type {
   PlanStepStatus,
   PromptPart,
   SessionPage,
+  SessionRoots,
   SessionState,
   SessionUpdate,
   SlashCommand,
@@ -32,8 +33,9 @@ export function v1InitializeRequest(clientVersion: string): Acp.InitializeReques
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: 'vscode-acp-client', version: clientVersion },
-    // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities.
-    clientCapabilities: {},
+    // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities. Boolean config
+    // options, which every v2 client supports, a v1 client must offer.
+    clientCapabilities: { session: { configOptions: { boolean: {} } } },
   };
 }
 
@@ -79,8 +81,19 @@ export class V1Driver implements AcpDriver {
     return this.connection.signal.aborted;
   }
 
-  async newSession(cwd: string): Promise<NewSession> {
-    const response = await authChecked(this.connection.agent.request(methods.agent.session.new, { cwd, mcpServers: [] }));
+  /** The directories beyond `cwd` that a session setup request carries. */
+  private additionalDirectories({ additionalDirectories }: SessionRoots): { additionalDirectories?: string[] } {
+    if (additionalDirectories.length === 0) { return {}; }
+    if (!this.agent.capabilities.additionalDirectories) {
+      logInfo('Agent does not support additional directories; sending only the cwd', { additionalDirectories });
+      return {};
+    }
+    return { additionalDirectories: [...additionalDirectories] };
+  }
+
+  async newSession(roots: SessionRoots): Promise<NewSession> {
+    const request: Acp.NewSessionRequest = { cwd: roots.cwd, ...this.additionalDirectories(roots), mcpServers: [] };
+    const response = await authChecked(this.connection.agent.request(methods.agent.session.new, request));
     return { sessionId: response.sessionId, ...sessionState(response) };
   }
 
@@ -95,13 +108,15 @@ export class V1Driver implements AcpDriver {
     };
   }
 
-  async loadSession(sessionId: string, cwd: string): Promise<SessionState> {
-    const response = await sessionChecked(this.connection.agent.request(methods.agent.session.load, { sessionId, cwd, mcpServers: [] }));
+  async loadSession(sessionId: string, roots: SessionRoots): Promise<SessionState> {
+    const request: Acp.LoadSessionRequest = { sessionId, cwd: roots.cwd, ...this.additionalDirectories(roots), mcpServers: [] };
+    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.load, request));
     return sessionState(response);
   }
 
-  async resumeSession(sessionId: string, cwd: string): Promise<SessionState> {
-    const response = await sessionChecked(this.connection.agent.request(methods.agent.session.resume, { sessionId, cwd, mcpServers: [] }));
+  async resumeSession(sessionId: string, roots: SessionRoots): Promise<SessionState> {
+    const request: Acp.ResumeSessionRequest = { sessionId, cwd: roots.cwd, ...this.additionalDirectories(roots), mcpServers: [] };
+    const response = await sessionChecked(sessionId, this.connection.agent.request(methods.agent.session.resume, request));
     return sessionState(response);
   }
 
@@ -122,8 +137,11 @@ export class V1Driver implements AcpDriver {
     await authChecked(this.connection.agent.request(methods.agent.session.setMode, { sessionId, modeId }));
   }
 
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null> {
-    const response = await authChecked(this.connection.agent.request(methods.agent.session.setConfigOption, { sessionId, configId, value }));
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<ConfigOption[] | null> {
+    const request: Acp.SetSessionConfigOptionRequest = typeof value === 'boolean'
+      ? { sessionId, configId, type: 'boolean', value }
+      : { sessionId, configId, value };
+    const response = await authChecked(this.connection.agent.request(methods.agent.session.setConfigOption, request));
     // The SDK validates an agent's requests and notifications but not its
     // responses, so this arrives as the agent sent it, whatever its type says.
     return Array.isArray(response.configOptions) ? response.configOptions.map(configOption) : null;
@@ -142,6 +160,7 @@ function agentDescription(response: Acp.InitializeResponse): AgentDescription {
       list: !!caps?.sessionCapabilities?.list,
       load: !!caps?.loadSession,
       resume: !!caps?.sessionCapabilities?.resume,
+      additionalDirectories: !!caps?.sessionCapabilities?.additionalDirectories,
     },
     authMethods: (response.authMethods ?? []).map((method) => ({ id: method.id, name: method.name, description: method.description ?? null })),
   };

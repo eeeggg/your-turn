@@ -90,7 +90,6 @@ class FakeSessions implements ChatSessions {
   cancelTurn = vi.fn<ChatSessions['cancelTurn']>(async () => {});
   setMode = vi.fn<ChatSessions['setMode']>(async () => {});
   setConfigOption = vi.fn<ChatSessions['setConfigOption']>(async () => null);
-  recordFirstPrompt = vi.fn<ChatSessions['recordFirstPrompt']>();
   recordTurnEnded = vi.fn<ChatSessions['recordTurnEnded']>();
   applyAvailableCommands = vi.fn<ChatSessions['applyAvailableCommands']>();
   applyConfigOptions = vi.fn<ChatSessions['applyConfigOptions']>((sessionId, options) => {
@@ -415,7 +414,6 @@ describe('ChatViewController', () => {
 
       const turn = sendPrompt(controller, sessions, 'hello');
       expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
-      expect(sessions.recordFirstPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
       expect(environment.take()).toEqual([{ type: 'promptStart' }]);
       expect(controller.hasRunningTurn).toBe(true);
 

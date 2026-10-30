@@ -29,6 +29,15 @@ function chatView() {
         activeSessionId: 's1',
         session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review, reset], ...session },
       }),
+    /** Each prompt sent and its turn ended, so it is in the session's history. */
+    sent: (...texts: string[]) =>
+      texts.forEach((text) => {
+        store.dispatch({ type: 'promptEdited', text });
+        store.dispatch({ type: 'promptSent' });
+        store.dispatch({ type: 'promptEnd' });
+      }),
+    older: () => store.dispatch({ type: 'historyMoved', to: 'older' }),
+    newer: () => store.dispatch({ type: 'historyMoved', to: 'newer' }),
     takePosted: () => posted.splice(0),
     notified: () => notified,
   };
@@ -214,6 +223,175 @@ describe('choosing a slash command', () => {
 
     expect(view.box()).toBe(before);
     expect(view.takePosted()).toEqual([]);
+  });
+});
+
+describe('the prompt history', () => {
+  it('recalls older prompts from an empty box with the caret at the start, stopping at the oldest, and sends nothing', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2', 'q3');
+    view.takePosted();
+
+    view.older();
+    expect([view.box().text, view.box().recall?.caret]).toEqual(['q3', 'start']);
+    view.older();
+    view.older();
+    expect([view.box().text, view.box().recall?.caret]).toEqual(['q1', 'start']);
+    const oldest = view.box();
+    view.older();
+
+    expect(view.box()).toBe(oldest);
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it('recalls newer prompts with the caret at the end, then leaves the history for an empty box', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2', 'q3');
+    view.older();
+    view.older();
+    view.older();
+
+    view.newer();
+    expect([view.box().text, view.box().recall?.caret]).toEqual(['q2', 'end']);
+    view.newer();
+    expect(view.box().text).toBe('q3');
+    view.newer();
+    expect([view.box().text, view.box().recall]).toEqual(['', null]);
+    const left = view.box();
+    view.newer();
+
+    expect(view.box()).toBe(left);
+  });
+
+  it('keeps a draft that differs from the latest prompt, but recalls from one that matches it', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2');
+    view.type('draft');
+    const drafted = view.box();
+
+    view.older();
+    expect(view.box()).toBe(drafted);
+
+    view.type('q2');
+    view.older();
+    view.older();
+    expect(view.box().text).toBe('q1');
+  });
+
+  it('keeps an edited recall from either move until it is cleared, then moves on from where it was', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2', 'q3');
+    view.older();
+    view.older();
+    view.type('q2, edited');
+    const edited = view.box();
+
+    view.older();
+    view.newer();
+    expect(view.box()).toBe(edited);
+
+    view.type('');
+    view.older();
+    expect(view.box().text).toBe('q1');
+  });
+
+  it('starts again from the newest after sending a recalled prompt', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2');
+    view.older();
+    view.older();
+
+    view.send({ type: 'promptSent' }, { type: 'promptEnd' });
+    expect(view.takePosted()).toContainEqual({ type: 'sendPrompt', text: 'q1' });
+    view.older();
+    view.older();
+
+    expect(view.box().text).toBe('q2');
+  });
+
+  it('stops browsing in another session or none, and once the transcript is cleared, keeping the text', () => {
+    const leavings: Action[] = [
+      { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } },
+      { type: 'state', activeSessionId: null, session: null },
+      { type: 'clearTranscript' },
+    ];
+    const after = leavings.map((leaving) => {
+      const view = chatView();
+      view.connect();
+      view.sent('q1', 'q2');
+      view.older();
+
+      view.send(leaving);
+
+      return [view.box().text, view.box().recall];
+    });
+
+    expect(after).toEqual(leavings.map(() => ['q2', null]));
+  });
+
+  it('starts again from the newest of a loaded history', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2');
+    view.older();
+    view.older();
+
+    view.send(
+      { type: 'loadSessionStart' },
+      { type: 'promptText', messageId: 'u1', text: 'l1' },
+      { type: 'promptText', messageId: 'u2', text: 'l2' },
+      { type: 'loadSessionEnd', ok: true },
+    );
+    view.type('');
+    view.older();
+    expect(view.box().text).toBe('l2');
+  });
+
+  it('recalls nothing while a load replays the history', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1');
+    view.send({ type: 'loadSessionStart' }, { type: 'promptText', messageId: null, text: 'l1' });
+    const loading = view.box();
+
+    view.older();
+
+    expect(view.box()).toBe(loading);
+  });
+
+  it('shows a recalled slash command with the popup dismissed, which an edit reopens', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('/re');
+
+    view.older();
+    expect(view.matches()).toEqual([]);
+
+    view.type('/re');
+    expect(view.matches()).toEqual(['review', 'Reset']);
+  });
+
+  it('announces the place of each recall, and the empty box on leaving, until the text is edited', () => {
+    const view = chatView();
+    view.connect();
+    view.sent('q1', 'q2', 'q3');
+
+    view.older();
+    expect(view.box().announcement).toBe('Prompt 3 of 3');
+    view.older();
+    expect(view.box().announcement).toBe('Prompt 2 of 3');
+    view.newer();
+    view.newer();
+    expect(view.box().announcement).toBe('Empty prompt');
+
+    view.older();
+    view.type('q3!');
+    expect(view.box().announcement).toBe('');
   });
 });
 

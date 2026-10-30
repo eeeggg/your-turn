@@ -32,7 +32,7 @@ export const initialState: RootState = {
 export function update(state: RootState, action: Action, now: number): Transition<RootState, WebviewToExtensionMessage> {
   const updatedSession = updateActiveSession(state.activeSession, action);
   const pickers = updatePickers(state.pickers, action);
-  const promptBox = updatePromptBox(state.promptBox, action, updatedSession);
+  const promptBox = updatePromptBox(state.promptBox, action, updatedSession, state.transcript);
   const transcript = updateTranscript(state.transcript, action, now);
   const sent = withSentPrompts(transcript.state, promptBox.outgoing, updatedSession?.turnRunning ?? false);
   const queued = sent.state.queued.length;
