@@ -86,14 +86,14 @@ preparation or execution, including focused and repeated runs.
 
 - For a bug, establish a failing regression before fixing it. Write a
   feature's tests first and watch each fail for the intended reason.
-- Then verify with deliberate breaks, one at a time, only what that failure
-  did not already show: a test that passed when first run, cases within one
-  test that failed together, assertions loose enough to pass for the wrong
-  reason (prefixes, filters, membership), and ways to get the behavior wrong
-  other than leaving it out. Skip a break that would only trip the assertion
-  the failing-first run already tripped, and say so when reporting. If only
-  the build catches a break, use a compiling variant; an undetected break
-  needs a test or exposes dead code.
+- Break deliberately, one at a time, only where a wrong implementation could
+  still pass: a test that passed when first run, an assertion loose enough to
+  pass for the wrong reason (prefixes, filters, membership), or a check that
+  only a fake's behavior makes meaningful (a fake that ignores or rejects a
+  request, for instance). A test that failed first because the behavior did
+  not exist yet needs no breaks; say which breaks were skipped and why when
+  reporting. If only the build catches a break, use a compiling variant; an
+  undetected break needs a test or exposes dead code.
 - Run `make test` for the unfiltered typecheck, lint, bundle, unit/webview and
   integration gate. Run `make test-ui` separately for
   rendered workbench behavior; it also performs typecheck and lint first. These

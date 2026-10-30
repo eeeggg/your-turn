@@ -15,7 +15,7 @@ const v2Request = {
 const v1Request = {
   protocolVersion: 1,
   clientInfo: { name: 'vscode-acp-client', version: '0.0.0-test' },
-  clientCapabilities: {},
+  clientCapabilities: { session: { configOptions: { boolean: {} } } },
 };
 
 /** An ACP v1 agent that refuses any `initialize` but one asking for 1, with `refusal`. */
@@ -146,11 +146,13 @@ describe('negotiation', () => {
     expect(updates).toEqual([]);
   });
 
-  it("sends each version's request saying the same thing, as the replay answers one with the other's answer", () => {
+  // v2 clients support boolean config options without saying so; v1 clients say so, as the SDK's router does for one.
+  it("sends each version's request saying the same thing in its own terms, as the replay answers one with the other's answer", () => {
     const v1 = v1InitializeRequest('1.2.3');
     const v2 = v2InitializeRequest('1.2.3');
 
     expect([v1.protocolVersion, v2.protocolVersion]).toEqual([1, 2]);
-    expect({ identity: v1.clientInfo, capabilities: v1.clientCapabilities }).toEqual({ identity: v2.info, capabilities: v2.capabilities });
+    expect(v1.clientInfo).toEqual(v2.info);
+    expect([v1.clientCapabilities, v2.capabilities]).toEqual([{ session: { configOptions: { boolean: {} } } }, {}]);
   });
 });

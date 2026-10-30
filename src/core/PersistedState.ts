@@ -184,12 +184,14 @@ export class SessionReferences extends EventEmitter<{ changed: [] }> {
   }
 
   /**
-   * A configuration was renamed: its references on `host` move to the new name. One that is already referenced under
-   * the new name keeps whichever of the two was active more recently, with its title and selections.
+   * A configuration was renamed, or with `sessionId`, that session was loaded through another: the references on `host`
+   * move to the new name. One that is already referenced under the new name keeps whichever of the two was active more
+   * recently, with its title and selections.
    */
-  rebind(host: string, from: string, to: string): Promise<void> {
+  rebind(host: string, from: string, to: string, sessionId?: string): Promise<void> {
     return this.change((references) => {
-      const moving = references.filter((reference) => reference.host === host && reference.configuredName === from);
+      const moving = references.filter((reference) => reference.host === host && reference.configuredName === from
+        && (sessionId === undefined || reference.sessionId === sessionId));
       if (moving.length === 0) {
         return undefined;
       }

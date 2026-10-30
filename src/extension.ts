@@ -5,6 +5,7 @@ import { AgentManager, findOnPath } from '@/core/AgentManager';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { checkPackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/SessionCommands';
+import { SessionStartup } from '@/core/SessionStartup';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionReferences, WorkspaceState } from '@/core/PersistedState';
 import { SessionList, type AgentSessions } from '@/core/SessionList';
@@ -267,7 +268,11 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
 
-  const sessionCommands = new SessionCommands(sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames);
+  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment);
+  const sessionCommands = new SessionCommands(
+    sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames, sessionStartup,
+  );
+  void chatViewReady.then(() => sessionCommands.restoreLastSession());
   const agentConfigurations = new AgentConfigurations(
     () => vscode.workspace.getConfiguration('acp'),
     sessionManager,

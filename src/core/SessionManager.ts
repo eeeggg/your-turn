@@ -28,11 +28,12 @@ import {
   Writes,
   type Selections,
   type SessionAddress,
+  type SessionReference,
   type SessionReferences,
   type WorkspaceState,
   type WorkspaceTarget,
 } from './PersistedState';
-import { logDebug, logError, logInfo, messageOf } from './Log';
+import { logDebug, logError, logInfo, logWarning, messageOf, type LogContext } from './Log';
 
 /** What sessions need from the workspace the extension runs in. */
 export interface SessionEnvironment {
@@ -106,9 +107,25 @@ function exitReason(agentDisplayName: string, code: number | null): string {
   return code === null ? `${agentDisplayName} exited unexpectedly.` : `${agentDisplayName} exited unexpectedly (code ${code}).`;
 }
 
-/** `options` with the select option `id` set to `value`; the setter sends only strings. */
-function withCurrent(options: ConfigOption[] | null, id: string, value: string): ConfigOption[] | null {
-  return options?.map((option) => (option.id === id && option.kind === 'select' ? { ...option, current: value } : option)) ?? null;
+/** `options` with option `id` set to `value`, when `value` is of its kind. */
+function withCurrent(options: ConfigOption[] | null, id: string, value: string | boolean): ConfigOption[] | null {
+  return options?.map((option) => {
+    if (option.id !== id) { return option; }
+    if (option.kind === 'select' && typeof value === 'string') { return { ...option, current: value }; }
+    if (option.kind === 'boolean' && typeof value === 'boolean') { return { ...option, current: value }; }
+    return option;
+  }) ?? null;
+}
+
+/** Where an option comes in the order saved values are reapplied: the mode, then the model, then the rest. */
+function reapplyRank(option: ConfigOption): number {
+  if (option.category === 'mode') { return 0; }
+  return option.category === 'model' ? 1 : 2;
+}
+
+function offers(option: ConfigOption, value: string | boolean): boolean {
+  if (option.kind === 'boolean') { return typeof value === 'boolean'; }
+  return option.groups.some((group) => group.values.some((offered) => offered.id === value));
 }
 
 /** Config options replace modes, as the ACP spec says, so the mode is displayed only for a session without them. */
@@ -121,6 +138,12 @@ function displayedSelections(session: SessionInfo): Selections {
 }
 
 export type SessionOpening = 'created' | 'loaded' | 'resumed';
+
+/** The configuration a session was last used through, and the host, when not this window's. */
+interface UsedThrough {
+  readonly configuredName: string;
+  readonly host?: string;
+}
 
 /** The events a {@link SessionManager} emits, with the arguments each passes its listeners. */
 export interface SessionManagerEvents {
@@ -174,7 +197,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private pendingAvailableCommands = new Map<string, SlashCommand[]>();
   private pendingConfigOptions = new Map<string, ConfigOption[]>();
   private pendingTitles = new Map<string, string>();
-  /** Sessions being loaded, whose replayed options must not overwrite those saved before they are reapplied. */
+  /**
+   * Sessions being loaded or resumed, whose replayed or reported options must not overwrite those saved before they are
+   * reapplied.
+   */
   private readonly loading = new Set<string>();
   /**
    * The names agents still running here were configured under and renamed from since, with their names now, so
@@ -449,12 +475,18 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * notifications that arrive before the caller's continuation runs can be
    * applied to it instead of dropped.
    */
-  private registerSession(agent: RunningAgent, sessionId: string, cwd: string, state: SessionState = NO_SESSION_STATE): SessionInfo {
+  private registerSession(
+    agent: RunningAgent,
+    sessionId: string,
+    cwd: string,
+    state: SessionState = NO_SESSION_STATE,
+    reference: SessionReference | undefined = this.referenceOf(agent.name, sessionId),
+  ): SessionInfo {
     if (this.disposed) {
       throw new Error('Session manager is disposed.');
     }
     // Known for a session reopened from the tree; updates drained below override it.
-    const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? this.referenceOf(agent.name, sessionId)?.title;
+    const title = this.listedTitles.get(agent.name)?.get(sessionId) ?? reference?.title;
     const sessionInfo: SessionInfo = {
       sessionId,
       agentId: agent.process.id,
@@ -631,7 +663,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
    * agent answering without them, against the spec, has set the value asked
    * for and nothing else.
    */
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null> {
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<ConfigOption[] | null> {
     const session = this.sessions.get(sessionId);
     if (!session) { return null; }
 
@@ -779,10 +811,14 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /**
    * Load an existing session, replaying its entire transcript via
-   * `session/update` notifications. Heavyweight. Active session is switched
-   * to the loaded session on success.
+   * `session/update` notifications, then reapply the options saved for it before the load ends. Heavyweight. Active
+   * session is switched to the loaded session on success.
+   *
+   * `usedThrough` is where the session was last used, when not through `agentName` (on this window's host, unless it
+   * names another): the title and options saved there are used, and once the load succeeds, the session's reference
+   * moves to `agentName`.
    */
-  async loadSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+  async loadSession(agentName: string, sessionId: string, usedThrough?: UsedThrough): Promise<SessionInfo> {
     await this.disconnectOtherAgent(agentName);
 
     const agent = await this.ensureAgent(agentName);
@@ -793,9 +829,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.dropActiveSessionUnless(sessionId);
 
     const roots = this.environment.workspaceRoots();
+    const reference = this.referenceUsedThrough(agentName, sessionId, usedThrough);
     // Registered and made active before the request, so the transcript the
     // agent replays during the load reaches the webview.
-    const session = this.registerSession(agent, sessionId, roots.cwd);
+    const session = this.registerSession(agent, sessionId, roots.cwd, NO_SESSION_STATE, reference);
     this.agentSessions.set(agentName, sessionId);
     this.activeSessionId = sessionId;
     // Emit active-session-changed BEFORE session-load-start so the webview
@@ -815,6 +852,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       if (state.commands) {
         session.availableCommands = state.commands;
       }
+      await this.reapplySelections(session, reference?.selections);
     } catch (e) {
       this.removeSession(session);
       this.emit('session-load-end', sessionId, agentName, /*ok=*/false);
@@ -825,14 +863,71 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
 
     this.emit('session-load-end', sessionId, agentName, /*ok=*/true);
+    this.moveReference(agentName, sessionId, usedThrough);
     this.recordOpened(session, 'loaded');
     return session;
   }
 
   /**
-   * Resume an existing session; unlike a load, the agent does not replay its transcript.
+   * Request each saved value that differs from the opened session's and that its agent offers: the mode first, then a
+   * model, then the rest in the agent's order, comparing again after each answer, as one change can bring about
+   * others. Each option is requested at most once, so this ends, and what the agent answers is what the session shows.
+   * Nothing is thrown: a value not reapplied is logged.
    */
-  async resumeSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+  private async reapplySelections(session: SessionInfo, saved: Selections | undefined): Promise<void> {
+    if (!saved) { return; }
+    const { sessionId } = session;
+    const notReapplied = (context: LogContext) => logWarning('Saved option not reapplied', { sessionId, ...context });
+
+    if ((session.configOptions ?? []).length === 0) {
+      const { modeId } = saved;
+      const { modes } = session;
+      if (modeId === undefined || !modes || modes.current === modeId) { return; }
+      if (!modes.available.some((mode) => mode.id === modeId)) {
+        notReapplied({ modeId, reason: 'not offered' });
+        return;
+      }
+      try {
+        await this.setMode(sessionId, modeId);
+      } catch (e) {
+        notReapplied({ modeId, reason: messageOf(e) });
+      }
+      return;
+    }
+
+    const requested = new Set<string>();
+    const rejected = new Set<string>();
+    for (;;) {
+      const [next] = [...(session.configOptions ?? [])]
+        .sort((a, b) => reapplyRank(a) - reapplyRank(b))
+        .flatMap((option) => {
+          const value = saved.options[option.id];
+          return value !== undefined && value !== option.current && !requested.has(option.id) && offers(option, value)
+            ? [{ configId: option.id, value }]
+            : [];
+        });
+      if (!next) { break; }
+      requested.add(next.configId);
+      try {
+        await this.setConfigOption(sessionId, next.configId, next.value);
+      } catch (e) {
+        rejected.add(next.configId);
+        notReapplied({ ...next, reason: messageOf(e) });
+      }
+    }
+
+    const shown = new Map((session.configOptions ?? []).map((option) => [option.id, option.current]));
+    for (const [configId, value] of Object.entries(saved.options)) {
+      if (shown.get(configId) === value || rejected.has(configId)) { continue; }
+      notReapplied({ configId, value, reason: requested.has(configId) ? 'the agent answered with another value' : 'not offered' });
+    }
+  }
+
+  /**
+   * Resume an existing session, then reapply the options saved for it before it becomes active; unlike a load, the
+   * agent does not replay its transcript. `usedThrough` is as for {@link loadSession}.
+   */
+  async resumeSession(agentName: string, sessionId: string, usedThrough?: UsedThrough): Promise<SessionInfo> {
     await this.disconnectOtherAgent(agentName);
 
     const agent = await this.ensureAgent(agentName);
@@ -845,14 +940,42 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const roots = this.environment.workspaceRoots();
     const response = await agent.driver.resumeSession(sessionId, roots);
 
-    const sessionInfo = this.registerSession(agent, sessionId, roots.cwd, response);
+    const reference = this.referenceUsedThrough(agentName, sessionId, usedThrough);
+    const sessionInfo = this.registerSession(agent, sessionId, roots.cwd, response, reference);
     this.agentSessions.set(agentName, sessionId);
     this.activeSessionId = sessionId;
+    this.loading.add(sessionId);
+    try {
+      await this.reapplySelections(sessionInfo, reference?.selections);
+    } finally {
+      this.loading.delete(sessionId);
+    }
     this.emit('session-added', sessionId, agentName);
     this.emit('active-session-changed', sessionId);
 
+    this.moveReference(agentName, sessionId, usedThrough);
     this.recordOpened(sessionInfo, 'resumed');
     return sessionInfo;
+  }
+
+  /** The reference of a session about to be opened through `agentName`, as {@link loadSession} takes `usedThrough`. */
+  private referenceUsedThrough(agentName: string, sessionId: string, usedThrough: UsedThrough | undefined): SessionReference | undefined {
+    if (!usedThrough) { return this.referenceOf(agentName, sessionId); }
+    const host = usedThrough.host ?? this.environment.workspaceTarget()?.host;
+    return host ? this.persisted?.references.get({ host, configuredName: usedThrough.configuredName, sessionId }) : undefined;
+  }
+
+  /** A session opened through `agentName` that was last used through another configuration: its reference moves. */
+  private moveReference(agentName: string, sessionId: string, usedThrough: UsedThrough | undefined): void {
+    const persisted = this.persisted;
+    const to = this.configuredNameOf(agentName);
+    if (!persisted || !usedThrough || usedThrough.configuredName === to) { return; }
+    const move = (host: string) => void persisted.references.rebind(host, usedThrough.configuredName, to, sessionId);
+    if (usedThrough.host) {
+      move(usedThrough.host);
+    } else {
+      this.withTarget((target) => move(target.host));
+    }
   }
 
   /** Honor the single-active-session model when opening a session with `agentName`. */

@@ -250,6 +250,22 @@ describe('V1Driver', () => {
       ]);
     });
 
+    it('sets a select option by its value alone, and a boolean one with its type', async () => {
+      const received: Acp.SetSessionConfigOptionRequest[] = [];
+      const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.setConfigOption, ({ params }) => {
+        received.push(params);
+        return { configOptions: [] };
+      }));
+
+      await driver.setConfigOption('s1', 'model', 'b');
+      await driver.setConfigOption('s1', 'fast', true);
+
+      expect(received).toEqual([
+        { sessionId: 's1', configId: 'model', value: 'b' },
+        { sessionId: 's1', configId: 'fast', type: 'boolean', value: true },
+      ]);
+    });
+
     it('keeps booleans, which no picker shows but which still replace modes', async () => {
       expect(await configOptionsOf({ id: 'fast', name: 'Fast', description: 'Answers sooner', type: 'boolean', currentValue: true })).toEqual([
         { kind: 'boolean', id: 'fast', name: 'Fast', description: 'Answers sooner', category: 'other', current: true },

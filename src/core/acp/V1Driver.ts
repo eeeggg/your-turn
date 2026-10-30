@@ -33,8 +33,9 @@ export function v1InitializeRequest(clientVersion: string): Acp.InitializeReques
   return {
     protocolVersion: PROTOCOL_VERSION,
     clientInfo: { name: 'vscode-acp-client', version: clientVersion },
-    // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities.
-    clientCapabilities: {},
+    // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities. Boolean config
+    // options, which every v2 client supports, a v1 client must offer.
+    clientCapabilities: { session: { configOptions: { boolean: {} } } },
   };
 }
 
@@ -136,8 +137,11 @@ export class V1Driver implements AcpDriver {
     await authChecked(this.connection.agent.request(methods.agent.session.setMode, { sessionId, modeId }));
   }
 
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null> {
-    const response = await authChecked(this.connection.agent.request(methods.agent.session.setConfigOption, { sessionId, configId, value }));
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<ConfigOption[] | null> {
+    const request: Acp.SetSessionConfigOptionRequest = typeof value === 'boolean'
+      ? { sessionId, configId, type: 'boolean', value }
+      : { sessionId, configId, value };
+    const response = await authChecked(this.connection.agent.request(methods.agent.session.setConfigOption, request));
     // The SDK validates an agent's requests and notifications but not its
     // responses, so this arrives as the agent sent it, whatever its type says.
     return Array.isArray(response.configOptions) ? response.configOptions.map(configOption) : null;

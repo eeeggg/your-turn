@@ -4,7 +4,8 @@ import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionReferences, WorkspaceState, type KeyValueStore } from '@/core/PersistedState';
 import { SessionCommands } from '@/core/SessionCommands';
-import { SessionManager } from '@/core/SessionManager';
+import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
+import { SessionStartup } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ProgressLocation } from '@/core/VsCodeApi';
 import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
@@ -59,20 +60,22 @@ const WORKSPACE = { uri: 'file:///Users/me/work.code-workspace', host: 'vscode-r
 
 function setup(scripts: Record<string, AgentScript>) {
   const agents = new InProcessAgents(scripts);
+  const environment: SessionEnvironment = {
+    workspaceRoots: () => work,
+    workspaceTarget: () => WORKSPACE,
+    workspaceTargetKnown: () => Promise.resolve(WORKSPACE),
+    agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
+    activeFileLink: () => undefined,
+  };
   const manager = new SessionManager(
     agents,
     new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
-    {
-      workspaceRoots: () => work,
-      workspaceTarget: () => WORKSPACE,
-      workspaceTargetKnown: () => Promise.resolve(WORKSPACE),
-      agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
-      activeFileLink: () => undefined,
-    },
+    environment,
     { chooseAuthMethod: async () => undefined },
   );
   const references = new SessionReferences(memoryStore());
-  manager.setPersistedState(references, new WorkspaceState(memoryStore()));
+  const workspace = new WorkspaceState(memoryStore());
+  manager.setPersistedState(references, workspace);
   const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn() };
   /** The session each Keep All was made in. */
   const keptIn: (string | null)[] = [];
@@ -85,8 +88,37 @@ function setup(scripts: Record<string, AgentScript>) {
     },
   };
   const user = new ScriptedUser();
-  const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts));
-  return { agents, manager, references, transcript, review, keptIn, user, commands };
+  const startup = new SessionStartup(manager, workspace, environment);
+  const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts), startup);
+  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands };
+}
+
+/** Where session `sessionId` of agent configuration `configuredName` lives in the test workspace. */
+const addressOf = (configuredName: string, sessionId: string) =>
+  ({ configuredName, sessionId, cwd: work.cwd, host: WORKSPACE.host, workspaceUri: WORKSPACE.uri });
+
+const RETRY_CHOOSE = ['Retry', 'Choose Session', 'Choose Agent'];
+const failedToOpen = (message: string, items: string[] = RETRY_CHOOSE): Call => ({ call: 'showErrorMessage', message: `Failed to open session: ${message}`, items });
+const choosingAgent = (items: string[]): Call => ({
+  call: 'showQuickPick', items, options: { title: 'Choose Agent', placeHolder: 'Open the session through which agent?' },
+});
+const choosingSession: Call = { call: 'executeCommand', command: 'acp-sessions.focus' };
+
+/** An agent that can load, and refuses the first `refusals` loads as another client has the session open. */
+function refusingAgent(refusals = Infinity) {
+  const requested: string[] = [];
+  const loaded: string[] = [];
+  let refused = 0;
+  const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } })
+    .onRequest(methods.agent.session.load, ({ params }) => {
+      requested.push(params.sessionId);
+      if (refused++ < refusals) {
+        throw RequestError.internalError(undefined, 'session in use by another client');
+      }
+      loaded.push(params.sessionId);
+      return {};
+    });
+  return { script, requested, loaded };
 }
 
 const underReview = (count: string) => `${count} still under review, kept until this session is opened again in this window.`;
@@ -533,13 +565,11 @@ describe('SessionCommands', () => {
 
     it('reports an agent that can neither load nor resume', async () => {
       const { user, commands } = setup({ one: sessionAgent('one').script });
+      user.answer(undefined);
 
       await commands.open('one', 'old');
 
-      expect(user.take()).toEqual([
-        focusChatView,
-        { call: 'showErrorMessage', message: 'Agent "one" does not support loading or resuming sessions.' },
-      ]);
+      expect(user.take()).toEqual([focusChatView, failedToOpen('Agent "one" cannot load or resume sessions.')]);
     });
 
     it('only shows the chat view when the session is already active', async () => {
@@ -622,21 +652,63 @@ describe('SessionCommands', () => {
           throw RequestError.invalidParams(undefined, 'Session not found');
         }),
       });
+      user.answer(undefined);
 
       await commands.open('one', 'gone');
 
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…'), failedToOpen('Invalid params: Session not found')]);
+    });
+
+    it('opens the session again through the same agent on Retry', async () => {
+      const one = refusingAgent(1);
+      const { manager, user, commands } = setup({ one: one.script });
+      user.answer('Retry');
+
+      await commands.open('one', 'old');
+
+      expect(manager.getActiveSessionId()).toBe('old');
       expect(user.take()).toEqual([
         focusChatView,
         progress('Loading session…'),
-        { call: 'showErrorMessage', message: 'Failed to open session: Invalid params: Session not found' },
+        failedToOpen('Internal error: session in use by another client'),
+        progress('Loading session…'),
       ]);
+    });
+
+    it('shows the Agents view to choose another session on Choose Session', async () => {
+      const { user, commands } = setup({ one: refusingAgent().script });
+      user.answer('Choose Session');
+
+      await commands.open('one', 'old');
+
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…'), failedToOpen('Internal error: session in use by another client'), choosingSession]);
+    });
+
+    it('opens the session through the agent chosen from every configuration, where its reference moves', async () => {
+      const two = sessionAgent('two', loads);
+      const { manager, references, user, commands } = setup({ one: refusingAgent().script, two: two.script });
+      await references.setTitle(addressOf('one', 'old'), 'Kept title');
+      user.answer('Choose Agent', 'two');
+
+      await commands.open('one', 'old');
+
+      expect(manager.getActiveSession()).toMatchObject({ sessionId: 'old', agentName: 'two', title: 'Kept title' });
+      expect(user.take()).toEqual([
+        focusChatView,
+        progress('Loading session…'),
+        failedToOpen('Internal error: session in use by another client'),
+        choosingAgent(['one', 'two']),
+        progress('Loading session…'),
+      ]);
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'one', sessionId: 'old' })).toBeUndefined();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'two', sessionId: 'old' })).toMatchObject({ title: 'Kept title' });
     });
 
     describe('that the agent reports unknown', () => {
       const unknown = () => fakeAgent(loads).onRequest(methods.agent.session.load, ({ params }) => {
         throw new RequestError(-32002, 'Resource not found', { sessionId: params.sessionId });
       });
-      const offered: Call = { call: 'showErrorMessage', message: 'Failed to open session: Resource not found', items: ['Remove from History'] };
+      const offered = failedToOpen('Resource not found', [...RETRY_CHOOSE, 'Remove from History']);
       const referenced = (references: SessionReferences, sessionId: string) =>
         references.get({ host: WORKSPACE.host, configuredName: 'one', sessionId });
 
@@ -671,6 +743,132 @@ describe('SessionCommands', () => {
 
       const missing: Call = { call: 'showErrorMessage', message: 'Open Session: missing agentName/sessionId.' };
       expect(user.take()).toEqual([missing, missing]);
+    });
+  });
+
+  describe('restore the last session', () => {
+    it('loads the last active session, asking nothing', async () => {
+      const one = refusingAgent(0);
+      const { manager, workspace, user, commands } = setup({ one: one.script });
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+
+      await commands.restoreLastSession();
+
+      expect(manager.getActiveSessionId()).toBe('old');
+      expect(one.loaded).toEqual(['old']);
+      expect(user.take()).toEqual([]);
+    });
+
+    it('loads nothing once the user has set out to open a session themselves, though it failed to open', async () => {
+      const one = refusingAgent();
+      const { workspace, user, commands } = setup({ one: one.script });
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+      user.answer(undefined);
+      await commands.open('one', 'other');
+      user.take();
+
+      await commands.restoreLastSession();
+
+      expect(one.requested).toEqual(['other']);
+      expect(user.take()).toEqual([]);
+    });
+
+    it.each<[string, (commands: SessionCommands) => Promise<void>, string[]]>([
+      ['connecting to another agent', (commands) => commands.connect('two'), ['two creates two-1']],
+      ['starting a new session', (commands) => commands.newSession(), ['one creates one-1']],
+      ['restarting the agent', (commands) => commands.restart(), ['one creates one-1']],
+    ])('lets a load under way end before %s', async (_, act, after) => {
+      const order: string[] = [];
+      let release: () => void = () => {};
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const creating = (name: string) => fakeAgent({ agentCapabilities: { loadSession: true } })
+        .onRequest(methods.agent.session.new, () => {
+          order.push(`${name} creates ${name}-1`);
+          return { sessionId: `${name}-1` };
+        });
+      const one: AgentScript = () => creating('one').onRequest(methods.agent.session.load, async () => {
+        order.push('one loads old');
+        await released;
+        order.push('one answers old');
+        return {};
+      });
+      const { manager, workspace, commands } = setup({ one, two: () => creating('two') });
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+      const loading = new Promise<void>((resolve) => { manager.once('session-load-start', () => resolve()); });
+
+      const restoring = commands.restoreLastSession();
+      await loading;
+      const acting = act(commands);
+      release();
+      await Promise.all([restoring, acting]);
+
+      expect(order).toEqual(['one loads old', 'one answers old', ...after]);
+    });
+
+    it('loads the session again through the same configuration on Retry', async () => {
+      const one = refusingAgent(1);
+      const { manager, workspace, user, commands } = setup({ one: one.script });
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+      user.answer('Retry');
+
+      await commands.restoreLastSession();
+
+      expect(manager.getActiveSessionId()).toBe('old');
+      expect(user.take()).toEqual([failedToOpen('Internal error: session in use by another client'), progress('Loading session…')]);
+    });
+
+    it('shows the Agents view to choose another session on Choose Session', async () => {
+      const { workspace, user, commands } = setup({ one: refusingAgent().script });
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+      user.answer('Choose Session');
+
+      await commands.restoreLastSession();
+
+      expect(user.take()).toEqual([failedToOpen('Internal error: session in use by another client'), choosingSession]);
+    });
+
+    it('loads through the agent chosen from every configuration, where the reference and the last active session move', async () => {
+      const { manager, references, workspace, user, commands } = setup({ one: refusingAgent().script, two: refusingAgent(0).script });
+      await references.setTitle(addressOf('one', 'old'), 'Kept title');
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+      user.answer('Choose Agent', 'two');
+
+      await commands.restoreLastSession();
+
+      expect(manager.getActiveSession()).toMatchObject({ sessionId: 'old', agentName: 'two', title: 'Kept title' });
+      expect(user.take()).toEqual([
+        failedToOpen('Internal error: session in use by another client'),
+        choosingAgent(['one', 'two']),
+        progress('Loading session…'),
+      ]);
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'two', sessionId: 'old' })).toMatchObject({ title: 'Kept title' });
+      expect(workspace.lastActiveSession()).toEqual(addressOf('two', 'old'));
+    });
+
+    it('offers only Choose Session when the workspace cwd is not the one the session was used in', async () => {
+      const { workspace, user, commands } = setup({ one: refusingAgent(0).script });
+      await workspace.setLastActiveSession({ ...addressOf('one', 'old'), cwd: '/moved' });
+      user.answer(undefined);
+
+      await commands.restoreLastSession();
+
+      expect(user.take()).toEqual([failedToOpen("The session was used in /moved, but this workspace's agents run in /work.", ['Choose Session'])]);
+    });
+
+    it('offers to remove a session the agent does not know from history, and removes it when asked', async () => {
+      const unknown: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } })
+        .onRequest(methods.agent.session.load, ({ params }) => {
+          throw new RequestError(-32002, 'Resource not found', { sessionId: params.sessionId });
+        });
+      const { references, workspace, user, commands } = setup({ one: unknown });
+      await references.used(addressOf('one', 'gone'));
+      await workspace.setLastActiveSession(addressOf('one', 'gone'));
+      user.answer('Remove from History');
+
+      await commands.restoreLastSession();
+
+      expect(user.take()).toEqual([failedToOpen('Resource not found', [...RETRY_CHOOSE, 'Remove from History'])]);
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'one', sessionId: 'gone' })).toBeUndefined();
     });
   });
 });

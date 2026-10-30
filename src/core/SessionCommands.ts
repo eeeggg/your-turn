@@ -1,8 +1,8 @@
-import { UnknownSession } from '@/core/acp/AcpDriver';
 import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { ChatViewController } from './ChatViewController';
 import { logError, messageOf } from './Log';
 import type { SessionManager } from './SessionManager';
+import { openingFailure, type OpeningFailure, type SessionStartup, type StartupOutcome } from './SessionStartup';
 import { ProgressLocation, type Commands, type Window } from './VsCodeApi';
 
 /** What commands need from the chat view. */
@@ -22,6 +22,9 @@ interface Switch {
 const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
 const REMOVE_FROM_HISTORY = 'Remove from History';
+const RETRY = 'Retry';
+const CHOOSE_SESSION = 'Choose Session';
+const CHOOSE_AGENT = 'Choose Agent';
 
 /** The commands that start, switch, open, and control sessions. */
 export class SessionCommands {
@@ -32,12 +35,59 @@ export class SessionCommands {
     private readonly window: Window,
     private readonly commands: Commands,
     private readonly agentNames: () => string[],
+    private readonly startup: SessionStartup,
   ) {}
+
+  /** Load the workspace's last active session, once per activation; a failure offers ways on. */
+  async restoreLastSession(): Promise<void> {
+    await this.settleStartup(await this.startup.attempt());
+  }
+
+  private async settleStartup(outcome: StartupOutcome): Promise<void> {
+    if (outcome.kind !== 'failed') { return; }
+    const { address, configuredName, failure } = outcome;
+    logError('Failed to open session', failure.message, { sessionId: address.sessionId, configuredName, kind: failure.kind });
+    const loadThrough = async (name: string) =>
+      this.settleStartup(await this.withProgress('Loading session…', () => this.startup.loadThrough(address, name)));
+    await this.offerWaysOn(failure, address.configuredName, address.sessionId, {
+      retry: () => loadThrough(configuredName),
+      chooseAgent: loadThrough,
+    });
+  }
+
+  /**
+   * Tell the user a session did not open, offering to try again through the same configuration or another, to choose
+   * another session, and for a session the agent does not know, to remove it from session history. A changed cwd
+   * offers only another session, as every configuration would meet it.
+   */
+  private async offerWaysOn(
+    failure: OpeningFailure,
+    referencedAs: string,
+    sessionId: string,
+    again: { retry: () => Promise<void>; chooseAgent: (configuredName: string) => Promise<void> },
+  ): Promise<void> {
+    const actions = failure.kind === 'cwdChanged'
+      ? [CHOOSE_SESSION]
+      : [RETRY, CHOOSE_SESSION, CHOOSE_AGENT, ...(failure.kind === 'unknownSession' ? [REMOVE_FROM_HISTORY] : [])];
+    const choice = await this.window.showErrorMessage(`Failed to open session: ${failure.message}`, ...actions);
+    if (choice === RETRY) {
+      await again.retry();
+    } else if (choice === CHOOSE_SESSION) {
+      await this.commands.executeCommand('acp-sessions.focus');
+    } else if (choice === CHOOSE_AGENT) {
+      const configuredName = await this.pickAgent({ title: 'Choose Agent', placeHolder: 'Open the session through which agent?' });
+      if (configuredName) { await again.chooseAgent(configuredName); }
+    } else if (choice === REMOVE_FROM_HISTORY) {
+      // Removal is the user's choice, as the agent may know the session again, such as once a store it uses is back.
+      await this.sessions.removeFromHistory(referencedAs, sessionId);
+    }
+  }
 
   /** Make a session with an agent the active session, asking which agent when none is given. */
   async connect(agentName?: string): Promise<void> {
     const name = agentName ?? await this.pickAgent();
     if (!name) { return; }
+    await this.startup.forgo();
 
     const currentAgent = this.sessions.getActiveAgentName();
     if (currentAgent && currentAgent !== name) {
@@ -55,6 +105,7 @@ export class SessionCommands {
 
   /** Replace the active session with a new one from the same agent; connect when there is none. */
   async newSession(): Promise<void> {
+    await this.startup.forgo();
     const activeSession = this.sessions.getActiveSession();
     if (!activeSession) {
       await this.connect();
@@ -84,6 +135,7 @@ export class SessionCommands {
 
   /** Stop an agent, by default the active session's, and connect it again with a new session. */
   async restart(agentName?: string): Promise<void> {
+    await this.startup.forgo();
     const activeSession = this.sessions.getActiveSession();
     const name = agentName ?? activeSession?.agentName;
     if (!name) { return; }
@@ -146,6 +198,7 @@ export class SessionCommands {
       void this.window.showErrorMessage('Open Session: missing agentName/sessionId.');
       return;
     }
+    await this.startup.forgo();
 
     if (this.sessions.getActiveSessionId() === sessionId) {
       await this.focusChatView();
@@ -161,30 +214,39 @@ export class SessionCommands {
     };
     if (!await this.confirmLeaving(opening)) { return; }
 
+    await this.focusChatView();
+    await this.openThrough(agentName, sessionId);
+  }
+
+  /**
+   * Open a session through `agentName`, loading it when the agent can, otherwise resuming it; `usedThrough` is the
+   * configuration it was last used through, where its reference moves from once it opens, when not `agentName`.
+   */
+  private async openThrough(agentName: string, sessionId: string, usedThrough?: string): Promise<void> {
+    const referencedAs = usedThrough ?? agentName;
+    const from = usedThrough === undefined ? undefined : { configuredName: usedThrough };
+    let failure: OpeningFailure;
     try {
-      await this.focusChatView();
       // Load replays the transcript, so it is preferred over resume.
       const capabilities = await this.sessions.ensureConnected(agentName);
       if (capabilities.load) {
-        await this.withProgress('Loading session…', () => this.sessions.loadSession(agentName, sessionId));
-      } else if (capabilities.resume) {
-        await this.sessions.resumeSession(agentName, sessionId);
-        void this.window.showInformationMessage('Resumed session (history not replayed).');
-      } else {
-        void this.window.showErrorMessage(`Agent "${agentName}" does not support loading or resuming sessions.`);
-      }
-    } catch (e) {
-      if (!(e instanceof UnknownSession)) {
-        this.report('Failed to open session', e);
+        await this.withProgress('Loading session…', () => this.sessions.loadSession(agentName, sessionId, from));
         return;
       }
-      // Removal is the user's choice, as the agent may know the session again, such as once a store it uses is back.
-      logError('Failed to open session', e);
-      const choice = await this.window.showErrorMessage(`Failed to open session: ${messageOf(e)}`, REMOVE_FROM_HISTORY);
-      if (choice === REMOVE_FROM_HISTORY) {
-        await this.sessions.removeFromHistory(agentName, sessionId);
+      if (capabilities.resume) {
+        await this.sessions.resumeSession(agentName, sessionId, from);
+        void this.window.showInformationMessage('Resumed session (history not replayed).');
+        return;
       }
+      failure = { kind: 'loadUnsupported', message: `Agent "${agentName}" cannot load or resume sessions.` };
+    } catch (e) {
+      logError('Failed to open session', e);
+      failure = openingFailure(e);
     }
+    await this.offerWaysOn(failure, referencedAs, sessionId, {
+      retry: () => this.openThrough(agentName, sessionId, usedThrough),
+      chooseAgent: (configuredName) => this.openThrough(configuredName, sessionId, referencedAs),
+    });
   }
 
   /**
@@ -224,16 +286,13 @@ export class SessionCommands {
     return choice?.label === action;
   }
 
-  private async pickAgent(): Promise<string | undefined> {
+  private async pickAgent(options = { placeHolder: 'Select an agent to connect', title: 'Connect to Agent' }): Promise<string | undefined> {
     const agentNames = this.agentNames();
     if (agentNames.length === 0) {
       void this.window.showWarningMessage('No ACP agents configured. Add agents in Settings > ACP > Agents.');
       return undefined;
     }
-    return this.window.showQuickPick(agentNames, {
-      placeHolder: 'Select an agent to connect',
-      title: 'Connect to Agent',
-    });
+    return this.window.showQuickPick(agentNames, options);
   }
 
   private async focusChatView(): Promise<void> {

@@ -1,4 +1,4 @@
-import { agent, methods, ndJsonStream, PROTOCOL_VERSION } from '@agentclientprotocol/sdk';
+import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentContext, SessionConfigOption } from '@agentclientprotocol/sdk';
 import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +19,10 @@ import { Readable, Writable } from 'node:stream';
  * A prompt of "switch <model>" makes it switch its model option to that value itself.
  * With `ACP_TEST_LISTS_SESSIONS` set, it lists sessions: one, new each time it is asked, titled "Listed <n>".
  * With `ACP_TEST_RECORDS` set to a file, it takes additional directories, loads and resumes any session, and appends
- * each session it creates, loads or resumes to that file as a line of JSON: its method and directories.
+ * each session it creates, loads or resumes to that file as a line of JSON: its method and directories. It replays a
+ * session it loads, as `replay` describes, and reports a session it loads or resumes with the options `restoredOptions`
+ * describes, appending each request to set one to the file too. It does not know a session `gone`, and refuses `busy`
+ * as in use.
  */
 
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
@@ -31,6 +34,70 @@ function record(method: string, { cwd, additionalDirectories }: { cwd: string; a
   if (RECORDS) {
     appendFileSync(RECORDS, `${JSON.stringify({ method, cwd, additionalDirectories: additionalDirectories ?? null })}\n`);
   }
+}
+
+interface Choices { model: string; effort: string; fast: boolean }
+
+/** The options of each session loaded or resumed, by its ID. */
+const restored = new Map<string, Choices>();
+
+/**
+ * A loaded or resumed session's options, as `fakeAgent-v2.ts` reports them too: its model, an effort whose values
+ * depend on the model, and whether it is fast. Choosing a model resets the effort; only model B offers high effort.
+ * A session `fixed-effort` refuses to change its effort.
+ */
+function restoredOptions({ model, effort, fast }: Choices): SessionConfigOption[] {
+  return [
+    modelOption(model),
+    {
+      id: 'effort',
+      name: 'Effort',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: effort,
+      options: [
+        { value: 'low', name: 'Low' },
+        { value: 'medium', name: 'Medium' },
+        ...(model === 'model-b' ? [{ value: 'high', name: 'High' }] : []),
+      ],
+    },
+    { id: 'fast', name: 'Fast', type: 'boolean', currentValue: fast },
+  ];
+}
+
+/** Open a session it is asked to load or resume, which starts out with model A at low effort and not fast. */
+function restore(sessionId: string): SessionConfigOption[] {
+  if (sessionId === 'gone') {
+    throw new RequestError(-32002, 'Resource not found', { sessionId });
+  }
+  if (sessionId === 'busy') {
+    throw RequestError.internalError(undefined, 'Session is in use by another client');
+  }
+  const choices = { model: 'model-a', effort: 'low', fast: false };
+  restored.set(sessionId, choices);
+  return restoredOptions(choices);
+}
+
+function choose(choices: Choices, sessionId: string, configId: string, value: string | boolean): SessionConfigOption[] {
+  if (configId === 'model') {
+    choices.model = String(value);
+    choices.effort = 'medium';
+  } else if (configId === 'effort' && sessionId !== 'fixed-effort') {
+    choices.effort = String(value);
+  } else if (configId === 'fast') {
+    choices.fast = value === true;
+  } else {
+    throw RequestError.invalidParams(undefined, `Cannot set ${configId}`);
+  }
+  return restoredOptions(choices);
+}
+
+/** The prompt and answer a loaded session replays. */
+async function replay(client: AgentContext, sessionId: string): Promise<void> {
+  const update = (sessionUpdate: 'user_message_chunk' | 'agent_message_chunk', text: string) =>
+    client.notify(methods.client.session.update, { sessionId, update: { sessionUpdate, content: { type: 'text', text } } });
+  await update('user_message_chunk', 'earlier question');
+  await update('agent_message_chunk', 'earlier answer');
 }
 
 function modelOption(currentValue: string): SessionConfigOption {
@@ -214,17 +281,26 @@ agent({ name: 'fake-agent' })
     record('session/new', params);
     return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
   })
-  .onRequest(methods.agent.session.load, ({ params }) => {
+  .onRequest(methods.agent.session.load, async ({ params, client }) => {
     record('session/load', params);
-    return {};
+    const configOptions = restore(params.sessionId);
+    await replay(client, params.sessionId);
+    return { configOptions };
   })
   .onRequest(methods.agent.session.resume, ({ params }) => {
     record('session/resume', params);
-    return {};
+    return { configOptions: restore(params.sessionId) };
   })
-  .onRequest(methods.agent.session.setConfigOption, ({ params }) => ({
-    configOptions: [modelOption(String(params.value))],
-  }))
+  .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
+    const choices = restored.get(params.sessionId);
+    if (!choices) {
+      return { configOptions: [modelOption(String(params.value))] };
+    }
+    if (RECORDS) {
+      appendFileSync(RECORDS, `${JSON.stringify({ method: 'session/set_config_option', ...params })}\n`);
+    }
+    return { configOptions: choose(choices, params.sessionId, params.configId, params.value) };
+  })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
     if (text.startsWith('edit ')) {

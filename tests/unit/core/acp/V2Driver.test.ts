@@ -252,6 +252,18 @@ describe('V2Driver', () => {
       expect(options).toEqual([expect.objectContaining({ id: 'model', current: 'b' })]);
     });
 
+    it('sets a boolean config option with its type', async () => {
+      const received: V2.SetSessionConfigOptionRequest[] = [];
+      const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.setConfigOption, ({ params }) => {
+        received.push(params);
+        return { configOptions: [] };
+      }));
+
+      await driver.setConfigOption('s1', 'fast', true);
+
+      expect(received).toEqual([{ sessionId: 's1', configId: 'fast', type: 'boolean', value: true }]);
+    });
+
     it('has no modes to set', async () => {
       const { driver } = await connectedDriver(() => fakeV2Agent());
 

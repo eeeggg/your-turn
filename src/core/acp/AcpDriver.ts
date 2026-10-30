@@ -255,6 +255,6 @@ export interface AcpDriver {
   cancel(sessionId: string): Promise<void>;
   setMode(sessionId: string, modeId: string): Promise<void>;
   /** The session's full set of config options after the change, or null when the agent returned none. */
-  setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null>;
+  setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<ConfigOption[] | null>;
   authenticate(methodId: string): Promise<void>;
 }

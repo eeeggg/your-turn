@@ -438,6 +438,19 @@ describe('SessionReferences', () => {
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([]);
     });
 
+    it("moves only the one session named, with all it holds, leaving the configuration's others", async () => {
+      const references = new SessionReferences(memoryStore(), ticking());
+      await references.used(address('a'));
+      await references.setTitle(address('b'), 'Kept title');
+      await references.saveSelections(address('b'), { options: { model: 'big' } });
+      const before = references.get(idOf('b'));
+
+      await references.rebind(devenv, 'OpenCode', 'oc', 'b');
+
+      expect([ids(references.list(devenv, 'OpenCode', '/home/me/work')), ids(references.list(devenv, 'oc', '/home/me/work'))]).toEqual([['a'], ['b']]);
+      expect(references.get({ ...idOf('b'), configuredName: 'oc' })).toEqual({ ...before, configuredName: 'oc' });
+    });
+
     it('changes nothing when applied again', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
       await references.used(address('a'));

@@ -171,8 +171,11 @@ export class V2Driver implements AcpDriver {
     throw new Error('ACP v2 sessions have no modes');
   }
 
-  async setConfigOption(sessionId: string, configId: string, value: string): Promise<ConfigOption[] | null> {
-    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.setConfigOption, { sessionId, configId, type: 'id', value }));
+  async setConfigOption(sessionId: string, configId: string, value: string | boolean): Promise<ConfigOption[] | null> {
+    const request: Acp.SetSessionConfigOptionRequest = typeof value === 'boolean'
+      ? { sessionId, configId, type: 'boolean', value }
+      : { sessionId, configId, type: 'id', value };
+    const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.setConfigOption, request));
     return configOptions(response.configOptions);
   }
 
