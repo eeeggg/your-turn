@@ -7,7 +7,7 @@ import { checkPackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionStartup } from '@/core/SessionStartup';
 import { SessionManager } from '@/core/SessionManager';
-import { SessionReferences, WorkspaceState } from '@/core/PersistedState';
+import { SessionReferences, StartupRequests, WorkspaceState } from '@/core/PersistedState';
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
@@ -18,7 +18,7 @@ import { Takeovers } from '@/core/review/Takeovers';
 import { ChatViewController, type DiffFileChoice } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
 import { logError, logInfo, logWarning, setLogSink } from '@/core/Log';
-import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
+import { createAgentsView } from '@/adapters/SessionTreeProvider';
 import { StatusBarManager } from '@/adapters/StatusBarManager';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
 import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
@@ -30,7 +30,8 @@ import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
-import { createWorkspaceEnvironment, workspaceUnavailability } from '@/adapters/WorkspaceEnvironment';
+import { createWorkspaceEnvironment, openWorkspace, workspaceUnavailability } from '@/adapters/WorkspaceEnvironment';
+import { WorkspaceOpening } from '@/core/WorkspaceOpening';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentConfigs, getAgentNames } from '@/adapters/AgentConfig';
@@ -89,9 +90,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   if (unavailability) {
     logInfo('ACP Client is unavailable in this window', { unavailability });
     void vscode.commands.executeCommand('setContext', 'acp.workspaceUnavailable', unavailability);
-    // Without a provider, a tree view says that none is registered beside its welcome content.
+    // Only the Agents view's Other Workspaces mode, which opens a workspace where the extension is available.
+    const opening = new WorkspaceOpening(new StartupRequests(context.globalState), openWorkspace, vscode.window);
     context.subscriptions.push(
-      vscode.window.registerTreeDataProvider('acp-sessions', { getChildren: () => [], getTreeItem: (item: never) => item }),
+      createAgentsView(undefined, new SessionReferences(context.globalState), () => undefined, opening).disposable,
       { dispose: disposeChannels },
     );
     return undefined;
@@ -123,16 +125,21 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const sessionsChanged = new vscode.EventEmitter<void>();
   context.subscriptions.push(sessionsChanged);
   sessionList.on('changed', () => sessionsChanged.fire());
-  const sessionTreeProvider = new SessionTreeProvider(sessionList);
+  const startupRequests = new StartupRequests(context.globalState);
+  void startupRequests.discardExpired();
+  const agentsView = createAgentsView(
+    sessionList,
+    sessionReferences,
+    () => workspaceEnvironment.workspaceTarget()?.uri,
+    new WorkspaceOpening(startupRequests, openWorkspace, vscode.window),
+  );
+  const { provider: sessionTreeProvider, treeView } = agentsView;
   const persistedStateCommands = new PersistedStateCommands(
     context.workspaceState,
     context.globalState,
     sessionReferences,
     () => workspaceEnvironment.workspaceTarget(),
   );
-  const treeView = vscode.window.createTreeView('acp-sessions', {
-    treeDataProvider: sessionTreeProvider,
-  });
   // Session ages count minutes, so the tree redraws each minute while it shows.
   let ageTicker: ReturnType<typeof setInterval> | undefined;
   const tickAges = (visible: boolean) => {
@@ -142,7 +149,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   tickAges(treeView.visible);
   const treeVisibilityChanged = treeView.onDidChangeVisibility(({ visible }) => {
     if (visible) {
-      sessionTreeProvider.refresh();
       void sessionList.refreshAll();
     }
     tickAges(visible);
@@ -268,11 +274,18 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
 
-  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment);
+  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment, startupRequests);
   const sessionCommands = new SessionCommands(
     sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames, sessionStartup,
   );
+  void sessionCommands.revealRequested();
   void chatViewReady.then(() => sessionCommands.restoreLastSession());
+  // Opening a workspace already open in a window brings that window to the front instead of starting a new one.
+  const requestedOnFocus = vscode.window.onDidChangeWindowState(({ focused }) => {
+    if (focused) {
+      void sessionCommands.openRequested();
+    }
+  });
   const agentConfigurations = new AgentConfigurations(
     () => vscode.workspace.getConfiguration('acp'),
     sessionManager,
@@ -297,9 +310,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   };
 
   context.subscriptions.push(
-    treeView,
+    agentsView.disposable,
     treeVisibilityChanged,
     windowFocused,
+    requestedOnFocus,
     { dispose: () => tickAges(false) },
     agentsChanged,
     chatViewRegistration,
@@ -392,7 +406,6 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       dispose: () => {
         void stop().catch((error: unknown) => logError('Failed to shut down ACP Client', error));
         chatWebviewProvider.dispose();
-        sessionTreeProvider.dispose();
         sessionList.dispose();
         disposeChannels();
       },

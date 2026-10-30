@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { setLogSink, type LogSink } from '@/core/Log';
 import {
   SessionReferences,
+  StartupRequests,
   WorkspaceState,
   type KeyValueStore,
   type SessionAddress,
@@ -10,6 +11,7 @@ import {
 
 const REFERENCES_KEY = 'acp.sessionReferences';
 const WORKSPACE_KEY = 'acp.workspace';
+const STARTUP_REQUESTS_KEY = 'acp.startupRequests';
 
 const LOCAL = 'file:///home/me/work';
 const DEVENV = 'vscode-remote://ssh-remote%2Bdevenv/home/me/work';
@@ -300,6 +302,17 @@ describe('SessionReferences', () => {
 
       expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['newer', 'older']);
       expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual(['local']);
+    });
+
+    it('lists every reference on every host, the most recently active first', async () => {
+      const references = new SessionReferences(memoryStore(), ticking());
+      await references.used(address('older'));
+      await references.used(address('local', { workspaceUri: LOCAL }));
+      await references.used(address('other-agent', { configuredName: 'Codex' }));
+      await references.used(address('other-cwd', { cwd: '/home/me/work/sub' }));
+      await references.remove(idOf('older'));
+
+      expect(ids(references.all())).toEqual(['other-cwd', 'other-agent', 'local']);
     });
   });
 
@@ -898,5 +911,166 @@ describe('WorkspaceState', () => {
     expect(state.lastActiveSession()).toEqual(address('a'));
     expect(state.workspaceTarget()).toBeUndefined();
     expect(workspaceState.values.get('acp.sessionHistory.v1')).toBe(retired);
+  });
+});
+
+describe('StartupRequests', () => {
+  const MINUTE = 60_000;
+  const otherWorkspace = 'file:///home/me/other';
+
+  it('hands a request to a window of its workspace once, across reloads', async () => {
+    const globalState = memoryStore();
+    await new StartupRequests(globalState).request(address('a'));
+
+    const window = new StartupRequests(globalState);
+    expect(await window.take(DEVENV)).toEqual(address('a'));
+    expect(await window.take(DEVENV)).toBeUndefined();
+    expect(await new StartupRequests(globalState).take(DEVENV)).toBeUndefined();
+  });
+
+  it('keeps only the fields of an address in a request, whatever else the caller passes', async () => {
+    const globalState = memoryStore();
+    await new StartupRequests(globalState).request({ ...address('a'), extra: 'dropped' } as SessionAddress);
+
+    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address('a'));
+  });
+
+  it('gives a window of another workspace nothing, leaving the request for its own', async () => {
+    const globalState = memoryStore();
+    await new StartupRequests(globalState).request(address('a'));
+
+    expect(await new StartupRequests(globalState).take(otherWorkspace)).toBeUndefined();
+    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address('a'));
+  });
+
+  it('answers a request only once it is written', async () => {
+    const globalState = heldStore();
+    const order: string[] = [];
+    const requesting = new StartupRequests(globalState).request(address('a')).then(() => order.push('request answered'));
+    const taking = new StartupRequests(globalState).take(DEVENV).then(() => order.push('take answered'));
+
+    globalState.finish[1]?.();
+    await taking;
+    globalState.finish[0]?.();
+    await requesting;
+
+    expect(order).toEqual(['take answered', 'request answered']);
+  });
+
+  it('answers a take only once the take is written', async () => {
+    const globalState = heldStore();
+    const requesting = new StartupRequests(globalState).request(address('a'));
+    globalState.finish[0]?.();
+    await requesting;
+    const order: string[] = [];
+    const taking = new StartupRequests(globalState).take(DEVENV).then(() => order.push('take answered'));
+    const requestingOther = new StartupRequests(globalState).request(address('b', { workspaceUri: LOCAL }))
+      .then(() => order.push('request answered'));
+
+    globalState.finish[2]?.();
+    await requestingOther;
+    globalState.finish[1]?.();
+    await taking;
+
+    expect(order).toEqual(['request answered', 'take answered']);
+  });
+
+  it('replaces a request for the same workspace with a newer one, which a take of the older does not consume', async () => {
+    const globalState = memoryStore();
+    const clock = ticking();
+    const source = new StartupRequests(globalState, clock);
+    const window = new StartupRequests(globalState, clock);
+    await source.request(address('a'));
+    await source.request(address('b'));
+
+    expect(await window.take(DEVENV)).toEqual(address('b'));
+    expect(await window.take(DEVENV)).toBeUndefined();
+
+    await source.request(address('c'));
+    expect(await window.take(DEVENV)).toEqual(address('c'));
+  });
+
+  it.each([
+    ['until', 10 * MINUTE - 1, address('a')],
+    ['not from', 10 * MINUTE, undefined],
+  ])('hands a request out %s ten minutes after it was made', async (_, after, expected) => {
+    const globalState = memoryStore();
+    const clock = stopped();
+    await new StartupRequests(globalState, clock).request(address('a'));
+
+    clock.advance(after);
+
+    expect(await new StartupRequests(globalState, clock).take(DEVENV)).toEqual(expected);
+  });
+
+  it('drops expired requests and the record of expired takes, writing nothing when none has expired', async () => {
+    const globalState = memoryStore();
+    const clock = stopped();
+    const requests = new StartupRequests(globalState, clock);
+    await requests.request(address('a'));
+    await requests.take(DEVENV);
+    clock.advance(5 * MINUTE);
+    await requests.request(address('b', { workspaceUri: LOCAL }));
+    const before = globalState.values.get(STARTUP_REQUESTS_KEY);
+
+    await new StartupRequests(globalState, clock).discardExpired();
+    expect(globalState.values.get(STARTUP_REQUESTS_KEY)).toBe(before);
+
+    clock.advance(5 * MINUTE);
+    await new StartupRequests(globalState, clock).discardExpired();
+    expect(globalState.values.get(STARTUP_REQUESTS_KEY)).toEqual({
+      schemaVersion: 1,
+      requests: [{ ...address('b', { workspaceUri: LOCAL }), requestId: expect.any(String) as unknown, expiresAt: '2026-10-29T10:15:00.000Z' }],
+      taken: [],
+    });
+  });
+
+  it('does not hand out again a request it took while an earlier value is served, nor write that value back', async () => {
+    const globalState = revertibleStore();
+    const requests = new StartupRequests(globalState);
+    await requests.request(address('a'));
+    await requests.take(DEVENV);
+
+    globalState.serveEarlier(STARTUP_REQUESTS_KEY);
+    expect(await requests.take(DEVENV)).toBeUndefined();
+    await requests.request(address('b', { workspaceUri: LOCAL }));
+
+    expect(await new StartupRequests(globalState).take(DEVENV)).toBeUndefined();
+  });
+
+  it('keeps its own request while an earlier value is served', async () => {
+    const globalState = revertibleStore();
+    const requests = new StartupRequests(globalState);
+    await requests.request(address('a'));
+
+    globalState.serveEarlier(STARTUP_REQUESTS_KEY);
+    await requests.request(address('b', { workspaceUri: LOCAL }));
+
+    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address('a'));
+  });
+
+  it('drops malformed requests and takes, keeping the rest', async () => {
+    const valid = { ...address('a'), requestId: 'one', expiresAt: '2026-10-29T10:10:00.000Z' };
+    const globalState = memoryStore({
+      [STARTUP_REQUESTS_KEY]: {
+        schemaVersion: 1,
+        requests: [valid, { ...valid, requestId: 2 }, { ...valid, cwd: undefined }, 'request'],
+        taken: [{ requestId: 'one' }, null],
+      },
+    });
+
+    expect(await new StartupRequests(globalState, stopped()).take(DEVENV)).toEqual(address('a'));
+  });
+
+  it('reads a later version as empty and never overwrites it', async () => {
+    const later = { schemaVersion: 2, requests: [] };
+    const globalState = memoryStore({ [STARTUP_REQUESTS_KEY]: later });
+    const requests = new StartupRequests(globalState);
+
+    await requests.request(address('a'));
+    await requests.discardExpired();
+
+    expect(await requests.take(DEVENV)).toBeUndefined();
+    expect(globalState.values.get(STARTUP_REQUESTS_KEY)).toBe(later);
   });
 });

@@ -67,7 +67,7 @@ interface SinceListed {
 
 const NO_MORE: MoreSessions = { kind: 'none' };
 /** The label of a session without a title, as titles are never derived from what was said in it. */
-const UNTITLED = 'Untitled';
+export const UNTITLED = 'Untitled';
 const SESSION_EVENTS = ['session-added', 'active-session-changed'] as const;
 /** Where a row's session came from, as its tooltip says. */
 const SOURCES = {
@@ -446,7 +446,7 @@ function failure(e: unknown): Failure {
   return e instanceof AuthenticationCancelled ? { kind: 'auth-required' } : { kind: 'failed', message: messageOf(e) };
 }
 
-function relativeTime(iso: string | undefined, now: number): string | undefined {
+export function relativeTime(iso: string | undefined, now: number): string | undefined {
   const time = iso ? Date.parse(iso) : NaN;
   if (Number.isNaN(time)) {
     return undefined;

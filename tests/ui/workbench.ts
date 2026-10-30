@@ -18,6 +18,33 @@ export function agentsViewRow(window: Page, label: string): Locator {
 }
 
 /**
+ * VS Code's private pane DOM holds a view's header, with its title and title actions, and its body, with its
+ * tree or welcome content. The view's icon in the header identifies the Agents pane under either of its titles.
+ */
+function agentsPane(window: Page): Locator {
+  return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-hubot') });
+}
+
+export function agentsViewTitle(window: Page): Locator {
+  return agentsPane(window).locator('.pane-header > .title');
+}
+
+/** VS Code displays a pane's title actions only while the pane is hovered or focused. */
+export function agentsViewAction(window: Page, name: string): Locator {
+  return agentsPane(window).locator('.pane-header .actions').getByRole('button', { name, exact: true });
+}
+
+/** The names of the Agents view's title actions, which VS Code renders together, whether or not it displays them. */
+export function agentsViewActionNames(window: Page): Promise<string[]> {
+  return agentsPane(window).locator('.pane-header .actions .action-label')
+    .evaluateAll((labels) => labels.map((label) => label.getAttribute('aria-label') ?? ''));
+}
+
+export function agentsViewWelcome(window: Page): Locator {
+  return agentsPane(window).locator('.welcome-view-content');
+}
+
+/**
  * VS Code hosts extension webviews in an outer workbench iframe and an
  * `#active-frame` iframe. The extension ID distinguishes ACP Chat from the
  * built-in Chat webview, which may be visible at the same time.

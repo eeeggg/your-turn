@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.19-dev.7",
+  "version": "0.3.19-dev.8",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -64,22 +64,27 @@
       {
         "view": "acp-sessions",
         "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\n[Detect Agents](command:acp.detectAgents)\nDetect Agents looks on your PATH for agents from the ACP registry.",
-        "when": "acp.noAgentsConfigured"
+        "when": "!acp.showingOtherWorkspaces && acp.noAgentsConfigured"
       },
       {
         "view": "acp-sessions",
         "contents": "ACP Client runs agents in a folder, and this window has none.\n[Open Folder](command:workbench.action.files.openFolder)",
-        "when": "acp.workspaceUnavailable == empty"
+        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == empty"
       },
       {
         "view": "acp-sessions",
         "contents": "ACP Client needs this workspace saved, so its sessions can be found when it is opened again.\n[Save Workspace As...](command:workbench.action.saveWorkspaceAs)",
-        "when": "acp.workspaceUnavailable == untitled"
+        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == untitled"
       },
       {
         "view": "acp-sessions",
         "contents": "ACP Client runs agents in the workspace's first folder, which must be on disk. This one is in a virtual file system.\n[Open Folder](command:workbench.action.files.openFolder)",
-        "when": "acp.workspaceUnavailable == virtual"
+        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == virtual"
+      },
+      {
+        "view": "acp-sessions",
+        "contents": "No sessions in other workspaces yet.\nSessions used in other workspaces appear here, and open in their workspace's window.",
+        "when": "acp.showingOtherWorkspaces"
       }
     ],
     "commands": [
@@ -115,6 +120,20 @@
         "command": "acp.addAgent",
         "title": "ACP: Add Agent Configuration",
         "icon": "$(add)"
+      },
+      {
+        "command": "acp.showOtherWorkspaces",
+        "title": "ACP: Show Other Workspaces",
+        "icon": "$(multiple-windows)"
+      },
+      {
+        "command": "acp.showAgents",
+        "title": "ACP: Show This Workspace's Agents",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "acp.openSessionInWorkspace",
+        "title": "ACP: Open Session in Its Workspace"
       },
       {
         "command": "acp.detectAgents",
@@ -338,6 +357,18 @@
           "when": "false"
         },
         {
+          "command": "acp.showOtherWorkspaces",
+          "when": "false"
+        },
+        {
+          "command": "acp.showAgents",
+          "when": "false"
+        },
+        {
+          "command": "acp.openSessionInWorkspace",
+          "when": "false"
+        },
+        {
           "command": "acp.openSession",
           "when": "false"
         },
@@ -457,8 +488,18 @@
       ],
       "view/title": [
         {
+          "command": "acp.showOtherWorkspaces",
+          "when": "view == acp-sessions && !acp.showingOtherWorkspaces",
+          "group": "navigation@0"
+        },
+        {
+          "command": "acp.showAgents",
+          "when": "view == acp-sessions && acp.showingOtherWorkspaces",
+          "group": "navigation@0"
+        },
+        {
           "command": "acp.addAgent",
-          "when": "!acp.workspaceUnavailable && view == acp-sessions",
+          "when": "!acp.workspaceUnavailable && !acp.showingOtherWorkspaces && view == acp-sessions",
           "group": "navigation@1"
         },
         {

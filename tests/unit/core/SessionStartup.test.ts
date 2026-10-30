@@ -3,7 +3,14 @@ import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { InitializeResponse } from '@agentclientprotocol/sdk';
 import type { SessionRoots } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress, type WorkspaceTarget } from '@/core/PersistedState';
+import {
+  SessionReferences,
+  StartupRequests,
+  WorkspaceState,
+  type KeyValueStore,
+  type SessionAddress,
+  type WorkspaceTarget,
+} from '@/core/PersistedState';
 import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionStartup } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -63,7 +70,8 @@ function setup(scripts: Record<string, AgentScript>) {
     chooseAuthMethod: async () => undefined,
   });
   onTestFinished(async () => { await manager.dispose(); updates.dispose(); });
-  const references = new SessionReferences(memoryStore(), () => Date.now());
+  const globalState = memoryStore();
+  const references = new SessionReferences(globalState, () => Date.now());
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
   return {
@@ -71,11 +79,17 @@ function setup(scripts: Record<string, AgentScript>) {
     manager,
     references,
     workspace,
-    startup: new SessionStartup(manager, workspace, environment),
+    startup: new SessionStartup(manager, workspace, environment, new StartupRequests(globalState)),
+    /** Another window asks the window opening the address's workspace to load its session. */
+    request: (address: SessionAddress) => new StartupRequests(globalState).request(address),
+    /** What another window opening the workspace would be given. */
+    taken: (workspaceUri = TARGET.uri) => new StartupRequests(globalState).take(workspaceUri),
     /** As when the workspace's first folder is no longer the one its sessions were used in. */
     withCwd(cwd: string) { roots = { ...roots, cwd }; },
     /** As in a remote window that has yet to learn its workspace URI. */
     withoutWorkspaceTarget() { target = undefined; },
+    /** As in a remote window once it learns its workspace URI. */
+    withWorkspaceTarget() { target = TARGET; },
     /** The reference to session `sessionId` through configuration `configuredName`. */
     reference: (configuredName: string, sessionId = 's1') => references.get({ host: TARGET.host, configuredName, sessionId }),
   };
@@ -145,6 +159,91 @@ describe('SessionStartup', () => {
 
     expect(await startup.attempt()).toMatchObject({ kind: 'loaded' });
     expect(fake.requests).toEqual(['session/load s1']);
+  });
+
+  describe('a session another window asked for', () => {
+    const asked: SessionAddress = { ...last, sessionId: 's2' };
+
+    it('loads it ahead of the last active session, taking the request so no window loads it again', async () => {
+      const fake = loadingAgent();
+      const { manager, startup, request, taken } = await seeded({ fake: fake.script });
+      await request(asked);
+
+      expect(await startup.attempt()).toEqual({ kind: 'loaded', session: manager.getSession('s2') });
+
+      expect(fake.requests).toEqual(['session/load s2']);
+      expect(await taken()).toBeUndefined();
+    });
+
+    it('loads it in a workspace with no last active session', async () => {
+      const fake = loadingAgent();
+      const { startup, request } = setup({ fake: fake.script });
+      await request(asked);
+
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's2' } });
+      expect(fake.requests).toEqual(['session/load s2']);
+    });
+
+    it('gives it once per activation, as it opened', async () => {
+      const { startup, request } = setup({ fake: loadingAgent().script });
+      await request(asked);
+
+      expect(await startup.requested()).toEqual(asked);
+      expect(await startup.requested()).toEqual(asked);
+      expect(await startup.requestedSince()).toBeUndefined();
+    });
+
+    it('leaves a request for another workspace, loading the last active session', async () => {
+      const fake = loadingAgent();
+      const { startup, request, taken } = await seeded({ fake: fake.script });
+      const elsewhere = { ...asked, workspaceUri: 'file:///elsewhere' };
+      await request(elsewhere);
+
+      expect(await startup.requested()).toBeUndefined();
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's1' } });
+      expect(await taken('file:///elsewhere')).toEqual(elsewhere);
+    });
+
+    it('fails as the last active session would, offering the same ways on', async () => {
+      const fake = loadingAgent();
+      const { manager, startup, request } = await seeded({ fake: fake.script });
+      const gone = { ...asked, sessionId: 'gone' };
+      await request(gone);
+
+      expect(await startup.attempt()).toEqual({
+        kind: 'failed', address: gone, configuredName: 'fake',
+        failure: { kind: 'unknownSession', message: expect.stringContaining('Resource not found') as unknown },
+      });
+      expect(manager.getActiveSession()).toBeUndefined();
+    });
+
+    it('leaves the request for when a remote window has learned its workspace URI', async () => {
+      const fake = loadingAgent();
+      const { startup, request, withoutWorkspaceTarget, withWorkspaceTarget } = await seeded({ fake: fake.script });
+      await request(asked);
+      withoutWorkspaceTarget();
+
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's1' } });
+      withWorkspaceTarget();
+      expect(await startup.requestedSince()).toEqual(asked);
+    });
+
+    it('gives a request made since it opened once', async () => {
+      const { startup, request } = setup({ fake: loadingAgent().script });
+      expect(await startup.requested()).toBeUndefined();
+      await request(asked);
+
+      expect(await startup.requestedSince()).toEqual(asked);
+      expect(await startup.requestedSince()).toBeUndefined();
+    });
+
+    it('takes the request it opened with before any made since', async () => {
+      const { startup, request } = setup({ fake: loadingAgent().script });
+      await request(asked);
+
+      expect(await startup.requestedSince()).toBeUndefined();
+      expect(await startup.requested()).toEqual(asked);
+    });
   });
 
   describe('failing', () => {

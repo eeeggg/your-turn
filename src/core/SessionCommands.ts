@@ -43,6 +43,21 @@ export class SessionCommands {
     await this.settleStartup(await this.startup.attempt());
   }
 
+  /** Show the chat view when another window asked this one, as it opened, to load a session, which startup loads there. */
+  async revealRequested(): Promise<void> {
+    if (await this.startup.requested()) {
+      await this.focusChatView();
+    }
+  }
+
+  /** Open a session another window has asked this one to since it opened, as Open Session does. */
+  async openRequested(): Promise<void> {
+    const address = await this.startup.requestedSince();
+    if (address) {
+      await this.open(address.configuredName, address.sessionId);
+    }
+  }
+
   private async settleStartup(outcome: StartupOutcome): Promise<void> {
     if (outcome.kind !== 'failed') { return; }
     const { address, configuredName, failure } = outcome;

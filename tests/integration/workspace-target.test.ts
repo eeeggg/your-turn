@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
-import { createWorkspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { createWorkspaceEnvironment, extensionHostUriOf } from '@/adapters/WorkspaceEnvironment';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { PermissionRequests } from '@/core/PermissionRequests';
@@ -194,5 +194,32 @@ suite("The window's workspace target", () => {
     assert.ok(reference, 'the session has a reference on the remote host');
     const { configuredName, sessionId: referenced, cwd, host, workspaceUri } = reference;
     assert.deepStrictEqual({ configuredName, sessionId: referenced, cwd, host, workspaceUri }, address);
+  });
+});
+
+suite('Opening a stored workspace target', () => {
+  const parts = (uri: vscode.Uri) => [uri.scheme, uri.authority, uri.path];
+  const DEVENV_FOLDER = 'vscode-remote://ssh-remote%2Bdevenv/home/me/api';
+  const OTHER_FOLDER = 'vscode-remote://ssh-remote%2Bother/home/me/web';
+  const CLIENT_FILE = 'file:///Users/me/work.code-workspace';
+
+  test('in a local window, sends every target as stored', () => {
+    for (const uri of [CLIENT_FILE, DEVENV_FOLDER]) {
+      assert.strictEqual(extensionHostUriOf(uri, undefined).toString(), uri);
+    }
+  });
+
+  test("in a remote window, sends a client file as the client's, which VS Code makes a file on the client again", () => {
+    assert.deepStrictEqual(parts(extensionHostUriOf(CLIENT_FILE, 'ssh-remote')), ['vscode-local', '', '/Users/me/work.code-workspace']);
+  });
+
+  test("in a remote window, sends a remote target unchanged, on this window's machine or another", () => {
+    for (const uri of [DEVENV_FOLDER, OTHER_FOLDER]) {
+      assert.strictEqual(extensionHostUriOf(uri, 'ssh-remote').toString(), uri);
+    }
+  });
+
+  test('refuses a target that is not a URI', () => {
+    assert.throws(() => extensionHostUriOf('/home/me/api', undefined));
   });
 });

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionReferences, WorkspaceState, type KeyValueStore } from '@/core/PersistedState';
+import { SessionReferences, StartupRequests, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionStartup } from '@/core/SessionStartup';
@@ -73,7 +73,8 @@ function setup(scripts: Record<string, AgentScript>) {
     environment,
     { chooseAuthMethod: async () => undefined },
   );
-  const references = new SessionReferences(memoryStore());
+  const globalState = memoryStore();
+  const references = new SessionReferences(globalState);
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
   const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn() };
@@ -88,9 +89,11 @@ function setup(scripts: Record<string, AgentScript>) {
     },
   };
   const user = new ScriptedUser();
-  const startup = new SessionStartup(manager, workspace, environment);
+  const startup = new SessionStartup(manager, workspace, environment, new StartupRequests(globalState));
   const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts), startup);
-  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands };
+  /** Another window asks the window opening the address's workspace to load its session. */
+  const request = (address: SessionAddress) => new StartupRequests(globalState).request(address);
+  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands, request };
 }
 
 /** Where session `sessionId` of agent configuration `configuredName` lives in the test workspace. */
@@ -869,6 +872,73 @@ describe('SessionCommands', () => {
 
       expect(user.take()).toEqual([failedToOpen('Resource not found', [...RETRY_CHOOSE, 'Remove from History'])]);
       expect(references.get({ host: WORKSPACE.host, configuredName: 'one', sessionId: 'gone' })).toBeUndefined();
+    });
+  });
+
+  describe('a session another window asked for', () => {
+    it('shows the chat view when the window opened with a request, which its startup load then loads', async () => {
+      const one = refusingAgent(0);
+      const { manager, workspace, user, commands, request } = setup({ one: one.script });
+      await workspace.setLastActiveSession(addressOf('one', 'old'));
+      await request(addressOf('one', 'asked'));
+
+      await commands.revealRequested();
+      await commands.restoreLastSession();
+
+      expect(manager.getActiveSessionId()).toBe('asked');
+      expect(one.requested).toEqual(['asked']);
+      expect(user.take()).toEqual([focusChatView]);
+    });
+
+    it('shows nothing when the window opened without one', async () => {
+      const { user, commands } = setup({ one: refusingAgent(0).script });
+
+      await commands.revealRequested();
+
+      expect(user.take()).toEqual([]);
+    });
+
+    it('opens one made since the window opened as Open Session does, once', async () => {
+      const one = refusingAgent(0);
+      const { manager, user, commands, request } = setup({ one: one.script });
+      await commands.revealRequested();
+      await request(addressOf('one', 'asked'));
+
+      await commands.openRequested();
+      await commands.openRequested();
+
+      expect(manager.getActiveSessionId()).toBe('asked');
+      expect(one.requested).toEqual(['asked']);
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
+    });
+
+    it('asks before leaving what the shown session would lose, and stays when declined', async () => {
+      const one = refusingAgent(0);
+      const { manager, transcript, user, commands, request } = setup({ one: one.script, two: sessionAgent('two').script });
+      await commands.revealRequested();
+      await manager.connectToAgent('two');
+      transcript.queuedPrompts = 1;
+      await request(addressOf('one', 'asked'));
+      user.answer('Cancel');
+
+      await commands.openRequested();
+
+      expect(manager.getActiveSessionId()).toBe('two-1');
+      expect(one.requested).toEqual([]);
+      expect(user.take()).toEqual([asked('Open a different session?', 'This discards 1 queued prompt.', 'Open Session')]);
+    });
+
+    it('does not open again the request the window opened with', async () => {
+      const one = refusingAgent(0);
+      const { user, commands, request } = setup({ one: one.script });
+      await request(addressOf('one', 'asked'));
+      await commands.revealRequested();
+      user.take();
+
+      await commands.openRequested();
+
+      expect(one.requested).toEqual([]);
+      expect(user.take()).toEqual([]);
     });
   });
 });

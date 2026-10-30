@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { logError } from './Log';
 
@@ -62,6 +63,10 @@ const REFERENCES_VERSION = 3;
 const WORKSPACE_VERSION = 2;
 const REFERENCES_KEY = 'acp.sessionReferences';
 const WORKSPACE_KEY = 'acp.workspace';
+const STARTUP_REQUESTS_KEY = 'acp.startupRequests';
+const STARTUP_REQUESTS_VERSION = 1;
+/** Allowing for a slow Remote-SSH connection or server installation in the window the request is for. */
+const REQUESTS_EXPIRE_AFTER = 10 * 60 * 1000;
 const RETIRED_WORKSPACE_KEYS = ['acp.sessionHistory.v1'];
 const CAPACITY = 500;
 const DAY = 24 * 60 * 60 * 1000;
@@ -106,6 +111,11 @@ export class SessionReferences extends EventEmitter<{ changed: [] }> {
     return referencesIn(this.read().entries)
       .filter((reference) => reference.host === host && reference.configuredName === configuredName && reference.cwd === cwd)
       .map(withoutRevision);
+  }
+
+  /** Every reference, of every workspace on every host, the most recently active first. */
+  all(): SessionReference[] {
+    return referencesIn(this.read().entries).map(withoutRevision);
   }
 
   get(id: ReferenceId): SessionReference | undefined {
@@ -461,6 +471,106 @@ export class WorkspaceState {
       writable,
     };
   }
+}
+
+/**
+ * Requests that the window opening a workspace load a session there, kept in global state because the window asking
+ * cannot write the target workspace's state. Only the newest request for a workspace counts, and it is taken once.
+ * Each instance keeps the requests it made and took until they expire and merges them with what it reads, so an
+ * earlier value VS Code serves can neither lose them nor bring back one taken.
+ */
+export class StartupRequests {
+  private readonly kept: StoredRequests = { requests: [], taken: [] };
+
+  constructor(private readonly globalState: KeyValueStore, private readonly now: () => number = Date.now) {}
+
+  /** Ask the window that opens the address's workspace to load its session; settles once the request is written. */
+  request(address: SessionAddress): Promise<void> {
+    const { requests, taken, writable } = this.read();
+    if (!writable) {
+      return Promise.resolve();
+    }
+    const request = {
+      ...addressOf(address),
+      requestId: randomUUID(),
+      expiresAt: new Date(this.now() + REQUESTS_EXPIRE_AFTER).toISOString(),
+    };
+    const others = (kept: readonly StartupRequest[]) => kept.filter((other) => other.workspaceUri !== request.workspaceUri);
+    this.kept.requests = [...others(this.kept.requests), request];
+    return this.store({ requests: [...others(requests), request], taken });
+  }
+
+  /** The session requested for this workspace, if any; settles once the take is written, so no window loads it again. */
+  async take(workspaceUri: string): Promise<SessionAddress | undefined> {
+    const { requests, taken, writable } = this.read();
+    const request = requests.find((candidate) => candidate.workspaceUri === workspaceUri);
+    if (!writable || !request || taken.some((take) => take.requestId === request.requestId)) {
+      return undefined;
+    }
+    const take = { requestId: request.requestId, expiresAt: request.expiresAt };
+    this.kept.taken = [...this.kept.taken, take];
+    await this.store({ requests, taken: [...taken, take] });
+    return addressOf(request);
+  }
+
+  /** Drop expired requests and takes, as each window does as it starts; writes nothing when none has expired. */
+  discardExpired(): Promise<void> {
+    const { value } = readEnvelope(this.globalState, STARTUP_REQUESTS_KEY, STARTUP_REQUESTS_VERSION);
+    const { requests, taken, writable } = this.read();
+    const storedCount = listOf(value?.['requests'], requestOf).length + listOf(value?.['taken'], takeOf).length;
+    return writable && storedCount !== requests.length + taken.length ? this.store({ requests, taken }) : Promise.resolve();
+  }
+
+  private store({ requests, taken }: StoredRequests): Promise<void> {
+    return write(this.globalState, STARTUP_REQUESTS_KEY, { schemaVersion: STARTUP_REQUESTS_VERSION, requests, taken }, 'startup requests');
+  }
+
+  /** What is stored merged with what this instance keeps, without what has expired: the newest request per workspace. */
+  private read(): StoredRequests & { writable: boolean } {
+    const { value, writable } = readEnvelope(this.globalState, STARTUP_REQUESTS_KEY, STARTUP_REQUESTS_VERSION);
+    const live = <T extends { readonly expiresAt: string }>(items: T[]) => items.filter((item) => this.now() < Date.parse(item.expiresAt));
+    this.kept.requests = live(this.kept.requests);
+    this.kept.taken = live(this.kept.taken);
+    const newest = new Map<string, StartupRequest>();
+    for (const request of live([...listOf(value?.['requests'], requestOf), ...this.kept.requests])) {
+      const other = newest.get(request.workspaceUri);
+      if (!other || [request.expiresAt, request.requestId].join() > [other.expiresAt, other.requestId].join()) {
+        newest.set(request.workspaceUri, request);
+      }
+    }
+    const taken = new Map(live([...listOf(value?.['taken'], takeOf), ...this.kept.taken]).map((take) => [take.requestId, take]));
+    return { requests: [...newest.values()], taken: [...taken.values()], writable };
+  }
+}
+
+interface StartupRequest extends SessionAddress {
+  readonly requestId: string;
+  readonly expiresAt: string;
+}
+
+/** A request taken, kept until the request would have expired so an earlier copy of it is not taken again. */
+interface Take {
+  readonly requestId: string;
+  readonly expiresAt: string;
+}
+
+interface StoredRequests {
+  requests: StartupRequest[];
+  taken: Take[];
+}
+
+function requestOf(raw: unknown): StartupRequest | undefined {
+  const address = addressFrom(raw);
+  const take = takeOf(raw);
+  return address && take ? { ...address, ...take } : undefined;
+}
+
+function takeOf(raw: unknown): Take | undefined {
+  if (!isRecord(raw)) {
+    return undefined;
+  }
+  const { requestId, expiresAt } = raw;
+  return typeof requestId === 'string' && typeof expiresAt === 'string' ? { requestId, expiresAt } : undefined;
 }
 
 /** The writes one owner started and has not seen finish. */

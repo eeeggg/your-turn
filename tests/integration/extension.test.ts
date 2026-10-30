@@ -3,6 +3,9 @@ import { suite, test } from 'mocha';
 import * as vscode from 'vscode';
 import { getOutputChannel, outputChannelSink } from '@/adapters/OutputChannels';
 
+/** The commands that switch the Agents view between this workspace's agents and other workspaces. */
+const MODE_TOGGLES = ['acp.showOtherWorkspaces', 'acp.showAgents'];
+
 suite('Extension Test Suite', () => {
 	vscode.window.showInformationMessage('Start all tests.');
 
@@ -58,10 +61,11 @@ suite('Extension Test Suite', () => {
 		const linked = (contents: string) => [...contents.matchAll(/\(command:([\w.]+)\)/g)].flatMap((match) => match[1] ?? []);
 		// VS Code shows a tree view's welcome until the tree's first items arrive, even when agents are configured.
 		assert.deepStrictEqual(viewsWelcome.map((welcome) => [welcome.when, linked(welcome.contents)]), [
-			['acp.noAgentsConfigured', ['acp.addAgent', 'acp.detectAgents']],
-			['acp.workspaceUnavailable == empty', ['workbench.action.files.openFolder']],
-			['acp.workspaceUnavailable == untitled', ['workbench.action.saveWorkspaceAs']],
-			['acp.workspaceUnavailable == virtual', ['workbench.action.files.openFolder']],
+			['!acp.showingOtherWorkspaces && acp.noAgentsConfigured', ['acp.addAgent', 'acp.detectAgents']],
+			['!acp.showingOtherWorkspaces && acp.workspaceUnavailable == empty', ['workbench.action.files.openFolder']],
+			['!acp.showingOtherWorkspaces && acp.workspaceUnavailable == untitled', ['workbench.action.saveWorkspaceAs']],
+			['!acp.showingOtherWorkspaces && acp.workspaceUnavailable == virtual', ['workbench.action.files.openFolder']],
+			['acp.showingOtherWorkspaces', []],
 		]);
 		const commands = await vscode.commands.getCommands(true);
 		assert.deepStrictEqual(viewsWelcome.flatMap((welcome) => linked(welcome.contents)).filter((command) => !commands.includes(command)), []);
@@ -91,6 +95,25 @@ suite('Extension Test Suite', () => {
 			return when !== 'false' && when !== unavailable && !when?.startsWith(`${unavailable} && `);
 		}), []);
 		const titles = [...(menus['view/title'] ?? []).filter(({ when }) => when?.includes('view == acp-sessions')), ...(menus['editor/title'] ?? [])];
-		assert.deepStrictEqual(titles.filter(({ when }) => !when?.startsWith(`${unavailable} && `)).map(({ command }) => command), []);
+		assert.deepStrictEqual(titles.filter(({ when }) => !when?.startsWith(`${unavailable} && `)).map(({ command }) => command), MODE_TOGGLES);
+	});
+
+	test("Offers switching the Agents view's mode in every window, left of Add Agent Configuration, which only this workspace's agents show", () => {
+		const ext = vscode.extensions.getExtension('formulahendry.acp-client');
+		assert.ok(ext);
+		const { commands, menus } = (ext.packageJSON as { contributes: {
+			commands: { command: string; icon?: string }[];
+			menus: Record<string, { command: string; when?: string; group?: string }[]>;
+		} }).contributes;
+		const titles = (menus['view/title'] ?? []).filter(({ when }) => when?.includes('view == acp-sessions'));
+		assert.deepStrictEqual(titles.map(({ command, when, group }) => [command, when, group]), [
+			['acp.showOtherWorkspaces', 'view == acp-sessions && !acp.showingOtherWorkspaces', 'navigation@0'],
+			['acp.showAgents', 'view == acp-sessions && acp.showingOtherWorkspaces', 'navigation@0'],
+			['acp.addAgent', '!acp.workspaceUnavailable && !acp.showingOtherWorkspaces && view == acp-sessions', 'navigation@1'],
+		]);
+		assert.deepStrictEqual(commands.filter(({ command }) => MODE_TOGGLES.includes(command)).map(({ command, icon }) => [command, icon]), [
+			['acp.showOtherWorkspaces', '$(multiple-windows)'],
+			['acp.showAgents', '$(arrow-left)'],
+		]);
 	});
 });

@@ -12,10 +12,13 @@ suite('In an unsaved workspace', () => {
     assert.strictEqual(workspaceUnavailability(vscode.workspace), 'untitled');
   });
 
-  test('activates without registering a command or giving tests its API', async () => {
+  test("activates registering only the commands of the Agents view's Other Workspaces mode, without giving tests its API", async () => {
     const ext = vscode.extensions.getExtension('formulahendry.acp-client');
     assert.ok(ext);
     assert.strictEqual(await ext.activate(), undefined);
-    assert.deepStrictEqual((await vscode.commands.getCommands(true)).filter((command) => command.startsWith('acp.')), []);
+    assert.deepStrictEqual(
+      (await vscode.commands.getCommands(true)).filter((command) => command.startsWith('acp.')).sort(),
+      ['acp.openSessionInWorkspace', 'acp.showAgents', 'acp.showOtherWorkspaces'],
+    );
   });
 });

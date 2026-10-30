@@ -10,7 +10,7 @@ import type { ConfigOption } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { PermissionRequests } from '@/core/PermissionRequests';
-import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
+import { SessionReferences, StartupRequests, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionStartup, type StartupOutcome } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -56,7 +56,8 @@ for (const version of [1, 2]) {
     /** A window starting with `sessionId`, used through `configuredName`, as its last active session. */
     async function starting(sessionId: string, configuredName = agentName) {
       const workspace = new WorkspaceState(memoryStore());
-      const references = new SessionReferences(memoryStore());
+      const globalState = memoryStore();
+      const references = new SessionReferences(globalState);
       const environment = createWorkspaceEnvironment(workspace);
       const updates = new SessionUpdateHandler();
       const manager = new SessionManager(
@@ -80,7 +81,13 @@ for (const version of [1, 2]) {
           texts.push(`${update.kind}: ${update.text}`);
         }
       });
-      return { address, references, workspace, texts, startup: new SessionStartup(manager, workspace, environment) };
+      /** A startup in this window again, as after a reload, over the same storage. */
+      const restarted = () => new SessionStartup(manager, workspace, environment, new StartupRequests(globalState));
+      /** Another window asks the window opening the address's workspace to load its session. */
+      const request = (requested: SessionAddress) => new StartupRequests(globalState).request(requested);
+      /** What another window opening the workspace would be given. */
+      const taken = () => new StartupRequests(globalState).take(address.workspaceUri);
+      return { address, references, workspace, texts, startup: restarted(), restarted, request, taken };
     }
 
     function loaded(outcome: StartupOutcome) {
@@ -139,6 +146,33 @@ for (const version of [1, 2]) {
         ['unknownSession', { kind: 'failed', message: 'Internal error: Session is in use by another client' }],
       );
       assert.ok(references.get(address) && references.get(busy), 'both references stay');
+    });
+
+    test('loads the session another window asked for ahead of the last active one, replayed with its options, taking the request', async () => {
+      const sessionId = `startup-requested-v${version}`;
+      const { address, workspace, texts, startup, request, taken } = await starting(sessionId);
+      await workspace.setLastActiveSession({ ...address, sessionId: 'gone' });
+      await request(address);
+
+      const session = loaded(await startup.attempt());
+
+      assert.strictEqual(session.sessionId, sessionId);
+      assert.deepStrictEqual(texts, ['promptText: earlier question', 'agentText: earlier answer']);
+      assert.deepStrictEqual(currents(session.configOptions), { model: 'model-b', effort: 'high', fast: true });
+      assert.strictEqual(await taken(), undefined);
+    });
+
+    test('fails for a requested session the agent does not know, which a reload does not ask for again', async () => {
+      const { address, startup, restarted, request } = await starting(`startup-after-gone-v${version}`);
+      await request({ ...address, sessionId: 'gone' });
+
+      const failed = await startup.attempt();
+      const reloaded = await restarted().attempt();
+
+      assert.deepStrictEqual(
+        [failed.kind === 'failed' && [failed.address.sessionId, failed.failure.kind], loaded(reloaded).sessionId],
+        [['gone', 'unknownSession'], address.sessionId],
+      );
     });
 
     test('loads through another configuration as chosen, which its reference and the last active session move to', async () => {

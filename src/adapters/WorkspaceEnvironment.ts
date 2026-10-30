@@ -54,6 +54,22 @@ export function windowWorkspaceUri(extensionHostUri: vscode.Uri, webview: Pick<v
   return remade.scheme === made.scheme && remade.authority === made.authority ? decoded : undefined;
 }
 
+/**
+ * A workspace URI stored as the client sees it, as this extension host must send it to the client. A remote extension
+ * host's `file:` URIs gain the window's authority on the way, so a client file is sent as `vscode-local:`, which the
+ * client turns back into its own `file:`; a `vscode-remote:` URI passes unchanged and opens on its machine. Throws for
+ * a stored value that is not a URI.
+ */
+export function extensionHostUriOf(clientUri: string, remoteName: string | undefined = vscode.env.remoteName): vscode.Uri {
+  const uri = vscode.Uri.parse(clientUri, true);
+  return remoteName !== undefined && uri.scheme === 'file' ? uri.with({ scheme: 'vscode-local' }) : uri;
+}
+
+/** Open a workspace stored as the client sees it in a new window; VS Code brings forward a window it is open in. */
+export async function openWorkspace(clientUri: string): Promise<void> {
+  await vscode.commands.executeCommand('vscode.openFolder', extensionHostUriOf(clientUri), { forceNewWindow: true });
+}
+
 /** What sessions need from the window's workspace, with the webview a remote window learns its workspace URI from. */
 export interface WorkspaceEnvironment extends SessionEnvironment {
   /** A webview of this window while one exists, and `undefined` once it is gone. */

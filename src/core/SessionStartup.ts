@@ -1,6 +1,6 @@
 import { UnknownSession } from './acp/AcpDriver';
 import { messageOf } from './Log';
-import type { SessionAddress, WorkspaceState } from './PersistedState';
+import type { SessionAddress, StartupRequests, WorkspaceState } from './PersistedState';
 import type { SessionEnvironment, SessionInfo, SessionManager } from './SessionManager';
 
 /** Why a session did not open, and what the user is told; its reference stays either way. */
@@ -27,28 +27,43 @@ export type StartupOutcome =
   | { kind: 'failed'; address: SessionAddress; configuredName: string; failure: OpeningFailure };
 
 /**
- * Loads the workspace's last active session when a window starts, through the configuration it was last used through,
- * replaying its transcript; and again, or through another configuration, as the user asks after a failure.
+ * Loads the session another window asked this one to as it opened, or else the workspace's last active session, when a
+ * window starts, through the configuration it was last used through, replaying its transcript; and again, or through
+ * another configuration, as the user asks after a failure.
  */
 export class SessionStartup {
   private attempted: Promise<StartupOutcome> | undefined;
+  private requesting: Promise<SessionAddress | undefined> | undefined;
   private forgone = false;
 
   constructor(
     private readonly sessions: SessionManager,
     private readonly workspace: WorkspaceState,
-    private readonly environment: Pick<SessionEnvironment, 'workspaceRoots' | 'agentConfigs'>,
+    private readonly environment: Pick<SessionEnvironment, 'workspaceRoots' | 'agentConfigs' | 'workspaceTarget'>,
+    private readonly requests: Pick<StartupRequests, 'take'>,
   ) {
     sessions.on('session-opened', () => { void this.forgo(); });
   }
 
   /**
-   * Load the last active session, unless a session has opened in this activation or the attempt was forgone; only the
-   * first call per activation tries.
+   * Load the requested or last active session, unless a session has opened in this activation or the attempt was
+   * forgone; only the first call per activation tries.
    */
   attempt(): Promise<StartupOutcome> {
     this.attempted ??= this.first();
     return this.attempted;
+  }
+
+  /** The session another window asked this one to load as it opened, taken from the requests once per activation. */
+  requested(): Promise<SessionAddress | undefined> {
+    this.requesting ??= this.take();
+    return this.requesting;
+  }
+
+  /** A session another window has asked this one to open since; each request is given once, after the one it opened with. */
+  async requestedSince(): Promise<SessionAddress | undefined> {
+    await this.requested();
+    return this.take();
   }
 
   /** Make no attempt from now on, as a session is opening otherwise; settles once an attempt under way has. */
@@ -63,11 +78,17 @@ export class SessionStartup {
   }
 
   private async first(): Promise<StartupOutcome> {
-    const address = this.workspace.lastActiveSession();
+    const address = await this.requested() ?? this.workspace.lastActiveSession();
     if (this.forgone || !address || this.sessions.getActiveSession()) {
       return { kind: 'nothing' };
     }
     return this.load(address, address.configuredName);
+  }
+
+  /** A remote window that has yet to learn its workspace URI cannot match a request, which stays for a later take. */
+  private take(): Promise<SessionAddress | undefined> {
+    const target = this.environment.workspaceTarget();
+    return target ? this.requests.take(target.uri) : Promise.resolve(undefined);
   }
 
   private async load(address: SessionAddress, configuredName: string): Promise<StartupOutcome> {
