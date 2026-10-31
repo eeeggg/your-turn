@@ -261,6 +261,115 @@ export interface PermissionRequest {
 
 export type PermissionOutcome = { kind: 'selected'; optionId: string } | { kind: 'cancelled' } | { kind: 'requestCancelled' };
 
+export type ElicitationValue = string | number | boolean | readonly string[];
+
+interface ElicitationChoice {
+  readonly value: string;
+  readonly title: string;
+  readonly description: string | null;
+}
+
+interface ElicitationOption {
+  readonly const: string;
+  readonly title: string;
+  readonly description?: string | null;
+}
+
+interface ElicitationPropertyBase {
+  readonly title?: string | null;
+  readonly description?: string | null;
+}
+
+/** SDK-independent field definitions; unknown optional field types have no controls. */
+export type ElicitationProperty = ElicitationPropertyBase & (
+  | { readonly type: 'string'; readonly minLength?: number | null; readonly maxLength?: number | null;
+    readonly pattern?: string | null; readonly format?: string | null; readonly enum?: readonly string[] | null;
+    readonly oneOf?: readonly ElicitationOption[] | null; readonly default?: string | null }
+  | { readonly type: 'number' | 'integer'; readonly minimum?: number | null; readonly maximum?: number | null; readonly default?: number | null }
+  | { readonly type: 'boolean'; readonly default?: boolean | null }
+  | { readonly type: 'array'; readonly minItems?: number | null; readonly maxItems?: number | null;
+    readonly items: { readonly type: 'string'; readonly enum: readonly string[] } | { readonly anyOf: readonly ElicitationOption[] } | { readonly type: 'other' };
+    readonly default?: readonly string[] | null }
+  | { readonly type: 'other' }
+);
+
+export interface ElicitationSchema {
+  readonly title?: string | null;
+  readonly description?: string | null;
+  readonly properties?: Readonly<Record<string, ElicitationProperty>>;
+  readonly required?: readonly string[] | null;
+}
+
+interface ElicitationField {
+  readonly name: string;
+  readonly type: 'string' | 'number' | 'integer' | 'boolean' | 'array';
+  readonly title: string | null;
+  readonly description: string | null;
+  readonly required: boolean;
+  readonly choices: readonly ElicitationChoice[] | null;
+  readonly minimum: number | null;
+  readonly maximum: number | null;
+  readonly minLength: number | null;
+  readonly maxLength: number | null;
+  readonly minItems: number | null;
+  readonly maxItems: number | null;
+  readonly pattern: string | null;
+  readonly format: string | null;
+  readonly default?: ElicitationValue;
+}
+
+/** Renderable fields with validated defaults; answers still require validation. */
+export interface ElicitationForm {
+  readonly title: string | null;
+  readonly description: string | null;
+  readonly fields: readonly ElicitationField[];
+}
+
+export interface ElicitationScope {
+  readonly sessionId?: string;
+  readonly toolCallId?: string | null;
+  readonly requestId?: string | number;
+}
+
+interface ElicitationRequestBase {
+  /** The incoming create request's JSON-RPC ID, not its parent request or URL ID. */
+  readonly rpcId: string | number | null;
+  readonly scope: ElicitationScope;
+  readonly message: string;
+}
+
+export type ElicitationRequest = ElicitationRequestBase & (
+  | { readonly mode: 'form'; readonly requestedSchema: ElicitationSchema }
+  | { readonly mode: 'url'; readonly elicitationId: string; readonly url: string }
+);
+
+export type ElicitationInteraction = ElicitationRequestBase & {
+  readonly interactionId: string;
+  readonly status: 'pending' | 'awaitingCompletion';
+  readonly completed: boolean;
+} & (
+  | { readonly mode: 'form'; readonly form: ElicitationForm }
+  | { readonly mode: 'url'; readonly elicitationId: string; readonly url: string }
+);
+
+export interface ElicitationResponse {
+  readonly action: 'accept' | 'decline' | 'cancel';
+  readonly content?: Readonly<Record<string, ElicitationValue>>;
+}
+
+export interface ElicitationChange {
+  readonly kind: 'created' | 'responded' | 'withdrawn' | 'closed' | 'completed';
+  readonly interaction: ElicitationInteraction;
+  readonly response?: ElicitationResponse;
+}
+
+export type ElicitationResponseResult = { kind: 'settled' | 'stale' } | { kind: 'invalid'; errors: Readonly<Record<string, string>> };
+
+/** Request withdrawal and connection loss are not user responses. */
+export class ElicitationError extends Error {
+  constructor(readonly kind: 'invalid' | 'cancelled' | 'closed', message: string) { super(message); }
+}
+
 /** The agent refuses the request until the user authenticates. */
 export class AuthRequired extends Error {
   constructor(message: string, options?: ErrorOptions) {

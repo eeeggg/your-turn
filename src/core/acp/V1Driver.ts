@@ -28,6 +28,7 @@ import type {
 } from './AcpDriver';
 import { authChecked, sessionChecked } from './RequestErrors';
 import { compactionContent } from './Compaction';
+import { v1Elicitation } from './Elicitation';
 
 /** The `initialize` request the v1 client sends, which the negotiation sends to the agent for it. */
 export function v1InitializeRequest(clientVersion: string): Acp.InitializeRequest {
@@ -54,6 +55,14 @@ export class V1Driver implements AcpDriver {
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = createClientApp({ name: 'vscode-acp-client' })
+      .onRequest(methods.client.elicitation.create, ({ params, requestId, signal }) => {
+        const capabilities = v1InitializeRequest(clientVersion).clientCapabilities?.elicitation;
+        if (!handlers.elicitations || (params.mode !== 'form' && params.mode !== 'url') || !capabilities?.[params.mode]) {
+          throw new RequestError(-32602, 'Elicitation mode is not advertised');
+        }
+        return v1Elicitation(params, requestId, signal, handlers.elicitations);
+      })
+      .onNotification(methods.client.elicitation.complete, ({ params }) => handlers.elicitations?.complete(params.elicitationId))
       .onRequest(methods.client.session.requestPermission, async ({ params, signal }) =>
         permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
       .onNotification(methods.client.session.update, ({ params }) => {
@@ -64,6 +73,7 @@ export class V1Driver implements AcpDriver {
         }
       });
     const connection = app.connect(stream);
+    connection.signal.addEventListener('abort', () => handlers.elicitations?.close(), { once: true });
 
     logDebug('Initializing ACP v1 connection', { agentName });
     const initResponse = await connection.agent.request(methods.agent.initialize, v1InitializeRequest(clientVersion));

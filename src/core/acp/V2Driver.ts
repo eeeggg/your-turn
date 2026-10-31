@@ -34,6 +34,7 @@ import {
 } from './AcpDriver';
 import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
 import { compactionContent } from './Compaction';
+import { v2Elicitation } from './Elicitation';
 
 /** The `initialize` request the v2 client sends, which the negotiation sends to the agent for it. */
 export function v2InitializeRequest(clientVersion: string): Acp.InitializeRequest {
@@ -61,6 +62,15 @@ export class V2Driver implements AcpDriver {
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = Acp.client({ name: 'vscode-acp-client' })
+      .onRequest(Acp.methods.client.elicitation.create, ({ params, requestId, signal }) => {
+        const capabilities = v2InitializeRequest(clientVersion).capabilities?.elicitation;
+        if (!capabilities) { throw new Acp.RequestError(-32601, 'Elicitation is not advertised'); }
+        if (!handlers.elicitations || (params.mode !== 'form' && params.mode !== 'url') || !capabilities[params.mode]) {
+          throw new Acp.RequestError(-32602, 'Elicitation mode is not advertised');
+        }
+        return v2Elicitation(params, requestId, signal, handlers.elicitations);
+      })
+      .onNotification(Acp.methods.client.elicitation.complete, ({ params }) => handlers.elicitations?.complete(params.elicitationId))
       .onRequest(Acp.methods.client.session.requestPermission, async ({ params, signal }) =>
         permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
       .onNotification(Acp.methods.client.session.update, ({ params }) => {
@@ -75,6 +85,7 @@ export class V2Driver implements AcpDriver {
         }
       });
     const connection = app.connect(stream);
+    connection.signal.addEventListener('abort', () => handlers.elicitations?.close(), { once: true });
     connection.signal.addEventListener('abort', () => foreground.close(), { once: true });
 
     logDebug('Initializing ACP v2 connection', { agentName });

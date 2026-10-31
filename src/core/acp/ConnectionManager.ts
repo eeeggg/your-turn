@@ -3,6 +3,7 @@ import type { Stream } from '@agentclientprotocol/sdk';
 
 import type { AgentStreams } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { captureTraffic } from '@/core/Traffic';
 import { logDebug, logError, logInfo } from '@/core/Log';
 import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
@@ -10,6 +11,7 @@ import type { AcpDriver } from './AcpDriver';
 import { negotiate } from './Negotiation';
 import { V1Driver } from './V1Driver';
 import { V2Driver } from './V2Driver';
+import { OutgoingRequests } from './OutgoingRequests';
 
 /**
  * Opens client-side ACP connections to agents, each spoken through an ACP driver.
@@ -18,7 +20,7 @@ export class ConnectionManager {
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly clientVersion: string,
-    private readonly createHandlers: () => ClientHandlers,
+    private readonly createHandlers: (context: { agentName: string; elicitations: ElicitationRequests }) => ClientHandlers,
   ) {}
 
   /** Connect to an agent over its streams and initialize the connection. */
@@ -28,13 +30,23 @@ export class ConnectionManager {
     const stream = ndJsonStream(streams.input, streams.output);
 
     // Wrap the stream to capture all ACP traffic separately from diagnostics.
-    const tappedStream = this.tapStream(stream);
-
-    const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
-    logInfo('Negotiated ACP protocol', { agentName, version: negotiated.version });
-    return negotiated.version === 2
-      ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers())
-      : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, this.createHandlers());
+    const outgoing = new OutgoingRequests();
+    const tappedStream = outgoing.observe(this.tapStream(stream));
+    const connectionElicitations = new ElicitationRequests((id) => outgoing.has(id));
+    const handlers = this.createHandlers({ agentName, elicitations: connectionElicitations });
+    const elicitations = handlers.elicitations ?? connectionElicitations;
+    const owned = { ...handlers, elicitations };
+    try {
+      const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
+      logInfo('Negotiated ACP protocol', { agentName, version: negotiated.version });
+      return await (negotiated.version === 2
+        ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, owned)
+        : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, owned));
+    } catch (error) {
+      elicitations.close();
+      outgoing.close();
+      throw error;
+    }
   }
 
   /**
