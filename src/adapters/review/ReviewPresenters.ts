@@ -29,6 +29,8 @@ export interface ReviewDisplay extends vscode.Disposable {
 function activePath(): string | undefined {
   const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   const uri = input instanceof vscode.TabInputText ? input.uri : input instanceof vscode.TabInputTextDiff ? input.modified : undefined;
+  if (input instanceof vscode.TabInputTextDiff && input.original.scheme === 'acp-review-diff'
+    && input.modified.scheme === 'acp-review-diff' && input.original.fsPath === input.modified.fsPath) { return input.modified.fsPath; }
   return uri?.scheme === 'file' ? uri.fsPath : undefined;
 }
 
@@ -269,7 +271,7 @@ export class ReviewPresenters implements vscode.Disposable {
   /** Only quick diff follows plain-tab entry; a normal editor must not reopen an ACP Review diff. */
   private tabsChanged(): void {
     if (this.disposed) { return; }
-    this.showPosition();
+    this.showAll();
     const path = textTabPath();
     if (path === this.tabPath) { return; }
     this.tabPath = path;
@@ -283,7 +285,15 @@ export class ReviewPresenters implements vscode.Disposable {
 
   private showAll(): void {
     if (this.disposed) { return; }
-    this.display.review(this.controls.sessionShown(), this.controls.reviewedPaths().map((path) => vscode.Uri.file(path)));
+    const paths = this.controls.reviewedPaths();
+    const uris = paths.map((path) => vscode.Uri.file(path));
+    for (const { tabs } of vscode.window.tabGroups.all) {
+      for (const { input } of tabs) {
+        if (input instanceof vscode.TabInputTextDiff && input.original.scheme === 'acp-review-diff'
+          && paths.includes(input.modified.fsPath)) { uris.push(input.original, input.modified); }
+      }
+    }
+    this.display.review(this.controls.sessionShown(), uris);
     this.showPosition();
   }
 

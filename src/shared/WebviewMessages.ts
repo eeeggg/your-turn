@@ -121,6 +121,9 @@ export interface SessionSnapshot {
   commands: SlashCommand[];
 }
 
+/** Reported summary content retained for presentation, including blocks the view does not yet support. */
+type CompactionContent = null | boolean | number | string | CompactionContent[] | { [key: string]: CompactionContent };
+
 export type ExtensionToWebviewMessage =
   | { type: 'state'; activeSessionId: string | null; session: SessionSnapshot | null }
   | { type: 'clearTranscript' }
@@ -153,6 +156,16 @@ export type ExtensionToWebviewMessage =
   | { type: 'commands'; commands: SlashCommand[] }
   | { type: 'pickers'; pickers: Picker[] }
   | { type: 'usage'; usage: SessionUsage }
+  /** Omitted patches retain stored values; null and an empty summary clear them. Status is an open string. */
+  | {
+    type: 'compactionUpdate';
+    compactionId: string;
+    status: string;
+    summary: { present: false } | { present: true; value: CompactionContent[] | null };
+    error: { present: false } | { present: true; value: string | null };
+  }
+  /** Append this content to the summary at the compaction's original timeline position. */
+  | { type: 'compactionSummaryChunk'; compactionId: string; content: CompactionContent }
   /** The active session's title, null when it has none. */
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }

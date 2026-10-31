@@ -159,6 +159,29 @@ export interface SlashCommand {
   hint: string | null;
 }
 
+/** ACP content retained without importing ACP SDK types into the shared core contract. */
+export type CompactionContent = null | boolean | number | string | CompactionContent[] | { [key: string]: CompactionContent };
+
+/** An update field where omission retains the prior value and null or an empty array clears it. */
+type CompactionSummaryPatch = { present: false } | { present: true; value: CompactionContent[] | null };
+
+/** An update field where omission retains the prior value and null clears it. */
+type CompactionErrorPatch = { present: false } | { present: true; value: string | null };
+
+/** An ID-addressed compaction upsert; patch presence is preserved for the transcript reducer. */
+interface CompactionUpdate {
+  compactionId: string;
+  status: string;
+  summary: CompactionSummaryPatch;
+  error: CompactionErrorPatch;
+}
+
+/** One content block appended to an ID-addressed compaction summary. */
+interface CompactionSummaryChunk {
+  compactionId: string;
+  content: CompactionContent;
+}
+
 /** The agent's latest context and cumulative session-cost snapshot; successive reports replace it, not add to it. */
 interface SessionUsage {
   /** Tokens currently in context. */
@@ -211,6 +234,8 @@ export type SessionUpdate =
   /** The agent switched the session's mode itself. */
   | { kind: 'currentMode'; modeId: string }
   | ({ kind: 'usage' } & SessionUsage)
+  | ({ kind: 'compactionUpdate' } & CompactionUpdate)
+  | ({ kind: 'compactionSummaryChunk' } & CompactionSummaryChunk)
   /** A null title clears the session's title; a missing one leaves it unchanged. */
   | { kind: 'sessionInfo'; title?: string | null; updatedAt?: string | null };
 

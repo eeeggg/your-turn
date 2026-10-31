@@ -113,11 +113,22 @@ for (const version of [1, 2]) {
       }), `infos: ${JSON.stringify(infos)}`);
     });
 
-    test('Sends one initialize, asking for v2 with the client version', () => {
+    test(version === 1
+      ? 'Asks for v2, then initializes v1 with the client version and capabilities'
+      : 'Sends one v2 initialize with the client version', () => {
       const initializes = trafficRecords().filter(t => t.direction === 'send' && at(t.message, 'method') === 'initialize');
-      assert.strictEqual(initializes.length, 1);
-      assert.strictEqual(at(initializes[0]?.message, 'params', 'protocolVersion'), 2);
-      assert.strictEqual(at(initializes[0]?.message, 'params', 'info', 'version'), CLIENT_VERSION);
+      assert.deepStrictEqual(initializes.map(t => at(t.message, 'params')), [
+        {
+          protocolVersion: 2,
+          info: { name: 'vscode-acp-client', version: CLIENT_VERSION },
+          capabilities: {},
+        },
+        ...(version === 1 ? [{
+          protocolVersion: 1,
+          clientInfo: { name: 'vscode-acp-client', version: CLIENT_VERSION },
+          clientCapabilities: { session: { compaction: {}, configOptions: { boolean: {} } } },
+        }] : []),
+      ]);
     });
 
     test('Creates a session and sets a config option', async () => {

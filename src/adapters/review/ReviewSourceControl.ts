@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'node:crypto';
 import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
 
@@ -14,13 +15,25 @@ export const BASELINE_SCHEME = 'review-baseline';
  * as its document's content changes.
  */
 export class ReviewSourceControl implements vscode.Disposable {
-  private readonly control = vscode.scm.createSourceControl('acp-review', 'ACP Review');
-  private readonly files = this.control.createResourceGroup('files', 'Files Under Review');
+  private readonly files: vscode.SourceControlResourceGroup;
   private readonly baselineChanged = new vscode.EventEmitter<vscode.Uri>();
   private readonly baselines: vscode.Disposable;
   private readonly changed = () => this.show();
+  private readonly openCommand: vscode.Disposable;
+  private readonly command = `_acp.openReviewResource.${randomUUID()}`;
+  private review: ReturnType<Reviews['shown']>;
+  private generation = 0;
 
-  constructor(private readonly controls: ReviewControls, private readonly reviews: Reviews) {
+  constructor(
+    private readonly controls: ReviewControls,
+    private readonly reviews: Reviews,
+    private readonly control = vscode.scm.createSourceControl('acp-review', 'ACP Review'),
+  ) {
+    this.files = control.createResourceGroup('files', 'Files Under Review');
+    this.openCommand = vscode.commands.registerCommand(this.command, async (generation: number, path: string) => {
+      if (generation !== this.generation || this.reviews.shown() !== this.review || this.controls.baseline(path) === undefined) { return; }
+      await this.controls.entered(path);
+    });
     this.control.inputBox.visible = false;
     this.control.quickDiffProvider = { provideOriginalResource: (uri) => this.originalResource(uri) };
     this.files.hideWhenEmpty = true;
@@ -44,16 +57,19 @@ export class ReviewSourceControl implements vscode.Disposable {
   dispose(): void {
     this.reviews.removeListener(this.changed);
     this.baselines.dispose();
+    this.openCommand.dispose();
     this.baselineChanged.dispose();
     this.control.dispose();
   }
 
   private show(): void {
+    if (this.review !== this.reviews.shown()) { this.generation++; }
+    this.review = this.reviews.shown();
     const left = this.listedFiles();
     const paths = this.controls.reviewedPaths();
     this.files.resourceStates = paths.map((path) => {
       const resourceUri = vscode.Uri.file(path);
-      return { resourceUri, command: { command: 'vscode.open', title: 'Open', arguments: [resourceUri] } };
+      return { resourceUri, command: { command: this.command, title: 'Open ACP Review', arguments: [this.generation, path] } };
     });
     for (const path of new Set([...left, ...paths])) {
       this.baselineChanged.fire(vscode.Uri.file(path).with({ scheme: BASELINE_SCHEME }));

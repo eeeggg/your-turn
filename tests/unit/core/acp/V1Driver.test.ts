@@ -3,6 +3,7 @@ import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type * as Acp from '@agentclientprotocol/sdk';
 import { PermissionRequests, type PermissionChooser } from '@/core/PermissionRequests';
 import { AuthRequired, UnknownSession, type ConfigOption, type SessionRoots, type SessionUpdate } from '@/core/acp/AcpDriver';
+import { v1InitializeRequest } from '@/core/acp/V1Driver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { connectedDriver, fakeAgent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
@@ -34,6 +35,10 @@ const modelOption: Acp.SessionConfigOption = {
 };
 
 describe('V1Driver', () => {
+  it('advertises support for ID-addressed session compaction', () => {
+    expect(v1InitializeRequest('1.2.3').clientCapabilities).toEqual({ session: { compaction: {}, configOptions: { boolean: {} } } });
+  });
+
   describe('the agent', () => {
     it('describes the agent as its initialize response does', async () => {
       const { driver } = await connectedDriver(() => fakeAgent({
@@ -234,6 +239,54 @@ describe('V1Driver', () => {
         cost: { amount: 0.123456789, currency: 'EUR', _meta: { vendor: 'cost metadata' } },
         _meta: { vendor: 'usage metadata' },
       })).toEqual([{ kind: 'usage', used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } }]);
+    });
+
+    it('passes on compaction updates and summary chunks while preserving patch-field presence and content', async () => {
+      expect(await translated(
+        { sessionUpdate: 'compaction_update', compactionId: 'compact-1', status: '_vendor_paused' },
+        {
+          sessionUpdate: 'compaction_update',
+          compactionId: 'compact-1',
+          status: 'in_progress',
+          summary: [{ type: 'text', text: 'Summary', _meta: { source: 'agent' } }],
+          error: 'still working',
+        },
+        {
+          sessionUpdate: 'compaction_summary_chunk',
+          compactionId: 'compact-1',
+          content: { type: 'resource_link', uri: 'file:///summary', name: 'summary.md', _meta: { source: 'agent' } },
+        },
+        { sessionUpdate: 'compaction_update', compactionId: 'compact-1', status: 'completed', summary: null, error: null },
+        { sessionUpdate: 'compaction_update', compactionId: 'compact-1', status: 'completed', summary: [], error: 'reported error' },
+      )).toEqual([
+        { kind: 'compactionUpdate', compactionId: 'compact-1', status: '_vendor_paused', summary: { present: false }, error: { present: false } },
+        {
+          kind: 'compactionUpdate',
+          compactionId: 'compact-1',
+          status: 'in_progress',
+          summary: { present: true, value: [{ type: 'text', text: 'Summary', _meta: { source: 'agent' } }] },
+          error: { present: true, value: 'still working' },
+        },
+        {
+          kind: 'compactionSummaryChunk',
+          compactionId: 'compact-1',
+          content: { type: 'resource_link', uri: 'file:///summary', name: 'summary.md', _meta: { source: 'agent' } },
+        },
+        {
+          kind: 'compactionUpdate',
+          compactionId: 'compact-1',
+          status: 'completed',
+          summary: { present: true, value: null },
+          error: { present: true, value: null },
+        },
+        {
+          kind: 'compactionUpdate',
+          compactionId: 'compact-1',
+          status: 'completed',
+          summary: { present: true, value: [] },
+          error: { present: true, value: 'reported error' },
+        },
+      ]);
     });
 
     it('reports no cost for both absent and null cost', async () => {

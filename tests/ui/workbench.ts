@@ -78,6 +78,14 @@ export function chatUserMessages(window: Page): Locator {
   return acpChatFrame(window).locator('.message.user');
 }
 
+export function chatTranscript(window: Page): Locator {
+  return acpChatFrame(window).locator('#messages');
+}
+
+export function chatCompactions(window: Page): Locator {
+  return acpChatFrame(window).locator('.compaction-block');
+}
+
 /** VS Code's quick-input control, used by the command palette and file picker. */
 export function quickInput(window: Page): Locator {
   return window.locator('.quick-input-widget:visible input');
@@ -171,6 +179,16 @@ export function sourceControl(window: Page): Locator {
 
 export function gitWorkingTreeChange(window: Page, name: string): Locator {
   return window.getByRole('treeitem', { name: `${name}, Modified`, exact: true });
+}
+
+/** SCM's private repository DOM groups resource rows under its provider, separating ACP from Git. */
+export function reviewedFile(window: Page, name: string): Locator {
+  return window.locator('.scm-view .monaco-list-row').filter({ hasText: name });
+}
+
+/** Native diff deletion highlights are Monaco's rendered removed-line presentation, not plain baseline text. */
+export function removedReviewLines(window: Page): Locator {
+  return reviewDiffEditor(window).locator('.original-in-monaco-diff-editor .line-delete');
 }
 
 /** A plain file editor excludes VS Code's native diff editor containers. */

@@ -47,7 +47,7 @@ vi.mock('vscode', () => ({
     registerTextDocumentContentProvider: () => ({ dispose() {} }),
   },
   window: host.window,
-  commands: { executeCommand: host.execute },
+  commands: { executeCommand: host.execute, registerCommand: () => ({ dispose() {} }) },
   TabInputTextDiff: class { readonly original = undefined; },
   EventEmitter: class { event = () => ({ dispose() {} }); fire() {} dispose() {} },
   scm: { createSourceControl: () => ({ inputBox: {}, createResourceGroup: () => ({ resourceStates: [] }), dispose() {} }) },

@@ -68,8 +68,13 @@ export class ReviewControls {
     return this.reviews.shown()?.file(path)?.baseline;
   }
 
+  deleted(path: string): boolean {
+    return this.reviews.shown()?.file(path)?.current === null;
+  }
+
   /** The unresolved changes against the open document, including unsaved edits. */
   changes(path: string): Change[] {
+    if (this.deleted(path)) { return []; }
     const baseline = this.baseline(path);
     const document = this.editors.text(path);
     return baseline === undefined || document === undefined ? []
@@ -122,9 +127,20 @@ export class ReviewControls {
 
   async keepFile(path = this.editors.activePath()): Promise<void> {
     if (path === undefined) { return; }
+    const review = this.reviews.shown();
+    const file = review?.file(path);
+    if (!review || !file) { return; }
+    if (file.current === null) {
+      try {
+        if (!(await this.reviews.deletionCurrent(file))) { return; }
+      } catch (e) {
+        this.editors.showError(`${basename(path)} could not be kept: ${messageOf(e)}`);
+        return;
+      }
+    }
     const paths = this.reviewedPaths();
     const active = this.editors.activePath() === path;
-    this.reviews.shown()?.keepFile(path);
+    review.keepFile(path);
     await this.advanceAfterResolution(path, paths, active);
   }
 
@@ -140,6 +156,7 @@ export class ReviewControls {
     const paths = this.reviewedPaths();
     const active = this.editors.activePath() === file.path;
     try {
+      if (file.current === null && !(await this.reviews.deletionCurrent(file))) { return; }
       await review.undoFile(file.path);
     } catch (e) {
       this.editors.showError(`${basename(file.path)} could not be undone: ${messageOf(e)}`);
@@ -158,19 +175,19 @@ export class ReviewControls {
     return this.move(path, -1);
   }
 
-  /** Opens the first unresolved file in review order, independent of the active editor; skips deleted files. */
+  /** Opens the first unresolved file in review order, independent of the active editor. */
   async openReview(): Promise<void> {
-    const path = this.reviews.shown()?.files().find((file) => file.current !== null)?.path;
+    const path = this.reviews.shown()?.files()[0]?.path;
     if (path !== undefined) { await this.editors.showChange(path); }
   }
 
   /**
    * The shown session's turn ended: the first unresolved change in review order, once the files its edits name were
-   * read; never a deleted file's, which no editor shows.
+   * read, unless a review presentation is already open.
    */
   async turnEnded(sessionId: string): Promise<void> {
     await this.reviews.settled(sessionId);
-    if (this.reviews.shown()?.files().some((file) => file.current !== null && this.editors.isOpen(file.path))) { return; }
+    if (this.reviews.shown()?.files().some((file) => this.editors.isOpen(file.path))) { return; }
     await this.openReview();
   }
 
@@ -180,7 +197,7 @@ export class ReviewControls {
    */
   async entered(path: string): Promise<void> {
     const file = this.reviews.shown()?.file(path);
-    if (file && file.current !== null) { await this.editors.showChange(path); }
+    if (file) { await this.editors.showChange(path); }
   }
 
   /**
@@ -246,7 +263,7 @@ export class ReviewControls {
     const index = before.indexOf(path);
     if (index < 0) { return undefined; }
     const files = this.reviews.shown()?.files() ?? [];
-    const unresolved = new Set(files.filter((file) => file.current !== null).map((file) => file.path));
+    const unresolved = new Set(files.map((file) => file.path));
     for (let offset = 1; offset < before.length; offset++) {
       const candidate = before[(index + offset) % before.length];
       if (candidate !== undefined && candidate !== path && unresolved.has(candidate)) {

@@ -5,6 +5,8 @@ import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
 import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
+  compactionBlocks,
+  compactionSummary,
   partShown,
   planStepIcon,
   showsEmptyState,
@@ -13,6 +15,7 @@ import {
   thoughtSummary,
   turnShown,
   type AgentMessage,
+  type Compaction,
   type EntryId,
   type PartIndex,
   type Plan,
@@ -114,6 +117,8 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
       );
     case 'turn':
       return <TurnView turn={entry} />;
+    case 'compaction':
+      return <CompactionBlock compaction={entry} />;
     case 'error':
       return (
         <div
@@ -163,7 +168,43 @@ const PartView = memo(function PartView({
       return <ToolCallList turnId={turnId} index={index} group={part} />;
     case 'plan':
       return <PlanView plan={part} />;
+    case 'compaction':
+      return <CompactionBlock compaction={part} />;
   }
+});
+
+const CompactionBlock = memo(function CompactionBlock({ compaction }: { compaction: Compaction }) {
+  const dispatch = useDispatch();
+  const blocks = useMemo(() => compactionBlocks(compaction.summary), [compaction.summary]);
+  const progressing = compaction.status === 'in_progress';
+  const header = <>
+    {progressing && <span aria-hidden="true" className="compaction-indicator inline-block size-1.5 flex-none animate-thought-pulse rounded-full bg-progress" />}
+    {compactionSummary(compaction)}
+  </>;
+  const headerClass = 'compaction-header flex items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground';
+  const error = compaction.error !== null && compaction.error !== '' ? <details className="compaction-error mt-1 text-sm text-muted-foreground">
+    <summary className="cursor-pointer px-2 py-1">Reported error</summary>
+    <pre className={`rounded-md border border-border bg-muted px-3 py-2 ${plainText}`}>{compaction.error}</pre>
+  </details> : null;
+  if (blocks.length === 0) {
+    return <div className="compaction-block mb-1 w-full max-w-full"><div className={headerClass}>{header}</div>{error}</div>;
+  }
+  return <><details
+    className="compaction-block group mb-1 w-full max-w-full"
+    open={compaction.open}
+    onToggle={(event) => {
+      if (event.target === event.currentTarget) {
+        dispatch({ type: 'compactionToggled', compactionId: compaction.compactionId, open: event.currentTarget.open });
+      }
+    }}
+  >
+    <summary className={`${headerClass} cursor-pointer select-none before:text-[0.9em] before:content-['▸'] group-open:before:content-['▾'] hover:text-foreground`}>{header}</summary>
+    <div className="compaction-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal wrap-anywhere">
+      {blocks.map((block, index) => block.kind === 'text'
+        ? <div key={index}><Markdown text={block.text} streaming={progressing} /></div>
+        : <div key={index} className="text-muted-foreground italic">Unsupported {block.type} content</div>)}
+    </div>
+  </details>{error}</>;
 });
 
 const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { turnId: EntryId; index: PartIndex; thought: Thought }) {

@@ -33,6 +33,7 @@ interface UiFixtures {
   workspaceFiles: Record<string, string>;
   gitRepository: boolean;
   listsSessions: boolean;
+  compaction: boolean;
   workspace: string;
   window: Page;
   display: string | undefined;
@@ -162,6 +163,7 @@ export const test = base.extend<UiFixtures>({
   workspaceFiles: [{}, { option: true }],
   gitRepository: [false, { option: true }],
   listsSessions: [false, { option: true }],
+  compaction: [false, { option: true }],
   display: async ({}, use) => {
     if (process.platform !== 'linux') { await use(process.env['DISPLAY']); return; }
     const server = spawn('Xvfb', ['-displayfd', '1', '-screen', '0', '1600x1000x24', '-nolisten', 'tcp'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -212,7 +214,7 @@ export const test = base.extend<UiFixtures>({
     }
   },
 
-  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, display }, use, testInfo) => {
+  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, display }, use, testInfo) => {
     let application: ElectronApplication | undefined;
     let applicationProcess: ChildProcess | undefined;
     let profile: string | undefined;
@@ -249,6 +251,7 @@ export const test = base.extend<UiFixtures>({
               ACP_TEST_SESSION_ID: `ui-${testInfo.testId}`,
               ELECTRON_RUN_AS_NODE: '1',
               ...(listsSessions ? { ACP_TEST_LISTS_SESSIONS: '1' } : {}),
+              ...(compaction ? { ACP_TEST_COMPACTION: '1' } : {}),
             },
           },
         },

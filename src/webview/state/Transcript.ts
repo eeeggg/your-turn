@@ -32,7 +32,23 @@ export interface Turn {
   readonly parts: readonly TurnPart[];
 }
 
-export type TurnPart = AgentMessage | Thought | ToolCallGroup | Plan;
+export type TurnPart = AgentMessage | Thought | ToolCallGroup | Plan | Compaction;
+
+type CompactionReport = Extract<ExtensionToWebviewMessage, { type: 'compactionUpdate' | 'compactionSummaryChunk' }>;
+type SummaryChunk = Extract<CompactionReport, { type: 'compactionSummaryChunk' }>;
+
+export interface Compaction {
+  readonly kind: 'compaction';
+  readonly compactionId: string;
+  readonly status: string;
+  readonly summary: readonly SummaryChunk['content'][];
+  readonly error: string | null;
+  readonly open: boolean;
+  readonly startedAt: number | null;
+  readonly endedAt: number | null;
+  /** Replay and a terminal report without a live start cannot establish a later live duration. */
+  readonly timingAllowed: boolean;
+}
 
 /** A part's place in its turn, which never changes: parts are only ever added at the end. */
 export type PartIndex = number;
@@ -83,7 +99,7 @@ interface TranscriptError {
   readonly text: string;
 }
 
-export type TranscriptEntry = Prompt | Turn | TranscriptError;
+export type TranscriptEntry = Prompt | Turn | TranscriptError | (Compaction & { readonly id: EntryId });
 
 /** An agent's terminal as last reported; its command runs while `exitStatus` is null. */
 interface Terminal {
@@ -113,6 +129,7 @@ export interface TranscriptState {
 
 export type TranscriptAction =
   | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }
+  | { type: 'compactionToggled'; compactionId: string; open: boolean }
   | { type: 'toolCallToggled'; turnId: EntryId; toolCallId: string; open: boolean }
   | { type: 'toolCallsToggled'; turnId: EntryId; part: PartIndex }
   /** A diff's file link, the `file`th file across the tool call's diffs. */
@@ -156,8 +173,36 @@ export function turnShown(turn: Turn): boolean {
 }
 
 export function thoughtSummary(thought: Pick<Thought, 'startedAt' | 'endedAt'>): string {
-  const seconds = thought.endedAt === null ? 0 : Math.round((thought.endedAt - thought.startedAt) / 1000);
+  const seconds = elapsedSeconds(thought.startedAt, thought.endedAt);
   return seconds > 0 ? `Thought for ${seconds}s` : 'Thought';
+}
+
+function elapsedSeconds(start: number | null, end: number | null): number {
+  return start === null || end === null ? 0 : Math.round((end - start) / 1000);
+}
+
+export function compactionSummary(compaction: Compaction): string {
+  const { status, startedAt, endedAt } = compaction;
+  if (status === 'in_progress') { return 'Compacting…'; }
+  if (!terminalCompaction(status)) { return `Compaction — unknown status: ${status}`; }
+  const seconds = elapsedSeconds(startedAt, endedAt);
+  return `Compaction ${status}${seconds > 0 ? ` in ${seconds}s` : ''}`;
+}
+
+/** Adjacent text chunks are one Markdown document; non-text content retains its reported position. */
+export function compactionBlocks(summary: Compaction['summary']): ({ kind: 'text'; text: string } | { kind: 'unsupported'; type: string })[] {
+  const blocks: ReturnType<typeof compactionBlocks> = [];
+  for (const content of summary) {
+    if (content !== null && typeof content === 'object' && !Array.isArray(content) && content['type'] === 'text' && typeof content['text'] === 'string') {
+      const previous = blocks.at(-1);
+      if (previous?.kind === 'text') { previous.text += content['text']; }
+      else { blocks.push({ kind: 'text', text: content['text'] }); }
+    } else {
+      const type = content !== null && typeof content === 'object' && !Array.isArray(content) && typeof content['type'] === 'string' ? content['type'] : 'unknown';
+      blocks.push({ kind: 'unsupported', type });
+    }
+  }
+  return blocks.filter((block) => block.kind !== 'text' || block.text.trim() !== '');
 }
 
 export function statusGlyph(status: ToolCallStatus): string {
@@ -285,6 +330,8 @@ export function updateTranscript(
   transcript: TranscriptState,
   action: Action,
   now: number,
+  turnRunning = false,
+  loading = false,
 ): Transition<TranscriptState, WebviewToExtensionMessage> {
   switch (action.type) {
     case 'state': {
@@ -338,6 +385,11 @@ export function updateTranscript(
       return stateOnly(withPlan(transcript, { kind: 'plan', steps: action.steps }, now));
     case 'usage':
       return stateOnly({ ...transcript, usage: action.usage });
+    case 'compactionUpdate':
+    case 'compactionSummaryChunk':
+      return stateOnly(withCompactionReported(transcript, action, now, turnRunning, loading));
+    case 'compactionToggled':
+      return stateOnly(withCompaction(transcript, action.compactionId, (compaction) => compaction.open === action.open ? compaction : { ...compaction, open: action.open }) ?? transcript);
     case 'thoughtToggled':
       return stateOnly(
         withTurn(transcript, action.turnId, (turn) =>
@@ -512,6 +564,60 @@ function withToolCallReported(
       ? withLastPart(turn, { ...last, toolCalls: [...last.toolCalls, call] }, 'replacing', now)
       : withLastPart(turn, { kind: 'toolCalls', toolCalls: [call], collapsed: false }, 'adding', now);
   });
+}
+
+/** The first report fixes placement; reports for that ID revise it across turn boundaries. */
+function withCompaction(transcript: TranscriptState, compactionId: string, change: (compaction: Compaction) => Compaction): TranscriptState | null {
+  for (const entry of transcript.entries) {
+    if (entry.kind === 'compaction' && entry.compactionId === compactionId) {
+      const next = change(entry);
+      return next === entry ? transcript : replaced(transcript, { ...entry, ...next });
+    }
+    if (entry.kind === 'turn') {
+      const index = entry.parts.findIndex((part) => part.kind === 'compaction' && part.compactionId === compactionId);
+      if (index !== -1) {
+        return withTurn(transcript, entry.id, (turn) => withPart(turn, index, (part) => part.kind === 'compaction' ? change(part) : part));
+      }
+    }
+  }
+  return null;
+}
+
+function withCompactionReported(transcript: TranscriptState, report: CompactionReport, now: number, turnRunning: boolean, loading: boolean): TranscriptState {
+  const revised = withCompaction(transcript, report.compactionId, (compaction) => revisedCompaction(compaction, report, now, loading));
+  if (revised) { return revised; }
+  const compaction = revisedCompaction({
+    kind: 'compaction', compactionId: report.compactionId, status: 'in_progress', summary: [], error: null,
+    open: true, startedAt: null, endedAt: null, timingAllowed: !loading,
+  }, report, now, loading);
+  return transcript.currentTurn !== null || turnRunning
+    ? inCurrentTurn(transcript, (turn) => withLastPart(turn, compaction, 'adding', now))
+    : appended(transcript, (id) => ({ ...compaction, id }));
+}
+
+function terminalCompaction(status: string): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
+function revisedCompaction(compaction: Compaction, report: CompactionReport, now: number, loading: boolean): Compaction {
+  const status = report.type === 'compactionUpdate' ? report.status : compaction.status;
+  const changedStatus = status !== compaction.status;
+  const terminal = terminalCompaction(status);
+  const startedAt = compaction.startedAt ?? (!loading && compaction.timingAllowed && status === 'in_progress' ? now : null);
+  const endedAt = compaction.endedAt ?? (!loading && startedAt !== null && terminal ? now : null);
+  const presentation = {
+    status, startedAt, endedAt,
+    timingAllowed: compaction.timingAllowed && !loading && !terminal,
+    open: changedStatus && status === 'completed' ? false : changedStatus && (status === 'failed' || status === 'cancelled') ? true : compaction.open,
+  };
+  return report.type === 'compactionSummaryChunk'
+    ? { ...compaction, ...presentation, summary: [...compaction.summary, report.content] }
+    : {
+      ...compaction,
+      ...presentation,
+      summary: report.summary.present ? report.summary.value ?? [] : compaction.summary,
+      error: report.error.present ? report.error.value : compaction.error,
+    };
 }
 
 function withPlan(transcript: TranscriptState, plan: Plan, now: number): TranscriptState {

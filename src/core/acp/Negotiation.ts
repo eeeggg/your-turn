@@ -18,8 +18,9 @@ export interface Negotiated {
 }
 
 /**
- * Agree an ACP version with the agent on `stream`: ask for v2, and for v1 when the agent refuses. SDK 2.0.0 has no
- * client-side negotiation and its clients cannot fall back once connected, so the requests go out on the stream
+ * Agree an ACP version with the agent on `stream`: ask for v2, then explicitly initialize v1 if selected or needed.
+ * A successful downgrade may have lost v1 capabilities, so repeat initialize before sending any other request.
+ * The SDK clients cannot fall back once connected, so the requests go out on the stream
  * itself, and the chosen client's own `initialize` is answered from the agent's answer (see `replaying`).
  */
 export async function negotiate(agentName: string, stream: Stream, clientVersion: string): Promise<Negotiated> {
@@ -39,8 +40,16 @@ export async function negotiate(agentName: string, stream: Stream, clientVersion
   };
 
   let answer = await ask('acp-negotiation-v2', v2InitializeRequest(clientVersion));
+  let requestedV1 = false;
   if ('error' in answer) {
     refuseUnspoken(agentName, answer.error);
+    requestedV1 = true;
+    answer = await ask('acp-negotiation-v1', v1InitializeRequest(clientVersion));
+    if ('error' in answer) {
+      throw new RequestError(answer.error.code, answer.error.message, answer.error.data);
+    }
+  } else if (protocolVersionOf(answer.result) === 1) {
+    requestedV1 = true;
     answer = await ask('acp-negotiation-v1', v1InitializeRequest(clientVersion));
     if ('error' in answer) {
       throw new RequestError(answer.error.code, answer.error.message, answer.error.data);
@@ -49,6 +58,9 @@ export async function negotiate(agentName: string, stream: Stream, clientVersion
   const version = protocolVersionOf(answer.result);
   if (version !== 1 && version !== 2) {
     throw new Error(`Agent "${agentName}" answered initialize with ACP version ${String(version)}; ${SPOKEN}`);
+  }
+  if (requestedV1 && version !== 1) {
+    throw new Error(`Agent "${agentName}" selected ACP version ${version} after initialize requested version 1`);
   }
   return { version, stream: replaying(reader, writer, answer.result) };
 }

@@ -15,7 +15,7 @@ const v2Request = {
 const v1Request = {
   protocolVersion: 1,
   clientInfo: { name: 'vscode-acp-client', version: '0.0.0-test' },
-  clientCapabilities: { session: { configOptions: { boolean: {} } } },
+  clientCapabilities: { session: { compaction: {}, configOptions: { boolean: {} } } },
 };
 
 /** An ACP v1 agent that refuses any `initialize` but one asking for 1, with `refusal`. */
@@ -54,8 +54,50 @@ describe('negotiation', () => {
     const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
 
     expect(driver).toBeInstanceOf(V1Driver);
-    expect(initializes()).toEqual([v2Request]);
+    expect(initializes()).toEqual([v2Request, v1Request]);
     expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+  });
+
+  it('uses the second initialize response and delivers v1 capabilities before creating a session on the same connection', async () => {
+    let launches = 0;
+    let initialized = 0;
+    let capabilities: unknown;
+    const { driver } = await connectedDriver(() => {
+      launches++;
+      return agent({ name: 'downgrading-agent' })
+        .onRequest(methods.agent.initialize, ({ params }) => {
+          initialized++;
+          capabilities = params.clientCapabilities;
+          return {
+            protocolVersion: 1,
+            agentInfo: { name: initialized === 1 ? 'initial' : 'final', version: '1.0.0' },
+            agentCapabilities: { loadSession: initialized === 2 },
+          };
+        })
+        .onRequest(methods.agent.session.new, () => {
+          return { sessionId: 's1' };
+        });
+    });
+
+    expect(driver.agent.displayName).toBe('final');
+    expect(driver.agent.capabilities.load).toBe(true);
+    expect(initialized).toBe(2);
+    expect(capabilities).toMatchObject({ session: { compaction: {}, configOptions: { boolean: {} } } });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(initializes()).toEqual([v2Request, v1Request]);
+    expect(launches).toBe(1);
+  });
+
+  it('reports rejection of repeated v1 initialization rather than claiming the capabilities were accepted', async () => {
+    await expect(connectedDriver(() => agent({ name: 'legacy-agent' })
+      .onRequest(methods.agent.initialize, ({ params }) => {
+        if (params.protocolVersion === 1) {
+          throw RequestError.invalidRequest(undefined, 'Repeated initialization is not supported');
+        }
+        return { protocolVersion: 1 };
+      }))).rejects.toThrow('Repeated initialization is not supported');
+
+    expect(initializes()).toEqual([v2Request, v1Request]);
   });
 
   it('speaks v2 with an agent that speaks only v2', async () => {
@@ -66,35 +108,33 @@ describe('negotiation', () => {
     expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
   });
 
-  it('speaks v2 with an agent that speaks both', async () => {
-    const { driver } = await connectedDriver(() => V2.agentProtocolRouter()
-      .withV1(fakeAgent())
-      .withV2(fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's2' }))));
+  it('uses the v2 answer without sending another initialize to the agent', async () => {
+    const { driver } = await connectedDriver(() => V2.agent({ name: 'v2-agent' })
+      .onRequest(V2.methods.agent.initialize, () => ({
+        protocolVersion: 2,
+        info: { name: 'v2-agent', version: '0.0.1' },
+        capabilities: { session: {} },
+      }))
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's2' })));
 
     expect(driver).toBeInstanceOf(V2Driver);
     expect(await driver.newSession(work)).toMatchObject({ sessionId: 's2' });
+    expect(initializes()).toEqual([v2Request]);
   });
 
-  it("speaks v1 with a v1 agent behind a router, which is told the client's name and offered no file access or terminals", async () => {
-    let received: unknown;
-    const { driver } = await connectedDriver(() => V2.agentProtocolRouter()
-      .withV1(agent({ name: 'routed-agent' }).onRequest(methods.agent.initialize, ({ params }) => {
-        received = params;
+  it('sends v1 capabilities on fallback and replays the answer without another initialize', async () => {
+    const { driver } = await connectedDriver(() => agent({ name: 'v1-agent' })
+      .onRequest(methods.agent.initialize, ({ params }) => {
+        if (params.protocolVersion !== 1) {
+          throw RequestError.invalidParams(undefined, 'Expected ACP v1');
+        }
         return { protocolVersion: 1 };
-      })));
+      })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
 
     expect(driver).toBeInstanceOf(V1Driver);
-    expect(received).toEqual({
-      protocolVersion: 1,
-      clientInfo: { name: 'vscode-acp-client', version: '0.0.0-test' },
-      clientCapabilities: {
-        fs: { readTextFile: false, writeTextFile: false },
-        terminal: false,
-        // What every v2 client supports, which the router offers for it.
-        session: { configOptions: { boolean: {} } },
-        auth: { terminal: false },
-      },
-    });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(initializes()).toEqual([v2Request, v1Request]);
   });
 
   it.each([
@@ -146,13 +186,13 @@ describe('negotiation', () => {
     expect(updates).toEqual([]);
   });
 
-  // v2 clients support boolean config options without saying so; v1 clients say so, as the SDK's router does for one.
+  // V2 clients support boolean config options without saying so; v1 clients advertise them.
   it("sends each version's request saying the same thing in its own terms, as the replay answers one with the other's answer", () => {
     const v1 = v1InitializeRequest('1.2.3');
     const v2 = v2InitializeRequest('1.2.3');
 
     expect([v1.protocolVersion, v2.protocolVersion]).toEqual([1, 2]);
     expect(v1.clientInfo).toEqual(v2.info);
-    expect([v1.clientCapabilities, v2.capabilities]).toEqual([{ session: { configOptions: { boolean: {} } } }, {}]);
+    expect([v1.clientCapabilities, v2.capabilities]).toEqual([{ session: { compaction: {}, configOptions: { boolean: {} } } }, {}]);
   });
 });

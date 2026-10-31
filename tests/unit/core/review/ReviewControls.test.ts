@@ -38,8 +38,9 @@ async function controls({ deleted = false, changes = false } = {}) {
   let failSave = false;
   let applies = true;
   let active: string | undefined;
+  let read = async (path: string): Promise<FileContent> => disk[path] ?? null;
   const reviews = new Reviews({
-    read: async (path) => disk[path] ?? null,
+    read: (path) => read(path),
     restore: async (path, content) => {
       if (failing) { throw new Error('disk full'); }
       restored.push([path, content]);
@@ -91,6 +92,8 @@ async function controls({ deleted = false, changes = false } = {}) {
     errors,
     saved,
     documents,
+    disk,
+    setRead: (next: typeof read) => { read = next; },
     activate: (path: string | undefined) => { active = path; },
     fail: () => { failing = true; },
     failSaves: () => { failSave = true; },
@@ -99,6 +102,53 @@ async function controls({ deleted = false, changes = false } = {}) {
 }
 
 describe('ReviewControls', () => {
+  it.each(['keep', 'undo'] as const)('rejects %s File for a deletion recreated before its watcher reads it', async (action) => {
+    const { controls: subject, reviews, disk, restored, saved } = await controls({ deleted: true });
+    disk['/w/gone.ts'] = 'recreated\n';
+    if (action === 'keep') { await subject.keepFile('/w/gone.ts'); }
+    else { await subject.undoFile('/w/gone.ts'); }
+    expect(disk['/w/gone.ts']).toBe('recreated\n');
+    expect(reviews.shown()?.file('/w/gone.ts')).toEqual({ path: '/w/gone.ts', baseline: 'gone\n', current: null });
+    expect(restored).toEqual([]);
+    expect(saved).toEqual([]);
+  });
+
+  it('offers no text changes for a deletion even when an old disk document is still open', async () => {
+    const { controls: subject, documents, saved, restored } = await controls({ deleted: true });
+    documents.set('/w/gone.ts', 'stale document\n');
+    expect(subject.changes('/w/gone.ts')).toEqual([]);
+    await subject.keepChange('/w/gone.ts', lineChanged(0));
+    await subject.undoChange('/w/gone.ts', lineChanged(0));
+    expect(subject.baseline('/w/gone.ts')).toBe('gone\n');
+    expect(saved).toEqual([]);
+    expect(restored).toEqual([]);
+  });
+
+  it('keeps a deletion without restoring or saving a document', async () => {
+    const { controls: subject, disk, saved, restored } = await controls({ deleted: true });
+    await subject.keepFile('/w/gone.ts');
+    expect(subject.baseline('/w/gone.ts')).toBeUndefined();
+    expect(disk['/w/gone.ts']).toBeNull();
+    expect(saved).toEqual([]);
+    expect(restored).toEqual([]);
+  });
+
+  it.each(['keep', 'undo'] as const)('rejects %s when the shown session changes during its absence check', async (action) => {
+    const { controls: subject, reviews, restored, setRead } = await controls({ deleted: true });
+    let release: (content: FileContent) => void = () => {};
+    const checked = new Promise<FileContent>((resolve) => { release = resolve; });
+    setRead(async () => checked);
+    try {
+      const deciding = action === 'keep' ? subject.keepFile('/w/gone.ts') : subject.undoFile('/w/gone.ts');
+      reviews.activeSessionChanged('s2');
+      release(null);
+      await deciding;
+      reviews.activeSessionChanged('s1');
+      expect(subject.baseline('/w/gone.ts')).toBe('gone\n');
+      expect(restored).toEqual([]);
+    } finally { release(null); }
+  });
+
   it('maps a cursor on either side to a current change, including a deletion anchor', async () => {
     const { controls: subject, documents } = await controls({ changes: true });
     expect(subject.changeAt('/w/m.ts', 6, 'original')).toEqual({ change: lineChanged(6), index: 1, total: 2 });
@@ -378,7 +428,7 @@ describe('ReviewControls', () => {
     expect(shown).toEqual(['/w/a.ts', '/w/a.ts', '/w/b.ts']);
   });
 
-  it("shows no deleted file's change when opening the review, skipping to the next unresolved file or none", async () => {
+  it('opens the deleted first file, including when it is the only unresolved file', async () => {
     const shown: string[] = [];
     const reviews = new Reviews({
       read: async (path) => path === '/w/b.ts' ? 'B\n' : null,
@@ -402,10 +452,10 @@ describe('ReviewControls', () => {
       save: async () => {},
     });
     await subject.openReview();
-    expect(shown).toEqual(['/w/b.ts']);
+    expect(shown).toEqual(['/w/gone.ts']);
     reviews.shown()?.keepFile('/w/b.ts');
     await subject.openReview();
-    expect(shown).toEqual(['/w/b.ts']);
+    expect(shown).toEqual(['/w/gone.ts', '/w/gone.ts']);
   });
 
   it('shows the first unresolved file at turn end only when no review file is open', async () => {
@@ -420,11 +470,11 @@ describe('ReviewControls', () => {
     expect(shown).toEqual(['/w/a.ts']);
   });
 
-  it("shows no deleted file's change, as no editor shows it", async () => {
+  it('does not replace an already open deletion at turn end', async () => {
     const { controls: subject, shown, activate } = await controls({ deleted: true });
     activate('/w/gone.ts');
     await subject.turnEnded('s1');
-    expect(shown).toEqual(['/w/a.ts']);
+    expect(shown).toEqual([]);
   });
 
   it('shows a change once the files the turn\'s edits name were read, as the turn can end before', async () => {
@@ -435,13 +485,58 @@ describe('ReviewControls', () => {
     expect(shown).toEqual(['/w/b.ts']);
   });
 
-  it("shows a change of a file the user comes to while it is under review, none of a file not under review or deleted", async () => {
+  it('shows existing and deleted files on entry, but not unreviewed or resolved files', async () => {
     const { controls: subject, shown, reviews } = await controls({ deleted: true });
     await subject.entered('/w/b.ts');
     await subject.entered('/w/other.ts');
     await subject.entered('/w/gone.ts');
     reviews.shown()?.keepFile('/w/a.ts');
     await subject.entered('/w/a.ts');
-    expect(shown).toEqual(['/w/b.ts']);
+    expect(shown).toEqual(['/w/b.ts', '/w/gone.ts']);
+  });
+
+  it.each([
+    { names: ['gone', 'live'], want: ['/w/gone.ts', '/w/live.ts'] },
+    { names: ['live', 'gone'], want: ['/w/live.ts', '/w/gone.ts'] },
+    { names: ['gone', 'empty'], want: ['/w/gone.ts', '/w/empty.ts'] },
+    { names: ['gone'], want: ['/w/gone.ts'] },
+    { names: ['empty'], want: ['/w/empty.ts'] },
+    { names: [], want: [] },
+  ])('includes every existence change in entry and wraparound: $names', async ({ names, want }) => {
+    const { controls: subject, reviews, disk, opened, shown } = await controls();
+    subject.keepAll();
+    for (const name of names) {
+      const path = `/w/${name}.ts`;
+      disk[path] = name === 'live' ? 'changed\n' : null;
+      await reviews.handleSessionUpdate('s1', edited(name, path, name === 'empty' ? '' : 'before\n', name === 'live' ? 'changed\n' : ''), 'v1');
+    }
+    expect(subject.reviewedPaths()).toEqual(want);
+    await subject.openReview();
+    expect(shown).toEqual(want.length ? [want[0]] : []);
+    shown.length = 0;
+    await subject.turnEnded('s1');
+    expect(shown).toEqual(want.length ? [want[0]] : []);
+    for (const path of want) { await subject.entered(path); }
+    expect(shown.slice(want.length ? 1 : 0)).toEqual(want);
+    for (const path of want) { await subject.next(path); }
+    expect(opened).toEqual(want.length ? [...want.slice(1), want[0]] : []);
+    opened.length = 0;
+    await subject.previous(want[0]);
+    expect(opened).toEqual(want.length ? [want.at(-1)] : []);
+    expect(subject.position(want[0])).toBe(want.length ? `1 of ${want.length}` : '0 of 0');
+  });
+
+  it.each(['keep', 'undo'] as const)('advances from live to deleted after %s, and resolves an all-deleted review', async (action) => {
+    const { controls: subject, reviews, opened, activate } = await controls({ deleted: true });
+    reviews.shown()?.keepFile('/w/a.ts');
+    reviews.shown()?.keepFile('/w/b.ts');
+    activate('/w/c.ts');
+    if (action === 'keep') { await subject.keepFile(); } else { await subject.undoFile(); }
+    expect(opened).toEqual(['/w/gone.ts']);
+    activate('/w/gone.ts');
+    if (action === 'keep') { await subject.keepFile(); } else { await subject.undoFile(); }
+    expect(subject.reviewedPaths()).toEqual([]);
+    expect(subject.position('/w/gone.ts')).toBe('0 of 0');
+    expect(opened).toEqual(action === 'undo' ? ['/w/gone.ts', '/w/gone.ts'] : ['/w/gone.ts']);
   });
 });

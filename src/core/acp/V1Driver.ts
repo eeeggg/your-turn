@@ -27,6 +27,7 @@ import type {
   ToolCallStatus,
 } from './AcpDriver';
 import { authChecked, sessionChecked } from './RequestErrors';
+import { compactionContent } from './Compaction';
 
 /** The `initialize` request the v1 client sends, which the negotiation sends to the agent for it. */
 export function v1InitializeRequest(clientVersion: string): Acp.InitializeRequest {
@@ -35,7 +36,7 @@ export function v1InitializeRequest(clientVersion: string): Acp.InitializeReques
     clientInfo: { name: 'vscode-acp-client', version: clientVersion },
     // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities. Boolean config
     // options, which every v2 client supports, a v1 client must offer.
-    clientCapabilities: { session: { configOptions: { boolean: {} } } },
+    clientCapabilities: { session: { compaction: {}, configOptions: { boolean: {} } } },
   };
 }
 
@@ -277,6 +278,20 @@ function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
       return { kind: 'configOptions', options: update.configOptions.map(configOption) };
     case 'current_mode_update':
       return { kind: 'currentMode', modeId: update.currentModeId };
+    case 'compaction_update':
+      return {
+        kind: 'compactionUpdate',
+        compactionId: update.compactionId,
+        status: update.status,
+        summary: update.summary === undefined
+          ? { present: false }
+          : { present: true, value: update.summary === null ? null : update.summary.map(compactionContent) },
+        error: update.error === undefined
+          ? { present: false }
+          : { present: true, value: update.error },
+      };
+    case 'compaction_summary_chunk':
+      return { kind: 'compactionSummaryChunk', compactionId: update.compactionId, content: compactionContent(update.content) };
     case 'usage_update':
       return {
         kind: 'usage',

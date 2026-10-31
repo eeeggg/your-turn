@@ -18,6 +18,8 @@ import { Readable, Writable } from 'node:stream';
  * changes `m.ts` there in three places.
  * A prompt of "switch <model>" makes it switch its model option to that value itself.
  * With `ACP_TEST_LISTS_SESSIONS` set, it lists sessions: one, new each time it is asked, titled "Listed <n>".
+ * With `ACP_TEST_COMPACTION` set, it checks the repeated v1 initialize, lists a session with one completed
+ * compaction, and holds a live compaction at permission acknowledgements for rendered-transcript assertions.
  * With `ACP_TEST_RECORDS` set to a file, it takes additional directories, loads and resumes any session, and appends
  * each session it creates, loads or resumes to that file as a line of JSON: its method and directories. It replays a
  * session it loads, as `replay` describes, and reports a session it loads or resumes with the options `restoredOptions`
@@ -28,6 +30,8 @@ import { Readable, Writable } from 'node:stream';
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
 const LISTS_SESSIONS = process.env['ACP_TEST_LISTS_SESSIONS'] !== undefined;
 const RECORDS = process.env['ACP_TEST_RECORDS'];
+const COMPACTION = process.env['ACP_TEST_COMPACTION'] !== undefined;
+const initializes: number[] = [];
 let listings = 0;
 
 function record(method: string, { cwd, additionalDirectories }: { cwd: string; additionalDirectories?: string[] | undefined }): void {
@@ -98,6 +102,53 @@ async function replay(client: AgentContext, sessionId: string): Promise<void> {
     client.notify(methods.client.session.update, { sessionId, update: { sessionUpdate, content: { type: 'text', text } } });
   await update('user_message_chunk', 'earlier question');
   await update('agent_message_chunk', 'earlier answer');
+}
+
+async function replayCompaction(client: AgentContext, sessionId: string): Promise<void> {
+  await client.notify(methods.client.session.update, {
+    sessionId,
+    update: { sessionUpdate: 'compaction_update', compactionId: 'replayed', status: 'completed',
+      summary: [{ type: 'text', text: 'Historical **summary**.' }] },
+  });
+  await client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'Historical question' } },
+  });
+  await client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Historical answer' } },
+  });
+}
+
+async function compact(client: AgentContext, sessionId: string): Promise<void> {
+  const say = (text: string) => client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  });
+  const chunk = (text: string) => client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'compaction_summary_chunk', compactionId: 'live', content: { type: 'text', text } },
+  });
+  const acknowledge = async (name: string) => {
+    const response = await client.request(methods.client.session.requestPermission, {
+      sessionId, toolCall: { toolCallId: 'compaction-checkpoint', title: name, status: 'pending' },
+      options: [{ optionId: 'continue', name, kind: 'allow_once' }],
+    });
+    if (response.outcome.outcome !== 'selected' || response.outcome.optionId !== 'continue') {
+      throw RequestError.invalidParams(undefined, 'Compaction checkpoint not acknowledged');
+    }
+  };
+  await say('Before live compaction.');
+  await client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'compaction_update', compactionId: 'live', status: 'in_progress' },
+  });
+  await chunk('Live **sum');
+  await chunk('mary**.');
+  await say('After live compaction.');
+  await acknowledge('Continue summary');
+  await chunk(' More detail.');
+  await acknowledge('Complete compaction');
+  await client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'compaction_update', compactionId: 'live', status: 'completed',
+      summary: [{ type: 'text', text: 'Live **summary**. More detail.' }] },
+  });
+  await say('Turn finished.');
 }
 
 function modelOption(currentValue: string): SessionConfigOption {
@@ -261,19 +312,30 @@ function run(client: AgentContext, sessionId: string): Promise<void> {
 }
 
 agent({ name: 'fake-agent' })
-  .onRequest(methods.agent.initialize, () => ({
-    protocolVersion: PROTOCOL_VERSION,
-    agentCapabilities: {
-      loadSession: RECORDS !== undefined,
-      sessionCapabilities: {
-        ...(LISTS_SESSIONS ? { list: {} } : {}),
-        ...(RECORDS ? { additionalDirectories: {}, resume: {} } : {}),
+  .onRequest(methods.agent.initialize, ({ params }) => {
+    initializes.push(params.protocolVersion);
+    if (COMPACTION && params.protocolVersion === 1
+      && (initializes.join(',') !== '2,1' || !params.clientCapabilities?.session?.compaction)) {
+      throw RequestError.invalidParams(undefined, 'Expected repeated v1 initialize advertising compaction');
+    }
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      agentCapabilities: {
+        loadSession: RECORDS !== undefined || COMPACTION,
+        sessionCapabilities: {
+          ...(LISTS_SESSIONS ? { list: {} } : {}),
+          ...(RECORDS ? { additionalDirectories: {}, resume: {} } : {}),
+        },
       },
-    },
-    authMethods: [],
-    agentInfo: { name: 'FakeAgent', version: '0.0.1' },
-  }))
+      authMethods: [],
+      agentInfo: { name: 'FakeAgent', version: '0.0.1' },
+    };
+  })
   .onRequest(methods.agent.session.list, ({ params }) => {
+    if (COMPACTION) {
+      if (initializes.join(',') !== '2,1') { throw RequestError.invalidParams(undefined, 'Missing v1 initialize'); }
+      return { sessions: [{ sessionId: SESSION_ID, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' }] };
+    }
     listings += 1;
     return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
@@ -284,7 +346,8 @@ agent({ name: 'fake-agent' })
   .onRequest(methods.agent.session.load, async ({ params, client }) => {
     record('session/load', params);
     const configOptions = restore(params.sessionId);
-    await replay(client, params.sessionId);
+    if (COMPACTION) { await replayCompaction(client, params.sessionId); }
+    else { await replay(client, params.sessionId); }
     return { configOptions };
   })
   .onRequest(methods.agent.session.resume, ({ params }) => {
@@ -303,6 +366,10 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+    if (COMPACTION && text === 'compact') {
+      await compact(client, params.sessionId);
+      return { stopReason: 'end_turn' };
+    }
     if (text === 'usage') {
       await client.notify(methods.client.session.update, {
         sessionId: params.sessionId,

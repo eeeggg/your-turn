@@ -855,6 +855,54 @@ describe('V2Driver', () => {
       })).toEqual([{ kind: 'usage', used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } }]);
     });
 
+    it('passes on compaction updates and summary chunks while preserving patch-field presence and content', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'compaction_update', compactionId: 'compact-1', status: '_vendor_paused' },
+        {
+          sessionUpdate: 'compaction_update',
+          compactionId: 'compact-1',
+          status: 'in_progress',
+          summary: [{ type: 'text', text: 'Summary', _meta: { source: 'agent' } }],
+          error: 'still working',
+        },
+        {
+          sessionUpdate: 'compaction_summary_chunk',
+          compactionId: 'compact-1',
+          content: { type: 'resource_link', uri: 'file:///summary', name: 'summary.md', _meta: { source: 'agent' } },
+        },
+        { sessionUpdate: 'compaction_update', compactionId: 'compact-1', status: 'completed', summary: null, error: null },
+        { sessionUpdate: 'compaction_update', compactionId: 'compact-1', status: 'completed', summary: [], error: 'reported error' },
+      )).toEqual([
+        { kind: 'compactionUpdate', compactionId: 'compact-1', status: '_vendor_paused', summary: { present: false }, error: { present: false } },
+        {
+          kind: 'compactionUpdate',
+          compactionId: 'compact-1',
+          status: 'in_progress',
+          summary: { present: true, value: [{ type: 'text', text: 'Summary', _meta: { source: 'agent' } }] },
+          error: { present: true, value: 'still working' },
+        },
+        {
+          kind: 'compactionSummaryChunk',
+          compactionId: 'compact-1',
+          content: { type: 'resource_link', uri: 'file:///summary', name: 'summary.md', _meta: { source: 'agent' } },
+        },
+        {
+          kind: 'compactionUpdate',
+          compactionId: 'compact-1',
+          status: 'completed',
+          summary: { present: true, value: null },
+          error: { present: true, value: null },
+        },
+        {
+          kind: 'compactionUpdate',
+          compactionId: 'compact-1',
+          status: 'completed',
+          summary: { present: true, value: [] },
+          error: { present: true, value: 'reported error' },
+        },
+      ]);
+    });
+
     it('reports no cost for both absent and null cost', async () => {
       expect(await updatesFor(
         { sessionUpdate: 'usage_update', used: 1000, size: 200000 },

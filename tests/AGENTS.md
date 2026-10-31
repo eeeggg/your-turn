@@ -113,6 +113,17 @@ preparation or execution, including focused and repeated runs.
 - The user installs candidates in Insiders and explicitly accepts the focused
   manual release gate. A green automated gate alone does not authorize release.
 
+## ACP Test Exchanges
+
+- Do not use the ACP SDK protocol router in tests, fixtures, or test tooling.
+  Use explicit agent exchanges with the stable versioned SDK entry points.
+  Do not build a replacement protocol router. Negotiation tests must expose the
+  actual initialize requests and responses rather than let a router select or
+  translate the protocol version on either side.
+- Use `tests/unit/core/InProcessAgents.ts` for in-process ACP conversations
+  where applicable. Keep fake-agent responses explicit so tests can detect
+  incorrect capability delivery and request ordering.
+
 ## Test Layers
 
 ### Vitest

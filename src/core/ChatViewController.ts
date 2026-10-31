@@ -408,6 +408,16 @@ export class ChatViewController {
         return { type: 'plan', steps: update.steps.map(planStep) };
       case 'commands':
         return { type: 'commands', commands: update.commands.map(slashCommand) };
+      case 'compactionUpdate':
+        return {
+          type: 'compactionUpdate',
+          compactionId: update.compactionId,
+          status: update.status,
+          summary: update.summary.present ? { present: true, value: update.summary.value } : { present: false },
+          error: update.error.present ? { present: true, value: update.error.value } : { present: false },
+        };
+      case 'compactionSummaryChunk':
+        return { type: 'compactionSummaryChunk', compactionId: update.compactionId, content: update.content };
       case 'usage':
         return {
           type: 'usage',

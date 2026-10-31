@@ -33,7 +33,7 @@ export function update(state: RootState, action: Action, now: number): Transitio
   const updatedSession = updateActiveSession(state.activeSession, action);
   const pickers = updatePickers(state.pickers, action);
   const promptBox = updatePromptBox(state.promptBox, action, updatedSession, state.transcript);
-  const transcript = updateTranscript(state.transcript, action, now);
+  const transcript = updateTranscript(state.transcript, action, now, updatedSession?.turnRunning ?? false, updatedSession?.loading ?? false);
   const sent = withSentPrompts(transcript.state, promptBox.outgoing, updatedSession?.turnRunning ?? false);
   const queued = sent.state.queued.length;
   const outgoing: WebviewToExtensionMessage[] = [...pickers.outgoing, ...sent.outgoing, ...transcript.outgoing];

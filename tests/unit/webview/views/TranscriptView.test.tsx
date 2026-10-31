@@ -372,6 +372,209 @@ describe('a turn', () => {
   });
 });
 
+describe('a compaction', () => {
+  type Report = Extract<Action, { type: 'compactionUpdate' }>;
+  const report = (status = 'in_progress', fields: Partial<Pick<Report, 'summary' | 'error'>> = {}, compactionId = 'opaque/id'): Report => ({
+    type: 'compactionUpdate', compactionId, status, summary: { present: false }, error: { present: false }, ...fields,
+  });
+  const chunk = (text: string): Action => ({ type: 'compactionSummaryChunk', compactionId: 'opaque/id', content: { type: 'text', text } });
+  const summary = { present: true, value: [{ type: 'text', text: '**Summary**' }] } as const;
+  const withSummary = (status = 'in_progress') => report(status, { summary: { present: true, value: [...summary.value] } });
+
+  it('renders standalone and active-turn compactions at their first position, outside tool-call groups', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send(report('completed', {}, 'before'), { type: 'promptStart' });
+    view.answer('Before');
+    view.toolCall({ toolCallId: 't1' });
+    view.send(withSummary());
+    view.toolCall({ toolCallId: 't2' });
+    view.answer('After');
+    view.send(report('completed'));
+    expect(view.all('#messages > .compaction-block')).toHaveLength(1);
+    expect(view.all('.turn > *').map((element) => element.classList[0])).toEqual(['message', 'turn-tools', 'compaction-block', 'turn-tools', 'message']);
+    expect(view.all('.turn-tools-summary').map((element) => element.textContent)).toEqual(['▾ 1 tool call', '▾ 1 tool call']);
+    expect(view.all('.compaction-header').map((element) => element.textContent)).toEqual(['Compaction completed', 'Compaction completed']);
+  });
+
+  it('starts expanded with Markdown and a progress indicator, respecting manual collapse during chunks', async () => {
+    const view = renderChatView();
+    view.send(withSummary());
+    const details = view.part<HTMLDetailsElement>('.compaction-block');
+    expect(details.open).toBe(true);
+    expect(view.part('.compaction-header').textContent).toBe('Compacting…');
+    expect(view.all('.compaction-indicator')).toHaveLength(1);
+    expect(view.part('.compaction-content [data-streamdown="strong"]').textContent).toBe('Summary');
+    await toggle(details);
+    view.send(chunk(' more'));
+    expect(details.open).toBe(false);
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it('collapses on completion once, allows reopening, and retains that choice on same-status patches', async () => {
+    const view = renderChatView();
+    view.send(withSummary(), report('completed'));
+    const details = view.part<HTMLDetailsElement>('.compaction-block');
+    expect(details.open).toBe(false);
+    expect(view.all('.compaction-indicator')).toHaveLength(0);
+    await toggle(details);
+    view.send(report('completed'), chunk(' tail'));
+    expect(details.open).toBe(true);
+  });
+
+  it.each(['failed', 'cancelled'])('opens on transition to %s, then respects manual collapse', async (status) => {
+    const view = renderChatView();
+    view.send(withSummary('completed'));
+    const details = view.part<HTMLDetailsElement>('.compaction-block');
+    view.send(report(status));
+    expect(details.open).toBe(true);
+    expect(view.part('.compaction-header').textContent).toBe(`Compaction ${status}`);
+    expect(view.all('.compaction-indicator')).toHaveLength(0);
+    await toggle(details);
+    view.send(report(status), chunk(' partial'));
+    expect(details.open).toBe(false);
+  });
+
+  it('shows an unknown status neutrally without a progress indicator or inferred outcome', () => {
+    const view = renderChatView();
+    view.send(withSummary('future_status'));
+    expect(view.part('.compaction-header').textContent).toBe('Compaction — unknown status: future_status');
+    expect(view.all('.compaction-indicator')).toHaveLength(0);
+    expect(view.part('.compaction-header').className).not.toMatch(/text-(success|failure|progress)/);
+  });
+
+  it.each([{ value: undefined }, { value: null }, { value: [] }, { value: [{ type: 'text', text: '' }] }])('shows only the header for absent or empty summary $value', ({ value }) => {
+    const view = renderChatView();
+    view.send(report('completed', value === undefined ? {} : { summary: { present: true, value } }));
+    expect(view.part('.compaction-header').textContent).toBe('Compaction completed');
+    expect(view.all('.compaction-content, .compaction-block summary')).toHaveLength(0);
+  });
+
+  it('removes a cleared summary without removing independently expandable structured error details', async () => {
+    const view = renderChatView();
+    const error = '{"code":42,"data":{"retry":false,"values":[null,3]},"message":"Reported"}';
+    view.send(withSummary(), report('failed', { summary: { present: true, value: null }, error: { present: true, value: error } }));
+    expect(view.all('.compaction-content')).toHaveLength(0);
+    const details = view.part<HTMLDetailsElement>('.compaction-error');
+    expect(details.open).toBe(false);
+    await toggle(details);
+    expect(JSON.parse(view.part('.compaction-error pre').textContent)).toEqual({ code: 42, data: { retry: false, values: [null, 3] }, message: 'Reported' });
+    view.send(report('failed', { error: { present: true, value: null } }));
+    expect(view.all('.compaction-error, .compaction-block summary')).toHaveLength(0);
+  });
+
+  it('renders plain errors without requiring a particular error shape', () => {
+    const view = renderChatView();
+    view.send(report('failed', { error: { present: true, value: 'Plain failure' } }));
+    expect(view.part('.compaction-error pre').textContent).toBe('Plain failure');
+  });
+
+  it('keeps reported error details accessible independently of a collapsed summary', () => {
+    const view = renderChatView();
+    view.send(withSummary('completed'), report('completed', { error: { present: true, value: '["reported",null,42]' } }));
+    const error = view.part('.compaction-error');
+    expect(error.parentElement?.closest('details')).toBeNull();
+    expect(JSON.parse(view.part('.compaction-error pre').textContent)).toEqual(['reported', null, 42]);
+  });
+
+  it('preserves structured error text exactly, including numbers that cannot be represented as JavaScript numbers', () => {
+    const view = renderChatView();
+    const error = '{"identifier":9007199254740993,"data":{"arbitrary":true}}';
+    view.send(report('failed', { error: { present: true, value: error } }));
+    expect(view.part('.compaction-error pre').textContent).toBe(error);
+  });
+
+  it('joins adjacent streamed text into continuous Markdown and replaces it with the final summary', async () => {
+    const view = renderChatView();
+    view.send(chunk('**Con'));
+    for (const text of ['tin', 'uous', '**\n\n', '- first\n', '- second']) { view.send(chunk(text)); }
+    expect(view.all('.compaction-content [data-streamdown="strong"]').map((element) => element.textContent)).toEqual(['Continuous']);
+    expect(view.all('.compaction-content li').map((element) => element.textContent)).toEqual(['first', 'second']);
+    view.send(report('completed', { summary: { present: true, value: [{ type: 'text', text: '**Final**' }] } }));
+    await toggle(view.part<HTMLDetailsElement>('.compaction-block'));
+    expect(view.all('.compaction-content [data-streamdown="strong"]').map((element) => element.textContent)).toEqual(['Final']);
+    expect(view.part('.compaction-content').textContent).not.toContain('Continuous');
+  });
+
+  it('preserves non-text order and uses type-specific placeholders for unsupported content', () => {
+    const view = renderChatView();
+    view.send(report('failed', { summary: { present: true, value: [
+      { type: 'text', text: '**Before**' },
+      { type: 'image', mimeType: 'image/png', data: 'AA==' },
+      { type: 'text', text: '**After**' },
+      { type: 'audio', mimeType: 'audio/wav', data: 'AA==' },
+      { type: 'resource_link', uri: 'file:///summary', name: 'summary' },
+      { type: 'resource', resource: { uri: 'file:///data', blob: 'AA==', mimeType: 'application/octet-stream' } },
+    ] } }));
+    expect(view.all('.compaction-content > *').map((element) => element.textContent)).toEqual([
+      'Before', 'Unsupported image content', 'After', 'Unsupported audio content', 'Unsupported resource_link content', 'Unsupported resource content',
+    ]);
+  });
+
+  it('measures live duration from the first in-progress report to the first terminal report, not subsequent patches', () => {
+    const view = renderChatView();
+    view.at(1000);
+    view.send(withSummary());
+    view.at(20_000);
+    view.send(report(), chunk(' more'));
+    view.at(55_432);
+    view.send(report('completed'));
+    expect(view.part('.compaction-header').textContent).toBe('Compaction completed in 54s');
+    view.at(90_000);
+    view.send(report('completed'), report('failed'));
+    expect(view.part('.compaction-header').textContent).toBe('Compaction failed in 54s');
+  });
+
+  it.each(['failed', 'cancelled'])('times implicit first-chunk progress until %s', (status) => {
+    const view = renderChatView();
+    view.at(3000);
+    view.send(chunk('Partial'));
+    view.at(4600);
+    view.send(report(status));
+    expect(view.part('.compaction-header').textContent).toBe(`Compaction ${status} in 2s`);
+  });
+
+  it('omits zero-second and completed-snapshot durations', () => {
+    const view = renderChatView();
+    view.at(1000);
+    view.send(report());
+    view.at(1400);
+    view.send(report('completed'), report('completed', {}, 'snapshot'));
+    expect(view.all('.compaction-header').map((element) => element.textContent)).toEqual(['Compaction completed', 'Compaction completed']);
+  });
+
+  it('excludes replay progress and completion from duration, including a terminal report after load ends', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'loadSessionStart' }, withSummary(), report('in_progress', {}, 'pending'));
+    view.at(54_000);
+    view.send(report('completed'), { type: 'loadSessionEnd', ok: true });
+    expect(view.part<HTMLDetailsElement>('.compaction-block').open).toBe(false);
+    view.at(90_000);
+    view.send(report('completed', {}, 'pending'));
+    expect(view.all('.compaction-header').map((element) => element.textContent)).toEqual(['Compaction completed', 'Compaction completed']);
+  });
+
+  it('does not use unknown statuses or turn/session end as timing endpoints', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send(report('future'));
+    view.at(10_000);
+    view.send(report('completed'));
+    expect(view.part('.compaction-header').textContent).toBe('Compaction completed');
+    view.send({ type: 'clearTranscript' });
+    view.connect();
+    view.at(20_000);
+    view.send({ type: 'promptStart' }, withSummary());
+    view.at(25_000);
+    view.send(report('future'), { type: 'promptEnd' }, { type: 'sessionEnded', message: 'Exited' });
+    expect(view.part('.compaction-header').textContent).toBe('Compaction — unknown status: future');
+    view.at(30_000);
+    view.send(report('cancelled'));
+    expect(view.part('.compaction-header').textContent).toBe('Compaction cancelled in 10s');
+  });
+});
+
 describe('a thought', () => {
   it('is open with an indicator while the agent thinks, and closes with its duration when the answer starts', () => {
     const view = renderChatView();

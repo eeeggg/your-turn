@@ -33,6 +33,7 @@ import {
   type ToolKind,
 } from './AcpDriver';
 import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
+import { compactionContent } from './Compaction';
 
 /** The `initialize` request the v2 client sends, which the negotiation sends to the agent for it. */
 export function v2InitializeRequest(clientVersion: string): Acp.InitializeRequest {
@@ -352,6 +353,22 @@ class Translator {
         size: update.size,
         cost: update.cost ? { amount: update.cost.amount, currency: update.cost.currency } : null,
       };
+    }
+    if (updates.isCompactionUpdate(update)) {
+      return {
+        kind: 'compactionUpdate',
+        compactionId: update.compactionId,
+        status: update.status,
+        summary: update.summary === undefined
+          ? { present: false }
+          : { present: true, value: update.summary === null ? null : update.summary.map(compactionContent) },
+        error: update.error === undefined
+          ? { present: false }
+          : { present: true, value: update.error },
+      };
+    }
+    if (updates.isCompactionSummaryChunk(update)) {
+      return { kind: 'compactionSummaryChunk', compactionId: update.compactionId, content: compactionContent(update.content) };
     }
     if (updates.isSessionInfoUpdate(update)) {
       return {

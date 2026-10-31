@@ -372,15 +372,23 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }),
     vscode.commands.registerCommand('acp.openReview', unlessTurnRuns(() => reviewControls.openReview())),
     vscode.commands.registerCommand('acp.previousReviewFile', async (arg?: unknown) => {
-      await reviewControls.previous(reviewPathOf(arg));
+      await reviewControls.previous(reviewPathOf(arg, reviewDiffs));
       await reviewPresenters.navigated();
     }),
     vscode.commands.registerCommand('acp.nextReviewFile', async (arg?: unknown) => {
-      await reviewControls.next(reviewPathOf(arg));
+      await reviewControls.next(reviewPathOf(arg, reviewDiffs));
       await reviewPresenters.navigated();
     }),
-    vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => reviewControls.undoFile(reviewPathOf(arg)))),
-    vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => reviewControls.keepFile(reviewPathOf(arg)))),
+    vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => {
+      const path = reviewPathOf(arg, reviewDiffs);
+      if (arg instanceof vscode.Uri && path === undefined) { return; }
+      return reviewControls.undoFile(path);
+    })),
+    vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => {
+      const path = reviewPathOf(arg, reviewDiffs);
+      if (arg instanceof vscode.Uri && path === undefined) { return; }
+      return reviewControls.keepFile(path);
+    })),
     vscode.commands.registerCommand('acp.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
     vscode.commands.registerCommand('acp.keepChange', unlessTurnRuns((...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
@@ -468,8 +476,8 @@ function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileC
 }
 
 /** The title area passes its editor's URI; the status bar passes nothing, and so means the active editor's file. */
-function reviewPathOf(arg: unknown): string | undefined {
-  return arg instanceof vscode.Uri && arg.scheme === 'file' ? arg.fsPath : undefined;
+function reviewPathOf(arg: unknown, presentation: DiffReviewPresentation): string | undefined {
+  return arg instanceof vscode.Uri ? presentation.pathOf(arg) : undefined;
 }
 
 /**

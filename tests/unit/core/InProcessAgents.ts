@@ -9,7 +9,7 @@ import type { ClientHandlers } from '@/core/ClientHandlers';
 import type { FileEditor } from '@/core/ReportedFiles';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
-/** Builds the agent a launch talks to, an SDK agent of either version or a router; called once per launch. */
+/** Builds the SDK agent a launch talks to, of either version; called once per launch. */
 export type AgentScript = () => AgentConnector;
 
 const unused = (): never => {

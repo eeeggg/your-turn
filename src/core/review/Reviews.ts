@@ -1,6 +1,6 @@
 import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { FollowedFiles, type WatchFile } from './FollowedFiles';
-import { Review, type ReadFile, type RestoreFile } from './Review';
+import { Review, type ReadFile, type RestoreFile, type ReviewedFile } from './Review';
 import { V1Guard } from './V1Guard';
 import { V2Guard } from './V2Guard';
 
@@ -57,6 +57,14 @@ export class Reviews {
 
   shown(): Review | undefined {
     return this.shownSessionId === null ? undefined : this.sessions.get(this.shownSessionId)?.review;
+  }
+
+  /** A deletion decision must still belong to the shown review and to an absent disk file. */
+  async deletionCurrent(file: ReviewedFile): Promise<boolean> {
+    const review = this.shown();
+    if (file.current !== null || review?.file(file.path) !== file) { return false; }
+    const content = await this.files.read(file.path);
+    return content === null && this.shown() === review && review.file(file.path) === file;
   }
 
   /** Settles once the files its evidence names were read. */

@@ -70,7 +70,7 @@ function setup() {
       }
     });
   });
-  const summary = () => store.getSnapshot().transcript.entries.map((entry) => (entry.kind === 'turn' ? 'turn' : `${entry.kind}: ${entry.text}`));
+  const summary = () => store.getSnapshot().transcript.entries.map((entry) => (entry.kind === 'turn' ? 'turn' : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : `${entry.kind}: ${entry.text}`));
   return { agents, manager, store, controller, prompts, turnInProgress, prompt, nextPrompt, stateChanged, summary };
 }
 

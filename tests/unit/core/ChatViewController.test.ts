@@ -785,6 +785,71 @@ describe('ChatViewController', () => {
       ]);
     });
 
+    it('delivers compaction patches and chunks in order between buffered text messages', () => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: 'm1', text: 'Before' });
+      controller.handleSessionUpdate('s1', {
+        kind: 'compactionUpdate', compactionId: 'c1', status: '_paused',
+        summary: { present: false }, error: { present: false },
+      });
+      controller.handleSessionUpdate('s1', {
+        kind: 'compactionSummaryChunk', compactionId: 'c1',
+        content: { type: 'resource_link', uri: 'file:///summary', name: 'summary', _meta: { nested: [null, true, 3] } },
+      });
+      controller.handleSessionUpdate('s1', {
+        kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
+        summary: { present: true, value: [{ type: 'text', text: 'Summary' }] }, error: { present: true, value: '' },
+      });
+      controller.handleSessionUpdate('s1', {
+        kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
+        summary: { present: true, value: null }, error: { present: true, value: null },
+      });
+      controller.handleSessionUpdate('s1', {
+        kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
+        summary: { present: true, value: [] }, error: { present: false },
+      });
+      controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: 'm2', text: 'After' });
+      controller.handleSessionUpdate('s1', { kind: 'usage', used: 10, size: 100, cost: null });
+
+      expect(environment.take()).toEqual([
+        { type: 'agentText', messageId: 'm1', text: 'Before' },
+        { type: 'compactionUpdate', compactionId: 'c1', status: '_paused', summary: { present: false }, error: { present: false } },
+        {
+          type: 'compactionSummaryChunk', compactionId: 'c1',
+          content: { type: 'resource_link', uri: 'file:///summary', name: 'summary', _meta: { nested: [null, true, 3] } },
+        },
+        {
+          type: 'compactionUpdate', compactionId: 'c1', status: 'completed',
+          summary: { present: true, value: [{ type: 'text', text: 'Summary' }] }, error: { present: true, value: '' },
+        },
+        {
+          type: 'compactionUpdate', compactionId: 'c1', status: 'completed',
+          summary: { present: true, value: null }, error: { present: true, value: null },
+        },
+        {
+          type: 'compactionUpdate', compactionId: 'c1', status: 'completed',
+          summary: { present: true, value: [] }, error: { present: false },
+        },
+        { type: 'agentText', messageId: 'm2', text: 'After' },
+        { type: 'usage', usage: { used: 10, size: 100, cost: null } },
+      ]);
+    });
+
+    it('drops both compaction variants for other sessions or without an active session', () => {
+      const { sessions, environment, controller } = setup();
+      const patch: SessionUpdate = {
+        kind: 'compactionUpdate', compactionId: 'c1', status: 'in_progress',
+        summary: { present: false }, error: { present: false },
+      };
+      const chunk: SessionUpdate = { kind: 'compactionSummaryChunk', compactionId: 'c1', content: { type: 'text', text: 'Summary' } };
+      controller.handleSessionUpdate('other', patch);
+      controller.handleSessionUpdate('other', chunk);
+      sessions.activeId = null;
+      controller.handleSessionUpdate('s1', patch);
+      controller.handleSessionUpdate('s1', chunk);
+      expect(environment.take()).toEqual([]);
+    });
+
     it('drops other-session usage and reports received without an active session', () => {
       const { sessions, environment, controller } = setup();
 
