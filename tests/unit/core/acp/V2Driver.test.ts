@@ -1075,7 +1075,7 @@ describe('V2Driver', () => {
   });
 
   describe('elicitation', () => {
-    it('answers an elicitation with method not found', async () => {
+    it('rejects unadvertised URL mode with invalid params while forms are advertised', async () => {
       let answered: (outcome: unknown) => void = () => {};
       const answer = new Promise<unknown>((resolve) => { answered = resolve; });
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
@@ -1087,7 +1087,7 @@ describe('V2Driver', () => {
 
       await driver.newSession(work);
 
-      expect(await answer).toHaveProperty('code', -32601);
+      expect(await answer).toHaveProperty('code', -32602);
     });
   });
 

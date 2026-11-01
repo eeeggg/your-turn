@@ -42,7 +42,7 @@ export function v2InitializeRequest(clientVersion: string): Acp.InitializeReques
     protocolVersion: Acp.PROTOCOL_VERSION,
     info: { name: 'vscode-acp-client', version: clientVersion },
     // Without auth.terminal, agents advertise only the auth methods they handle themselves.
-    capabilities: {},
+    capabilities: { elicitation: { form: {} } },
   };
 }
 
@@ -85,7 +85,10 @@ export class V2Driver implements AcpDriver {
         }
       });
     const connection = app.connect(stream);
-    connection.signal.addEventListener('abort', () => handlers.elicitations?.close(), { once: true });
+    connection.signal.addEventListener('abort', () => {
+      handlers.elicitations?.close();
+      handlers.close?.();
+    }, { once: true });
     connection.signal.addEventListener('abort', () => foreground.close(), { once: true });
 
     logDebug('Initializing ACP v2 connection', { agentName });

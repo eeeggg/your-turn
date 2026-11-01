@@ -99,7 +99,7 @@ function setup(scripts: Record<string, AgentScript>) {
   onTestFinished(async () => { await terminals.dispose(); });
   const chatView = new ChatViewController(
     manager,
-    { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false },
+    { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
     unusedEditor,
     terminals,
   );

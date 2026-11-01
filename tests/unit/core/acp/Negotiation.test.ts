@@ -10,12 +10,12 @@ import { connectedDriver, fakeAgent, fakeV2Agent, work, type AgentScript } from 
 const v2Request = {
   protocolVersion: 2,
   info: { name: 'vscode-acp-client', version: '0.0.0-test' },
-  capabilities: {},
+  capabilities: { elicitation: { form: {} } },
 };
 const v1Request = {
   protocolVersion: 1,
   clientInfo: { name: 'vscode-acp-client', version: '0.0.0-test' },
-  clientCapabilities: { session: { compaction: {}, configOptions: { boolean: {} } } },
+  clientCapabilities: { elicitation: { form: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
 };
 
 /** An ACP v1 agent that refuses any `initialize` but one asking for 1, with `refusal`. */
@@ -193,6 +193,6 @@ describe('negotiation', () => {
 
     expect([v1.protocolVersion, v2.protocolVersion]).toEqual([1, 2]);
     expect(v1.clientInfo).toEqual(v2.info);
-    expect([v1.clientCapabilities, v2.capabilities]).toEqual([{ session: { compaction: {}, configOptions: { boolean: {} } } }, {}]);
+    expect([v1.clientCapabilities, v2.capabilities]).toEqual([{ elicitation: { form: {} }, session: { compaction: {}, configOptions: { boolean: {} } } }, { elicitation: { form: {} } }]);
   });
 });

@@ -121,12 +121,12 @@ for (const version of [1, 2]) {
         {
           protocolVersion: 2,
           info: { name: 'vscode-acp-client', version: CLIENT_VERSION },
-          capabilities: {},
+          capabilities: { elicitation: { form: {} } },
         },
         ...(version === 1 ? [{
           protocolVersion: 1,
           clientInfo: { name: 'vscode-acp-client', version: CLIENT_VERSION },
-          clientCapabilities: { session: { compaction: {}, configOptions: { boolean: {} } } },
+          clientCapabilities: { elicitation: { form: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
         }] : []),
       ]);
     });

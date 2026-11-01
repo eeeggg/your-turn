@@ -5,7 +5,7 @@ import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { v1Elicitation, v2Elicitation } from '@/core/acp/Elicitation';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import type { Elicitations } from '@/core/ClientHandlers';
+import type { Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
 import { connectedDriver, fakeAgent, fakeV2Agent, InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
 
 describe('versioned elicitation translation', () => {
@@ -134,8 +134,69 @@ describe('versioned elicitation translation', () => {
 });
 
 describe('unadvertised elicitation wire behavior', () => {
+  it.each([1, 2])('v%i delivers an authentication form through the real driver and rejects invalid parents', async (version) => {
+    let interactions: ElicitationInteractions | undefined;
+    const duringAuth = async (client: V1.AgentContext | V2.AgentContext, requestId: string | number | null) => {
+      if (requestId === null || !interactions) { throw new Error('Missing authentication ownership'); }
+      const params = { mode: 'form' as const, requestId, message: 'Setup', requestedSchema: { properties: { enabled: { type: 'boolean' as const } } } };
+      if (version === 1) {
+        await expect((client as V1.AgentContext).request(V1.methods.client.elicitation.create, { ...params, requestId: 'stale' })).rejects.toMatchObject({ code: -32602 });
+      } else {
+        await expect((client as V2.AgentContext).request(V2.methods.client.elicitation.create, { ...params, requestId: 'stale' })).rejects.toMatchObject({ code: -32602 });
+      }
+      const response = version === 1
+        ? (client as V1.AgentContext).request(V1.methods.client.elicitation.create, params)
+        : (client as V2.AgentContext).request(V2.methods.client.elicitation.create, params);
+      expect(await response).toEqual({ action: 'accept', content: { enabled: false } });
+      return {};
+    };
+    const agents = new InProcessAgents({ fake: version === 1
+      ? () => fakeAgent().onRequest(V1.methods.agent.authenticate, ({ client, requestId }) => duringAuth(client, requestId))
+      : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ client, requestId }) => duringAuth(client, requestId)) });
+    const updates = new SessionUpdateHandler();
+    const manager = new ConnectionManager(updates, 'test', ({ elicitations }) => {
+      interactions = elicitations;
+      elicitations.subscribe((change) => {
+        if (change.kind === 'created') { elicitations.respond(change.interaction.interactionId, { action: 'accept', content: { enabled: false } }); }
+      });
+      return { ...unusedHandlers, elicitations };
+    });
+    onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    await driver.authenticate('browser');
+  });
+
+  it('releases presentation subscriptions exactly once when initialization fails', async () => {
+    const agents = new InProcessAgents({ fake: () => V1.agent({ name: 'refusing' }).onRequest(V1.methods.agent.initialize, () => {
+      throw new V1.RequestError(-32602, 'Initialization refused');
+    }) });
+    const updates = new SessionUpdateHandler();
+    let releases = 0;
+    const manager = new ConnectionManager(updates, 'test', () => ({ ...unusedHandlers, close: () => { releases++; } }));
+    onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
+    await expect(manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }))).rejects.toThrow('Initialization refused');
+    expect(releases).toBe(1);
+    await agents.launched[0]?.crash();
+    expect(releases).toBe(1);
+  });
+
+  it.each([1, 2])('v%i releases connection presentation on disconnect, including an empty connection', async (version) => {
+    const agents = new InProcessAgents({ fake: version === 1 ? fakeAgent : fakeV2Agent });
+    const updates = new SessionUpdateHandler();
+    const attached = new Set<string>();
+    const manager = new ConnectionManager(updates, 'test', ({ agentName }) => {
+      attached.add(agentName);
+      return { ...unusedHandlers, close: () => { attached.delete(agentName); } };
+    });
+    onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
+    await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    expect([...attached]).toEqual(['fake']);
+    await agents.launched[0]?.crash();
+    expect([...attached]).toEqual([]);
+  });
+
   it.each([1, 2])('v%i validates authentication parents using actual outgoing wire IDs after negotiation replay', async (version) => {
-    let requests: ElicitationRequests | undefined;
+    let requests: (Elicitations & ElicitationInteractions) | undefined;
     const observed: { parent: string | number | null } = { parent: null };
     const duringAuth = async (id: string | number | null) => {
       observed.parent = id;
@@ -212,11 +273,11 @@ describe('unadvertised elicitation wire behavior', () => {
     expect(await answer).toEqual({ action: 'decline' });
   });
 
-  it.each(['form', 'url'] as const)('v1 rejects unsolicited %s with invalid params', async (mode) => {
+  it.each(['form', 'url'] as const)('v1 rejects malformed form or unadvertised URL (%s) with invalid params', async (mode) => {
     let received: unknown;
     const { driver } = await connectedDriver(() => fakeAgent().onRequest(V1.methods.agent.session.new, async ({ client }) => {
       const request: V1.CreateElicitationRequest = mode === 'form'
-        ? { mode, sessionId: 's1', message: 'Question', requestedSchema: {} }
+        ? { mode, sessionId: 's1', message: 'Question', requestedSchema: { required: ['missing'] } }
         : { mode, sessionId: 's1', message: 'Authorize', elicitationId: 'external', url: 'https://example.org' };
       received = await client.request(V1.methods.client.elicitation.create, request).catch((error: unknown) => error);
       return { sessionId: 's1' };
@@ -225,16 +286,16 @@ describe('unadvertised elicitation wire behavior', () => {
     expect(received).toMatchObject({ code: -32602 });
   });
 
-  it.each(['form', 'url'] as const)('v2 rejects unsolicited %s with method not found', async (mode) => {
+  it.each(['form', 'url'] as const)('v2 rejects malformed form or unadvertised URL (%s) with invalid params', async (mode) => {
     let received: unknown;
     const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
       const request: V2.CreateElicitationRequest = mode === 'form'
-        ? { mode, sessionId: 's1', message: 'Question', requestedSchema: {} }
+        ? { mode, sessionId: 's1', message: 'Question', requestedSchema: { required: ['missing'] } }
         : { mode, sessionId: 's1', message: 'Authorize', elicitationId: 'external', url: 'https://example.org' };
       received = await client.request(V2.methods.client.elicitation.create, request).catch((error: unknown) => error);
       return { sessionId: 's1' };
     }));
     await driver.newSession(work);
-    expect(received).toMatchObject({ code: -32601 });
+    expect(received).toMatchObject({ code: -32602 });
   });
 });

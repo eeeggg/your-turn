@@ -8,11 +8,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   public static readonly viewType = 'acp-chat';
 
   private view: vscode.WebviewView | undefined;
+  private ready: Promise<void> = Promise.resolve();
+  private releaseReady: (() => void) | undefined;
   private readonly received = new vscode.EventEmitter<WebviewToExtensionMessage>();
   readonly onDidReceiveMessage = this.received.event;
   private readonly posted = new vscode.EventEmitter<ExtensionToWebviewMessage>();
   /** Each message delivered to the webview. */
   readonly onDidPost = this.posted.event;
+
+  get visible(): boolean { return this.view?.visible ?? false; }
+
+  showInformationMessage<T extends string>(message: string, ...items: T[]): Thenable<T | undefined> {
+    return vscode.window.showInformationMessage(message, ...items);
+  }
+
+  async reveal(): Promise<void> {
+    await vscode.commands.executeCommand('acp-chat.focus');
+    await this.ready;
+  }
 
   /** `webviewChanged` is given the view's webview when it resolves, and `undefined` once the view is disposed. */
   constructor(
@@ -26,6 +39,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
     _token: vscode.CancellationToken,
   ): void {
     this.view = webviewView;
+    this.ready = new Promise((resolve) => { this.releaseReady = resolve; });
 
     webviewView.webview.options = {
       enableScripts: true,
@@ -36,10 +50,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
 
     webviewView.webview.onDidReceiveMessage((message: WebviewToExtensionMessage) => {
       this.received.fire(message);
+      if (message.type === 'ready') { this.releaseReady?.(); }
     });
 
     webviewView.onDidDispose(() => {
       this.view = undefined;
+      this.releaseReady?.();
       this.webviewChanged(undefined);
     });
     this.webviewChanged(webviewView.webview);

@@ -103,10 +103,13 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
-  const connectionManager = new ConnectionManager(
+  const connectionManager: ConnectionManager = new ConnectionManager(
     sessionUpdateHandler,
     (context.extension.packageJSON as { version: string }).version,
-    () => ({ permissions: new PermissionRequests(permissionQuickPick) }),
+    ({ agentName, agentId, elicitations }) => ({
+      permissions: new PermissionRequests(permissionQuickPick),
+      close: chatViewController.attachElicitations(agentName, elicitations, agentId),
+    }),
   );
   const sessionReferences = new SessionReferences(context.globalState);
   const workspaceState = new WorkspaceState(context.workspaceState);

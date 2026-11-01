@@ -42,6 +42,7 @@ function setup() {
     post: (message) => store.dispatch(message),
     executeCommand: async (...args) => { turnInProgress.push(args[2]); },
     showsToolCallDiffs: () => false,
+    visible: true, reveal: async () => {}, showInformationMessage: async () => undefined,
   }, unusedEditor, terminals);
   onTestFinished(async () => { updates.dispose(); await controller.dispose(); });
   updates.addListener((sessionId, update) => controller.handleSessionUpdate(sessionId, update));
@@ -70,7 +71,7 @@ function setup() {
       }
     });
   });
-  const summary = () => store.getSnapshot().transcript.entries.map((entry) => (entry.kind === 'turn' ? 'turn' : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : `${entry.kind}: ${entry.text}`));
+  const summary = () => store.getSnapshot().transcript.entries.map((entry) => (entry.kind === 'turn' ? 'turn' : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : entry.kind === 'question' ? `question: ${entry.record.interactionId}` : `${entry.kind}: ${entry.text}`));
   return { agents, manager, store, controller, prompts, turnInProgress, prompt, nextPrompt, stateChanged, summary };
 }
 

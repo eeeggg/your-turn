@@ -1,6 +1,7 @@
 import type {
   ConfigOption,
   ConfigValueGroup,
+  ElicitationInteraction,
   PlanStep,
   SessionUpdate,
   SlashCommand,
@@ -21,7 +22,8 @@ import { CommandOutputFeed, type ShownContent } from './CommandOutputFeed';
 import { logDebug, logError, logInfo, messageOf } from './Log';
 import { openReportedChanges, openReportedFile, type FileEditor } from './ReportedFiles';
 import { ToolCallDiffs, type DiffFile } from './ToolCallDiffs';
-import type { Commands } from './VsCodeApi';
+import type { Commands, Window } from './VsCodeApi';
+import type { ElicitationInteractions } from './ClientHandlers';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<
@@ -56,6 +58,9 @@ type TurnListener = (inProgress: boolean) => void;
 
 /** What the chat view needs from the editor it runs in. */
 export interface ChatViewEnvironment extends Commands {
+  readonly visible: boolean;
+  showInformationMessage: Window['showInformationMessage'];
+  reveal(): PromiseLike<void>;
   /** Deliver a webview message; dropped while the chat view is not open. */
   post(message: ExtensionToWebviewMessage): void;
   /** The `acp.showToolCallDiffs` setting, read for each tool call update. */
@@ -69,6 +74,111 @@ export interface ChatViewEnvironment extends Commands {
  * The webview sends one prompt at a time and queues the rest.
  */
 export class ChatViewController {
+  private readonly elicitationSources = new Map<ElicitationInteractions, { agentName: string; agentId: string; unsubscribe: () => void }>();
+  private readonly questionDrafts = new Map<string, Extract<WebviewToExtensionMessage, { type: 'questionDraft' }>['draft']>();
+  private readonly questionOrder = new Map<string, number>();
+  private nextQuestionOrder = 0;
+
+  attachElicitations(agentName: string, interactions: ElicitationInteractions, agentId: string): () => void {
+    const unsubscribe = interactions.subscribe((change) => {
+      const { interaction, response } = change;
+      if (change.kind === 'created') { this.questionOrder.set(interaction.interactionId, this.nextQuestionOrder++); }
+      if (change.kind === 'responded' && interaction.mode === 'form' && interaction.scope.sessionId !== undefined && response
+        && this.ownsQuestion(interaction, agentId)) {
+        this.postAbout(interaction.scope.sessionId, {
+          type: 'questionSettled',
+          record: {
+            ...this.question(interaction, agentName), sessionId: interaction.scope.sessionId,
+            response: response.action === 'accept' ? { action: 'accept', content: structuredClone(response.content ?? {}) } : { action: response.action },
+          },
+        });
+      }
+      if (change.kind === 'responded' || change.kind === 'withdrawn' || change.kind === 'closed') {
+        this.questionDrafts.delete(change.interaction.interactionId);
+        this.questionOrder.delete(change.interaction.interactionId);
+      }
+      this.sendQuestions();
+      if (change.kind === 'created' && interaction.mode === 'form' && !this.environment.visible
+        && this.questionSource(interaction.interactionId)) {
+        void this.discoverQuestion(interaction, agentName);
+      }
+    });
+    this.elicitationSources.set(interactions, { agentName, agentId, unsubscribe });
+    for (const interaction of interactions.snapshot()) { this.questionOrder.set(interaction.interactionId, this.nextQuestionOrder++); }
+    this.sendQuestions();
+    return () => {
+      unsubscribe();
+      this.elicitationSources.delete(interactions);
+      for (const interaction of interactions.snapshot()) {
+        this.questionDrafts.delete(interaction.interactionId);
+        this.questionOrder.delete(interaction.interactionId);
+      }
+      if (this.elicitationSources.size === 0) { this.post({ type: 'questions', questions: [] }); }
+      else { this.sendQuestions(); }
+    };
+  }
+
+  private questionSource(interactionId: string): ElicitationInteractions | undefined {
+    if (this.disposed) { return undefined; }
+    for (const [source, { agentId }] of this.elicitationSources) {
+      if (source.snapshot().some((interaction) => interaction.interactionId === interactionId && interaction.mode === 'form'
+        && interaction.status === 'pending' && this.ownsQuestion(interaction, agentId))) {
+        return source;
+      }
+    }
+    return undefined;
+  }
+
+  private ownsQuestion(interaction: ElicitationInteraction, agentId: string): boolean {
+    const sessionId = interaction.scope.sessionId;
+    return sessionId === undefined || (sessionId === this.sessions.getActiveSessionId()
+      && this.sessions.getSession(sessionId)?.agentId === agentId);
+  }
+
+  private async discoverQuestion(interaction: Extract<ElicitationInteraction, { mode: 'form' }>, agentName: string): Promise<void> {
+    const sessionId = interaction.scope.sessionId;
+    const session = sessionId === undefined ? undefined : this.sessions.getSession(sessionId);
+    const label = sessionId === undefined ? '' : ` for ${session?.title ?? sessionId}`;
+    try {
+      const choice = await this.environment.showInformationMessage(`${agentName} has a question${label}.`, 'Open');
+      if (choice !== 'Open' || !this.questionSource(interaction.interactionId)) { return; }
+      await this.environment.reveal();
+      if (!this.questionSource(interaction.interactionId)) { return; }
+      this.sendQuestions();
+      this.post({ type: 'questionOpen', interactionId: interaction.interactionId });
+    } catch (error) {
+      logError('Failed to open question', error);
+    }
+  }
+
+  private sendQuestions(): void {
+    if (this.elicitationSources.size === 0) { return; }
+    const questions: Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'] = [];
+    for (const [source, { agentName, agentId }] of this.elicitationSources) {
+      for (const interaction of source.snapshot()) {
+        if (interaction.mode !== 'form' || interaction.status !== 'pending'
+          || !this.ownsQuestion(interaction, agentId)) { continue; }
+        questions.push({ ...this.question(interaction, agentName), draft: this.questionDrafts.get(interaction.interactionId) ?? null });
+      }
+    }
+    questions.sort((a, b) => (this.questionOrder.get(a.interactionId) ?? 0) - (this.questionOrder.get(b.interactionId) ?? 0));
+    this.post({ type: 'questions', questions });
+  }
+
+  private question(interaction: Extract<ElicitationInteraction, { mode: 'form' }>, agentName: string): Omit<Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number], 'draft'> {
+    return {
+      interactionId: interaction.interactionId, agentName, sessionId: interaction.scope.sessionId ?? null,
+      message: interaction.message, title: interaction.form.title, description: interaction.form.description,
+      fields: interaction.form.fields.map((field) => ({
+        name: field.name, title: field.title, description: field.description, required: field.required,
+        kind: field.type === 'string' ? 'text' : field.type === 'array' ? 'multiple' : field.type,
+        choices: field.choices?.map((choice) => ({ ...choice })) ?? null,
+        minimum: field.minimum, maximum: field.maximum, minLength: field.minLength, maxLength: field.maxLength,
+        minItems: field.minItems, maxItems: field.maxItems, pattern: field.pattern, format: field.format,
+        ...(field.default === undefined ? {} : { default: typeof field.default === 'object' ? [...field.default] : field.default }),
+      })),
+    };
+  }
   /**
    * Sessions with a prompt in flight. The chat view hears of a turn only while its session is shown, and is told
    * it is running when it opens or shows that session again, so it holds its next prompt.
@@ -125,6 +235,17 @@ export class ChatViewController {
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     if (this.disposed) { return; }
     switch (message.type) {
+      case 'questionDraft':
+        if (this.questionSource(message.interactionId)) { this.questionDrafts.set(message.interactionId, structuredClone(message.draft)); }
+        break;
+      case 'questionResponse':
+        {
+          const source = this.questionSource(message.interactionId);
+          if (!source) { break; }
+          const result = source.respond(message.interactionId, { action: message.action, ...(message.content === undefined ? {} : { content: message.content }) });
+          if (result.kind === 'invalid') { this.post({ type: 'questionErrors', interactionId: message.interactionId, errors: { ...result.errors } }); }
+        }
+        break;
       case 'sendPrompt':
         await this.sendPrompt(message.text);
         break;
@@ -143,6 +264,7 @@ export class ChatViewController {
         this._queuedPrompts = 0;
         this.sendCurrentState();
         this.sendRunningTurn();
+        this.sendQuestions();
         break;
       case 'openFile':
         await this.chooseDiffFile({ toolCallId: message.toolCallId, file: message.file, open: 'file' });
@@ -207,6 +329,7 @@ export class ChatViewController {
   notifyActiveSessionChanged(): void {
     const changed = this.sessions.getActiveSessionId() !== this.shownSessionId;
     this.sendCurrentState();
+    this.sendQuestions();
     if (changed) {
       this.sendRunningTurn();
       this.setTurnInProgress(this.isRunning(this.shownSessionId));
@@ -270,6 +393,10 @@ export class ChatViewController {
     if (this.pendingText) { clearTimeout(this.pendingText.timer); }
     this.pendingText = null;
     this.turnListeners.clear();
+    for (const source of this.elicitationSources.values()) { source.unsubscribe(); }
+    this.elicitationSources.clear();
+    this.questionDrafts.clear();
+    this.questionOrder.clear();
     this.disposal = this.commandOutput.dispose();
     return this.disposal;
   }

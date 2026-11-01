@@ -65,6 +65,27 @@ export function promptInput(window: Page): Locator {
   return acpChatFrame(window).locator('#promptInput');
 }
 
+export function questionSurface(window: Page): Locator {
+  return acpChatFrame(window).getByRole('region', { name: 'Questions', exact: true });
+}
+
+export function questionNotification(window: Page): Locator {
+  return acpChatFrame(window).getByRole('button', { name: /^Open questions \(/ });
+}
+
+export function pendingQuestions(window: Page): Locator {
+  return acpChatFrame(window).getByLabel('Pending questions', { exact: true });
+}
+
+/** VS Code's private notification-list DOM groups a native message with its action buttons. */
+export function nativeQuestionNotification(window: Page): Locator {
+  return window.locator('.notifications-list-container .monaco-list-row').filter({ hasText: 'has a question' });
+}
+
+export function questionRecords(window: Page): Locator {
+  return acpChatFrame(window).locator('.question-record');
+}
+
 export function sessionUsage(window: Page): Locator {
   return acpChatFrame(window).getByRole('button', { name: 'Session usage', exact: true });
 }

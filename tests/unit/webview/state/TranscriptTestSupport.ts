@@ -42,7 +42,7 @@ export function chatView() {
     toolCalls: () => partsOf('toolCalls').flatMap((group) => group.toolCalls),
     /** Each entry as `kind: text`, and a turn as its parts in order, the way a reader would summarize the transcript. */
     summary: () =>
-      transcript().entries.map((entry) => (entry.kind === 'turn' ? `turn: ${entry.parts.map(partSummary).join(' | ')}` : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : `${entry.kind}: ${entry.text}`)),
+      transcript().entries.map((entry) => (entry.kind === 'turn' ? `turn: ${entry.parts.map(partSummary).join(' | ')}` : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : entry.kind === 'question' ? `question: ${entry.record.interactionId}` : `${entry.kind}: ${entry.text}`)),
     emptyState: () => showsEmptyState(transcript(), store.getSnapshot().activeSession),
     at: (now: number) => {
       time = now;
@@ -81,6 +81,8 @@ function partSummary(part: TurnPart): string {
       return `plan ${part.steps.map((step) => step.text).join(', ')}`;
     case 'compaction':
       return `compaction ${part.compactionId}`;
+    case 'question':
+      return `question ${part.record.interactionId}`;
   }
 }
 

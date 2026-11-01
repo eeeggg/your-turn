@@ -1,12 +1,19 @@
-import { useId, useRef, useState } from 'react';
+import { use, useId, useRef, useState } from 'react';
 import { code } from 'currency-codes';
 import type { SessionUsage } from '@/shared/WebviewMessages';
+import { ExpansionContext } from '@/webview/views/Questions';
 
 const tokenFormat = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 21 });
 const costFormat = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
 
 export function Usage({ usage }: { usage: SessionUsage }) {
-  const [open, setOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const expansion = use(ExpansionContext);
+  const open = expansion ? expansion.open === 'usage' : localOpen;
+  const setOpen = (value: boolean) => {
+    if (expansion) { if (value || expansion.open === 'usage') { expansion.setOpen(value ? 'usage' : null); } }
+    else { setLocalOpen(value); }
+  };
   const [pointerFocus, setPointerFocus] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);

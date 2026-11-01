@@ -2,6 +2,7 @@ import { InputArea } from '@/webview/views/InputArea';
 import { SessionBanner } from '@/webview/views/SessionBanner';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import { TranscriptView } from '@/webview/views/TranscriptView';
+import { Questions } from '@/webview/views/Questions';
 
 /** The whole page of the chat view. */
 export function ChatView() {
@@ -9,8 +10,10 @@ export function ChatView() {
     <>
       <SessionBanner />
       <TranscriptView />
-      <QueuedPrompts />
-      <InputArea />
+      <Questions>
+        <QueuedPrompts />
+        <InputArea />
+      </Questions>
       <LoadOverlay />
     </>
   );

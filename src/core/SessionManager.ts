@@ -384,7 +384,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     let driver: AcpDriver;
     try {
-      driver = await this.connectionManager.connect(agentName, agentProcess);
+      driver = await this.connectionManager.connect(agentName, agentProcess, agentProcess.id);
       if (this.disposed) {
         throw new Error('Session manager is disposed.');
       }

@@ -4,7 +4,7 @@ import type { Store } from '@/webview/state/Store';
 
 export const StoreContext = createContext<Store<RootState, Action> | null>(null);
 
-function useStore(): Store<RootState, Action> {
+export function useStore(): Store<RootState, Action> {
   const store = use(StoreContext);
   if (!store) {
     throw new Error('Chat view components must render inside a StoreContext.');

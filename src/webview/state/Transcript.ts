@@ -4,6 +4,7 @@ import type {
   ExtensionToWebviewMessage,
   PlanStep,
   PlanStepStatus,
+  QuestionRecord,
   SessionUsage,
   ToolCallContent,
   ToolCallStatus,
@@ -32,7 +33,13 @@ export interface Turn {
   readonly parts: readonly TurnPart[];
 }
 
-export type TurnPart = AgentMessage | Thought | ToolCallGroup | Plan | Compaction;
+export type TurnPart = AgentMessage | Thought | ToolCallGroup | Plan | Compaction | SettledQuestion;
+
+interface SettledQuestion {
+  readonly kind: 'question';
+  readonly record: QuestionRecord;
+  readonly open: boolean;
+}
 
 type CompactionReport = Extract<ExtensionToWebviewMessage, { type: 'compactionUpdate' | 'compactionSummaryChunk' }>;
 type SummaryChunk = Extract<CompactionReport, { type: 'compactionSummaryChunk' }>;
@@ -99,7 +106,7 @@ interface TranscriptError {
   readonly text: string;
 }
 
-export type TranscriptEntry = Prompt | Turn | TranscriptError | (Compaction & { readonly id: EntryId });
+export type TranscriptEntry = Prompt | Turn | TranscriptError | ((Compaction | SettledQuestion) & { readonly id: EntryId });
 
 /** An agent's terminal as last reported; its command runs while `exitStatus` is null. */
 interface Terminal {
@@ -128,6 +135,7 @@ export interface TranscriptState {
 }
 
 export type TranscriptAction =
+  | { type: 'questionRecordToggled'; interactionId: string; open: boolean }
   | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }
   | { type: 'compactionToggled'; compactionId: string; open: boolean }
   | { type: 'toolCallToggled'; turnId: EntryId; toolCallId: string; open: boolean }
@@ -334,6 +342,22 @@ export function updateTranscript(
   loading = false,
 ): Transition<TranscriptState, WebviewToExtensionMessage> {
   switch (action.type) {
+    case 'questionSettled': {
+      if (loading || action.record.sessionId !== transcript.sessionId || transcript.entries.some((entry) => entry.kind === 'question'
+        ? entry.record.interactionId === action.record.interactionId
+        : entry.kind === 'turn' && entry.parts.some((part) => part.kind === 'question' && part.record.interactionId === action.record.interactionId))) {
+        return stateOnly(transcript);
+      }
+      const question: SettledQuestion = { kind: 'question', record: action.record, open: false };
+      return stateOnly(transcript.currentTurn !== null || turnRunning
+        ? inCurrentTurn(transcript, (turn) => withLastPart(turn, question, 'adding', now))
+        : appended(transcript, (id) => ({ ...question, id })));
+    }
+    case 'questionRecordToggled': {
+      const revise = <T extends SettledQuestion>(question: T): T => question.record.interactionId === action.interactionId && question.open !== action.open ? { ...question, open: action.open } : question;
+      return stateOnly({ ...transcript, entries: transcript.entries.map((entry) => entry.kind === 'question' ? revise(entry)
+        : entry.kind === 'turn' ? { ...entry, parts: entry.parts.map((part) => part.kind === 'question' ? revise(part) : part) } : entry) });
+    }
     case 'state': {
       const sessionId = action.session?.sessionId ?? null;
       if (sessionId === null) {

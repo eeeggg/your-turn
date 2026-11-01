@@ -4,6 +4,7 @@ import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
 import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
+import { ElicitationRequests } from '@/core/ElicitationRequests';
 import type { FileEditor } from '@/core/ReportedFiles';
 import type { SessionInfo } from '@/core/SessionManager';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
@@ -131,6 +132,14 @@ class FakeSessions implements ChatSessions {
 }
 
 class FakeEnvironment implements ChatViewEnvironment {
+  visible = true;
+  notifications: { message: string; items: string[]; reply: Deferred<string | undefined> }[] = [];
+  showInformationMessage: ChatViewEnvironment['showInformationMessage'] = <T extends string>(message: string, ...items: T[]) => {
+    const reply = deferred<T | undefined>();
+    this.notifications.push({ message, items, reply: { ...reply, resolve: (value) => reply.resolve(value as T | undefined) } });
+    return reply.promise;
+  };
+  reveal = vi.fn<ChatViewEnvironment['reveal']>(async () => { this.visible = true; });
   posted: ExtensionToWebviewMessage[] = [];
 
   post(message: ExtensionToWebviewMessage): void {
@@ -192,6 +201,241 @@ function sendPrompt(controller: ChatViewController, sessions: FakeSessions, text
 const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
+  it('rejects stale controls after reconnect and rechecks connection ownership after native reveal', async () => {
+    const { controller, environment, sessions } = setup();
+    environment.visible = false;
+    const old = new ElicitationRequests();
+    const detachOld = controller.attachElicitations('Agent', old, 'fake');
+    const withdrawn = old.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Old', requestedSchema: {} });
+    const rejected = expect(withdrawn).rejects.toMatchObject({ kind: 'closed' });
+    const oldId = old.snapshot()[0]?.interactionId ?? '';
+    old.close(); detachOld(); await rejected;
+    const replacement = new ElicitationRequests();
+    const detach = controller.attachElicitations('Agent', replacement, 'replacement');
+    sessions.session = sessionInfo({ agentId: 'replacement' });
+    const answer = replacement.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'New', requestedSchema: {} });
+    const id = replacement.snapshot()[0]?.interactionId ?? '';
+    await controller.handleMessage({ type: 'questionResponse', interactionId: oldId, action: 'accept', content: {} });
+    await controller.handleMessage({ type: 'questionDraft', interactionId: oldId, draft: { injected: 'stale' } });
+    expect(replacement.snapshot()).toHaveLength(1);
+    environment.notifications[0]?.reply.resolve('Open');
+    await environment.notifications[0]?.reply.promise;
+    expect(environment.reveal).not.toHaveBeenCalled();
+    const revealing = deferred<undefined>();
+    environment.reveal.mockImplementation(() => revealing.promise);
+    environment.notifications[1]?.reply.resolve('Open');
+    await environment.notifications[1]?.reply.promise;
+    expect(environment.reveal).toHaveBeenCalledOnce();
+    sessions.session = sessionInfo({ agentId: 'another-connection' });
+    environment.take();
+    revealing.resolve(undefined);
+    await revealing.promise;
+    expect(environment.take()).toEqual([]);
+    sessions.session = sessionInfo({ agentId: 'replacement' });
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, draft: null })] });
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'decline' });
+    expect(await answer).toEqual({ action: 'decline' });
+    detach(); replacement.close();
+  });
+
+  it('keeps questions from multiple connections in arrival order', async () => {
+    const { controller, environment } = setup();
+    const a = new ElicitationRequests();
+    const b = new ElicitationRequests();
+    const detachA = controller.attachElicitations('A', a, 'a');
+    const detachB = controller.attachElicitations('B', b, 'b');
+    const first = b.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth-b' }, message: 'First', requestedSchema: {} });
+    const second = a.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth-a' }, message: 'Second', requestedSchema: {} });
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take().filter((message) => message.type === 'questions').at(-1)?.questions.map((question) => question.message)).toEqual(['First', 'Second']);
+    a.respond(a.snapshot()[0]?.interactionId ?? '', { action: 'cancel' });
+    b.respond(b.snapshot()[0]?.interactionId ?? '', { action: 'decline' });
+    await Promise.all([first, second]);
+    detachA(); detachB(); a.close(); b.close();
+  });
+
+  it('does not expose, answer or record a foreign connection question with the active session ID', async () => {
+    const { controller, environment, sessions } = setup();
+    sessions.session = sessionInfo({ agentId: 'other-connection', agentName: 'other' });
+    environment.visible = false;
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Foreign?', requestedSchema: {} });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    expect(environment.take()).toEqual([{ type: 'questions', questions: [] }, { type: 'questions', questions: [] }]);
+    expect(environment.notifications).toEqual([]);
+    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { answer: 'forged' } });
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: {} });
+    expect(requests.snapshot()).toHaveLength(1);
+    requests.respond(id, { action: 'decline' });
+    expect(await answer).toEqual({ action: 'decline' });
+    expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
+    detach();
+    requests.close();
+  });
+
+  it('announces a hidden question without revealing or answering, then opens only the explicitly selected request', async () => {
+    const { controller, environment, sessions } = setup();
+    sessions.session = sessionInfo({ title: 'Work session' });
+    environment.visible = false;
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const first = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'First?', requestedSchema: {} });
+    const second = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: 's1' }, message: 'Second?', requestedSchema: {} });
+    const id = requests.snapshot()[1]?.interactionId ?? '';
+    expect(environment.notifications.map(({ message, items }) => ({ message, items }))).toEqual([
+      { message: 'Agent has a question for Work session.', items: ['Open'] },
+      { message: 'Agent has a question for Work session.', items: ['Open'] },
+    ]);
+    expect(environment.reveal).not.toHaveBeenCalled();
+    expect(requests.snapshot()).toHaveLength(2);
+    environment.notifications[0]?.reply.resolve(undefined);
+    environment.notifications[1]?.reply.resolve('Open');
+    await environment.notifications[1]?.reply.promise;
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.reveal).toHaveBeenCalledOnce();
+    expect(environment.take()).toContainEqual({ type: 'questionOpen', interactionId: id });
+    expect(requests.snapshot()).toHaveLength(2);
+    requests.respond(requests.snapshot()[0]?.interactionId ?? '', { action: 'cancel' });
+    requests.respond(id, { action: 'decline' });
+    expect(await first).toEqual({ action: 'cancel' });
+    expect(await second).toEqual({ action: 'decline' });
+    detach();
+    requests.close();
+  });
+
+  it('does not reveal a stale notification or navigate to a different active session', async () => {
+    const { controller, environment, sessions } = setup();
+    environment.visible = false;
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Pending?', requestedSchema: {} });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    sessions.activeId = 'other';
+    environment.notifications[0]?.reply.resolve('Open');
+    await environment.notifications[0]?.reply.promise;
+    expect(environment.reveal).not.toHaveBeenCalled();
+    requests.respond(id, { action: 'cancel' });
+    await answer;
+    detach();
+    requests.close();
+  });
+
+  it('announces outside-session questions without inventing a session and ignores withdrawn notification actions', async () => {
+    const { controller, environment, sessions } = setup();
+    sessions.activeId = null;
+    environment.visible = false;
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Setup Agent', requests, 'fake');
+    const abort = new AbortController();
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth' }, message: 'Setup?', requestedSchema: {} }, abort.signal);
+    const rejected = expect(answer).rejects.toMatchObject({ kind: 'cancelled' });
+    expect(environment.notifications[0]?.message).toBe('Setup Agent has a question.');
+    abort.abort();
+    await rejected;
+    environment.notifications[0]?.reply.resolve('Open');
+    await environment.notifications[0]?.reply.promise;
+    expect(environment.reveal).not.toHaveBeenCalled();
+    expect(environment.take().filter((message) => message.type === 'questionOpen')).toEqual([]);
+    detach();
+    requests.close();
+  });
+  it.each(['accept', 'decline', 'cancel'] as const)('records only core-confirmed session form response %s, once', async (action) => {
+    const { controller, environment } = setup();
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Count?', requestedSchema: { title: 'Settings', properties: { count: { type: 'integer', default: 0 } }, required: ['count'] } });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    environment.take();
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 0.5 } });
+    expect(environment.take()).toEqual([{ type: 'questionErrors', interactionId: id, errors: { count: 'Invalid value' } }]);
+    const response = action === 'accept' ? { action, content: { count: 0 } } : { action };
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, ...response });
+    expect(await answer).toEqual(response);
+    const messages = environment.take();
+    expect(messages).toEqual([
+      { type: 'questionSettled', record: { interactionId: id, sessionId: 's1', agentName: 'Agent', message: 'Count?', title: 'Settings', description: null, fields: [expect.objectContaining({ name: 'count', kind: 'integer', default: 0 })], response } },
+      { type: 'questions', questions: [] },
+    ]);
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, ...response });
+    expect(environment.take()).toEqual([]);
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take().filter((message) => message.type === 'questionSettled')).toEqual([]);
+    detach();
+    requests.close();
+  });
+
+  it('does not record outside-session responses or request withdrawal as session answers', async () => {
+    const { controller, environment } = setup();
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Setup Agent', requests, 'fake');
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth' }, message: 'Setup?', requestedSchema: {} });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    environment.take();
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: {} });
+    expect(await answer).toEqual({ action: 'accept', content: {} });
+    expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
+    const abort = new AbortController();
+    const withdrawn = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: 's1' }, message: 'Pending?', requestedSchema: {} }, abort.signal);
+    const rejected = expect(withdrawn).rejects.toMatchObject({ kind: 'cancelled' });
+    environment.take();
+    abort.abort();
+    await rejected;
+    expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
+    detach();
+    requests.close();
+  });
+  it('keeps outside-session forms available without a session and removes aborted drafts on resynchronization', async () => {
+    const { controller, environment, sessions } = setup();
+    sessions.activeId = null;
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Setup Agent', requests, 'fake');
+    const abort = new AbortController();
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth' }, message: 'Setup?', requestedSchema: {} }, abort.signal);
+    const rejected = expect(answer).rejects.toMatchObject({ kind: 'cancelled' });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { text: 'draft' } });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, sessionId: null, agentName: 'Setup Agent' })] });
+    abort.abort();
+    await rejected;
+    expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: {} });
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
+    detach();
+    requests.close();
+  });
+
+  it('resynchronizes pending forms and raw drafts without answering or exposing another session', async () => {
+    const { controller, environment, sessions } = setup();
+    const requests = new ElicitationRequests();
+    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Count?', requestedSchema: { properties: { count: { type: 'integer', default: 0 } } } });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, agentName: 'Agent', message: 'Count?', draft: null, fields: [expect.objectContaining({ kind: 'integer', default: 0 })] })] });
+    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { count: '-' } });
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ draft: { count: '-' } })] });
+    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: {} });
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ draft: {} })] });
+    sessions.activeId = 'other';
+    controller.notifyActiveSessionChanged();
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 3 } });
+    expect(requests.snapshot()).toHaveLength(1);
+    sessions.activeId = 's1';
+    controller.notifyActiveSessionChanged();
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 1.5 } });
+    expect(environment.take()).toContainEqual({ type: 'questionErrors', interactionId: id, errors: { count: 'Invalid value' } });
+    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 3 } });
+    expect(await answer).toEqual({ action: 'accept', content: { count: 3 } });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
+    detach();
+    requests.close();
+  });
+
   it('stops posting and accepting updates while its command output drains on disposal', async () => {
     vi.useFakeTimers();
     onTestFinished(() => { vi.useRealTimers(); });

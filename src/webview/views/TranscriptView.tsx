@@ -1,6 +1,6 @@
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
-import type { ToolCallStatus } from '@/shared/WebviewMessages';
+import type { QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
 import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
 import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
@@ -119,6 +119,8 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
       return <TurnView turn={entry} />;
     case 'compaction':
       return <CompactionBlock compaction={entry} />;
+    case 'question':
+      return <QuestionRecordBlock record={entry.record} open={entry.open} />;
     case 'error':
       return (
         <div
@@ -170,7 +172,37 @@ const PartView = memo(function PartView({
       return <PlanView plan={part} />;
     case 'compaction':
       return <CompactionBlock compaction={part} />;
+    case 'question':
+      return <QuestionRecordBlock record={part.record} open={part.open} />;
   }
+});
+
+const QuestionRecordBlock = memo(function QuestionRecordBlock({ record, open }: { record: QuestionRecord; open: boolean }) {
+  const dispatch = useDispatch();
+  const outcome = record.response.action === 'accept' ? 'Answered' : record.response.action === 'decline' ? 'Refused' : 'Dismissed';
+  return <details className="question-record mb-1 w-full max-w-full" open={open} onToggle={(event) => {
+    if (event.target === event.currentTarget && event.currentTarget.open !== open) {
+      dispatch({ type: 'questionRecordToggled', interactionId: record.interactionId, open: event.currentTarget.open });
+    }
+  }}>
+    <summary className="cursor-pointer rounded-sm px-2 py-1 text-sm text-muted-foreground focus-visible:outline-1 focus-visible:outline-ring">Question — {outcome}{record.title === null ? '' : `: ${record.title}`}</summary>
+    <div className="mt-1 space-y-2 rounded-md border border-border bg-muted px-3 py-2 text-sm whitespace-pre-wrap wrap-anywhere">
+      <p className="text-muted-foreground">{record.agentName}</p>
+      <p>{record.message}</p>
+      {record.description !== null && <p>{record.description}</p>}
+      {record.fields.map((field) => <div key={field.name} className="space-y-1">
+        <p className="font-semibold">{field.title ?? field.name}{field.required ? ' *' : ''}</p>
+        {field.description !== null && <p>{field.description}</p>}
+        {field.choices?.map((choice) => <p key={choice.value}>{choice.title} ({JSON.stringify(choice.value)}){choice.description === null ? '' : ` — ${choice.description}`}</p>)}
+      </div>)}
+      {record.response.action === 'accept' ? <dl className="space-y-2">
+        {Object.entries(record.response.content).map(([name, value]) => {
+          const field = record.fields.find((field) => field.name === name);
+          return <div key={name}><dt className="font-semibold">{field?.title ?? name}</dt><dd>{JSON.stringify(value)}</dd></div>;
+        })}
+      </dl> : <p>No answers sent.</p>}
+    </div>
+  </details>;
 });
 
 const CompactionBlock = memo(function CompactionBlock({ compaction }: { compaction: Compaction }) {

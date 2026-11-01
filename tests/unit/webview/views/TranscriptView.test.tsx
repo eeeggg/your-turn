@@ -105,10 +105,41 @@ async function toggle(details: HTMLDetailsElement): Promise<void> {
 }
 
 describe('the chat view', () => {
+  it.each(['accept', 'decline', 'cancel'] as const)('shows a distinct collapsed %s record with inert question and response details', async (action) => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'questionSettled', record: {
+      interactionId: 'q1', sessionId: 's1', agentName: 'Agent', title: 'Settings', message: 'Visit https://example.com?', description: 'Choose carefully',
+      fields: [{ name: 'enabled', kind: 'boolean', title: 'Enabled', description: 'Enable it?', required: false, choices: null, minimum: null, maximum: null, minLength: null, maxLength: null, minItems: null, maxItems: null, pattern: null, format: null }],
+      response: action === 'accept' ? { action, content: { enabled: false } } : { action },
+    } });
+    const record = view.part<HTMLDetailsElement>('details.question-record');
+    expect(record.open).toBe(false);
+    const outcome = action === 'accept' ? 'Answered' : action === 'decline' ? 'Refused' : 'Dismissed';
+    expect(record.querySelector('summary')?.textContent).toBe(`Question — ${outcome}: Settings`);
+    await toggle(record);
+    expect(record.open).toBe(true);
+    expect(record.textContent).toContain('Visit https://example.com?');
+    expect(record.textContent).toContain('Choose carefully');
+    expect(record.textContent).toContain('Enable it?');
+    expect(record.textContent).toContain('Agent');
+    expect(record.querySelector('a')).toBeNull();
+    if (action === 'accept') {
+      expect([...record.querySelectorAll('dt, dd')].map((element) => element.textContent)).toEqual(['Enabled', 'false']);
+    } else {
+      expect(record.querySelector('dl')).toBeNull();
+      expect(record.textContent).toContain('No answers sent.');
+    }
+    expect(view.takePosted()).toEqual([]);
+    await toggle(record);
+    expect(record.open).toBe(false);
+  });
+
   it('lays out the banner, the transcript, the input area and the load overlay in that order', () => {
     const { container } = renderChatView();
 
-    expect([...container.children].map((child) => child.id)).toEqual(['sessionBanner', 'transcript', 'inputArea', 'loadOverlay']);
+    expect([...container.children].map((child) => child.id)).toEqual(['sessionBanner', 'transcript', 'questionAnchor', 'loadOverlay']);
+    expect([...container.querySelector('#questionAnchor')?.children ?? []].map((child) => child.id)).toEqual(['inputArea']);
   });
 
   it('gives the library that follows the stream the transcript to scroll and the entries inside it to watch', () => {
@@ -169,7 +200,8 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
 
-    expect([...view.container.children].map((child) => child.id)).toEqual(['sessionBanner', 'transcript', 'queuedPrompts', 'inputArea', 'loadOverlay']);
+    expect([...view.container.children].map((child) => child.id)).toEqual(['sessionBanner', 'transcript', 'questionAnchor', 'loadOverlay']);
+    expect([...view.part('#questionAnchor').children].map((child) => child.id)).toEqual(['queuedPrompts', 'inputArea']);
     expect(queue(view)?.getAttribute('aria-label')).toBe('Queued prompts');
     expect(queued(view)).toEqual([
       ['Queued', 'second', 'second'],

@@ -125,6 +125,10 @@ export interface SessionSnapshot {
 type CompactionContent = null | boolean | number | string | CompactionContent[] | { [key: string]: CompactionContent };
 
 export type ExtensionToWebviewMessage =
+  | { type: 'questionOpen'; interactionId: string }
+  | { type: 'questionSettled'; record: QuestionRecord }
+  | { type: 'questions'; questions: Question[] }
+  | { type: 'questionErrors'; interactionId: string; errors: Readonly<Record<string, string>> }
   | { type: 'state'; activeSessionId: string | null; session: SessionSnapshot | null }
   | { type: 'clearTranscript' }
   | { type: 'promptStart' }
@@ -174,6 +178,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'file-attached'; path: string; name: string };
 
 export type WebviewToExtensionMessage =
+  | { type: 'questionDraft'; interactionId: string; draft: Readonly<Record<string, QuestionValue>> }
+  | { type: 'questionResponse'; interactionId: string; action: 'accept' | 'decline' | 'cancel'; content?: Readonly<Record<string, QuestionValue>> }
   | { type: 'ready' }
   | { type: 'sendPrompt'; text: string }
   | { type: 'cancelTurn' }
@@ -184,3 +190,47 @@ export type WebviewToExtensionMessage =
   | { type: 'openFile'; toolCallId: string; file: number }
   /** As for `openFile`; only for a file the agent reported lines of. */
   | { type: 'openChanges'; toolCallId: string; file: number };
+
+type QuestionValue = string | number | boolean | readonly string[];
+
+interface QuestionField {
+  name: string;
+  kind: 'text' | 'number' | 'integer' | 'boolean' | 'multiple';
+  title: string | null;
+  description: string | null;
+  required: boolean;
+  choices: { value: string; title: string; description: string | null }[] | null;
+  minimum: number | null;
+  maximum: number | null;
+  minLength: number | null;
+  maxLength: number | null;
+  minItems: number | null;
+  maxItems: number | null;
+  pattern: string | null;
+  format: string | null;
+  default?: QuestionValue;
+}
+
+interface Question {
+  interactionId: string;
+  agentName: string;
+  sessionId: string | null;
+  message: string;
+  title: string | null;
+  description: string | null;
+  fields: QuestionField[];
+  /** Null before any edit; an empty object is a saved draft with every field omitted. */
+  draft: Readonly<Record<string, QuestionValue>> | null;
+}
+
+/** Core-confirmed form response, not a pending draft or a replayable prompt. */
+export interface QuestionRecord {
+  interactionId: string;
+  sessionId: string;
+  agentName: string;
+  message: string;
+  title: string | null;
+  description: string | null;
+  fields: QuestionField[];
+  response: { action: 'accept'; content: Readonly<Record<string, QuestionValue>> } | { action: 'decline' | 'cancel' };
+}

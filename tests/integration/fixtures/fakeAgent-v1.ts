@@ -1,6 +1,6 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentContext, SessionConfigOption } from '@agentclientprotocol/sdk';
-import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, unlinkSync, watch, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 
@@ -366,6 +366,30 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+    if (text.startsWith('question-hidden ')) {
+      const directory = text.slice('question-hidden '.length);
+      const trigger = new Promise<void>((resolve) => {
+        const watcher = watch(directory, (_event, name) => {
+          if (name === 'question.trigger') { watcher.close(); resolve(); }
+        });
+      });
+      await client.notify(methods.client.session.update, {
+        sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Question armed.' } },
+      });
+      await trigger;
+      const response = await client.request(methods.client.elicitation.create, {
+        mode: 'form', sessionId: params.sessionId, message: 'Choose the settings to send.', requestedSchema: {
+          title: 'Desktop settings', required: ['count'], properties: {
+            count: { type: 'integer', title: 'Count', minimum: 0, maximum: 3 },
+            enabled: { type: 'boolean', title: 'Enabled', default: false },
+          },
+        },
+      });
+      await client.notify(methods.client.session.update, {
+        sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Received question response: ${JSON.stringify(response)}` } },
+      });
+      return { stopReason: 'end_turn' };
+    }
     if (COMPACTION && text === 'compact') {
       await compact(client, params.sessionId);
       return { stopReason: 'end_turn' };

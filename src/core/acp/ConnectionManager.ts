@@ -1,8 +1,9 @@
 import { ndJsonStream } from '@agentclientprotocol/sdk';
 import type { Stream } from '@agentclientprotocol/sdk';
+import { randomUUID } from 'node:crypto';
 
 import type { AgentStreams } from '@/core/AgentManager';
-import type { ClientHandlers } from '@/core/ClientHandlers';
+import type { ClientHandlers, Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { captureTraffic } from '@/core/Traffic';
 import { logDebug, logError, logInfo } from '@/core/Log';
@@ -20,11 +21,11 @@ export class ConnectionManager {
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly clientVersion: string,
-    private readonly createHandlers: (context: { agentName: string; elicitations: ElicitationRequests }) => ClientHandlers,
+    private readonly createHandlers: (context: { agentName: string; agentId: string; elicitations: Elicitations & ElicitationInteractions }) => ClientHandlers,
   ) {}
 
   /** Connect to an agent over its streams and initialize the connection. */
-  async connect(agentName: string, streams: AgentStreams): Promise<AcpDriver> {
+  async connect(agentName: string, streams: AgentStreams, agentId: string = randomUUID()): Promise<AcpDriver> {
     logDebug('Connecting to agent', { agentName });
 
     const stream = ndJsonStream(streams.input, streams.output);
@@ -33,9 +34,16 @@ export class ConnectionManager {
     const outgoing = new OutgoingRequests();
     const tappedStream = outgoing.observe(this.tapStream(stream));
     const connectionElicitations = new ElicitationRequests((id) => outgoing.has(id));
-    const handlers = this.createHandlers({ agentName, elicitations: connectionElicitations });
+    const handlers = this.createHandlers({ agentName, agentId, elicitations: connectionElicitations });
     const elicitations = handlers.elicitations ?? connectionElicitations;
-    const owned = { ...handlers, elicitations };
+    let closed = false;
+    const close = () => {
+      if (closed) { return; }
+      closed = true;
+      try { elicitations.close(); }
+      finally { outgoing.close(); handlers.close?.(); }
+    };
+    const owned = { ...handlers, elicitations, close };
     try {
       const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
       logInfo('Negotiated ACP protocol', { agentName, version: negotiated.version });
@@ -43,8 +51,7 @@ export class ConnectionManager {
         ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, owned)
         : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, owned));
     } catch (error) {
-      elicitations.close();
-      outgoing.close();
+      close();
       throw error;
     }
   }
