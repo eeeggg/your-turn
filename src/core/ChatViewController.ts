@@ -16,7 +16,7 @@ import type {
   ToolCallContent as WebviewToolCallContent,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
-import type { SessionInfo, SessionManager } from './SessionManager';
+import type { SessionEnvironment, SessionInfo, SessionManager } from './SessionManager';
 import type { AgentTerminals } from './AgentTerminals';
 import { CommandOutputFeed, type ShownContent } from './CommandOutputFeed';
 import { logDebug, logError, logInfo, messageOf } from './Log';
@@ -24,6 +24,8 @@ import { openReportedChanges, openReportedFile, type FileEditor } from './Report
 import { ToolCallDiffs, type DiffFile } from './ToolCallDiffs';
 import type { Commands, Window } from './VsCodeApi';
 import type { ElicitationInteractions } from './ClientHandlers';
+import { SessionTabs } from './SessionTabs';
+import type { SessionCommands } from './SessionCommands';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<
@@ -193,6 +195,14 @@ export class ChatViewController {
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
   private readonly commandOutput: CommandOutputFeed;
   private readonly diffs = new ToolCallDiffs();
+  private readonly tabs = new SessionTabs();
+  get sessionTabs(): SessionTabs { return this.tabs; }
+  notifyTabsChanged(): void { this.sendTabs(true); }
+  private navigation: Pick<SessionCommands, 'selectTab' | 'closeTab'> | undefined;
+
+  setTabNavigation(navigation: Pick<SessionCommands, 'selectTab' | 'closeTab'>): void {
+    this.navigation = navigation;
+  }
   private readonly turnListeners = new Set<TurnListener>();
   private disposed = false;
   private disposal: Promise<void> | undefined;
@@ -202,6 +212,7 @@ export class ChatViewController {
     private readonly environment: ChatViewEnvironment,
     private readonly editor: FileEditor,
     private readonly terminals: AgentTerminals,
+    private readonly workspace?: Pick<SessionEnvironment, 'workspaceRoots'>,
   ) {
     this.commandOutput = new CommandOutputFeed(terminals, {
       toolCallContent: (sessionId, toolCallId, content) =>
@@ -235,6 +246,12 @@ export class ChatViewController {
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     if (this.disposed) { return; }
     switch (message.type) {
+      case 'selectSessionTab':
+        await this.navigation?.selectTab(message.tabId);
+        break;
+      case 'closeSessionTab':
+        await this.navigation?.closeTab(message.tabId);
+        break;
       case 'questionDraft':
         if (this.questionSource(message.interactionId)) { this.questionDrafts.set(message.interactionId, structuredClone(message.draft)); }
         break;
@@ -263,6 +280,7 @@ export class ChatViewController {
         logInfo('Chat view ready');
         this._queuedPrompts = 0;
         this.sendCurrentState();
+        this.sendTabs(true);
         this.sendRunningTurn();
         this.setTurnInProgress(this.hasRunningTurn);
         this.sendQuestions();
@@ -301,6 +319,7 @@ export class ChatViewController {
           this.setTurnInProgress(running);
           this.post({ type: 'foregroundActivity', running });
         }
+        this.sendTabs();
         return;
       }
       case 'commands':
@@ -314,6 +333,11 @@ export class ChatViewController {
         break;
       case 'sessionInfo':
         this.sessions.applySessionInfoUpdate(sessionId, update);
+        {
+          const session = this.sessions.getSession(sessionId);
+          if (session) { this.tabs.update(session); }
+          this.sendTabs();
+        }
         this.sendTitle(sessionId);
         break;
       default:
@@ -336,6 +360,14 @@ export class ChatViewController {
     this.pendingText = { message, timer: setTimeout(() => this.sendPendingText(), TEXT_CHUNK_WINDOW_MS) };
   }
 
+  /** Only the successful-open event commits a reference and its selection. */
+  notifySessionOpened(sessionId: string): void {
+    const session = this.sessions.getSession(sessionId);
+    if (!session || this.disposed) { return; }
+    this.tabs.open(session);
+    this.sendTabs();
+  }
+
   /** Tell the webview the active session changed. */
   notifyActiveSessionChanged(): void {
     const changed = this.sessions.getActiveSessionId() !== this.shownSessionId;
@@ -355,6 +387,7 @@ export class ChatViewController {
   /** The session is gone, whether its agent exited or the user disconnected it. */
   notifySessionRemoved(sessionId: string): void {
     this.sessions.clearActivity(sessionId);
+    this.sendTabs();
     this.commandOutput.forgetSession(sessionId);
     this.diffs.forgetSession(sessionId);
   }
@@ -365,6 +398,7 @@ export class ChatViewController {
    */
   notifySessionEnded(sessionId: string, reason: string): void {
     this.sessions.clearActivity(sessionId);
+    this.sendTabs();
     if (sessionId === this.shownSessionId) {
       this.shownSessionEnded = true;
       this.post({ type: 'sessionEnded', message: reason });
@@ -422,6 +456,7 @@ export class ChatViewController {
     }
 
     const submission = this.sessions.beginPrompt(activeId);
+    this.sendTabs();
     this.post({ type: 'promptStart' });
     this.setTurnInProgress(true);
 
@@ -436,6 +471,7 @@ export class ChatViewController {
     }
     const wasRunning = this.isRunning(activeId);
     this.sessions.endPrompt(activeId, submission);
+    this.sendTabs();
     if (activeId !== this.sessions.getActiveSessionId()) { return; }
     if (wasRunning && !this.isRunning(activeId)) { this.endTurn(activeId); }
   }
@@ -524,6 +560,20 @@ export class ChatViewController {
         pickers: pickersOf(session),
         commands: session.availableCommands.map(slashCommand),
       } : null,
+    });
+  }
+
+  private sendTabs(includeEmpty = false): void {
+    const snapshot = this.tabs.snapshot();
+    if (!includeEmpty && snapshot.tabs.length === 0) { return; }
+    const additionalDirectories = this.workspace?.workspaceRoots().additionalDirectories ?? [];
+    this.post({
+      type: 'sessionTabs', selectedTabId: snapshot.selectedTabId,
+      tabs: snapshot.tabs.map((tab) => ({
+        tabId: tab.tabId, title: tab.title ?? null, agentName: tab.agentDisplayName,
+        cwd: tab.cwd, additionalDirectories: [...additionalDirectories],
+        running: this.sessions.getSession(tab.sessionId)?.agentName === tab.agentName && this.isRunning(tab.sessionId),
+      })),
     });
   }
 

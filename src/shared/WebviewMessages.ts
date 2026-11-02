@@ -121,10 +121,26 @@ export interface SessionSnapshot {
   commands: SlashCommand[];
 }
 
+/** A navigation reference, not a retained transcript or a live connection. */
+interface SessionTab {
+  tabId: string;
+  title: string | null;
+  agentName: string;
+  cwd: string;
+  additionalDirectories: readonly string[];
+  running: boolean;
+}
+
+export interface SessionTabsSnapshot {
+  tabs: readonly SessionTab[];
+  selectedTabId: string | null;
+}
+
 /** Reported summary content retained for presentation, including blocks the view does not yet support. */
 type CompactionContent = null | boolean | number | string | CompactionContent[] | { [key: string]: CompactionContent };
 
 export type ExtensionToWebviewMessage =
+  | ({ type: 'sessionTabs' } & SessionTabsSnapshot)
   | { type: 'questionOpen'; interactionId: string }
   | { type: 'questionSettled'; record: QuestionRecord }
   | { type: 'questions'; questions: Question[] }
@@ -179,6 +195,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'file-attached'; path: string; name: string };
 
 export type WebviewToExtensionMessage =
+  | { type: 'selectSessionTab'; tabId: string }
+  | { type: 'closeSessionTab'; tabId: string }
   | { type: 'questionDraft'; interactionId: string; draft: Readonly<Record<string, QuestionValue>> }
   | { type: 'questionResponse'; interactionId: string; action: 'accept' | 'decline' | 'cancel'; content?: Readonly<Record<string, QuestionValue>> }
   | { type: 'ready' }

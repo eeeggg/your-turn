@@ -8,6 +8,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   public static readonly viewType = 'acp-chat';
 
   private view: vscode.WebviewView | undefined;
+  private title = 'Chat';
   private ready: Promise<void> = Promise.resolve();
   private releaseReady: (() => void) | undefined;
   private readonly received = new vscode.EventEmitter<WebviewToExtensionMessage>();
@@ -39,6 +40,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
     _token: vscode.CancellationToken,
   ): void {
     this.view = webviewView;
+    webviewView.title = this.title;
     this.ready = new Promise((resolve) => { this.releaseReady = resolve; });
 
     webviewView.webview.options = {
@@ -62,6 +64,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   }
 
   post(message: ExtensionToWebviewMessage): void {
+    if (message.type === 'state') {
+      this.title = message.session ? `Chat ${message.session.agentName}` : 'Chat';
+      if (this.view) { this.view.title = this.title; }
+    }
     if (this.view) {
       void this.view.webview.postMessage(message);
       this.posted.fire(message);

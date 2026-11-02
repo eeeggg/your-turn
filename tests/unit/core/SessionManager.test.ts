@@ -17,6 +17,7 @@ import {
   type SessionManagerEvents,
 } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, work, type AgentScript, type ExitOrder } from './InProcessAgents';
 
 function memoryStore(): KeyValueStore {
@@ -97,13 +98,16 @@ function setup(scripts: Record<string, AgentScript>) {
   // As in the extension, the chat view applies session updates to the sessions.
   const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
   const executeCommand = vi.fn(async () => {});
+  const posted: ExtensionToWebviewMessage[] = [];
   onTestFinished(async () => { await terminals.dispose(); });
   const chatView = new ChatViewController(
     manager,
-    { post() {}, executeCommand, showsToolCallDiffs: () => false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
+    { post: (message) => posted.push(message), executeCommand, showsToolCallDiffs: () => false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
     unusedEditor,
     terminals,
+    environment,
   );
+  manager.on('session-opened', (sessionId) => chatView.notifySessionOpened(sessionId));
   onTestFinished(async () => { updates.dispose(); await chatView.dispose(); });
   const received: [string, SessionUpdate][] = [];
   const receivedWaiters: { count: number; resolve: () => void }[] = [];
@@ -127,6 +131,7 @@ function setup(scripts: Record<string, AgentScript>) {
   return {
     agents,
     manager,
+    posted,
     chatView,
     executeCommand,
     references,
@@ -175,6 +180,28 @@ function sessionAgent(id = 's1', extend: (app: AgentApp) => AgentApp = (app) => 
 }
 
 describe('SessionManager', () => {
+  it('opens navigation references for create, load and resume, but not a failed replay', async () => {
+    const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: 'created' }))
+      .onRequest(methods.agent.session.load, ({ params }) => {
+        if (params.sessionId === 'failed') { throw RequestError.invalidParams(undefined, 'Cannot load'); }
+        return {};
+      })
+      .onRequest(methods.agent.session.resume, () => ({}));
+    const { manager, chatView, posted } = setup({ fake: script });
+    await manager.connectToAgent('fake');
+    await manager.loadSession('fake', 'loaded');
+    await manager.resumeSession('fake', 'resumed');
+    await expect(manager.loadSession('fake', 'failed')).rejects.toThrow('Cannot load');
+    await chatView.handleMessage({ type: 'ready' });
+    const snapshots = posted.filter((message) => message.type === 'sessionTabs');
+    expect(snapshots.at(-1)).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-3', tabs: [
+      { tabId: 'tab-1', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], running: false },
+      { tabId: 'tab-2', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], running: false },
+      { tabId: 'tab-3', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], running: false },
+    ] });
+  });
+
   it.each([false, true])('retains every outstanding submission when the newer one ends (reported idle: %s)', async (reportedIdle) => {
     const { manager } = setup({ fake: sessionAgent().script });
     await manager.connectToAgent('fake');

@@ -186,7 +186,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, (webview) => workspaceEnvironment.useWebview(webview));
   const reportedFileEditor = new ReportedFileEditor();
   const agentTerminals = new AgentTerminals(pseudoterminalDisplays);
-  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals);
+  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals, workspaceEnvironment);
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
   });
@@ -251,6 +251,9 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reviews.activeSessionChanged(sessionId);
     chatViewController.notifyActiveSessionChanged();
   });
+  sessionManager.on('session-opened', (sessionId) => {
+    chatViewController.notifySessionOpened(sessionId);
+  });
   sessionManager.on('session-ended', (sessionId, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
   });
@@ -287,6 +290,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const sessionCommands = new SessionCommands(
     sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames, sessionStartup,
   );
+  chatViewController.setTabNavigation(sessionCommands);
   void sessionCommands.revealRequested();
   void chatViewReady.then(() => sessionCommands.restoreLastSession());
   // Opening a workspace already open in a window brings that window to the front instead of starting a new one.
@@ -330,7 +334,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     reportedFileEditor,
     statusBarManager,
     vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.newSession', () => sessionCommands.newSession()),
+    vscode.commands.registerCommand('acp.newSession', (arg?: unknown) => sessionCommands.newSession(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.restartAgent', (arg?: unknown) => sessionCommands.restart(agentNameOf(arg))),
     vscode.commands.registerCommand('acp.cancelTurn', () => sessionCommands.cancelTurn()),

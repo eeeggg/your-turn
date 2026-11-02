@@ -7,6 +7,7 @@ import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionStartup } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionTabs } from '@/core/SessionTabs';
 import { ProgressLocation } from '@/core/VsCodeApi';
 import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
 import { ScriptedUser, type Call } from './ScriptedUser';
@@ -77,7 +78,12 @@ function setup(scripts: Record<string, AgentScript>) {
   const references = new SessionReferences(globalState);
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
-  const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn() };
+  const tabs = new SessionTabs();
+  manager.on('session-opened', (sessionId) => {
+    const session = manager.getSession(sessionId);
+    if (session) { tabs.open(session); }
+  });
+  const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn(), sessionTabs: tabs, notifyTabsChanged: vi.fn() };
   /** The session each Keep All was made in. */
   const keptIn: (string | null)[] = [];
   const review = {
@@ -93,7 +99,7 @@ function setup(scripts: Record<string, AgentScript>) {
   const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts), startup);
   /** Another window asks the window opening the address's workspace to load its session. */
   const request = (address: SessionAddress) => new StartupRequests(globalState).request(address);
-  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands, request };
+  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands, request, tabs };
 }
 
 /** Where session `sessionId` of agent configuration `configuredName` lives in the test workspace. */
@@ -132,6 +138,132 @@ const asked = (question: string, detail: string, action: string, keepAll?: { lab
 });
 
 describe('SessionCommands', () => {
+  it('does not create a targeted session when stopping foreground work is declined', async () => {
+    const { commands, manager, tabs, user, transcript, agents } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    await commands.connect('one');
+    const before = tabs.snapshot();
+    transcript.hasRunningTurn = true;
+    user.answer(undefined);
+    await commands.newSession('two');
+    expect(manager.getActiveSessionId()).toBe('one-1');
+    expect(tabs.snapshot()).toEqual(before);
+    expect(agents.launched.map((agent) => agent.name)).toEqual(['one']);
+  });
+
+  it('retains a retryable MRU reference without selection when reopening after close fails', async () => {
+    let fail = false;
+    const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: 'one-1' }))
+      .onRequest(methods.agent.session.load, () => {
+        if (fail) { throw RequestError.internalError(undefined, 'Cannot reopen'); }
+        return {};
+      });
+    const { commands, manager, tabs, user } = setup({ one: script });
+    await commands.connect('one');
+    await commands.open('one', 'older');
+    const [first, second] = tabs.snapshot().tabs;
+    if (!first || !second) { throw new Error('missing tabs'); }
+    fail = true;
+    user.answer(undefined);
+    await commands.closeTab(second.tabId);
+    expect(manager.getActiveSessionId()).toBeNull();
+    expect(tabs.snapshot()).toEqual({ tabs: [first], selectedTabId: null });
+    fail = false;
+    await commands.selectTab(first.tabId);
+    expect(manager.getActiveSessionId()).toBe('one-1');
+    expect(tabs.snapshot().selectedTabId).toBe(first.tabId);
+  });
+
+  it('serializes a tab load with a competing tree open so the last request remains selected', async () => {
+    let release: (() => void) | undefined;
+    let arrived: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => { arrived = resolve; });
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let hold = false;
+    const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: 'one-1' }))
+      .onRequest(methods.agent.session.load, async ({ params }) => {
+        if (hold && params.sessionId === 'one-1') { arrived?.(); await held; }
+        return {};
+      });
+    const { commands, manager, tabs } = setup({ one: script });
+    await commands.connect('one');
+    await commands.open('one', 'older');
+    const first = tabs.snapshot().tabs[0];
+    if (!first) { throw new Error('missing tab'); }
+    hold = true;
+    const selecting = commands.selectTab(first.tabId);
+    await started;
+    const opening = commands.open('one', 'latest');
+    release?.();
+    await Promise.all([selecting, opening]);
+    expect(manager.getActiveSessionId()).toBe('latest');
+    const snapshot = tabs.snapshot();
+    expect(snapshot.tabs.find((tab) => tab.tabId === snapshot.selectedTabId)?.sessionId).toBe('latest');
+  });
+
+  it('does not confuse equal session IDs owned by different configurations', async () => {
+    const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const two = sessionAgent('two', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs } = setup({ one: one.script, two: two.script });
+    await commands.open('one', 'shared');
+    await commands.open('two', 'shared');
+    expect(manager.getActiveAgentName()).toBe('two');
+    expect(tabs.snapshot().tabs.map((tab) => tab.agentName)).toEqual(['one', 'two']);
+  });
+
+  it('selects through load and closes only references until closing the selection reopens MRU', async () => {
+    const agent = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs, references } = setup({ one: agent.script });
+    await commands.connect('one');
+    await commands.open('one', 'older');
+    const [first, second] = tabs.snapshot().tabs;
+    if (!first || !second) { throw new Error('missing opened tabs'); }
+    await commands.selectTab(first.tabId);
+    expect(manager.getActiveSessionId()).toBe('one-1');
+    expect(tabs.snapshot().selectedTabId).toBe(first.tabId);
+    await commands.closeTab(first.tabId);
+    expect(manager.getActiveSessionId()).toBe('older');
+    expect(tabs.snapshot().selectedTabId).toBe(second.tabId);
+    expect(references.list(WORKSPACE.host, 'one', '/work').map((ref) => ref.sessionId).sort()).toEqual(['older', 'one-1']);
+    await commands.closeTab(second.tabId);
+    expect(manager.getActiveSessionId()).toBeNull();
+    expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
+  });
+
+  it('leaves navigation unchanged when departure is cancelled and closes unfocused references without a request', async () => {
+    const agent = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs, transcript, user, agents } = setup({ one: agent.script });
+    await commands.connect('one');
+    await commands.open('one', 'older');
+    const [first, second] = tabs.snapshot().tabs;
+    if (!first || !second) { throw new Error('missing tabs'); }
+    transcript.queuedPrompts = 1;
+    const before = tabs.snapshot();
+    user.answer(undefined, undefined);
+    await commands.selectTab(first.tabId);
+    await commands.closeTab(second.tabId);
+    expect(tabs.snapshot()).toEqual(before);
+    expect(manager.getActiveSessionId()).toBe('older');
+    const requests = [...agent.requests];
+    await commands.closeTab(first.tabId);
+    expect(agent.requests).toEqual(requests);
+    expect(agents.launched).toHaveLength(1);
+    expect(tabs.snapshot().tabs.map((tab) => tab.tabId)).toEqual([second.tabId]);
+  });
+
+  it('creates a fresh session for an explicitly targeted agent without an intermediate session', async () => {
+    const { commands, manager, agents, tabs } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    await commands.connect('one');
+    await commands.newSession('two');
+    expect(manager.getActiveSessionId()).toBe('two-1');
+    expect(manager.hasSession('one')).toBe(false);
+    expect(agents.launched.map((agent) => agent.name)).toEqual(['one', 'two']);
+    await commands.newSession('two');
+    expect(manager.getActiveSessionId()).toBe('two-2');
+    expect(tabs.snapshot().tabs.map((tab) => tab.sessionId)).toEqual(['one-1', 'two-1', 'two-2']);
+  });
+
   describe('connect', () => {
     it('makes a session with the named agent the active session', async () => {
       const { manager, user, commands } = setup({ one: sessionAgent('one').script });

@@ -33,12 +33,23 @@ suite('Chat View Test Suite', () => {
     };
     const view = { webview, onDidDispose: disposed.event } as unknown as vscode.WebviewView;
     try {
+      provider.post({ type: 'state', activeSessionId: 's1', session: { sessionId: 's1', agentName: 'First Agent', cwd: '/work', pickers: [], commands: [] } });
       provider.resolveWebviewView(view, { state: undefined }, tokens.token);
+      assert.strictEqual(view.title, 'Chat First Agent');
+      const html = webview.html;
+      provider.post({ type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Second Agent', cwd: '/work', pickers: [], commands: [] } });
+      assert.strictEqual(view.title, 'Chat Second Agent');
+      assert.strictEqual(webview.html, html, 'changing the title must not reload the webview');
       assert.strictEqual(given.length, 1);
       assert.strictEqual(given[0], webview);
 
       disposed.fire();
       assert.deepStrictEqual(given.slice(1), [undefined]);
+      const replacement = { webview, onDidDispose: disposed.event } as unknown as vscode.WebviewView;
+      provider.resolveWebviewView(replacement, { state: undefined }, tokens.token);
+      assert.strictEqual(replacement.title, 'Chat Second Agent');
+      provider.post({ type: 'state', activeSessionId: null, session: null });
+      assert.strictEqual(replacement.title, 'Chat');
     } finally {
       provider.dispose();
       disposed.dispose();

@@ -338,7 +338,10 @@ agent({ name: 'fake-agent' })
   .onRequest(methods.agent.session.list, ({ params }) => {
     if (COMPACTION) {
       if (initializes.join(',') !== '2,1') { throw RequestError.invalidParams(undefined, 'Missing v1 initialize'); }
-      return { sessions: [{ sessionId: SESSION_ID, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' }] };
+      return { sessions: [
+        { sessionId: SESSION_ID, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' },
+        { sessionId: `${SESSION_ID}-other`, cwd: params.cwd ?? process.cwd(), title: 'Another session with a deliberately long title for tab overflow' },
+      ] };
     }
     listings += 1;
     return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };

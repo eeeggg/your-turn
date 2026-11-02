@@ -14,13 +14,19 @@ function agentMessages(): string[] {
 }
 
 describe('streaming a turn', () => {
-  it('shows the spinner while a prompt runs', () => {
+  it('shows the tab activity indicator while core reports foreground work', () => {
     page.send({ type: 'promptStart' });
+    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [
+      { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [], running: true },
+    ] });
 
-    expect(page.byId('status').querySelector('.spinner')).not.toBeNull();
+    expect(page.byId('sessionTabs').querySelector('.activity-dot')?.getAttribute('aria-label')).toBe('Actively working');
 
     page.send({ type: 'promptEnd' });
-    expect(page.byId('status').textContent).toBe('');
+    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [
+      { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [], running: false },
+    ] });
+    expect(page.byId('sessionTabs').querySelector('.activity-dot')).toBeNull();
   });
 
   it('accumulates the text of a turn into one agent message', () => {

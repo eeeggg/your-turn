@@ -71,6 +71,16 @@ export function promptInput(window: Page): Locator {
   return acpChatFrame(window).locator('#promptInput');
 }
 
+export function sessionTabs(window: Page): Locator {
+  return acpChatFrame(window).getByRole('tablist', { name: 'Sessions', exact: true });
+}
+
+/** The chat view's header uses VS Code's private pane DOM, identified by its contributed icon. */
+export function chatViewTitle(window: Page): Locator {
+  return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-comment-discussion') })
+    .locator('.pane-header > .title');
+}
+
 export function questionSurface(window: Page): Locator {
   return acpChatFrame(window).getByRole('region', { name: 'Elicitations', exact: true });
 }

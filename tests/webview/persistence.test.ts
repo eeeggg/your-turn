@@ -41,7 +41,7 @@ describe('a rebuilt page', () => {
     const page = open(earlierBuildState);
 
     expect(transcriptOnScreen(page)).toEqual([]);
-    expect(page.byId('sessionBanner').classList.contains('visible')).toBe(false);
+    expect(page.byId('sessionTabs').hidden).toBe(true);
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(true);
     expect(page.takePosted()).toEqual([{ type: 'ready' }]);
   });
@@ -61,7 +61,7 @@ describe('a rebuilt page', () => {
     connect(page, { agentName: 'OpenCode', title: 'New session' });
 
     expect(transcriptOnScreen(page)).toEqual([]);
-    expect(page.byId('bannerAgent').textContent).toBe('New session');
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('New session');
   });
 });
 

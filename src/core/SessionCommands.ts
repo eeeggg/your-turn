@@ -6,7 +6,7 @@ import { openingFailure, type OpeningFailure, type SessionStartup, type StartupO
 import { ProgressLocation, type Commands, type Window } from './VsCodeApi';
 
 /** What commands need from the chat view. */
-export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompts' | 'clearTranscript'>;
+export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompts' | 'clearTranscript' | 'sessionTabs' | 'notifyTabsChanged'>;
 
 /** What commands need of the shown review. */
 export type ShownReview = Pick<ReviewControls, 'reviewedPaths' | 'keepAll'>;
@@ -28,6 +28,41 @@ const CHOOSE_AGENT = 'Choose Agent';
 
 /** The commands that start, switch, open, and control sessions. */
 export class SessionCommands {
+  private navigation = Promise.resolve();
+
+  private serial(action: () => Promise<void>): Promise<void> {
+    const result = this.navigation.then(action);
+    this.navigation = result.catch(() => {});
+    return result;
+  }
+
+  selectTab(tabId: string): Promise<void> {
+    return this.serial(async () => {
+      const tab = this.chatView.sessionTabs.snapshot().tabs.find((tab) => tab.tabId === tabId);
+      if (tab) { await this.openSession(tab.agentName, tab.sessionId); }
+    });
+  }
+
+  closeTab(tabId: string): Promise<void> {
+    return this.serial(async () => {
+      const snapshot = this.chatView.sessionTabs.snapshot();
+      const tab = snapshot.tabs.find((tab) => tab.tabId === tabId);
+      if (!tab) { return; }
+      if (snapshot.selectedTabId !== tabId) {
+        this.chatView.sessionTabs.close(tabId);
+        this.chatView.notifyTabsChanged();
+        return;
+      }
+      const closing = { question: 'Close this session tab?', action: 'Close Tab', keepAllAction: 'Keep All and Close', stopsAgent: true };
+      if (!await this.confirmLeaving(closing)) { return; }
+      await this.startup.forgo();
+      const activeAgent = this.sessions.getActiveAgentName();
+      if (activeAgent) { await this.sessions.disconnectAgent(activeAgent); }
+      const next = this.chatView.sessionTabs.close(tabId);
+      this.chatView.notifyTabsChanged();
+      if (next) { await this.openThrough(next.agentName, next.sessionId); }
+    });
+  }
   constructor(
     private readonly sessions: SessionManager,
     private readonly chatView: ChatView,
@@ -40,7 +75,7 @@ export class SessionCommands {
 
   /** Load the workspace's last active session, once per activation; a failure offers ways on. */
   async restoreLastSession(): Promise<void> {
-    await this.settleStartup(await this.startup.attempt());
+    await this.serial(async () => this.settleStartup(await this.startup.attempt()));
   }
 
   /** Show the chat view when another window asked this one, as it opened, to load a session, which startup loads there. */
@@ -99,7 +134,11 @@ export class SessionCommands {
   }
 
   /** Make a session with an agent the active session, asking which agent when none is given. */
-  async connect(agentName?: string): Promise<void> {
+  connect(agentName?: string): Promise<void> {
+    return this.serial(() => this.connectAgent(agentName));
+  }
+
+  private async connectAgent(agentName?: string): Promise<void> {
     const name = agentName ?? await this.pickAgent();
     if (!name) { return; }
     await this.startup.forgo();
@@ -113,17 +152,35 @@ export class SessionCommands {
 
     try {
       await this.withProgress(`Connecting to ${name}...`, () => this.sessions.connectToAgent(name));
+      this.selectActiveTab();
     } catch (e) {
       this.report('Failed to connect', e);
     }
   }
 
   /** Replace the active session with a new one from the same agent; connect when there is none. */
-  async newSession(): Promise<void> {
+  newSession(agentName?: string): Promise<void> {
+    return this.serial(() => this.createSession(agentName));
+  }
+
+  private async createSession(agentName?: string): Promise<void> {
     await this.startup.forgo();
     const activeSession = this.sessions.getActiveSession();
+    if (agentName && agentName !== activeSession?.agentName) {
+      const starting = { question: `Start a new session with ${agentName}?`, action: 'New Session', keepAllAction: 'Keep All and Start', stopsAgent: true };
+      if (!await this.confirmLeaving(starting)) { return; }
+      try {
+        // A listed agent can already have a session even when it is not the active agent.
+        if (this.sessions.hasSession(agentName)) { await this.sessions.disconnectAgent(agentName); }
+        this.chatView.clearTranscript();
+        await this.withProgress(`Starting new session with ${agentName}...`, () => this.sessions.connectToAgent(agentName));
+      } catch (e) {
+        this.report('Failed to start new session', e);
+      }
+      return;
+    }
     if (!activeSession) {
-      await this.connect();
+      await this.connectAgent();
       return;
     }
 
@@ -138,7 +195,11 @@ export class SessionCommands {
   }
 
   /** Stop an agent, by default the active session's. */
-  async disconnect(agentName?: string): Promise<void> {
+  disconnect(agentName?: string): Promise<void> {
+    return this.serial(() => this.disconnectAgent(agentName));
+  }
+
+  private async disconnectAgent(agentName?: string): Promise<void> {
     const name = agentName ?? this.sessions.getActiveAgentName();
     if (!name) {
       void this.window.showInformationMessage('No active session.');
@@ -149,7 +210,11 @@ export class SessionCommands {
   }
 
   /** Stop an agent, by default the active session's, and connect it again with a new session. */
-  async restart(agentName?: string): Promise<void> {
+  restart(agentName?: string): Promise<void> {
+    return this.serial(() => this.restartAgent(agentName));
+  }
+
+  private async restartAgent(agentName?: string): Promise<void> {
     await this.startup.forgo();
     const activeSession = this.sessions.getActiveSession();
     const name = agentName ?? activeSession?.agentName;
@@ -208,14 +273,19 @@ export class SessionCommands {
   }
 
   /** Show a past session in the chat view, loading it when the agent can, otherwise resuming it. */
-  async open(agentName: string | undefined, sessionId: string | undefined): Promise<void> {
+  open(agentName: string | undefined, sessionId: string | undefined): Promise<void> {
+    return this.serial(() => this.openSession(agentName, sessionId));
+  }
+
+  private async openSession(agentName: string | undefined, sessionId: string | undefined): Promise<void> {
     if (!agentName || !sessionId) {
       void this.window.showErrorMessage('Open Session: missing agentName/sessionId.');
       return;
     }
     await this.startup.forgo();
 
-    if (this.sessions.getActiveSessionId() === sessionId) {
+    if (this.sessions.getActiveSessionId() === sessionId && this.sessions.getActiveAgentName() === agentName) {
+      this.selectActiveTab();
       await this.focusChatView();
       return;
     }
@@ -312,6 +382,13 @@ export class SessionCommands {
 
   private async focusChatView(): Promise<void> {
     await this.commands.executeCommand('acp-chat.focus');
+  }
+
+  private selectActiveTab(): void {
+    const session = this.sessions.getActiveSession();
+    if (!session) { return; }
+    this.chatView.sessionTabs.open(session);
+    this.chatView.notifyTabsChanged();
   }
 
   private withProgress<R>(title: string, task: () => PromiseLike<R>): PromiseLike<R> {

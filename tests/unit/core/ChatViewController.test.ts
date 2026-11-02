@@ -193,7 +193,9 @@ function setup() {
     if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
     await disposed;
   });
-  const controller = new ChatViewController(sessions, environment, editor, terminals);
+  const controller = new ChatViewController(sessions, environment, editor, terminals, {
+    workspaceRoots: () => ({ cwd: '/work/project', additionalDirectories: ['/other'] }),
+  });
   onTestFinished(async () => {
     const disposed = controller.dispose();
     if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
@@ -214,6 +216,76 @@ function sendPrompt(controller: ChatViewController, sessions: FakeSessions, text
 const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
+  it('routes opaque tab requests to session commands without changing content', async () => {
+    const { controller, environment } = setup();
+    const requests: string[] = [];
+    controller.setTabNavigation({
+      selectTab: async (id) => { requests.push(`select:${id}`); },
+      closeTab: async (id) => { requests.push(`close:${id}`); },
+    });
+    await controller.handleMessage({ type: 'selectSessionTab', tabId: 'opaque-one' });
+    await controller.handleMessage({ type: 'closeSessionTab', tabId: 'opaque-two' });
+    expect(requests).toEqual(['select:opaque-one', 'close:opaque-two']);
+    expect(environment.take()).toEqual([]);
+  });
+  it('commits tabs only on successful opens and re-sends the complete navigation on readiness', async () => {
+    const { controller, sessions, environment } = setup();
+    controller.notifyActiveSessionChanged();
+    expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
+    controller.notifySessionOpened('s1');
+    const first = environment.take();
+    const snapshot = first.find((message) => message.type === 'sessionTabs');
+    expect(snapshot).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-1', tabs: [
+      { tabId: 'tab-1', title: null, agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
+    ] });
+    if (snapshot?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
+    expect(snapshot.selectedTabId).toBe(snapshot.tabs[0]?.tabId);
+
+    sessions.session = sessionInfo({ sessionId: 's2', title: 'Second' });
+    sessions.activeId = 's2';
+    controller.notifyActiveSessionChanged();
+    controller.notifyLoadSessionEnd(false);
+    expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
+    await controller.handleMessage({ type: 'ready' });
+    expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([snapshot]);
+
+    controller.notifySessionOpened('s2');
+    const second = environment.take().find((message) => message.type === 'sessionTabs');
+    expect(second?.type === 'sessionTabs' && second.tabs).toEqual([
+      snapshot.tabs[0],
+      { tabId: 'tab-2', title: 'Second', agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
+    ]);
+    controller.notifySessionOpened('s2');
+    expect(environment.take()).toEqual([second]);
+  });
+
+  it('updates tab labels and foreground indicators without creating content or prompt boundaries', async () => {
+    const { controller, sessions, environment } = setup();
+    controller.notifySessionOpened('s1');
+    const initial = environment.take().find((message) => message.type === 'sessionTabs');
+    if (initial?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
+    const tab = initial.tabs[0];
+    controller.handleSessionUpdate('s1', { kind: 'sessionInfo', title: 'Renamed' });
+    expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([
+      { ...initial, tabs: [{ ...tab, title: 'Renamed' }] },
+    ]);
+    controller.handleSessionUpdate('s1', { kind: 'sessionInfo', title: null });
+    environment.take();
+    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+    expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([
+      { ...initial, tabs: [{ ...tab, running: true }] },
+    ]);
+    const turn = sendPrompt(controller, sessions, 'steering');
+    environment.take();
+    sessions.fail(new Error('Rejected'));
+    await turn;
+    expect(controller.hasRunningTurn).toBe(true);
+    expect(environment.take().some((message) => message.type === 'promptEnd')).toBe(false);
+    controller.notifySessionRemoved('s1');
+    const removed = environment.take();
+    expect(removed).toEqual([initial]);
+  });
+
   it('keeps the next submission active when autonomous idle releases the queue synchronously', async () => {
     const { controller, sessions, environment } = setup();
     controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
@@ -578,7 +650,7 @@ describe('ChatViewController', () => {
             { name: 'review', description: 'Review', takesInput: true, hint: 'what to review' },
           ],
         },
-      }]);
+      }, { type: 'sessionTabs', tabs: [], selectedTabId: null }]);
     });
 
     it('leaves the title out when the session has none', () => {
@@ -597,7 +669,7 @@ describe('ChatViewController', () => {
 
       await controller.handleMessage({ type: 'ready' });
 
-      expect(environment.take()).toEqual([{ type: 'state', activeSessionId: null, session: null }]);
+      expect(environment.take()).toEqual([{ type: 'state', activeSessionId: null, session: null }, { type: 'sessionTabs', tabs: [], selectedTabId: null }]);
     });
 
     it('passes on replays and changes to the pickers', () => {
@@ -728,7 +800,7 @@ describe('ChatViewController', () => {
       expect(state.activeSession?.turnRunning).toBe(true);
       expect(state.transcript.currentTurn).toBe(streaming.transcript.currentTurn);
       expect(state.transcript.entries).toEqual(streaming.transcript.entries);
-      expect(messages.map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
+      expect(messages.map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
       expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'acp.turnInProgress', true]]);
     });
 
@@ -856,13 +928,13 @@ describe('ChatViewController', () => {
       environment.take();
 
       await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
+      expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
 
       sessions.answer();
       await turn;
       environment.take();
       await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state']);
+      expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs']);
     });
 
     describe('in a session the chat view no longer shows', () => {
@@ -982,7 +1054,7 @@ describe('ChatViewController', () => {
         environment.take();
         await controller.handleMessage({ type: 'ready' });
 
-        expect(environment.take().map((message) => message.type)).toEqual(['state']);
+        expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs']);
         expect(controller.hasRunningTurn).toBe(false);
         sessions.fail(new Error('ACP connection closed'));
         await turn;

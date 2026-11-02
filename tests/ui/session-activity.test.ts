@@ -1,6 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { acpContainerControl, agentsViewRow, chatStop, chatTranscript, chatUserMessages, promptInput, queuedPrompts } from './workbench';
+import { acpContainerControl, agentsViewRow, chatStop, chatTranscript, chatUserMessages, chatViewTitle, promptInput, queuedPrompts, sessionTabs } from './workbench';
 import { expect, test } from './window';
 
 test.use({ agentVersion: 'v2' });
@@ -11,14 +11,19 @@ test('Stop returns for autonomous foreground work and cancels the active session
   await window.getByRole('button', { name: 'ACP: Connect to Agent', exact: true }).click();
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
+  const tabs = sessionTabs(window);
+  await expect(tabs.getByRole('tab')).toHaveCount(1);
+  await expect(chatViewTitle(window)).toHaveText('Chat FakeAgent');
   await prompt.fill(`autonomous ${workspace}`);
   await prompt.press('Enter');
   await expect(chatTranscript(window)).toContainText('Initial foreground complete.');
   await expect(chatStop(window)).toHaveCount(0);
+  await expect(tabs.locator('.activity-dot')).toHaveCount(0);
   await writeFile(join(workspace, 'foreground.trigger'), 'start');
   await expect(chatTranscript(window)).toContainText('Autonomous foreground running.');
   await prompt.hover();
   await expect(chatStop(window)).toBeVisible();
+  await expect(tabs.getByLabel('Actively working')).toBeVisible();
   await prompt.fill('steer-check');
   await prompt.press('Enter');
   await prompt.fill('switch model-b');
@@ -51,6 +56,7 @@ test('Stop returns for autonomous foreground work and cancels the active session
   await expect(rows).toHaveCount(1);
   await expect(chatUserMessages(window)).toHaveCount(2);
   await expect(chatStop(window)).toBeVisible();
+  await expect(tabs.getByLabel('Actively working')).toBeVisible();
   await window.screenshot({ path: testInfo.outputPath('autonomous-stop.png') });
   await rows.nth(0).getByRole('button', { name: 'Stop and send now', exact: true }).click();
   await expect(chatTranscript(window)).toContainText('cancel-ack');

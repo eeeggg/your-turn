@@ -1,4 +1,4 @@
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, SessionTabsSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { updateActiveSession, withPromptsPosted, type ActiveSession } from '@/webview/state/ActiveSession';
 import { initialPickers, updatePickers, type PickerAction, type PickersState } from '@/webview/state/Pickers';
 import { initialPromptBox, updatePromptBox, type PromptBoxAction, type PromptBoxState } from '@/webview/state/PromptBox';
@@ -15,6 +15,7 @@ import {
 /** Everything the chat view shows. */
 export interface RootState {
   readonly activeSession: ActiveSession | null;
+  readonly sessionTabs: SessionTabsSnapshot;
   readonly pickers: PickersState;
   readonly promptBox: PromptBoxState;
   readonly transcript: TranscriptState;
@@ -22,10 +23,12 @@ export interface RootState {
 }
 
 /** What the store is dispatched: webview messages from the extension, and user actions. */
-export type Action = ExtensionToWebviewMessage | PickerAction | PromptBoxAction | TranscriptAction | QuestionAction;
+export type Action = ExtensionToWebviewMessage | PickerAction | PromptBoxAction | TranscriptAction | QuestionAction
+  | { type: 'sessionTabSelected' | 'sessionTabClosed'; tabId: string };
 
 export const initialState: RootState = {
   activeSession: null,
+  sessionTabs: { tabs: [], selectedTabId: null },
   pickers: initialPickers,
   promptBox: initialPromptBox,
   transcript: initialTranscript,
@@ -33,6 +36,16 @@ export const initialState: RootState = {
 };
 
 export function update(state: RootState, action: Action, now: number): Transition<RootState, WebviewToExtensionMessage> {
+  if (action.type === 'sessionTabSelected' || action.type === 'sessionTabClosed') {
+    return {
+      state,
+      outgoing: state.sessionTabs.tabs.some((tab) => tab.tabId === action.tabId)
+        ? [{ type: action.type === 'sessionTabSelected' ? 'selectSessionTab' : 'closeSessionTab', tabId: action.tabId }] : [],
+    };
+  }
+  if (action.type === 'sessionTabs') {
+    return { state: { ...state, sessionTabs: { tabs: action.tabs, selectedTabId: action.selectedTabId } }, outgoing: [] };
+  }
   const updatedSession = updateActiveSession(state.activeSession, action);
   const questions = updateQuestions(state.questions, action);
   const pickers = updatePickers(state.pickers, action);
@@ -50,7 +63,7 @@ export function update(state: RootState, action: Action, now: number): Transitio
     sent.state !== state.transcript || questions.state !== state.questions;
   return {
     state: changed
-      ? { activeSession, pickers: pickers.state, promptBox: promptBox.state, transcript: sent.state, questions: questions.state }
+      ? { activeSession, sessionTabs: state.sessionTabs, pickers: pickers.state, promptBox: promptBox.state, transcript: sent.state, questions: questions.state }
       : state,
     outgoing,
   };

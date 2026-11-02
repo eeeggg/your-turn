@@ -1,8 +1,38 @@
 import { describe, expect, it } from 'vitest';
 import { promptHistory } from '@/webview/state/Transcript';
 import { chatView, promptEnd, queuedPrompts } from './TranscriptTestSupport';
+import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
 describe('prompts', () => {
+  it('updates tab navigation without touching the active transcript, composer, queue or activity', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.send({ type: 'foregroundActivity', running: true });
+    view.answer('Working');
+    view.prompt('queued');
+    view.send({ type: 'promptEdited', text: 'draft' });
+    view.takePosted();
+    const before = view.store.getSnapshot();
+    const navigation: Extract<ExtensionToWebviewMessage, { type: 'sessionTabs' }> = {
+      type: 'sessionTabs', selectedTabId: 'tab-a',
+      tabs: [
+        { tabId: 'tab-a', title: 'First', agentName: 'Fake', cwd: '/work', additionalDirectories: ['/other'], running: true },
+        { tabId: 'tab-b', title: null, agentName: 'Other', cwd: '/work', additionalDirectories: ['/other'], running: false },
+      ],
+    };
+
+    view.send(navigation);
+
+    expect(view.store.getSnapshot()).toEqual({ ...before, sessionTabs: { tabs: navigation.tabs, selectedTabId: 'tab-a' } });
+    expect(view.store.getSnapshot().activeSession).toBe(before.activeSession);
+    expect(view.store.getSnapshot().transcript).toBe(before.transcript);
+    expect(view.store.getSnapshot().promptBox).toBe(before.promptBox);
+    expect(view.store.getSnapshot().pickers).toBe(before.pickers);
+    expect(view.store.getSnapshot().questions).toBe(before.questions);
+    expect(view.takePosted()).toEqual([]);
+  });
+
   it('shows exactly the prompt the prompt box sent', () => {
     const view = chatView();
     view.connect();

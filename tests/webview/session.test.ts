@@ -32,7 +32,7 @@ describe('session state', () => {
 
     expect(page.takePosted()).toEqual([{ type: 'ready' }]);
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(true);
-    expect(page.byId('sessionBanner').classList.contains('visible')).toBe(false);
+    expect(page.byId('sessionTabs').hidden).toBe(true);
     expect(page.byId('emptyState').style.display).toBe('');
   });
 
@@ -40,9 +40,9 @@ describe('session state', () => {
     page = loadChatPage();
     connect(page, { agentName: 'OpenCode', cwd: '/work/project' });
 
-    expect(page.byId('sessionBanner').classList.contains('visible')).toBe(true);
-    expect(page.byId('bannerAgent').textContent).toBe('OpenCode');
-    expect(page.byId('bannerCwd').textContent).toBe('/work/project');
+    expect(page.byId('sessionTabs').hidden).toBe(false);
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
+    expect(page.document.querySelector('[role="tab"]')?.getAttribute('title')).toContain('/work/project');
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
     expect(page.byId('emptyState').style.display).toBe('none');
   });
@@ -51,7 +51,7 @@ describe('session state', () => {
     page = loadChatPage();
     connect(page, { agentName: 'OpenCode', title: 'Fix the build' });
 
-    expect(page.byId('bannerAgent').textContent).toBe('Fix the build');
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('Fix the build');
   });
 
   it('updates the title from sessionInfoUpdate and falls back to the agent name when cleared', () => {
@@ -59,17 +59,19 @@ describe('session state', () => {
     connect(page, { agentName: 'OpenCode', title: 'Old' });
 
     page.send({ type: 'sessionInfoUpdate', title: 'New' });
-    expect(page.byId('bannerAgent').textContent).toBe('New');
+    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ tabId: 'tab', title: 'New', agentName: 'OpenCode', cwd: '/work', additionalDirectories: [], running: false }] });
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('New');
 
     page.send({ type: 'sessionInfoUpdate', title: null });
-    expect(page.byId('bannerAgent').textContent).toBe('OpenCode');
+    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ tabId: 'tab', title: null, agentName: 'OpenCode', cwd: '/work', additionalDirectories: [], running: false }] });
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
   });
 
   it('ignores sessionInfoUpdate when no session is connected', () => {
     page = loadChatPage();
     page.send({ type: 'sessionInfoUpdate', title: 'New' });
 
-    expect(page.byId('bannerAgent').textContent).toBe('');
+    expect(page.document.querySelector('[role="tab"]')).toBeNull();
   });
 
   it('returns to the disconnected view on a state message without a session', () => {
@@ -77,7 +79,7 @@ describe('session state', () => {
     connect(page);
     page.send({ type: 'state', activeSessionId: null, session: null });
 
-    expect(page.byId('sessionBanner').classList.contains('visible')).toBe(false);
+    expect(page.document.querySelectorAll('[role="tab"]')).toHaveLength(1);
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(true);
     expect(page.byId('emptyState').style.display).toBe('');
   });
@@ -92,7 +94,7 @@ describe('session state', () => {
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
     expect(page.byId('messages').contains(page.byId('emptyState'))).toBe(true);
     expect(page.byId('emptyState').style.display).toBe('');
-    expect(page.byId('sessionBanner').classList.contains('visible')).toBe(false);
+    expect(page.document.querySelectorAll('[role="tab"]')).toHaveLength(1);
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(true);
   });
 
@@ -105,7 +107,7 @@ describe('session state', () => {
     connect(page, { sessionId: 's2', agentName: 'OpenCode' });
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
-    expect(page.byId('bannerAgent').textContent).toBe('OpenCode');
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
   });
 
@@ -132,7 +134,7 @@ describe('session state', () => {
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
     expect(page.byId('messages').contains(page.byId('emptyState'))).toBe(true);
     expect(page.byId('emptyState').style.display).toBe('');
-    expect(page.byId('status').textContent).toBe('');
+    expect(page.document.querySelector('.activity-dot')).toBeNull();
   });
 
   it('keeps the transcript cleared when the same session reconnects', () => {

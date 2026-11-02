@@ -167,6 +167,9 @@ function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapsho
 export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}): void {
   const full = sessionSnapshot(session);
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
+  page.send({ type: 'sessionTabs', selectedTabId: full.sessionId, tabs: [{
+    tabId: full.sessionId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], running: false,
+  }] });
 }
 
 export function answer(page: ChatPage, text: string, messageId: string | null = null): void {

@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef } from 'react';
 import { InputArea } from '@/webview/views/InputArea';
-import { SessionBanner } from '@/webview/views/SessionBanner';
+import { SessionTabs } from '@/webview/views/SessionTabs';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 import { TranscriptView } from '@/webview/views/TranscriptView';
 import { Questions } from '@/webview/views/Questions';
@@ -11,7 +11,7 @@ import { Chevron } from '@/webview/views/elements/Chevron';
 export function ChatView() {
   return (
     <>
-      <SessionBanner />
+      <SessionTabs />
       <TranscriptView />
       <Questions>
         <QueuedPrompts />
