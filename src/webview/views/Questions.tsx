@@ -1,12 +1,15 @@
 import { createContext, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import type { QuestionsState } from '@/webview/state/Questions';
+import { toWords } from 'to-words/en-US';
+import { questionAnswers, type QuestionsState } from '@/webview/state/Questions';
 import { useDispatch, useSelector, useStore } from '@/webview/views/StoreContext';
+import { Chevron } from '@/webview/views/elements/Chevron';
 
 type Expansion = 'questions' | 'usage' | null;
 export const ExpansionContext = createContext<{ open: Expansion; setOpen: (open: Expansion) => void } | null>(null);
 type Item = QuestionsState['items'][number];
 type Field = Item['question']['fields'][number];
-const controlStyle = 'w-full rounded-sm border border-input-border bg-input px-2 py-1 text-input-foreground focus:outline-1 focus:outline-ring';
+const controlStyle = 'w-full rounded-sm border-2 border-control-border bg-input px-2.5 py-2 text-input-foreground focus:border-ring focus:outline-1 focus:outline-ring';
+const iconButtonStyle = 'cursor-pointer rounded-sm px-2 py-1 hover:bg-secondary-hover focus-visible:outline-1 focus-visible:outline-ring';
 const buttonStyle = 'cursor-pointer rounded-sm bg-secondary px-2 py-1 text-secondary-foreground hover:bg-secondary-hover focus-visible:outline-1 focus-visible:outline-ring disabled:opacity-40';
 
 export function Questions({ children }: { children: ReactNode }) {
@@ -95,7 +98,6 @@ export function Questions({ children }: { children: ReactNode }) {
     const heading = headings.current.get(id);
     if (heading && scrolling.current) {
       scrolling.current.scrollTop += heading.getBoundingClientRect().top - scrolling.current.getBoundingClientRect().top;
-      heading.focus({ preventScroll: true });
       setCurrent(id);
     }
   };
@@ -105,40 +107,41 @@ export function Questions({ children }: { children: ReactNode }) {
         {items.length > 0 && <button
           ref={notification}
           type="button"
-          aria-label={`Open questions (${items.length})`}
           aria-expanded={open === 'questions'}
           aria-controls={open === 'questions' ? detailsId : undefined}
-          className="question-notification mx-3 my-1 rounded-md border border-dashed border-border bg-muted px-3 py-2 text-left text-muted-foreground hover:bg-hover focus-visible:outline-1 focus-visible:outline-ring"
+          className="question-notification mx-3 mt-2 mb-2 flex cursor-pointer items-center gap-3 rounded-md border border-control-border border-l-3 border-l-link bg-muted px-3 py-2 text-left text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
           onPointerDown={rememberFocus}
           onClick={(event) => {
             if (open === 'questions') { close(); }
             else { if (event.detail === 0) { rememberFocus(); } setCurrent(items[0]?.question.interactionId ?? null); setOpen('questions'); }
           }}
-        >{items.length} {items.length === 1 ? 'question' : 'questions'} awaiting your response</button>}
+        ><span className="min-w-0 flex-1">{items.length === 1 ? 'An elicitation is' : `${toWords(items.length, { casing: 'sentence', hyphenate: true })} elicitations are`} awaiting your response</span><Chevron direction={open === 'questions' ? 'down' : 'up'} /></button>}
         {children}
         {open === 'questions' && items.length > 0 && <section
           ref={surface}
           id={detailsId}
-          aria-label="Questions"
-          className="question-surface absolute right-3 bottom-8 left-3 z-100 flex max-h-[min(36rem,60vh)] flex-col rounded-md border border-popover-border bg-popover text-popover-foreground shadow-popover"
+          aria-label="Elicitations"
+          className="question-surface absolute right-3 bottom-8 left-3 z-100 flex max-h-[min(36rem,60vh)] flex-col rounded-md border border-control-border bg-popover text-popover-foreground shadow-popover"
           onKeyDown={(event) => {
             if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
           }}
         >
           <div className="flex flex-none items-center justify-between gap-2 border-b border-border p-2">
-            <nav aria-label="Question navigation" className="flex flex-wrap gap-1">
-              {items.map(({ question }, index) => <button
-                key={question.interactionId}
-                type="button"
-                aria-label={`Question ${index + 1}`}
-                aria-current={current === question.interactionId ? 'true' : undefined}
-                className={`${buttonStyle} ${current === question.interactionId ? 'outline-1 outline-ring' : ''}`}
-                onClick={() => navigate(question.interactionId)}
-              >({index + 1})</button>)}
-            </nav>
-            <button type="button" className={buttonStyle} aria-label="Collapse questions" onClick={close}>Collapse</button>
+            {items.length > 1 ? <nav aria-label="Elicitation navigation" className="flex items-center gap-2">
+              <button type="button" className={iconButtonStyle} aria-label="Previous elicitation" title="Previous elicitation" onClick={() => {
+                const index = Math.max(0, items.findIndex((item) => item.question.interactionId === current));
+                const target = items[(index - 1 + items.length) % items.length];
+                if (target) { navigate(target.question.interactionId); }
+              }}><Chevron direction="left" /></button>
+              <button type="button" className={iconButtonStyle} aria-label="Next elicitation" title="Next elicitation" onClick={() => {
+                const index = Math.max(0, items.findIndex((item) => item.question.interactionId === current));
+                const target = items[(index + 1) % items.length];
+                if (target) { navigate(target.question.interactionId); }
+              }}><Chevron direction="right" /></button>
+            </nav> : <span className="text-xs text-muted-foreground">Elicitation</span>}
+            <button type="button" className={iconButtonStyle} aria-label="Collapse elicitations" title="Collapse elicitations" onClick={close}><Chevron direction="down" /></button>
           </div>
-          <div ref={scrolling} aria-label="Pending questions" className="min-h-0 overflow-y-auto overscroll-contain p-3" onScroll={() => {
+          <div ref={scrolling} aria-label="Pending elicitations" className="min-h-0 overflow-y-auto overscroll-contain p-3" onScroll={() => {
             const top = scrolling.current?.getBoundingClientRect().top ?? 0;
             const visible = [...headings.current].find(([, heading]) => heading.getBoundingClientRect().bottom > top);
             if (visible) { setCurrent(visible[0]); }
@@ -158,6 +161,16 @@ function QuestionForm({ item, headingRef }: { item: Item; headingRef: (heading: 
   const { question, submitting, errors } = item;
   const dispatch = useDispatch();
   const id = useId();
+  const keepEditing = useRef<HTMLButtonElement>(null);
+  const confirmation = useRef<HTMLDivElement>(null);
+  const submit = useRef<HTMLButtonElement>(null);
+  const wasConfirming = useRef(false);
+  const valid = Object.keys(questionAnswers(item).errors).length === 0;
+  useLayoutEffect(() => {
+    if (item.confirmingEmpty) { keepEditing.current?.focus(); confirmation.current?.scrollIntoView({ block: 'nearest' }); }
+    else if (wasConfirming.current && !submitting) { submit.current?.focus(); }
+    wasConfirming.current = item.confirmingEmpty;
+  }, [item.confirmingEmpty, submitting]);
   return <form data-question-id={question.interactionId} aria-labelledby={id} noValidate className="mb-4 space-y-3 border-b border-border pb-4 last:mb-0 last:border-0" onSubmit={(event) => {
     event.preventDefault();
     dispatch({ type: 'questionSubmitted', interactionId: question.interactionId });
@@ -165,9 +178,8 @@ function QuestionForm({ item, headingRef }: { item: Item; headingRef: (heading: 
     <div className="flex items-start justify-between gap-2">
       <div className="min-w-0">
         <p className="text-xs text-muted-foreground">{question.agentName}</p>
-        <h3 ref={headingRef} id={id} tabIndex={-1} className="font-semibold whitespace-pre-wrap wrap-anywhere focus:outline-1 focus:outline-ring">{question.title ?? 'Question'}</h3>
+        <h3 ref={headingRef} id={id} tabIndex={-1} className="font-semibold whitespace-pre-wrap wrap-anywhere outline-none">{question.title ?? 'Elicitation'}</h3>
       </div>
-      <button type="button" disabled={submitting} className={buttonStyle} aria-label="Dismiss question" onClick={() => dispatch({ type: 'questionDismissed', interactionId: question.interactionId, action: 'cancel' })}>Dismiss</button>
     </div>
     <p className="whitespace-pre-wrap wrap-anywhere">{question.message}</p>
     {question.description !== null && <p className="whitespace-pre-wrap wrap-anywhere">{question.description}</p>}
@@ -176,11 +188,28 @@ function QuestionForm({ item, headingRef }: { item: Item; headingRef: (heading: 
     <fieldset disabled={submitting} className="min-w-0 space-y-3">
       {question.fields.map((field) => <QuestionField key={field.name} field={field} item={item} />)}
     </fieldset>
-    <div className="flex gap-2">
-      <button type="submit" disabled={submitting} className={buttonStyle}>Submit</button>
-      <button type="button" disabled={submitting} className={buttonStyle} onClick={() => dispatch({ type: 'questionDismissed', interactionId: question.interactionId, action: 'decline' })}>Refuse</button>
-    </div>
+    {item.confirmingEmpty ? <div ref={confirmation} className="space-y-2 rounded-md border border-control-border bg-muted p-3" role="group" aria-labelledby={`${id}-confirmation`}>
+      <p id={`${id}-confirmation`} className="font-semibold">Submit without answers?</p>
+      <p>No answers have been provided. Submitting will accept this elicitation without supplying any answers.</p>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" disabled={submitting} className={buttonStyle} onClick={() => dispatch({ type: 'questionEmptyConfirmed', interactionId: question.interactionId })}>Submit without answers</button>
+        <button ref={keepEditing} type="button" className={buttonStyle} onClick={() => dispatch({ type: 'questionEditingContinued', interactionId: question.interactionId })}>Keep editing</button>
+      </div>
+    </div> : <ResponseActions submitting={submitting} valid={valid} submitRef={submit} respond={(action) => dispatch({ type: 'questionDismissed', interactionId: question.interactionId, action })} />}
   </form>;
+}
+
+function ResponseActions({ submitting, valid, submitRef, respond }: {
+  submitting: boolean; valid: boolean; submitRef: React.RefObject<HTMLButtonElement | null>;
+  respond: (action: 'decline' | 'cancel') => void;
+}) {
+  return <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+    {(['Submit', 'Decline', 'Cancel'] as const).map((label) => <button key={label}
+      ref={label === 'Submit' ? submitRef : undefined} type={label === 'Submit' ? 'submit' : 'button'}
+      disabled={submitting || (label === 'Submit' && !valid)}
+      className={label === 'Submit' ? 'cursor-pointer rounded-sm bg-primary px-2 py-1 text-primary-foreground hover:bg-primary-hover focus-visible:outline-1 focus-visible:outline-ring disabled:opacity-40' : buttonStyle}
+      onClick={label === 'Submit' ? undefined : () => respond(label === 'Decline' ? 'decline' : 'cancel')}>{label}</button>)}
+  </div>;
 }
 
 function QuestionField({ field, item }: { field: Field; item: Item }) {
@@ -188,7 +217,8 @@ function QuestionField({ field, item }: { field: Field; item: Item }) {
   const dispatch = useDispatch();
   const interactionId = item.question.interactionId;
   const value = Object.hasOwn(item.draft, field.name) ? item.draft[field.name] : undefined;
-  const error = Object.hasOwn(item.errors, field.name) ? item.errors[field.name] : undefined;
+  const validation = questionAnswers(item).errors;
+  const error = Object.hasOwn(item.errors, field.name) ? item.errors[field.name] : validation[field.name];
   const title = field.title ?? field.name;
   const edit = (value: NonNullable<Item['draft'][string]>) => dispatch({ type: 'questionFieldEdited', interactionId, name: field.name, value });
   const clear = () => dispatch({ type: 'questionFieldCleared', interactionId, name: field.name });

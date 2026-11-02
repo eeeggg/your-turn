@@ -29,11 +29,14 @@ async function duringTeardown<T>(signal: AbortSignal, action: () => Promise<T>):
 }
 
 interface UiFixtures {
+  agentVersion: 'v1' | 'v2';
   reviewPresentation: 'diffEditor' | 'quickDiff' | undefined;
   workspaceFiles: Record<string, string>;
   gitRepository: boolean;
   listsSessions: boolean;
   compaction: boolean;
+  preSessionQuestion: boolean;
+  authenticationQuestion: boolean;
   workspace: string;
   window: Page;
   display: string | undefined;
@@ -159,11 +162,14 @@ async function captureFailure(
 }
 
 export const test = base.extend<UiFixtures>({
+  agentVersion: ['v1', { option: true }],
   reviewPresentation: [undefined, { option: true }],
   workspaceFiles: [{}, { option: true }],
   gitRepository: [false, { option: true }],
   listsSessions: [false, { option: true }],
   compaction: [false, { option: true }],
+  preSessionQuestion: [false, { option: true }],
+  authenticationQuestion: [false, { option: true }],
   display: async ({}, use) => {
     if (process.platform !== 'linux') { await use(process.env['DISPLAY']); return; }
     const server = spawn('Xvfb', ['-displayfd', '1', '-screen', '0', '1600x1000x24', '-nolisten', 'tcp'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -214,7 +220,7 @@ export const test = base.extend<UiFixtures>({
     }
   },
 
-  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, display }, use, testInfo) => {
+  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, display }, use, testInfo) => {
     let application: ElectronApplication | undefined;
     let applicationProcess: ChildProcess | undefined;
     let profile: string | undefined;
@@ -244,14 +250,16 @@ export const test = base.extend<UiFixtures>({
         ...(gitRepository ? { 'git.enabled': true } : {}),
         ...(reviewPresentation ? { 'acp.review.presentation': reviewPresentation } : {}),
         'acp.agents': {
-          'fake-v1': {
+          [`fake-${agentVersion}`]: {
             command: process.execPath,
-            args: [join(root, 'dist', 'test', 'fixtures', 'fakeAgent-v1.js')],
+            args: [join(root, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion}.js`)],
             env: {
               ACP_TEST_SESSION_ID: `ui-${testInfo.testId}`,
               ELECTRON_RUN_AS_NODE: '1',
               ...(listsSessions ? { ACP_TEST_LISTS_SESSIONS: '1' } : {}),
               ...(compaction ? { ACP_TEST_COMPACTION: '1' } : {}),
+              ...(preSessionQuestion ? { ACP_TEST_PRE_SESSION_QUESTION: '1' } : {}),
+              ...(authenticationQuestion ? { ACP_TEST_AUTHENTICATION_QUESTION: '1' } : {}),
             },
           },
         },

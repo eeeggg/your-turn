@@ -1075,12 +1075,12 @@ describe('V2Driver', () => {
   });
 
   describe('elicitation', () => {
-    it('rejects unadvertised URL mode with invalid params while forms are advertised', async () => {
+    it('rejects unsafe URL mode targets with invalid params', async () => {
       let answered: (outcome: unknown) => void = () => {};
       const answer = new Promise<unknown>((resolve) => { answered = resolve; });
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
         answered(await client.request(V2.methods.client.elicitation.create, {
-          mode: 'url', sessionId: 's1', elicitationId: 'e1', url: 'https://example.com/login', message: 'Sign in',
+          mode: 'url', sessionId: 's1', elicitationId: 'e1', url: 'file:///tmp/login', message: 'Sign in',
         }).catch((e: unknown) => e));
         return { sessionId: 's1' };
       }));

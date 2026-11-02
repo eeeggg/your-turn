@@ -115,6 +115,13 @@ interface Terminal {
   readonly exitStatus: ExitStatus | null;
 }
 
+export interface QueuedPrompt {
+  readonly id: EntryId;
+  readonly text: string;
+  readonly open: boolean;
+  readonly draft: string | null;
+}
+
 export interface TranscriptState {
   /** The session the entries belong to; a `state` for any other session clears them, unless {@link sessionEnded}. */
   readonly sessionId: string | null;
@@ -129,7 +136,9 @@ export interface TranscriptState {
   /** The turn the agent's work goes into, until the turn ends. */
   readonly currentTurn: EntryId | null;
   /** Prompts the user sent while a turn ran, oldest first; each goes to the agent when the turn before it ends. */
-  readonly queued: readonly string[];
+  readonly queued: readonly QueuedPrompt[];
+  /** Cancelled prompts, ordered with sent prompts by their cancellation IDs, without transcript entries. */
+  readonly cancelledPrompts: readonly { readonly id: EntryId; readonly text: string }[];
   /** Rises each time the view must follow the stream again: for each prompt the user sends, and on each clear. */
   readonly followRequests: number;
 }
@@ -142,7 +151,13 @@ export type TranscriptAction =
   | { type: 'toolCallsToggled'; turnId: EntryId; part: PartIndex }
   /** A diff's file link, the `file`th file across the tool call's diffs. */
   | { type: 'diffFileClicked'; toolCallId: string; file: number }
-  | { type: 'sendNowChosen' };
+  | { type: 'sendNowChosen'; id: EntryId }
+  | { type: 'queuedPromptToggled'; id: EntryId }
+  | { type: 'queuedPromptEditStarted'; id: EntryId }
+  | { type: 'queuedPromptEdited'; id: EntryId; text: string }
+  | { type: 'queuedPromptEditSaved'; id: EntryId }
+  | { type: 'queuedPromptEditDiscarded'; id: EntryId }
+  | { type: 'queuedPromptCancelled'; id: EntryId };
 
 export const initialTranscript: TranscriptState = {
   sessionId: null,
@@ -153,6 +168,7 @@ export const initialTranscript: TranscriptState = {
   nextId: 1,
   currentTurn: null,
   queued: [],
+  cancelledPrompts: [],
   followRequests: 0,
 };
 
@@ -166,9 +182,10 @@ export function showsEmptyState(transcript: TranscriptState, session: ActiveSess
   return session === null && transcript.entries.length === 0;
 }
 
-/** The session's prompts the agent has, oldest first: those it was sent, a queued one once it goes, and those a load replayed. */
+/** Sent, replayed and cancelled prompts, oldest first; cancellation does not put an unsent prompt in the transcript. */
 export function promptHistory(transcript: TranscriptState): string[] {
-  return transcript.entries.flatMap((entry) => (entry.kind === 'prompt' && entry.text.trim() !== '' ? [entry.text] : []));
+  return [...transcript.entries.filter((entry) => entry.kind === 'prompt'), ...transcript.cancelledPrompts]
+    .sort((a, b) => a.id - b.id).flatMap((entry) => entry.text.trim() !== '' ? [entry.text] : []);
 }
 
 /** A part is drawn only once it has something to show, so whitespace before the answer leaves no trace. */
@@ -436,9 +453,37 @@ export function updateTranscript(
       return { state: transcript, outgoing: [{ type: 'openFile', toolCallId: action.toolCallId, file: action.file }] };
     case 'sendNowChosen':
       // Cancelling ends the turn, which sends the top of the queue; the queue itself stays as it is until then.
-      return transcript.queued.length === 0
+      return !turnRunning || transcript.queued[0]?.id !== action.id
         ? stateOnly(transcript)
         : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'cancelTurn' }] };
+    case 'queuedPromptToggled':
+    case 'queuedPromptEditStarted':
+    case 'queuedPromptEdited':
+    case 'queuedPromptEditSaved':
+    case 'queuedPromptEditDiscarded':
+    case 'queuedPromptCancelled': {
+      const prompt = transcript.queued.find((item) => item.id === action.id);
+      if (!prompt) { return stateOnly(transcript); }
+      if (action.type === 'queuedPromptCancelled' || (action.type === 'queuedPromptEditSaved' && prompt.draft !== null && prompt.draft.trim() === '')) {
+        const cancelled = {
+          ...transcript, queued: transcript.queued.filter((item) => item.id !== action.id),
+          cancelledPrompts: [...transcript.cancelledPrompts, { id: transcript.nextId, text: prompt.text }], nextId: transcript.nextId + 1,
+        };
+        return turnRunning ? stateOnly(cancelled) : withQueueHeadSent(cancelled);
+      }
+      let revised: QueuedPrompt;
+      switch (action.type) {
+        case 'queuedPromptToggled': revised = { ...prompt, open: !prompt.open }; break;
+        case 'queuedPromptEditStarted': revised = prompt.draft === null ? { ...prompt, draft: prompt.text } : prompt; break;
+        case 'queuedPromptEdited': revised = prompt.draft !== null ? { ...prompt, draft: action.text } : prompt; break;
+        case 'queuedPromptEditSaved': revised = prompt.draft !== null ? { ...prompt, text: prompt.draft, draft: null } : prompt; break;
+        case 'queuedPromptEditDiscarded': revised = { ...prompt, draft: null }; break;
+      }
+      if (revised === prompt) { return stateOnly(transcript); }
+      const changed = { ...transcript, queued: transcript.queued.map((item) => item.id === action.id ? revised : item) };
+      return !turnRunning && (action.type === 'queuedPromptEditSaved' || action.type === 'queuedPromptEditDiscarded')
+        ? withQueueHeadSent(changed) : stateOnly(changed);
+    }
     default:
       return stateOnly(transcript);
   }
@@ -462,8 +507,8 @@ export function withSentPrompts(
       continue;
     }
     const followed = { ...state, followRequests: state.followRequests + 1 };
-    if (busy) {
-      state = { ...followed, queued: [...followed.queued, message.text] };
+    if (busy || state.queued.length > 0) {
+      state = { ...followed, queued: [...followed.queued, { id: followed.nextId, text: message.text, open: false, draft: null }], nextId: followed.nextId + 1 };
     } else {
       state = withPrompt(followed, message.text);
       posted.push(message);
@@ -475,10 +520,10 @@ export function withSentPrompts(
 
 function withQueueHeadSent(transcript: TranscriptState): Transition<TranscriptState, WebviewToExtensionMessage> {
   const [head, ...rest] = transcript.queued;
-  if (head === undefined) {
+  if (head?.draft !== null) {
     return stateOnly(transcript);
   }
-  return { state: { ...withPrompt(transcript, head), queued: rest }, outgoing: [{ type: 'sendPrompt', text: head }] };
+  return { state: { ...withPrompt(transcript, head.text), queued: rest }, outgoing: [{ type: 'sendPrompt', text: head.text }] };
 }
 
 function withPrompt(transcript: TranscriptState, text: string): TranscriptState {
@@ -704,7 +749,7 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
   const empty =
-    transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0;
+    transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0 && transcript.cancelledPrompts.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
     : {
@@ -716,6 +761,7 @@ function cleared(transcript: TranscriptState, sessionId: string | null): Transcr
       usage: null,
       currentTurn: null,
       queued: [],
+      cancelledPrompts: [],
       followRequests: transcript.followRequests + 1,
     };
 }

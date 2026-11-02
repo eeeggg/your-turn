@@ -43,6 +43,17 @@ export class ElicitationRequests implements Elicitations {
       if (request.mode === 'url' && (typeof request.elicitationId !== 'string' || typeof request.url !== 'string' || this.urls.has(request.elicitationId))) {
         throw new ElicitationError('invalid', 'Invalid or duplicate URL elicitation');
       }
+      if (request.mode === 'url') {
+        let target: URL;
+        try { target = new URL(request.url); }
+        catch { throw new ElicitationError('invalid', 'Invalid URL elicitation target'); }
+        const loopback = target.hostname === 'localhost' || target.hostname === '127.0.0.1' || target.hostname === '[::1]';
+        if ((target.protocol !== 'https:' && !(target.protocol === 'http:' && loopback))
+          || !target.hostname || target.username || target.password || !/^https?:\/\//iu.test(request.url)
+          || /[\u0000-\u0020\u007f\\]/u.test(request.url)) {
+          throw new ElicitationError('invalid', 'URL elicitation requires HTTPS or loopback HTTP without embedded credentials');
+        }
+      }
       const interaction: ElicitationInteraction = Object.freeze({
         rpcId: request.rpcId, message: request.message,
         scope: Object.freeze({ ...request.scope }), interactionId: `elicitation-${++nextInteraction}`, status: 'pending', completed: false,

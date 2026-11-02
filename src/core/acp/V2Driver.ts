@@ -42,7 +42,7 @@ export function v2InitializeRequest(clientVersion: string): Acp.InitializeReques
     protocolVersion: Acp.PROTOCOL_VERSION,
     info: { name: 'vscode-acp-client', version: clientVersion },
     // Without auth.terminal, agents advertise only the auth methods they handle themselves.
-    capabilities: { elicitation: { form: {} } },
+    capabilities: { elicitation: { form: {}, url: {} } },
   };
 }
 

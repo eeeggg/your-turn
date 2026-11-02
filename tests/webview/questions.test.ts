@@ -17,26 +17,26 @@ describe('bundled question delivery', () => {
     prompt.setSelectionRange(2, 5);
     page.takePosted();
     page.send({ type: 'questions', questions: [question] });
-    expect(page.document.querySelector('[aria-label="Questions"]')).toBeNull();
+    expect(page.document.querySelector('[aria-label="Elicitations"]')).toBeNull();
     expect(page.document.activeElement).toBe(prompt);
     page.send({ type: 'questionOpen', interactionId: 'q1' });
     expect(page.document.activeElement?.textContent).toBe('Question');
-    const surface = page.document.querySelector('[aria-label="Questions"]');
+    const surface = page.document.querySelector('[aria-label="Elicitations"]');
     const collapsed = new Promise<void>((resolve) => {
       const observer = new page.window.MutationObserver(() => {
-        if (!page.document.querySelector('[aria-label="Questions"]')) { observer.disconnect(); resolve(); }
+        if (!page.document.querySelector('[aria-label="Elicitations"]')) { observer.disconnect(); resolve(); }
       });
       observer.observe(page.document.body, { childList: true, subtree: true });
       onTestFinished(() => observer.disconnect());
     });
     surface?.dispatchEvent(new page.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
     await collapsed;
-    expect(page.document.querySelector('[aria-label="Questions"]')).toBeNull();
-    const notification = page.document.querySelector<HTMLButtonElement>('[aria-label="Open questions (1)"]');
+    expect(page.document.querySelector('[aria-label="Elicitations"]')).toBeNull();
+    const notification = page.document.querySelector<HTMLButtonElement>('.question-notification');
     expect(notification).not.toBeNull();
     const opened = new Promise<void>((resolve) => {
       const observer = new page.window.MutationObserver(() => {
-        if (page.document.querySelector('[aria-label="Questions"]')) { observer.disconnect(); resolve(); }
+        if (page.document.querySelector('[aria-label="Elicitations"]')) { observer.disconnect(); resolve(); }
       });
       observer.observe(page.document.body, { childList: true, subtree: true });
       onTestFinished(() => observer.disconnect());
@@ -56,10 +56,10 @@ describe('bundled question delivery', () => {
     } });
     const record = page.document.querySelector<HTMLDetailsElement>('.question-record');
     expect(record?.open).toBe(false);
-    expect(record?.querySelector('summary')?.textContent).toBe('Question — Answered: Question');
+    expect(record?.querySelector('summary')?.textContent).toBe('Elicitation — Submitted: Question');
     expect(record?.querySelector('dd')?.textContent).toBe('false');
     page.send({ type: 'questions', questions: [] });
-    expect(page.document.querySelector('[aria-label="Questions"]')).toBeNull();
+    expect(page.document.querySelector('[aria-label="Elicitations"]')).toBeNull();
     expect([prompt.value, prompt.selectionStart, prompt.selectionEnd]).toEqual(['unfinished prompt', 2, 5]);
     page.send({ type: 'loadSessionStart' });
     page.send({ type: 'loadSessionEnd', ok: true });

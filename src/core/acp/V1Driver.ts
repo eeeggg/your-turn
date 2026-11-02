@@ -37,7 +37,7 @@ export function v1InitializeRequest(clientVersion: string): Acp.InitializeReques
     clientInfo: { name: 'vscode-acp-client', version: clientVersion },
     // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities. Boolean config
     // options, which every v2 client supports, a v1 client must offer.
-    clientCapabilities: { elicitation: { form: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
+    clientCapabilities: { elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
   };
 }
 

@@ -115,8 +115,8 @@ describe('the chat view', () => {
     } });
     const record = view.part<HTMLDetailsElement>('details.question-record');
     expect(record.open).toBe(false);
-    const outcome = action === 'accept' ? 'Answered' : action === 'decline' ? 'Refused' : 'Dismissed';
-    expect(record.querySelector('summary')?.textContent).toBe(`Question — ${outcome}: Settings`);
+    const outcome = action === 'accept' ? 'Submitted' : action === 'decline' ? 'Declined' : 'Cancelled';
+    expect(record.querySelector('summary')?.textContent).toBe(`Elicitation — ${outcome}: Settings`);
     await toggle(record);
     expect(record.open).toBe(true);
     expect(record.textContent).toContain('Visit https://example.com?');
@@ -240,6 +240,91 @@ describe('the queue', () => {
     view.send({ type: 'promptEnd' });
     expect(queue(view)).toBeNull();
     expect(userMessages(view)).toEqual(['first', 'second', 'third']);
+  });
+
+  it('expands a queued prompt without changing its text, the composer or the running turn', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    prompt(view, 'line one\nline two\nline three\nline four');
+    view.send({ type: 'promptEdited', text: 'composer draft' });
+    view.takePosted();
+    const expand = view.part<HTMLButtonElement>('[aria-label="Expand queued prompt"]');
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(expand);
+    expect(expand.getAttribute('aria-expanded')).toBe('true');
+    expect(view.part('.queued-text').className).not.toContain('line-clamp');
+    expect(view.part('.queued-text').textContent).toBe('line one\nline two\nline three\nline four');
+    fireEvent.click(expand);
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('composer draft');
+    expect(view.store.getSnapshot().activeSession?.turnRunning).toBe(true);
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it('holds the queue head during inline editing and sends the saved text when the agent is idle', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    prompt(view, 'second');
+    prompt(view, 'third');
+    view.takePosted();
+    fireEvent.click(view.part('[aria-label="Edit queued prompt"]'));
+    const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
+    expect(document.activeElement).toBe(editor);
+    fireEvent.change(editor, { target: { value: 'saved second' } });
+    view.send({ type: 'promptEnd' });
+    expect(view.takePosted()).toEqual([]);
+    expect(userMessages(view)).toEqual(['first']);
+    expect(editor.value).toBe('saved second');
+    fireEvent.keyDown(editor, { key: 'Enter' });
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'saved second' }, { type: 'queuedPrompts', count: 1 }]);
+    expect(userMessages(view)).toEqual(['first', 'saved second']);
+    expect(queued(view).map(([, text]) => text)).toEqual(['third']);
+  });
+
+  it('uses Escape to discard only the inline edit, and ignores Enter during composition or with Shift', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    prompt(view, 'second');
+    fireEvent.click(view.part('[aria-label="Edit queued prompt"]'));
+    const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
+    fireEvent.change(editor, { target: { value: 'unsaved' } });
+    view.takePosted();
+    fireEvent.keyDown(editor, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true });
+    expect(editor.value).toBe('unsaved');
+    expect(view.container.querySelector('[aria-label="Queued prompt text"]')).toBe(editor);
+    fireEvent.keyDown(editor, { key: 'Escape' });
+    expect(view.container.querySelector('[aria-label="Queued prompt text"]')).toBeNull();
+    expect(document.activeElement).toBe(view.part('[aria-label="Edit queued prompt"]'));
+    expect(queued(view).map(([, text]) => text)).toEqual(['second']);
+    expect(view.takePosted()).toEqual([]);
+  });
+
+  it.each(['cancel', 'empty save'] as const)('%s preserves the composer and recalls the last saved text without a transcript entry', (method) => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    prompt(view, 'second');
+    prompt(view, 'third');
+    view.send({ type: 'promptEdited', text: 'composer draft' });
+    fireEvent.click(view.part('[aria-label="Edit queued prompt"]'));
+    const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
+    fireEvent.change(editor, { target: { value: method === 'cancel' ? 'unsaved edit' : ' \n\t' } });
+    view.takePosted();
+    if (method === 'cancel') { fireEvent.click(view.part('[aria-label="Cancel queued prompt"]')); }
+    else { fireEvent.keyDown(editor, { key: 'Enter' }); }
+    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('composer draft');
+    expect(queued(view).map(([, text]) => text)).toEqual(['third']);
+    expect(userMessages(view)).toEqual(['first']);
+    expect(view.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
+    view.send({ type: 'promptEdited', text: '' });
+    fireEvent.keyDown(view.part('#promptInput'), { key: 'ArrowUp' });
+    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('second');
+    expect(userMessages(view)).toEqual(['first']);
+    expect(view.takePosted()).toEqual([]);
   });
 });
 

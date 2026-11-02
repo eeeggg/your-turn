@@ -179,13 +179,13 @@ const PartView = memo(function PartView({
 
 const QuestionRecordBlock = memo(function QuestionRecordBlock({ record, open }: { record: QuestionRecord; open: boolean }) {
   const dispatch = useDispatch();
-  const outcome = record.response.action === 'accept' ? 'Answered' : record.response.action === 'decline' ? 'Refused' : 'Dismissed';
+  const outcome = record.response.action === 'accept' ? 'Submitted' : record.response.action === 'decline' ? 'Declined' : 'Cancelled';
   return <details className="question-record mb-1 w-full max-w-full" open={open} onToggle={(event) => {
     if (event.target === event.currentTarget && event.currentTarget.open !== open) {
       dispatch({ type: 'questionRecordToggled', interactionId: record.interactionId, open: event.currentTarget.open });
     }
   }}>
-    <summary className="cursor-pointer rounded-sm px-2 py-1 text-sm text-muted-foreground focus-visible:outline-1 focus-visible:outline-ring">Question — {outcome}{record.title === null ? '' : `: ${record.title}`}</summary>
+    <summary className="cursor-pointer rounded-sm px-2 py-1 text-sm text-muted-foreground focus-visible:outline-1 focus-visible:outline-ring">Elicitation — {outcome}{record.title === null ? '' : `: ${record.title}`}</summary>
     <div className="mt-1 space-y-2 rounded-md border border-border bg-muted px-3 py-2 text-sm whitespace-pre-wrap wrap-anywhere">
       <p className="text-muted-foreground">{record.agentName}</p>
       <p>{record.message}</p>

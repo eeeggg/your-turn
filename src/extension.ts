@@ -30,6 +30,8 @@ import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
+import { attachUrlElicitations } from '@/core/UrlElicitations';
+import { urlElicitationQuickPick } from '@/adapters/UrlElicitationQuickPick';
 import { createWorkspaceEnvironment, openWorkspace, workspaceUnavailability } from '@/adapters/WorkspaceEnvironment';
 import { WorkspaceOpening } from '@/core/WorkspaceOpening';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
@@ -106,10 +108,14 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   const connectionManager: ConnectionManager = new ConnectionManager(
     sessionUpdateHandler,
     (context.extension.packageJSON as { version: string }).version,
-    ({ agentName, agentId, elicitations }) => ({
-      permissions: new PermissionRequests(permissionQuickPick),
-      close: chatViewController.attachElicitations(agentName, elicitations, agentId),
-    }),
+    ({ agentName, agentId, elicitations }) => {
+      const detachForms = chatViewController.attachElicitations(agentName, elicitations, agentId);
+      const detachUrls = attachUrlElicitations(agentName, elicitations, urlElicitationQuickPick);
+      return {
+        permissions: new PermissionRequests(permissionQuickPick),
+        close: () => { detachForms(); void detachUrls(); },
+      };
+    },
   );
   const sessionReferences = new SessionReferences(context.globalState);
   const workspaceState = new WorkspaceState(context.workspaceState);

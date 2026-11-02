@@ -12,6 +12,52 @@ const question: Question = {
 };
 
 describe('question state', () => {
+  it('requires an active empty confirmation and cannot confirm withdrawn or edited requests', () => {
+    let state = update(initialState, { type: 'questions', questions: [{ ...question, fields: question.fields.map((field) => ({ ...field, required: false })), draft: {} }, { ...question, interactionId: 'q2' }] }, 0).state;
+    expect(update(state, { type: 'questionEmptyConfirmed', interactionId: 'q1' }, 0).outgoing).toEqual([]);
+    const pending = update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0);
+    expect(pending.outgoing).toEqual([]);
+    expect(pending.state.questions.items[0]).toMatchObject({ confirmingEmpty: true, submitting: false });
+    state = update(pending.state, { type: 'questionFieldEdited', interactionId: 'q1', name: 'count', value: '0' }, 0).state;
+    expect(update(state, { type: 'questionEmptyConfirmed', interactionId: 'q1' }, 0).outgoing).toEqual([]);
+    state = update(state, { type: 'questions', questions: [{ ...question, interactionId: 'q2' }] }, 0).state;
+    expect(update(state, { type: 'questionEmptyConfirmed', interactionId: 'q1' }, 0).outgoing).toEqual([]);
+    expect(update(state, { type: 'questionSubmitted', interactionId: 'q2' }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q2', action: 'accept', content: { count: 0, enabled: false } }]);
+  });
+
+  it.each([
+    { field: { minimum: 0 }, value: '-1' },
+    { field: { maximum: 3 }, value: '4' },
+    { field: { kind: 'text' as const, minLength: 2 }, value: 'a' },
+    { field: { kind: 'text' as const, maxLength: 2 }, value: 'abc' },
+    { field: { kind: 'text' as const, pattern: '^[a-z]+$' }, value: '123' },
+    { field: { kind: 'text' as const, format: 'email' }, value: 'not an email' },
+    { field: { kind: 'text' as const, format: 'uri' }, value: 'not a URI' },
+    { field: { kind: 'text' as const, format: 'date' }, value: '2026-02-30' },
+    { field: { kind: 'text' as const, format: 'date-time' }, value: '2026-02-30T10:00:00Z' },
+    { field: { kind: 'multiple' as const, minItems: 1, choices: [] }, value: [] },
+    { field: { kind: 'multiple' as const, maxItems: 1, choices: [{ value: 'a', title: 'A', description: null }, { value: 'b', title: 'B', description: null }] }, value: ['a', 'b'] },
+    { field: { kind: 'multiple' as const, choices: [{ value: 'a', title: 'A', description: null }] }, value: ['a', 'a'] },
+    { field: { kind: 'text' as const, choices: [{ value: 'a', title: 'A', description: null }] }, value: 'b' },
+  ])('does not send an answer outside the supplied constraint: %j', ({ field, value }) => {
+    const first = question.fields[0];
+    if (!first) { throw new Error('Missing fixture field'); }
+    const state = update(initialState, { type: 'questions', questions: [{ ...question, fields: [{ ...first, ...field }], draft: { count: value } }] }, 0).state;
+    const result = update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0);
+    expect(result.outgoing).toEqual([]);
+    expect(result.state.questions.items[0]?.errors).toEqual({ count: 'Invalid value' });
+  });
+
+  it.each([
+    ['uri', 'https://example.com'], ['date', '2026-02-28'], ['date-time', '2026-02-28T10:00:00Z'],
+    ['email', 'a@example.com'], ['future-format', 'unchanged'],
+  ])('accepts valid %s answers without imposing constraints on unknown formats', (format, value) => {
+    const first = question.fields[0];
+    if (!first) { throw new Error('Missing fixture field'); }
+    const state = update(initialState, { type: 'questions', questions: [{ ...question, fields: [{ ...first, kind: 'text', format }], draft: { count: value } }] }, 0).state;
+    expect(update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { count: value } }]);
+  });
+
   it('initializes defaults without submitting and retains edited raw input when another request appends', () => {
     const received = update(initialState, { type: 'questions', questions: [question] }, 0);
     expect(received.outgoing).toEqual([]);

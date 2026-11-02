@@ -2,6 +2,7 @@ import { use, useId, useRef, useState } from 'react';
 import { code } from 'currency-codes';
 import type { SessionUsage } from '@/shared/WebviewMessages';
 import { ExpansionContext } from '@/webview/views/Questions';
+import { Chevron } from '@/webview/views/elements/Chevron';
 
 const tokenFormat = new Intl.NumberFormat('en-US', { maximumSignificantDigits: 21 });
 const costFormat = { minimumFractionDigits: 2, maximumFractionDigits: 2 };
@@ -84,9 +85,7 @@ export function Usage({ usage }: { usage: SessionUsage }) {
         }}
       >
         <span id={readoutId} className="min-w-0 flex-1 wrap-anywhere">{`${usedText} / ${sizeText} tokens${costText === null ? '' : ` · ${costText.summary}`}`}</span>
-        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 16 16" fill="none" className={`mt-0.5 flex-none ${open ? 'rotate-180' : ''}`}>
-          <path d="m4 10 4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <Chevron direction={open ? 'down' : 'up'} size={12} className="mt-0.5" />
       </button>
       {open && (
         <section

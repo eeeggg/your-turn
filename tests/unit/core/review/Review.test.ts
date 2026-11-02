@@ -38,6 +38,25 @@ describe('Review', () => {
     expect(files()).toEqual([['/w/new.ts', null, 'made'], ['/w/old.ts', 'gone', null]]);
   });
 
+  it('preserves a created file baseline across edits and restoration of its initial content, so undo deletes it', async () => {
+    const { review: subject, files, restored } = review();
+    subject.changed('/w/new.ts', null, 'made');
+    subject.changed('/w/new.ts', 'made', 'modified');
+    expect(files()).toEqual([['/w/new.ts', null, 'modified']]);
+    subject.changed('/w/new.ts', 'modified', 'made');
+    expect(files()).toEqual([['/w/new.ts', null, 'made']]);
+    await subject.undoFile('/w/new.ts');
+    expect(restored).toEqual([['/w/new.ts', null]]);
+    expect(files()).toEqual([]);
+  });
+
+  it('removes a created file from review when later change evidence deletes it', () => {
+    const { review: subject, files } = review();
+    subject.changed('/w/new.ts', null, 'made');
+    subject.changed('/w/new.ts', 'made', null);
+    expect(files()).toEqual([]);
+  });
+
   it('ignores a change that leaves a file as it was', () => {
     const { review: subject, files, heard } = review();
     subject.changed('/w/a.ts', 'same', 'same');

@@ -36,7 +36,7 @@ const modelOption: Acp.SessionConfigOption = {
 
 describe('V1Driver', () => {
   it('advertises support for ID-addressed session compaction', () => {
-    expect(v1InitializeRequest('1.2.3').clientCapabilities).toEqual({ elicitation: { form: {} }, session: { compaction: {}, configOptions: { boolean: {} } } });
+    expect(v1InitializeRequest('1.2.3').clientCapabilities).toEqual({ elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } } });
   });
 
   describe('the agent', () => {

@@ -6,6 +6,23 @@ const form: ElicitationRequest = { mode: 'form', rpcId: 1, scope: { sessionId: '
 const url: ElicitationRequest = { mode: 'url', rpcId: 2, scope: { requestId: 'auth-1' }, message: 'Authorize', elicitationId: 'external', url: 'https://example.org' };
 
 describe('connection-owned elicitation requests', () => {
+  it.each(['not a URL', 'https:example.org', 'https://example.org\\path', 'javascript:alert(1)', 'file:///tmp/login', 'command:workbench.action.closeWindow', 'http://example.org', 'https://user:secret@example.org', 'https://example.org\n/path', 'http://localhost.example.org:3000'])('rejects unsafe URL %s before publishing it', async (target) => {
+    const requests = new ElicitationRequests();
+    const changes: ElicitationChange[] = [];
+    requests.subscribe((change) => changes.push(change));
+    await expect(requests.create({ ...url, url: target })).rejects.toMatchObject({ kind: 'invalid' });
+    expect(changes).toEqual([]);
+    expect(requests.snapshot()).toEqual([]);
+  });
+
+  it.each(['https://example.org/path?state=abc#fragment', 'http://localhost:3000/connect', 'http://127.0.0.1:3000/connect', 'http://[::1]:3000/connect'])('preserves allowed URL %s without fetching or rewriting it', async (target) => {
+    const requests = new ElicitationRequests();
+    const answer = requests.create({ ...url, url: target });
+    expect(requests.snapshot()).toMatchObject([{ url: target }]);
+    requests.respond(requests.snapshot()[0]?.interactionId ?? '', { action: 'decline' });
+    expect(await answer).toEqual({ action: 'decline' });
+  });
+
   it('isolates failing observers from promise ownership and other observers', async () => {
     const requests = new ElicitationRequests();
     requests.subscribe(() => { throw new Error('Observer failed'); });

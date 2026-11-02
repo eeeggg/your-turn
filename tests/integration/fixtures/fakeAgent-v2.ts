@@ -1,6 +1,6 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk/experimental/v2';
 import type { AgentContext, ContentBlock, SessionConfigOption, SessionUpdate, StateUpdate } from '@agentclientprotocol/sdk/experimental/v2';
-import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, unlinkSync, watch, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 
@@ -27,6 +27,11 @@ import { Readable, Writable } from 'node:stream';
 const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
 const RECORDS = process.env['ACP_TEST_RECORDS'];
 let listings = 0;
+let setupResponse: unknown;
+const AUTHENTICATION_QUESTION = process.env['ACP_TEST_AUTHENTICATION_QUESTION'] === '1';
+let authenticated = false;
+let authenticationResponse: unknown;
+let sessionCreationAttempts = 0;
 
 function record(method: string, { cwd, additionalDirectories, replayFrom }: { cwd: string; additionalDirectories?: string[] | undefined; replayFrom?: { type: string } | null | undefined }): void {
   if (RECORDS) {
@@ -349,19 +354,96 @@ function promptText(prompt: ContentBlock[]): string {
   return prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
 }
 
+let questionsIdle = false;
+
+async function withdrawnQuestions(client: AgentContext, sessionId: string, directory: string): Promise<void> {
+  const controller = new AbortController();
+  const trigger = new Promise<void>((resolve) => {
+    const watcher = watch(directory, (_event, name) => {
+      if (name === 'questions-withdraw.trigger') { watcher.close(); resolve(); }
+    });
+  });
+  const form = (title: string) => ({
+    sessionId, mode: 'form' as const, message: 'Enter an answer.',
+    requestedSchema: { type: 'object' as const, title, required: ['answer'], properties: { answer: { type: 'string' as const, title: 'Answer' } } },
+  });
+  await reportState(client, sessionId, { state: 'running' });
+  const withdrawn = client.request(methods.client.elicitation.create, form('Withdrawn settings'), { cancellationSignal: controller.signal }).then(
+    async (response) => { await say(client, sessionId, `ERROR: withdrawn response ${response.action}`); },
+    async (error: unknown) => { await say(client, sessionId, `Withdrawal error: ${error instanceof RequestError ? error.code : 'unknown'}`); },
+  );
+  const surviving = client.request(methods.client.elicitation.create, form('Surviving settings')).then(async (response) => {
+    await say(client, sessionId, `Surviving answer: ${response.action === 'accept' ? JSON.stringify(response.content) : response.action}`);
+  });
+  await reportState(client, sessionId, { state: 'requires_action' });
+  await trigger;
+  controller.abort();
+  await withdrawn;
+  const replacement = client.request(methods.client.elicitation.create, form('Replacement settings')).then(async (response) => {
+    await say(client, sessionId, `Replacement answer: ${response.action === 'accept' ? JSON.stringify(response.content) : response.action}`);
+  });
+  await Promise.all([surviving, replacement]);
+  await reportState(client, sessionId, { state: 'idle', stopReason: 'end_turn' });
+}
+
+async function concurrentQuestions(client: AgentContext, sessionId: string, directory: string): Promise<void> {
+  questionsIdle = false;
+  const idleGate = new Promise<void>((resolve) => {
+    const watcher = watch(directory, (_event, name) => {
+      if (name === 'questions-idle.trigger') { watcher.close(); resolve(); }
+    });
+  });
+  await reportState(client, sessionId, { state: 'running' });
+  const first = client.request(methods.client.elicitation.create, {
+    sessionId, mode: 'form', message: 'Choose a count.',
+    requestedSchema: { type: 'object', title: 'First settings', required: ['count'], properties: { count: { type: 'integer', title: 'Count' } } },
+  }).then(async (response) => { await say(client, sessionId, `First response: ${JSON.stringify({ action: response.action, ...(response.action === 'accept' ? { content: response.content } : {}) })}`); });
+  const second = client.request(methods.client.elicitation.create, {
+    sessionId, mode: 'form', message: 'Choose whether enabled.',
+    requestedSchema: { type: 'object', title: 'Second settings', required: ['enabled'], properties: { enabled: { type: 'boolean', title: 'Enabled' } } },
+  }).then(async (response) => { await say(client, sessionId, `Second response: ${JSON.stringify({ action: response.action, ...(response.action === 'accept' ? { content: response.content } : {}) })}`); });
+  await reportState(client, sessionId, { state: 'requires_action' });
+  await Promise.all([first, second]);
+  await say(client, sessionId, 'Answers settled; waiting to report idle.');
+  await idleGate;
+  questionsIdle = true;
+  await reportState(client, sessionId, { state: 'idle', stopReason: 'end_turn' });
+}
+
 agent({ name: 'fake-agent' })
   .onRequest(methods.agent.initialize, () => ({
     protocolVersion: PROTOCOL_VERSION,
     info: { name: 'FakeAgent', version: '0.0.1' },
     capabilities: { session: RECORDS ? { additionalDirectories: {} } : {} },
-    authMethods: [],
+    authMethods: AUTHENTICATION_QUESTION ? [{ type: 'agent', methodId: 'preference', name: 'Test preference' }] : [],
   }))
   .onRequest(methods.agent.session.list, ({ params }) => {
     listings += 1;
     return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
-  .onRequest(methods.agent.session.new, ({ params }) => {
+  .onRequest(methods.agent.auth.login, async ({ client, requestId }) => {
+    if (requestId === null) { throw new Error('Authentication needs a parent request ID'); }
+    const response = await client.request(methods.client.elicitation.create, {
+      requestId, mode: 'form', message: 'Choose a non-sensitive authentication preference.',
+      requestedSchema: { type: 'object', title: 'Authentication preference', required: ['enabled'], properties: { enabled: { type: 'boolean', title: 'Enabled' } } },
+    });
+    authenticationResponse = { action: response.action, ...(response.action === 'accept' ? { content: response.content } : {}) };
+    if (response.action !== 'accept') { throw RequestError.internalError(undefined, 'Authentication preference not accepted'); }
+    authenticated = true;
+    return {};
+  })
+  .onRequest(methods.agent.session.new, async ({ params, client, requestId }) => {
+    sessionCreationAttempts++;
+    if (AUTHENTICATION_QUESTION && !authenticated) { throw new RequestError(-32000, 'Authentication required'); }
     record('session/new', params);
+    if (process.env['ACP_TEST_PRE_SESSION_QUESTION'] === '1') {
+      if (requestId === null) { throw new Error('Session creation needs a parent request ID'); }
+      const response = await client.request(methods.client.elicitation.create, {
+        requestId, mode: 'form', message: 'Choose a non-sensitive setup preference before creating the session.',
+        requestedSchema: { type: 'object', title: 'Before session setup', required: ['enabled'], properties: { enabled: { type: 'boolean', title: 'Enabled' } } },
+      });
+      setupResponse = { action: response.action, ...(response.action === 'accept' ? { content: response.content } : {}) };
+    }
     return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
   })
   .onRequest(methods.agent.session.resume, async ({ params, client }) => {
@@ -384,7 +466,39 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, ({ params, client }) => {
     const text = promptText(params.prompt);
-    if (text.startsWith('edit ')) {
+    if (text === 'url-elicitation') {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        const response = await client.request(methods.client.elicitation.create, {
+          mode: 'url', sessionId: params.sessionId, elicitationId: 'desktop-url',
+          message: 'Connect the test service in your browser.', url: `https://example.org/connect?state=${'a'.repeat(180)}`,
+        });
+        await say(client, params.sessionId, `URL response: ${JSON.stringify(response)}`);
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text === 'verify-authentication') {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await say(client, params.sessionId, `Authentication response: ${JSON.stringify(authenticationResponse)}; session creation attempts: ${sessionCreationAttempts}`);
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text === 'verify-pre-session') {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await say(client, params.sessionId, `Setup response before session creation: ${JSON.stringify(setupResponse)}`);
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text.startsWith('questions-withdraw ')) {
+      void withdrawnQuestions(client, params.sessionId, text.slice('questions-withdraw '.length));
+    } else if (text.startsWith('questions-concurrent ')) {
+      void concurrentQuestions(client, params.sessionId, text.slice('questions-concurrent '.length));
+    } else if (text === 'after-questions') {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await say(client, params.sessionId, questionsIdle ? 'Queued prompt received after agent idle.' : 'ERROR: queued prompt received before agent idle.');
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text.startsWith('edit ')) {
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         await edit(client, params.sessionId, text.slice('edit '.length));

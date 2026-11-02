@@ -66,15 +66,19 @@ export function promptInput(window: Page): Locator {
 }
 
 export function questionSurface(window: Page): Locator {
-  return acpChatFrame(window).getByRole('region', { name: 'Questions', exact: true });
+  return acpChatFrame(window).getByRole('region', { name: 'Elicitations', exact: true });
 }
 
 export function questionNotification(window: Page): Locator {
-  return acpChatFrame(window).getByRole('button', { name: /^Open questions \(/ });
+  return acpChatFrame(window).getByRole('button', { name: /elicitation.*awaiting your response$/ });
 }
 
 export function pendingQuestions(window: Page): Locator {
-  return acpChatFrame(window).getByLabel('Pending questions', { exact: true });
+  return acpChatFrame(window).getByLabel('Pending elicitations', { exact: true });
+}
+
+export function queuedPrompts(window: Page): Locator {
+  return acpChatFrame(window).locator('#queuedPrompts');
 }
 
 /** VS Code's private notification-list DOM groups a native message with its action buttons. */

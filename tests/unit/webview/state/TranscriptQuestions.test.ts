@@ -21,7 +21,7 @@ describe('settled question records', () => {
       { kind: 'question', record, open: false },
     ]);
     expect(saved.currentTurn).not.toBeNull();
-    expect(saved.queued).toEqual(['queued']);
+    expect(saved.queued.map((prompt) => prompt.text)).toEqual(['queued']);
     expect(view.takePosted()).toEqual([]);
     view.send({ type: 'questionSettled', record });
     expect(view.transcript()).toBe(saved);

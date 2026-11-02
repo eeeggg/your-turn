@@ -46,7 +46,8 @@ export class Review {
 
   /** Evidence that `path` held `before` and now holds `after`; the first for a path under review sets its baseline. */
   changed(path: string, before: FileContent, after: FileContent): void {
-    this.set(path, this.reviewed.get(path)?.baseline ?? before, after);
+    const file = this.reviewed.get(path);
+    this.set(path, file ? file.baseline : before, after);
   }
 
   /** What a file under review holds now, however it came to; a path not under review is not evidence. */

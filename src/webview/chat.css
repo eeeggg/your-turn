@@ -26,6 +26,7 @@
   --color-input-foreground: var(--vscode-input-foreground);
   /* Themes may leave a border color unset, and an unset border color would fall back to the text color. */
   --color-input-border: var(--vscode-input-border, transparent);
+  --color-control-border: var(--vscode-input-border, var(--vscode-contrastBorder, var(--vscode-descriptionForeground)));
   --color-input-placeholder: var(--vscode-input-placeholderForeground);
   --color-popover: var(--vscode-dropdown-background);
   --color-popover-foreground: var(--vscode-dropdown-foreground);

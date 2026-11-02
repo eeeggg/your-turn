@@ -33,6 +33,10 @@ const RECORDS = process.env['ACP_TEST_RECORDS'];
 const COMPACTION = process.env['ACP_TEST_COMPACTION'] !== undefined;
 const initializes: number[] = [];
 let listings = 0;
+const AUTHENTICATION_QUESTION = process.env['ACP_TEST_AUTHENTICATION_QUESTION'] === '1';
+let authenticated = false;
+let authenticationResponse: unknown;
+let sessionCreationAttempts = 0;
 
 function record(method: string, { cwd, additionalDirectories }: { cwd: string; additionalDirectories?: string[] | undefined }): void {
   if (RECORDS) {
@@ -327,7 +331,7 @@ agent({ name: 'fake-agent' })
           ...(RECORDS ? { additionalDirectories: {}, resume: {} } : {}),
         },
       },
-      authMethods: [],
+      authMethods: AUTHENTICATION_QUESTION ? [{ id: 'preference', name: 'Test preference' }] : [],
       agentInfo: { name: 'FakeAgent', version: '0.0.1' },
     };
   })
@@ -339,7 +343,20 @@ agent({ name: 'fake-agent' })
     listings += 1;
     return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
+  .onRequest(methods.agent.authenticate, async ({ client, requestId }) => {
+    if (requestId === null) { throw new Error('Authentication needs a parent request ID'); }
+    const response = await client.request(methods.client.elicitation.create, {
+      requestId, mode: 'form', message: 'Choose a non-sensitive authentication preference.',
+      requestedSchema: { type: 'object', title: 'Authentication preference', required: ['enabled'], properties: { enabled: { type: 'boolean', title: 'Enabled' } } },
+    });
+    authenticationResponse = { action: response.action, ...(response.action === 'accept' ? { content: response.content } : {}) };
+    if (response.action !== 'accept') { throw RequestError.internalError(undefined, 'Authentication preference not accepted'); }
+    authenticated = true;
+    return {};
+  })
   .onRequest(methods.agent.session.new, ({ params }) => {
+    sessionCreationAttempts++;
+    if (AUTHENTICATION_QUESTION && !authenticated) { throw new RequestError(-32000, 'Authentication required'); }
     record('session/new', params);
     return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
   })
@@ -366,7 +383,20 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
-    if (text.startsWith('question-hidden ')) {
+    if (text === 'url-elicitation') {
+      const response = await client.request(methods.client.elicitation.create, {
+        mode: 'url', sessionId: params.sessionId, elicitationId: 'desktop-url',
+        message: 'Connect the test service in your browser.', url: `https://example.org/connect?state=${'a'.repeat(180)}`,
+      });
+      await client.notify(methods.client.session.update, {
+        sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `URL response: ${JSON.stringify(response)}` } },
+      });
+      return { stopReason: 'end_turn' };
+    } else if (text === 'verify-authentication') {
+      await client.notify(methods.client.session.update, {
+        sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Authentication response: ${JSON.stringify(authenticationResponse)}; session creation attempts: ${sessionCreationAttempts}` } },
+      });
+    } else if (text.startsWith('question-hidden ')) {
       const directory = text.slice('question-hidden '.length);
       const trigger = new Promise<void>((resolve) => {
         const watcher = watch(directory, (_event, name) => {
