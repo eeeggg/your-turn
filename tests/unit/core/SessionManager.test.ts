@@ -96,19 +96,20 @@ function setup(scripts: Record<string, AgentScript>) {
 
   // As in the extension, the chat view applies session updates to the sessions.
   const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
+  const executeCommand = vi.fn(async () => {});
   onTestFinished(async () => { await terminals.dispose(); });
   const chatView = new ChatViewController(
     manager,
-    { post() {}, executeCommand: async () => {}, showsToolCallDiffs: () => false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
+    { post() {}, executeCommand, showsToolCallDiffs: () => false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
     unusedEditor,
     terminals,
   );
   onTestFinished(async () => { updates.dispose(); await chatView.dispose(); });
   const received: [string, SessionUpdate][] = [];
   const receivedWaiters: { count: number; resolve: () => void }[] = [];
-  updates.addListener((sessionId, update) => {
+  updates.addListener((sessionId, update, _schema, agentId) => {
     received.push([sessionId, update]);
-    chatView.handleSessionUpdate(sessionId, update);
+    chatView.handleSessionUpdate(sessionId, update, agentId);
     for (const waiter of receivedWaiters.splice(0)) {
       if (received.length >= waiter.count) {
         waiter.resolve();
@@ -127,6 +128,7 @@ function setup(scripts: Record<string, AgentScript>) {
     agents,
     manager,
     chatView,
+    executeCommand,
     references,
     workspace,
     /** The reference to session `sessionId` of agent `fake` on the test workspace's host. */
@@ -173,6 +175,123 @@ function sessionAgent(id = 's1', extend: (app: AgentApp) => AgentApp = (app) => 
 }
 
 describe('SessionManager', () => {
+  it.each([false, true])('retains every outstanding submission when the newer one ends (reported idle: %s)', async (reportedIdle) => {
+    const { manager } = setup({ fake: sessionAgent().script });
+    await manager.connectToAgent('fake');
+    const first = manager.beginPrompt('s1');
+    const second = manager.beginPrompt('s1');
+    if (reportedIdle) { manager.applyForegroundState('s1', 'idle'); }
+    manager.endPrompt('s1', second);
+    expect(manager.hasForegroundWork('s1')).toBe(true);
+    manager.endPrompt('s1', first);
+    expect(manager.hasForegroundWork('s1')).toBe(false);
+  });
+
+  it.each(['disconnect', 'exit'] as const)('resets Stop and review context through the extension lifecycle on %s', async (ending) => {
+    const { manager, chatView, agents, executeCommand } = setup({ fake: sessionAgent().script });
+    manager.on('active-session-changed', () => chatView.notifyActiveSessionChanged());
+    manager.on('session-removed', (id) => chatView.notifySessionRemoved(id));
+    manager.on('session-ended', (id, reason) => chatView.notifySessionEnded(id, reason));
+    await manager.connectToAgent('fake');
+    chatView.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+    expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', true);
+    if (ending === 'disconnect') { await manager.disconnectAgent('fake'); }
+    else { await agents.running('fake')[0]?.crash(); }
+    expect(chatView.hasRunningTurn).toBe(false);
+    expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', false);
+  });
+
+  it('keeps another agent opening snapshot when an unrelated connection exits', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { manager, agents, receivedAtLeast, chatView } = setup({
+      other: () => fakeV2Agent(),
+      fake: () => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
+        await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'running' } });
+        await gate;
+        return { sessionId: 's1' };
+      }),
+    });
+    await manager.ensureConnected('other');
+    const opening = manager.connectToAgent('fake');
+    try {
+      await receivedAtLeast(1);
+      await agents.running('other')[0]?.crash();
+    } finally { release(); }
+    await opening;
+    expect(chatView.hasRunningTurn).toBe(true);
+  });
+
+  it('does not reuse foreground snapshots from a failed opening after its connection exits', async () => {
+    let first = true;
+    const { manager, chatView } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] }))
+      .onRequest(V2.methods.agent.session.new, async ({ client }) => {
+        if (first) {
+          first = false;
+          await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'running' } });
+          throw V2.RequestError.internalError(undefined, 'Cannot open');
+        }
+        return { sessionId: 's1' };
+      }) });
+    await expect(manager.connectToAgent('fake')).rejects.toThrow('Cannot open');
+    await manager.connectToAgent('fake');
+    expect(chatView.hasRunningTurn).toBe(false);
+  });
+
+  it('restores Stop for autonomous foreground work and keeps it until cancellation reaches idle', async () => {
+    let client!: V2.AgentContext;
+    let cancel!: (sessionId: string) => void;
+    const cancelled = new Promise<string>((resolve) => { cancel = resolve; });
+    const { manager, chatView } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] }))
+      .onRequest(V2.methods.agent.session.new, ({ client: connected }) => { client = connected; return { sessionId: 's1' }; })
+      .onRequest(V2.methods.agent.session.prompt, async () => {
+        await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'running' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'idle' } });
+        return { messageId: 'u1' };
+      })
+      .onNotification(V2.methods.agent.session.cancel, ({ params }) => cancel(params.sessionId)) });
+    await manager.connectToAgent('fake');
+    await chatView.handleMessage({ type: 'sendPrompt', text: 'go' });
+    expect(chatView.hasRunningTurn).toBe(false);
+    await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'running' } });
+    await manager.listSessions('fake');
+    expect(chatView.hasRunningTurn).toBe(true);
+    await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'requires_action' } });
+    await manager.listSessions('fake');
+    await chatView.handleMessage({ type: 'cancelTurn' });
+    expect(await cancelled).toBe('s1');
+    expect(chatView.hasRunningTurn).toBe(true);
+    await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' } });
+    await manager.listSessions('fake');
+    expect(chatView.hasRunningTurn).toBe(false);
+    await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', messageId: 'background', content: { type: 'text', text: 'Detached output' } } });
+    await manager.listSessions('fake');
+    expect(chatView.hasRunningTurn).toBe(false);
+  });
+
+  it('retains running snapshots received before session creation or resume registration', async () => {
+    const { manager, chatView } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] }))
+      .onRequest(V2.methods.agent.session.new, async ({ client }) => {
+        await client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', state: 'running' } });
+        return { sessionId: 's1' };
+      })
+      .onRequest(V2.methods.agent.session.resume, async ({ client, params }) => {
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'requires_action' } });
+        return {};
+      }) });
+    await manager.connectToAgent('fake');
+    await manager.listSessions('fake');
+    expect(chatView.hasRunningTurn).toBe(true);
+    await manager.resumeSession('fake', 's2');
+    await manager.listSessions('fake');
+    expect(chatView.hasRunningTurn).toBe(true);
+    await manager.disconnectAgent('fake');
+    expect(chatView.hasRunningTurn).toBe(false);
+  });
+
   describe('connecting', () => {
     it('tells whether an agent is running, without starting it', async () => {
       const { manager, agents } = setup({ fake: sessionAgent().script });

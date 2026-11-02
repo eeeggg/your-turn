@@ -61,6 +61,12 @@ export function acpChatWebview(window: Page): Locator {
   return window.locator(`iframe.webview[src*="extensionId=${extensionId}"]`);
 }
 
+/** VS Code's private pane DOM identifies the chat view by its header icon; its webview is in an overlay outside it. */
+export function chatStop(window: Page): Locator {
+  return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-comment-discussion') })
+    .locator('.pane-header .actions').getByRole('button', { name: 'ACP: Cancel Current Turn', exact: true });
+}
+
 export function promptInput(window: Page): Locator {
   return acpChatFrame(window).locator('#promptInput');
 }

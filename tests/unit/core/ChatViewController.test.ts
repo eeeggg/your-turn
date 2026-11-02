@@ -6,8 +6,12 @@ import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import type { FileEditor } from '@/core/ReportedFiles';
-import type { SessionInfo } from '@/core/SessionManager';
+import { SessionManager, type SessionInfo } from '@/core/SessionManager';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { InProcessAgents, unusedHandlers, work } from './InProcessAgents';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
+import { initialState, update } from '@/webview/state/RootState';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -77,6 +81,15 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 /** Sessions whose prompts stay in flight until the test answers them. */
 class FakeSessions implements ChatSessions {
+  private readonly activity = new SessionManager(new InProcessAgents({}), new ConnectionManager(new SessionUpdateHandler(), 'test', () => unusedHandlers), {
+    workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: async () => undefined,
+    agentConfigs: () => ({}), activeFileLink: () => undefined,
+  }, { chooseAuthMethod: async () => undefined });
+  applyForegroundState: ChatSessions['applyForegroundState'] = (id, state) => this.activity.applyForegroundState(id, state);
+  beginPrompt: ChatSessions['beginPrompt'] = (id) => this.activity.beginPrompt(id);
+  endPrompt: ChatSessions['endPrompt'] = (id, submission) => this.activity.endPrompt(id, submission);
+  clearActivity: ChatSessions['clearActivity'] = (id) => this.activity.clearActivity(id);
+  hasForegroundWork: ChatSessions['hasForegroundWork'] = (id) => this.activity.hasForegroundWork(id);
   activeId: string | null = 's1';
   session: SessionInfo | undefined = sessionInfo();
   readonly prompts: { text: string; reply: Deferred<undefined> }[] = [];
@@ -201,6 +214,59 @@ function sendPrompt(controller: ChatViewController, sessions: FakeSessions, text
 const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
+  it('keeps the next submission active when autonomous idle releases the queue synchronously', async () => {
+    const { controller, sessions, environment } = setup();
+    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+    let next: Promise<void> | undefined;
+    const post = environment.post.bind(environment);
+    environment.post = (message) => {
+      post(message);
+      if (message.type === 'foregroundActivity' && !message.running) { next = sendPrompt(controller, sessions, 'next'); }
+    };
+    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
+    environment.post = post;
+    expect(controller.hasRunningTurn).toBe(true);
+    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', true);
+    sessions.answer();
+    await next;
+  });
+
+  it('does not clear work submitted synchronously when an idle notification releases the queue', async () => {
+    const { controller, sessions, environment } = setup();
+    const first = sendPrompt(controller, sessions, 'first');
+    let next: Promise<void> | undefined;
+    const post = environment.post.bind(environment);
+    environment.post = (message) => {
+      post(message);
+      if (message.type === 'promptEnd') { next = sendPrompt(controller, sessions, 'next'); }
+    };
+    sessions.answer();
+    await first;
+    environment.post = post;
+    expect(controller.hasRunningTurn).toBe(true);
+    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', true);
+    sessions.answer();
+    await next;
+  });
+
+  it.each(['resolve', 'reject'] as const)('does not end older outstanding work when a newer submission settles by %s', async (settle) => {
+    const { controller, sessions, environment } = setup();
+    const first = sendPrompt(controller, sessions, 'first');
+    const second = sendPrompt(controller, sessions, 'steer');
+    environment.take();
+    const newer = sessions.prompts.pop();
+    if (!newer) { throw new Error('missing steering submission'); }
+    if (settle === 'resolve') { newer.reply.resolve(undefined); }
+    else { newer.reply.reject(new Error('refused')); }
+    await second;
+    expect(controller.hasRunningTurn).toBe(true);
+    expect(environment.take().filter((message) => message.type === 'promptEnd')).toEqual([]);
+    sessions.answer();
+    await first;
+    expect(controller.hasRunningTurn).toBe(false);
+    expect(environment.take()).toEqual([{ type: 'promptEnd' }]);
+  });
+
   it('rejects stale controls after reconnect and rechecks connection ownership after native reveal', async () => {
     const { controller, environment, sessions } = setup();
     environment.visible = false;
@@ -643,6 +709,68 @@ describe('ChatViewController', () => {
   });
 
   describe('turns', () => {
+    it('restores foreground state and review context when a controller is recreated during autonomous work', async () => {
+      const { sessions, controller, environment, editor, terminals } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'requiresAction' });
+      await controller.dispose();
+      environment.take();
+      environment.executeCommand.mockClear();
+      const replacement = new ChatViewController(sessions, environment, editor, terminals);
+      onTestFinished(() => replacement.dispose());
+      await replacement.handleMessage({ type: 'ready' });
+      expect(replacement.hasRunningTurn).toBe(true);
+      const messages = environment.take();
+      const first = messages[0];
+      if (!first) { throw new Error('Missing session state'); }
+      const opened = update(initialState, first, 0).state;
+      const streaming = update(opened, { type: 'agentText', messageId: 'autonomous', text: 'Working' }, 1).state;
+      const state = messages.reduce((state, message) => update(state, message, 2).state, streaming);
+      expect(state.activeSession?.turnRunning).toBe(true);
+      expect(state.transcript.currentTurn).toBe(streaming.transcript.currentTurn);
+      expect(state.transcript.entries).toEqual(streaming.transcript.entries);
+      expect(messages.map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
+      expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'acp.turnInProgress', true]]);
+    });
+
+    it.each(['answer', 'fail'] as const)('does not end newer autonomous work when an older prompt settles via %s', async (outcome) => {
+      const { sessions, controller, environment } = setup();
+      const turn = sendPrompt(controller, sessions, 'go');
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+      environment.take();
+      if (outcome === 'answer') { sessions.answer(); } else { sessions.fail(new Error('Rejected')); }
+      await turn;
+      expect(controller.hasRunningTurn).toBe(true);
+      expect(environment.take()).toEqual(outcome === 'answer' ? [] : [{ type: 'error', message: 'Rejected' }]);
+    });
+
+    it('holds queued prompts until prompt acceptance settles and does not release twice for repeated idle', async () => {
+      const { sessions, controller, environment } = setup();
+      const turn = sendPrompt(controller, sessions, 'go');
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+      environment.take();
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
+      expect(environment.take()).toEqual([]);
+      expect(controller.hasRunningTurn).toBe(true);
+      sessions.answer();
+      await turn;
+      expect(environment.take()).toEqual([{ type: 'promptEnd' }]);
+    });
+
+    it('keeps immediate submission feedback through an initial idle snapshot until foreground work starts', async () => {
+      const { sessions, controller, environment } = setup();
+      const turn = sendPrompt(controller, sessions, 'go');
+      environment.take();
+      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
+      expect(controller.hasRunningTurn).toBe(true);
+      expect(environment.take()).toEqual([]);
+      sessions.fail(new Error('Rejected'));
+      await turn;
+      expect(controller.hasRunningTurn).toBe(false);
+    });
+
     it('refuses a prompt when no session is active', async () => {
       const { sessions, environment, controller } = setup();
       sessions.activeId = null;
@@ -728,7 +856,7 @@ describe('ChatViewController', () => {
       environment.take();
 
       await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state', 'promptStart']);
+      expect(environment.take().map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
 
       sessions.answer();
       await turn;
@@ -785,7 +913,7 @@ describe('ChatViewController', () => {
 
         switchTo(sessions, controller, 's1');
 
-        expect(environment.take().map((message) => message.type)).toEqual(['state', 'promptStart']);
+        expect(environment.take().map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
         sessions.answer();
         await turn;
       });

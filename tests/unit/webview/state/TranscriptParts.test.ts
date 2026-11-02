@@ -9,10 +9,11 @@ describe('agent messages', () => {
     for (const answer of ['hello ', 'world']) {
       view.answer(answer);
     }
+    view.prompt('next');
     view.send({ type: 'promptStart' });
     view.answer('again');
 
-    expect(view.summary()).toEqual(['turn: hello world', 'turn: again']);
+    expect(view.summary()).toEqual(['turn: hello world', 'prompt: next', 'turn: again']);
   });
 
   it('draws a turn only once it has more than whitespace', () => {
@@ -235,10 +236,11 @@ describe('plans', () => {
     view.plan({ text: 'a', status: 'completed' }, { text: 'b', status: 'pending' });
     expect(view.summary()).toEqual(['turn: plan a, b | working']);
 
+    view.prompt('next');
     view.send({ type: 'promptStart' });
     view.plan({ text: 'c', status: 'pending' });
 
-    expect(view.summary()).toEqual(['turn: plan a, b | working', 'turn: plan c']);
+    expect(view.summary()).toEqual(['turn: plan a, b | working', 'prompt: next', 'turn: plan c']);
   });
 
   it('starts another plan when the turn it was in was cleared', () => {

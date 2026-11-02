@@ -133,6 +133,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'clearTranscript' }
   | { type: 'promptStart' }
   | { type: 'promptEnd' }
+  | { type: 'foregroundActivity'; running: boolean }
   | { type: 'error'; message: string }
   /** The shown session's agent exited on its own; the message says so. A sessionless `state` follows. */
   | { type: 'sessionEnded'; message: string }

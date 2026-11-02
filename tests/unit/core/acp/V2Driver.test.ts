@@ -100,6 +100,20 @@ const modelOption: V2.SessionConfigOption = {
 };
 
 describe('V2Driver', () => {
+  it('passes foreground snapshots up by session, including autonomous work and requires action', async () => {
+    expect(await passedUp(
+      ['s1', { sessionUpdate: 'state_update', state: 'idle' }],
+      ['s1', { sessionUpdate: 'state_update', state: 'running' }],
+      ['s2', { sessionUpdate: 'state_update', state: 'requires_action' }],
+      ['s1', { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' }],
+    )).toEqual([
+      ['s1', { kind: 'foreground', state: 'idle' }],
+      ['s1', { kind: 'foreground', state: 'running' }],
+      ['s2', { kind: 'foreground', state: 'requiresAction' }],
+      ['s1', { kind: 'foreground', state: 'idle' }],
+    ]);
+  });
+
   describe('the agent', () => {
     it('describes the agent as its initialize response does, offering only the auth methods it handles itself', async () => {
       const { driver } = await connectedDriver(() => fakeV2Agent({
@@ -348,6 +362,111 @@ describe('V2Driver', () => {
   });
 
   describe('prompts', () => {
+    it.each(['first', 'second'] as const)('waits for the next idle when %s is accepted after foreground restarts', async (late) => {
+      const accept = new Map<string, () => void>();
+      let client!: V2.AgentContext;
+      const { driver } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.prompt, async (context) => {
+          client = context.client;
+          const block = context.params.prompt[0];
+          if (!block || !V2.ContentBlock.isText(block)) { throw new Error('expected text'); }
+          await new Promise<void>((resolve) => accept.set(block.text, resolve));
+          return { messageId: block.text };
+        })
+        .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+      const first = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'first' }]));
+      const second = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'second' }]));
+      await driver.listSessions({});
+      const early = late === 'first' ? 'second' : 'first';
+      accept.get(early)?.();
+      await driver.listSessions({});
+      await reportState(client, running);
+      await reportState(client, idle);
+      await driver.listSessions({});
+      expect(await (late === 'first' ? second : first)).toBe('ended');
+      await reportState(client, running);
+      accept.get(late)?.();
+      await driver.listSessions({});
+      expect(await soFar(late === 'first' ? first : second)).toBe('running');
+      await reportState(client, idle);
+      await driver.listSessions({});
+      expect(await soFar(late === 'first' ? first : second)).toBe('ended');
+    });
+
+    it('suppresses accepted prompt echoes arriving after completion without suppressing other messages', async () => {
+      let client!: V2.AgentContext;
+      const { driver, updates } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.prompt, async (context) => {
+          client = context.client;
+          await reportState(client, running);
+          await reportState(client, idle);
+          return { messageId: 'local' };
+        })
+        .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+      await driver.prompt('s1', go);
+      await notify(client, { sessionUpdate: 'user_message', messageId: 'local', content: [text('go')] });
+      await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'local', content: text('go') });
+      await notify(client, { sessionUpdate: 'user_message', messageId: 'other', content: [text('external')] });
+      await driver.listSessions({});
+      expect(updates).toEqual([
+        ['s1', { kind: 'foreground', state: 'running' }],
+        ['s1', { kind: 'foreground', state: 'idle' }],
+        ['s1', { kind: 'promptMessage', messageId: 'other', text: 'external' }],
+      ]);
+    });
+
+    it.each(['first', 'second'] as const)('keeps the other completion waiter and echo suppression after rejecting %s', async (rejected) => {
+      const requests = new Map<string, { accept: () => void; refuse: () => void }>();
+      let client!: V2.AgentContext;
+      const { driver, updates } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.prompt, async (context) => {
+          client = context.client;
+          const name = context.params.prompt[0];
+          if (!name || !V2.ContentBlock.isText(name)) { throw new Error('expected text'); }
+          await new Promise<void>((resolve, reject) => requests.set(name.text, {
+            accept: resolve, refuse: () => reject(V2.RequestError.internalError(undefined, 'refused')),
+          }));
+          return { messageId: name.text };
+        })
+        .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
+      const first = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'first' }]));
+      const second = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'second' }]));
+      await driver.listSessions({});
+      await reportState(client, running);
+      requests.get(rejected)?.refuse();
+      expect(await (rejected === 'first' ? first : second)).toHaveProperty('message', expect.stringContaining('refused'));
+      const accepted = rejected === 'first' ? 'second' : 'first';
+      await notify(client, { sessionUpdate: 'user_message', messageId: accepted, content: [text(accepted)] });
+      requests.get(accepted)?.accept();
+      await driver.listSessions({});
+      await reportState(client, idle);
+      await driver.listSessions({});
+      expect(await soFar(rejected === 'first' ? second : first)).toBe('ended');
+      expect(updates.filter(([, update]) => update.kind === 'promptMessage')).toEqual([]);
+    });
+
+    it('completes all overlapping accepted prompts on idle rather than replacing the earlier waiter', async () => {
+      const agent = await turnAgent();
+      const first = outcomeOf(agent.driver.prompt('s1', go));
+      await agent.report(running);
+      const second = outcomeOf(agent.driver.prompt('s1', go));
+      await agent.report();
+      await agent.report(idle);
+      expect(await second).toBe('ended');
+      expect(await soFar(first)).toBe('ended');
+    });
+
+    it('rejects all overlapping completion waiters when the connection closes', async () => {
+      const agent = await turnAgent();
+      const first = outcomeOf(agent.driver.prompt('s1', go));
+      await agent.report(running);
+      const second = outcomeOf(agent.driver.prompt('s1', go));
+      await agent.report();
+      await agent.exit();
+      expect(await second).toEqual(new Error('The connection to the agent closed before the turn ended'));
+      expect(await soFar(first)).toEqual(new Error('The connection to the agent closed before the turn ended'));
+    });
+
     it('sends the text and the file link as content blocks', async () => {
       const received: V2.PromptRequest[] = [];
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.prompt, async ({ params, client }) => {
@@ -524,7 +643,11 @@ describe('V2Driver', () => {
         ['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }],
         ['s1', { kind: 'promptText', messageId: 'u0', text: ' now' }],
       ];
-      expect(updates).toEqual([...replay, ['s1', { kind: 'agentText', messageId: 'a1', text: 'Done' }], ...replay]);
+      expect(updates).toEqual([...replay,
+        ['s1', { kind: 'foreground', state: 'running' }],
+        ['s1', { kind: 'agentText', messageId: 'a1', text: 'Done' }],
+        ['s1', { kind: 'foreground', state: 'idle' }],
+        ...replay]);
     });
 
     it('passes up the prompts a load replays after a prompt the agent refused', async () => {

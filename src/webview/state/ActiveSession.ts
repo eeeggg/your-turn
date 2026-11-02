@@ -54,6 +54,8 @@ export function updateActiveSession(
       return session && { ...session, commands: action.commands };
     case 'promptStart':
       return withChanges(session, { turnRunning: true });
+    case 'foregroundActivity':
+      return withChanges(session, { turnRunning: action.running });
     case 'promptEnd':
       return withChanges(session, { turnRunning: false });
     case 'loadSessionStart':

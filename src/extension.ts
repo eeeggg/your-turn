@@ -198,7 +198,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       }
     });
   });
-  sessionUpdateHandler.addListener((sessionId, update) => chatViewController.handleSessionUpdate(sessionId, update));
+  sessionUpdateHandler.addListener((sessionId, update, _schema, agentId) => chatViewController.handleSessionUpdate(sessionId, update, agentId));
   sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
   const reviews = new Reviews(workspaceFiles);
   let disposal: Promise<void> | undefined;

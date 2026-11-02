@@ -195,11 +195,14 @@ interface SessionUsage {
 /** The ACP schema a driver speaks, which names the driver, as each speaks one; its session updates are tagged with it. */
 export type AcpSchema = 'v1' | 'v2';
 
+export type ForegroundState = 'idle' | 'running' | 'requiresAction';
+
 /**
  * Something new or changed in a session; what has no place here is dropped by the driver. Discriminated by `kind`,
  * not the webview messages' `type`, so an update cannot be posted to the webview as it is.
  */
 export type SessionUpdate =
+  | { kind: 'foreground'; state: ForegroundState }
   | { kind: 'agentText'; messageId: string | null; text: string }
   | { kind: 'thoughtText'; messageId: string | null; text: string }
   /** More of a prompt that a load replays. */

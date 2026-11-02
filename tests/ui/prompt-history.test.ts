@@ -111,8 +111,9 @@ test('queued controls preserve inline focus, composer drafts and queue order acr
   await surface.getByLabel('Count *', { exact: true }).fill('0');
   await surface.getByRole('button', { name: 'Submit', exact: true }).click();
   await expect(chatTranscript(window)).toContainText('Received question response:');
-  // Send now disappears only after the webview receives agent-owned promptEnd.
-  await expect(queue.getByRole('button', { name: 'Send now', exact: true })).toHaveCount(0);
+  // Delivery controls disappear only after the agent ends foreground work.
+  await expect(queue.getByRole('button', { name: 'Stop send now', exact: true })).toHaveCount(0);
+  await expect(queue.getByRole('button', { name: 'Steer now', exact: true })).toHaveCount(0);
   await expect(editor).toHaveValue('noted edited head');
   await expect(chatUserMessages(window)).toHaveCount(1);
   await expect(prompt).toHaveValue('composer draft');

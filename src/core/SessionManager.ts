@@ -7,6 +7,7 @@ import {
   type AuthMethod,
   type ConfigOption,
   type FileLink,
+  type ForegroundState,
   type Modes,
   type NewSession,
   type PromptPart,
@@ -183,6 +184,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   private listedTitles = new Map<string, Map<string, string>>();
 
   private sessions = new Map<string, SessionInfo>();
+  private readonly activity = new Map<string, { foreground: ForegroundState | null; submissions: Set<symbol>; agentId: string | undefined }>();
   private activeSessionId: string | null = null;
 
   /** Maps agentName → sessionId for the one-session-per-agent model. */
@@ -412,6 +414,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /** Stop an agent's process and forget it; its session, if any, is the caller's to drop. */
   private stopAgent(agent: RunningAgent): void {
+    this.clearUnregisteredActivity(agent.process.id);
     if (this.agents.get(agent.name) === agent) {
       this.agents.delete(agent.name);
     }
@@ -419,6 +422,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   private handleAgentExit(agentName: string, agentProcess: AgentProcess, code: number | null): void {
+    this.clearUnregisteredActivity(agentProcess.id);
     // Still registered means nothing here stopped it.
     const unexpected = this.agents.get(agentName)?.process === agentProcess;
     if (unexpected) {
@@ -1001,6 +1005,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   /** Forget a session; the caller announces any change to the active session. */
   private removeSession(session: SessionInfo): void {
+    this.activity.delete(session.sessionId);
     this.sessions.delete(session.sessionId);
     if (this.agentSessions.get(session.agentName) === session.sessionId) {
       this.agentSessions.delete(session.agentName);
@@ -1063,6 +1068,41 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     return this.sessions.get(sessionId);
   }
 
+  /** Also retains snapshots that arrive before session/new or session/resume answers. */
+  applyForegroundState(sessionId: string, state: ForegroundState, agentId?: string): void {
+    const activity = this.activity.get(sessionId) ?? { foreground: null, submissions: new Set<symbol>(), agentId: agentId ?? this.sessions.get(sessionId)?.agentId };
+    activity.foreground = state;
+    this.activity.set(sessionId, activity);
+  }
+
+  beginPrompt(sessionId: string): symbol {
+    const activity = this.activity.get(sessionId) ?? { foreground: null, submissions: new Set<symbol>(), agentId: this.sessions.get(sessionId)?.agentId };
+    const submission = Symbol(sessionId);
+    activity.submissions.add(submission);
+    this.activity.set(sessionId, activity);
+    return submission;
+  }
+
+  endPrompt(sessionId: string, submission: symbol): void {
+    this.activity.get(sessionId)?.submissions.delete(submission);
+  }
+
+  clearActivity(sessionId: string): void {
+    this.activity.delete(sessionId);
+  }
+
+  /** An opening that never registered a session must not seed a later connection. */
+  private clearUnregisteredActivity(agentId: string): void {
+    for (const [sessionId, activity] of this.activity) {
+      if (activity.agentId === agentId && !this.sessions.has(sessionId)) { this.activity.delete(sessionId); }
+    }
+  }
+
+  hasForegroundWork(sessionId: string): boolean {
+    const activity = this.activity.get(sessionId);
+    return activity !== undefined && (activity.submissions.size > 0 || activity.foreground === 'running' || activity.foreground === 'requiresAction');
+  }
+
   getActiveSession(): SessionInfo | undefined {
     if (!this.activeSessionId) { return undefined; }
     return this.sessions.get(this.activeSessionId);
@@ -1103,6 +1143,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.endWaits();
     this.agents.clear();
     this.sessions.clear();
+    this.activity.clear();
     this.agentSessions.clear();
     this.disposal = (async () => {
       const results = await Promise.allSettled([...this.processes].map(async ([process, exited]) => {

@@ -7,7 +7,7 @@ import type { ClientHandlers, Elicitations, ElicitationInteractions } from '@/co
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { captureTraffic } from '@/core/Traffic';
 import { logDebug, logError, logInfo } from '@/core/Log';
-import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { AcpDriver } from './AcpDriver';
 import { negotiate } from './Negotiation';
 import { V1Driver } from './V1Driver';
@@ -29,6 +29,8 @@ export class ConnectionManager {
     logDebug('Connecting to agent', { agentName });
 
     const stream = ndJsonStream(streams.input, streams.output);
+    const updates = new SessionUpdateHandler();
+    updates.addListener((sessionId, update, schema) => this.sessionUpdateHandler.handleUpdate(sessionId, update, schema, agentId));
 
     // Wrap the stream to capture all ACP traffic separately from diagnostics.
     const outgoing = new OutgoingRequests();
@@ -40,6 +42,7 @@ export class ConnectionManager {
     const close = () => {
       if (closed) { return; }
       closed = true;
+      updates.dispose();
       try { elicitations.close(); }
       finally { outgoing.close(); handlers.close?.(); }
     };
@@ -48,8 +51,8 @@ export class ConnectionManager {
       const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
       logInfo('Negotiated ACP protocol', { agentName, version: negotiated.version });
       return await (negotiated.version === 2
-        ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, owned)
-        : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, this.sessionUpdateHandler, owned));
+        ? V2Driver.connect(agentName, negotiated.stream, this.clientVersion, updates, owned)
+        : V1Driver.connect(agentName, negotiated.stream, this.clientVersion, updates, owned));
     } catch (error) {
       close();
       throw error;

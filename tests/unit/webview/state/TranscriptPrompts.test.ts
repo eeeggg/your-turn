@@ -35,6 +35,59 @@ describe('prompts', () => {
 });
 
 describe('the queue', () => {
+  it('keeps streamed steering output in place when submission feedback arrives later', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.answer('before');
+    view.prompt('head');
+    const id = view.transcript().queued[0]?.id ?? -1;
+    view.send({ type: 'steerNowChosen', id });
+    view.answer('after');
+    const current = view.transcript().currentTurn;
+    view.send({ type: 'promptStart' });
+    expect(view.transcript().currentTurn).toBe(current);
+    view.answer(' more');
+    expect(view.summary()).toEqual(['prompt: first', 'turn: before', 'prompt: head', 'turn: after more']);
+  });
+
+  it('steers only an unedited queue head while running and leaves later prompts for completion', () => {
+    const view = chatView();
+    view.connect();
+    view.prompt('first');
+    view.answer('before');
+    view.prompt('head');
+    view.prompt('tail');
+    const head = view.transcript().queued[0]?.id ?? -1;
+    const tail = view.transcript().queued[1]?.id ?? -1;
+    view.takePosted();
+    view.send({ type: 'steerNowChosen', id: tail });
+    expect(view.takePosted()).toEqual([]);
+    view.send({ type: 'queuedPromptEditStarted', id: head }, { type: 'steerNowChosen', id: head });
+    expect(view.takePosted()).toEqual([]);
+    expect(view.transcript().currentTurn).not.toBeNull();
+    view.send({ type: 'queuedPromptEditDiscarded', id: head }, { type: 'steerNowChosen', id: head });
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'head' }, queuedPrompts(1)]);
+    view.send({ type: 'steerNowChosen', id: head });
+    expect(view.takePosted()).toEqual([]);
+    view.answer('after');
+    expect(view.summary()).toEqual(['prompt: first', 'turn: before', 'prompt: head', 'turn: after']);
+    expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['tail']);
+    view.send(promptEnd);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'tail' }, queuedPrompts(0)]);
+  });
+
+  it('queues prompts during autonomous work without creating an empty turn and releases one on foreground idle', () => {
+    const view = chatView();
+    view.connect();
+    view.send({ type: 'foregroundActivity', running: true });
+    expect(view.transcript().currentTurn).toBeNull();
+    view.prompt('next');
+    expect(view.takePosted()).toEqual([queuedPrompts(1)]);
+    view.send({ type: 'foregroundActivity', running: false });
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'next' }, queuedPrompts(0)]);
+  });
+
   it('holds a prompt sent during a turn instead of sending it, out of the transcript while the turn grows', () => {
     const view = chatView();
     view.connect();

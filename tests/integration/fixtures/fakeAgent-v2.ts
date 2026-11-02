@@ -355,6 +355,23 @@ function promptText(prompt: ContentBlock[]): string {
 }
 
 let questionsIdle = false;
+const autonomousSessions = new Set<string>();
+let promptNumber = 0;
+
+async function autonomousWork(client: AgentContext, sessionId: string, directory: string): Promise<void> {
+  const restart = new Promise<void>((resolve) => {
+    const watcher = watch(directory, (_event, name) => {
+      if (name === 'foreground.trigger') { watcher.close(); resolve(); }
+    });
+  });
+  await reportState(client, sessionId, { state: 'running' });
+  await say(client, sessionId, 'Initial foreground complete.');
+  await reportState(client, sessionId, { state: 'idle', stopReason: 'end_turn' });
+  await restart;
+  autonomousSessions.add(sessionId);
+  await reportState(client, sessionId, { state: 'running' });
+  await say(client, sessionId, 'Autonomous foreground running.');
+}
 
 async function withdrawnQuestions(client: AgentContext, sessionId: string, directory: string): Promise<void> {
   const controller = new AbortController();
@@ -466,7 +483,11 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, ({ params, client }) => {
     const text = promptText(params.prompt);
-    if (text === 'url-elicitation') {
+    if (text === 'steer-check' && autonomousSessions.has(params.sessionId)) {
+      void say(client, params.sessionId, 'Steering received without cancellation.');
+    } else if (text.startsWith('autonomous ')) {
+      void autonomousWork(client, params.sessionId, text.slice('autonomous '.length));
+    } else if (text === 'url-elicitation') {
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         const response = await client.request(methods.client.elicitation.create, {
@@ -540,10 +561,13 @@ agent({ name: 'fake-agent' })
     } else {
       void turn(client, params.sessionId);
     }
-    return { messageId: 'prompt-message' };
+    return { messageId: `prompt-message-${++promptNumber}` };
   })
   .onNotification(methods.agent.session.cancel, async ({ params, client }) => {
     await say(client, params.sessionId, 'cancel-ack');
+    if (autonomousSessions.delete(params.sessionId)) {
+      await reportState(client, params.sessionId, { state: 'idle', stopReason: 'cancelled' });
+    }
   })
   .connect(ndJsonStream(
     Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,

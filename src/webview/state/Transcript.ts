@@ -152,6 +152,7 @@ export type TranscriptAction =
   /** A diff's file link, the `file`th file across the tool call's diffs. */
   | { type: 'diffFileClicked'; toolCallId: string; file: number }
   | { type: 'sendNowChosen'; id: EntryId }
+  | { type: 'steerNowChosen'; id: EntryId }
   | { type: 'queuedPromptToggled'; id: EntryId }
   | { type: 'queuedPromptEditStarted'; id: EntryId }
   | { type: 'queuedPromptEdited'; id: EntryId; text: string }
@@ -397,9 +398,11 @@ export function updateTranscript(
     case 'loadSessionStart':
       return stateOnly(cleared(transcript, transcript.sessionId));
     case 'promptStart':
-      return stateOnly(withCurrent(transcript, null));
+      return stateOnly(transcript);
     case 'promptEnd':
       return withQueueHeadSent(endTurn(transcript, now));
+    case 'foregroundActivity':
+      return action.running ? stateOnly(transcript) : withQueueHeadSent(endTurn(transcript, now));
     case 'loadSessionEnd': {
       const ended = endTurn(transcript, now);
       return stateOnly(action.ok ? ended : appended(ended, (id) => ({ kind: 'error', id, text: 'Failed to load session.' })));
@@ -456,6 +459,10 @@ export function updateTranscript(
       return !turnRunning || transcript.queued[0]?.id !== action.id
         ? stateOnly(transcript)
         : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'cancelTurn' }] };
+    case 'steerNowChosen':
+      return !turnRunning || transcript.queued[0]?.id !== action.id || transcript.queued[0].draft !== null
+        ? stateOnly(transcript)
+        : withQueueHeadSent({ ...endTurn(transcript, now), followRequests: transcript.followRequests + 1 });
     case 'queuedPromptToggled':
     case 'queuedPromptEditStarted':
     case 'queuedPromptEdited':
@@ -527,7 +534,7 @@ function withQueueHeadSent(transcript: TranscriptState): Transition<TranscriptSt
 }
 
 function withPrompt(transcript: TranscriptState, text: string): TranscriptState {
-  return appended(transcript, (id) => ({ kind: 'prompt', id, text }));
+  return appended(withCurrent(transcript, null), (id) => ({ kind: 'prompt', id, text }));
 }
 
 function withAgentText(

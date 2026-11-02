@@ -58,7 +58,7 @@ export class V2Driver implements AcpDriver {
   ): Promise<V2Driver> {
     const { permissions } = handlers;
     const foreground = new Foreground();
-    const translator = new Translator();
+    const translator = new Translator(foreground);
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
     const app = Acp.client({ name: 'vscode-acp-client' })
@@ -77,6 +77,12 @@ export class V2Driver implements AcpDriver {
         logTrace('Received session update', { type: params.update.sessionUpdate, sessionId: params.sessionId });
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
           foreground.report(params.sessionId, params.update);
+          if (Acp.StateUpdate.isIdle(params.update) || Acp.StateUpdate.isRunning(params.update) || Acp.StateUpdate.isRequiresAction(params.update)) {
+            updates.handleUpdate(params.sessionId, {
+              kind: 'foreground',
+              state: Acp.StateUpdate.isRequiresAction(params.update) ? 'requiresAction' : params.update.state,
+            }, 'v2');
+          }
           return;
         }
         const update = translator.translate(params.sessionId, params.update);
@@ -89,7 +95,7 @@ export class V2Driver implements AcpDriver {
       handlers.elicitations?.close();
       handlers.close?.();
     }, { once: true });
-    connection.signal.addEventListener('abort', () => foreground.close(), { once: true });
+    connection.signal.addEventListener('abort', () => { foreground.close(); translator.clear(); }, { once: true });
 
     logDebug('Initializing ACP v2 connection', { agentName });
     const initResponse = await connection.agent.request(Acp.methods.agent.initialize, v2InitializeRequest(clientVersion));
@@ -147,6 +153,7 @@ export class V2Driver implements AcpDriver {
   }
 
   private async resume(sessionId: string, roots: SessionRoots, replayFrom: Acp.ReplayFrom | null): Promise<SessionState> {
+    this.translator.forgetPrompts(sessionId);
     const response = await sessionChecked(sessionId, this.connection.agent.request(Acp.methods.agent.session.resume, {
       sessionId,
       cwd: roots.cwd,
@@ -159,20 +166,20 @@ export class V2Driver implements AcpDriver {
   /** The agent answers once it has taken the prompt in, and reports the end of the turn it starts as the session going idle. */
   async prompt(sessionId: string, prompt: PromptPart[]): Promise<void> {
     const turn = this.foreground.begin(sessionId);
-    this.translator.prompting.add(sessionId);
     try {
       const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.prompt, {
         sessionId,
         prompt: prompt.map(contentBlock),
       }));
       logDebug('Prompt accepted', { messageId: response.messageId });
+      this.translator.accepted(sessionId, response.messageId);
       const idle = await turn.end();
       if (Acp.IdleStateUpdate.isError(idle)) {
         throw turnFailure(idle.error);
       }
       logInfo('Prompt turn ended', { stopReason: idle.stopReason ?? 'none' });
     } finally {
-      this.translator.prompting.delete(sessionId);
+      this.foreground.remove(sessionId, turn);
     }
   }
 
@@ -207,13 +214,16 @@ export class V2Driver implements AcpDriver {
  */
 class Foreground {
   private readonly working = new Set<string>();
-  /** The latest per session: the extension holds a prompt sent mid-turn until the turn ends. */
-  private readonly turns = new Map<string, Turn>();
+  private readonly turns = new Map<string, Set<Turn>>();
+
+  hasPrompts(sessionId: string): boolean {
+    return (this.turns.get(sessionId)?.size ?? 0) > 0;
+  }
 
   report(sessionId: string, update: Acp.StateUpdate): void {
     if (Acp.StateUpdate.isIdle(update)) {
       if (this.working.delete(sessionId)) {
-        this.turns.get(sessionId)?.ended(update);
+        for (const turn of this.turns.get(sessionId) ?? []) { turn.ended(update); }
       }
     } else if (Acp.StateUpdate.isRunning(update) || Acp.StateUpdate.isRequiresAction(update)) {
       this.working.add(sessionId);
@@ -222,14 +232,24 @@ class Foreground {
 
   begin(sessionId: string): Turn {
     const turn = new Turn(() => this.working.has(sessionId));
-    this.turns.set(sessionId, turn);
+    const turns = this.turns.get(sessionId) ?? new Set<Turn>();
+    turns.add(turn);
+    this.turns.set(sessionId, turns);
     return turn;
   }
 
+  remove(sessionId: string, turn: Turn): void {
+    const turns = this.turns.get(sessionId);
+    turns?.delete(turn);
+    if (turns?.size === 0) { this.turns.delete(sessionId); }
+  }
+
   close(): void {
-    for (const turn of this.turns.values()) {
-      turn.close();
+    for (const turns of this.turns.values()) {
+      for (const turn of turns) { turn.close(); }
     }
+    this.turns.clear();
+    this.working.clear();
   }
 }
 
@@ -282,8 +302,28 @@ function turnFailure(error: Acp.Error | null | undefined): Error {
  * prompt back as a user message the chat view already shows.
  */
 class Translator {
-  readonly prompting = new Set<string>();
+  constructor(private readonly foreground: Foreground) {}
+  private readonly localPrompts = new Map<string, Set<string>>();
   private readonly toolCallContents = new Map<string, Map<string, ToolCallContent[]>>();
+
+  accepted(sessionId: string, messageId: string): void {
+    const prompts = this.localPrompts.get(sessionId) ?? new Set<string>();
+    prompts.add(messageId);
+    this.localPrompts.set(sessionId, prompts);
+  }
+
+  forgetPrompts(sessionId: string): void {
+    this.localPrompts.delete(sessionId);
+  }
+
+  clear(): void {
+    this.localPrompts.clear();
+    this.toolCallContents.clear();
+  }
+
+  private isLocalPrompt(sessionId: string, messageId: string): boolean {
+    return this.foreground.hasPrompts(sessionId) || !!this.localPrompts.get(sessionId)?.has(messageId);
+  }
 
   /** The session update for v2's, or null when the interface has no place for it. */
   translate(sessionId: string, update: Acp.SessionUpdate): SessionUpdate | null {
@@ -297,7 +337,7 @@ class Translator {
       return text === null ? null : { kind: 'thoughtText', messageId: update.messageId, text };
     }
     if (updates.isUserMessageChunk(update)) {
-      const text = this.prompting.has(sessionId) ? null : textForUser(update.content);
+      const text = this.isLocalPrompt(sessionId, update.messageId) ? null : textForUser(update.content);
       return text === null ? null : { kind: 'promptText', messageId: update.messageId, text };
     }
     if (updates.isAgentMessage(update)) {
@@ -307,7 +347,7 @@ class Translator {
       return update.content === undefined ? null : { kind: 'thoughtMessage', messageId: update.messageId, text: messageText(update.content) };
     }
     if (updates.isUserMessage(update)) {
-      return update.content === undefined || this.prompting.has(sessionId)
+      return update.content === undefined || this.isLocalPrompt(sessionId, update.messageId)
         ? null
         : { kind: 'promptMessage', messageId: update.messageId, text: messageText(update.content) };
     }

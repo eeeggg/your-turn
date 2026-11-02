@@ -35,6 +35,53 @@ const modelOption: Acp.SessionConfigOption = {
 };
 
 describe('V1Driver', () => {
+  it('keeps both overlapping requests pending through cancellation until their responses arrive', async () => {
+    const replies: (() => void)[] = [];
+    let cancelled!: () => void;
+    const cancellation = new Promise<void>((resolve) => { cancelled = resolve; });
+    const { driver } = await connectedDriver(() => fakeAgent()
+      .onRequest(methods.agent.session.prompt, async () => {
+        await new Promise<void>((resolve) => replies.push(resolve));
+        return { stopReason: 'cancelled' };
+      })
+      .onRequest(methods.agent.session.list, () => ({ sessions: [] }))
+      .onNotification(methods.agent.session.cancel, () => cancelled()), {
+      permissions: { requestPermission: vi.fn(), cancelSession: () => {} },
+    });
+    const completed: string[] = [];
+    const first = driver.prompt('s1', [{ kind: 'text', text: 'first' }]).then(() => { completed.push('first'); });
+    const second = driver.prompt('s1', [{ kind: 'text', text: 'steer' }]).then(() => { completed.push('second'); });
+    await driver.listSessions({});
+    await driver.cancel('s1');
+    await cancellation;
+    expect(completed).toEqual([]);
+    for (const reply of replies) { reply(); }
+    await Promise.all([first, second]);
+    expect(completed).toEqual(['first', 'second']);
+  });
+
+  it.each(['first', 'second'] as const)('keeps overlapping prompt completions independent when %s finishes first', async (early) => {
+    const replies = new Map<string, () => void>();
+    const { driver } = await connectedDriver(() => fakeAgent()
+      .onRequest(methods.agent.session.prompt, async ({ params }) => {
+        const block = params.prompt[0];
+        if (block?.type !== 'text') { throw new Error('expected text'); }
+        await new Promise<void>((resolve) => replies.set(block.text, resolve));
+        return { stopReason: 'end_turn' };
+      })
+      .onRequest(methods.agent.session.list, () => ({ sessions: [] })));
+    const completed: string[] = [];
+    const first = driver.prompt('s1', [{ kind: 'text', text: 'first' }]).then(() => { completed.push('first'); });
+    const second = driver.prompt('s1', [{ kind: 'text', text: 'second' }]).then(() => { completed.push('second'); });
+    await driver.listSessions({});
+    replies.get(early)?.();
+    await (early === 'first' ? first : second);
+    expect(completed).toEqual([early]);
+    replies.get(early === 'first' ? 'second' : 'first')?.();
+    await Promise.all([first, second]);
+    expect(completed).toEqual(early === 'first' ? ['first', 'second'] : ['second', 'first']);
+  });
+
   it('advertises support for ID-addressed session compaction', () => {
     expect(v1InitializeRequest('1.2.3').clientCapabilities).toEqual({ elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } } });
   });

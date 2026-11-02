@@ -39,6 +39,11 @@ export type ChatSessions = Pick<
   | 'applyConfigOptions'
   | 'applyCurrentMode'
   | 'applySessionInfoUpdate'
+  | 'applyForegroundState'
+  | 'beginPrompt'
+  | 'endPrompt'
+  | 'clearActivity'
+  | 'hasForegroundWork'
 >;
 
 /** Text arriving within this many milliseconds reaches the webview as one message, so it renders about once a frame at most. */
@@ -179,11 +184,6 @@ export class ChatViewController {
       })),
     };
   }
-  /**
-   * Sessions with a prompt in flight. The chat view hears of a turn only while its session is shown, and is told
-   * it is running when it opens or shows that session again, so it holds its next prompt.
-   */
-  private readonly runningTurns = new Set<string>();
   /** The session the chat view was last told about; reporting the same one again would split its running turn. */
   private shownSessionId: string | null = null;
   /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
@@ -264,6 +264,7 @@ export class ChatViewController {
         this._queuedPrompts = 0;
         this.sendCurrentState();
         this.sendRunningTurn();
+        this.setTurnInProgress(this.hasRunningTurn);
         this.sendQuestions();
         break;
       case 'openFile':
@@ -287,11 +288,21 @@ export class ChatViewController {
     }
   }
 
-  handleSessionUpdate(sessionId: string, update: SessionUpdate): void {
+  handleSessionUpdate(sessionId: string, update: SessionUpdate, agentId?: string): void {
     if (this.disposed) { return; }
     // Applied before the active-session check: an agent can send these while
     // a session is still being created, before it becomes the active session.
     switch (update.kind) {
+      case 'foreground': {
+        const wasRunning = this.isRunning(sessionId);
+        this.sessions.applyForegroundState(sessionId, update.state, agentId);
+        const running = this.isRunning(sessionId);
+        if (sessionId === this.sessions.getActiveSessionId() && wasRunning !== running) {
+          this.setTurnInProgress(running);
+          this.post({ type: 'foregroundActivity', running });
+        }
+        return;
+      }
       case 'commands':
         this.sessions.applyAvailableCommands(sessionId, update.commands);
         break;
@@ -343,6 +354,7 @@ export class ChatViewController {
 
   /** The session is gone, whether its agent exited or the user disconnected it. */
   notifySessionRemoved(sessionId: string): void {
+    this.sessions.clearActivity(sessionId);
     this.commandOutput.forgetSession(sessionId);
     this.diffs.forgetSession(sessionId);
   }
@@ -352,7 +364,7 @@ export class ChatViewController {
    * view keeps the transcript and shows why.
    */
   notifySessionEnded(sessionId: string, reason: string): void {
-    this.runningTurns.delete(sessionId);
+    this.sessions.clearActivity(sessionId);
     if (sessionId === this.shownSessionId) {
       this.shownSessionEnded = true;
       this.post({ type: 'sessionEnded', message: reason });
@@ -379,6 +391,7 @@ export class ChatViewController {
   /** The replay finished, successfully or not. */
   notifyLoadSessionEnd(ok: boolean): void {
     this.post({ type: 'loadSessionEnd', ok });
+    this.sendActivity();
   }
 
   /** Clear the transcript, as when a new session starts. */
@@ -408,7 +421,7 @@ export class ChatViewController {
       return;
     }
 
-    this.runningTurns.add(activeId);
+    const submission = this.sessions.beginPrompt(activeId);
     this.post({ type: 'promptStart' });
     this.setTurnInProgress(true);
 
@@ -421,24 +434,32 @@ export class ChatViewController {
         this.post({ type: 'error', message: messageOf(e) || 'Prompt failed' });
       }
     }
-    this.endTurn(activeId);
+    const wasRunning = this.isRunning(activeId);
+    this.sessions.endPrompt(activeId, submission);
+    if (activeId !== this.sessions.getActiveSessionId()) { return; }
+    if (wasRunning && !this.isRunning(activeId)) { this.endTurn(activeId); }
   }
 
   private endTurn(sessionId: string): void {
-    this.runningTurns.delete(sessionId);
     if (sessionId !== this.sessions.getActiveSessionId()) { return; }
-    this.post({ type: 'promptEnd' });
     this.setTurnInProgress(false);
+    this.post({ type: 'promptEnd' });
   }
 
   private isRunning(sessionId: string | null): boolean {
-    return sessionId !== null && this.runningTurns.has(sessionId);
+    return sessionId !== null && this.sessions.hasForegroundWork(sessionId);
   }
 
   private sendRunningTurn(): void {
     if (this.isRunning(this.shownSessionId)) {
-      this.post({ type: 'promptStart' });
+      this.post({ type: 'foregroundActivity', running: true });
     }
+  }
+
+  private sendActivity(): void {
+    const running = this.hasRunningTurn;
+    if (running) { this.post({ type: 'foregroundActivity', running }); }
+    this.setTurnInProgress(running);
   }
 
   private async cancelTurn(): Promise<void> {
@@ -560,6 +581,7 @@ export class ChatViewController {
         return session ? { type: 'pickers', pickers: pickersOf(session) } : null;
       }
       case 'sessionInfo':
+      case 'foreground':
       case 'terminal':
       case 'terminalOutput':
         return null;

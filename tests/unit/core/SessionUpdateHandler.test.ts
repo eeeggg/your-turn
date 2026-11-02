@@ -27,7 +27,10 @@ describe('SessionUpdateHandler', () => {
 
     handler.handleUpdate('s1', update, 'v2');
 
-    expect(listener).toHaveBeenCalledExactlyOnceWith('s1', update, 'v2');
+    expect(listener).toHaveBeenCalledExactlyOnceWith('s1', update, 'v2', undefined);
+    listener.mockClear();
+    handler.handleUpdate('s1', update, 'v2', 'connection-1');
+    expect(listener).toHaveBeenCalledExactlyOnceWith('s1', update, 'v2', 'connection-1');
   });
 
   it('registers a listener once even if it is added twice', () => {

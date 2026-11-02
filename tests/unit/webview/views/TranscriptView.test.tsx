@@ -220,10 +220,30 @@ describe('the queue', () => {
 
     const buttons = view.all('#queuedPrompts .send-now');
     expect(buttons.map((button) => button.closest('.queued-prompt')?.querySelector('.queued-text')?.textContent)).toEqual(['second']);
-    expect(buttons[0]?.textContent).toBe('Send now');
+    expect(buttons[0]?.textContent).toBe('Stop and send now');
     fireEvent.click(view.part('#queuedPrompts .send-now'));
 
     expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
+  });
+
+  it('steers only the queue head without cancellation and keeps the remainder queued', () => {
+    const view = renderChatView();
+    view.connect();
+    prompt(view, 'first');
+    view.send({ type: 'agentText', messageId: 'a1', text: 'before' });
+    prompt(view, 'second');
+    prompt(view, 'third');
+    view.takePosted();
+    const buttons = view.all('#queuedPrompts .steer-now');
+    expect(buttons.map((button) => button.closest('.queued-prompt')?.querySelector('.queued-text')?.textContent)).toEqual(['second']);
+    expect(buttons[0]?.textContent).toBe('Steer now');
+    fireEvent.click(view.part('#queuedPrompts .steer-now'));
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, { type: 'queuedPrompts', count: 1 }]);
+    expect(queued(view).map(([, value]) => value)).toEqual(['third']);
+    expect(userMessages(view)).toEqual(['first', 'second']);
+    view.send({ type: 'promptStart' }, { type: 'agentText', messageId: 'a2', text: 'after' });
+    expect(userMessages(view)).toEqual(['first', 'second']);
+    expect(view.takePosted()).toEqual([]);
   });
 
   it('moves a queued prompt into the transcript when it goes out, and is gone once the last one has', () => {
@@ -269,7 +289,8 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
     view.takePosted();
-    fireEvent.click(view.part('[aria-label="Edit queued prompt"]'));
+    expect(view.all('#queuedPrompts button').map((button) => button.textContent)).not.toContain('Edit');
+    fireEvent.click(view.part('.queued-text'));
     const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
     expect(document.activeElement).toBe(editor);
     fireEvent.change(editor, { target: { value: 'saved second' } });
@@ -288,7 +309,7 @@ describe('the queue', () => {
     view.connect();
     prompt(view, 'first');
     prompt(view, 'second');
-    fireEvent.click(view.part('[aria-label="Edit queued prompt"]'));
+    fireEvent.click(view.part('.queued-text'));
     const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
     fireEvent.change(editor, { target: { value: 'unsaved' } });
     view.takePosted();
@@ -298,7 +319,7 @@ describe('the queue', () => {
     expect(view.container.querySelector('[aria-label="Queued prompt text"]')).toBe(editor);
     fireEvent.keyDown(editor, { key: 'Escape' });
     expect(view.container.querySelector('[aria-label="Queued prompt text"]')).toBeNull();
-    expect(document.activeElement).toBe(view.part('[aria-label="Edit queued prompt"]'));
+    expect(document.activeElement).toBe(view.part('.queued-text'));
     expect(queued(view).map(([, text]) => text)).toEqual(['second']);
     expect(view.takePosted()).toEqual([]);
   });
@@ -310,7 +331,7 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
     view.send({ type: 'promptEdited', text: 'composer draft' });
-    fireEvent.click(view.part('[aria-label="Edit queued prompt"]'));
+    fireEvent.click(view.part('.queued-text'));
     const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
     fireEvent.change(editor, { target: { value: method === 'cancel' ? 'unsaved edit' : ' \n\t' } });
     view.takePosted();
