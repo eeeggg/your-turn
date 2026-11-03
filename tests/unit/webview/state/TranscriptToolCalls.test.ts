@@ -196,7 +196,7 @@ describe("a tool call's files", () => {
   it("gives each diff shown its first file's place across the tool call's diffs", () => {
     const { blocks } = shownContent([edited, ...texts('done'), twoFiles, edited], inSession(), true);
 
-    expect(blocks.map((block) => (block.kind === 'diff' ? block.firstFile : block.text))).toEqual([0, 'done', 1, 3]);
+    expect(blocks.map((block) => (block.kind === 'diff' ? block.firstFile : block.kind === 'image' ? block.src : block.text))).toEqual([0, 'done', 1, 3]);
   });
 });
 
@@ -306,7 +306,7 @@ describe('what is shown', () => {
     const { blocks, truncated } = shownContent([diff, ...texts(half), diff, ...texts(half, 'c'), diff], inSession(), true);
 
     expect(truncated).toBe(true);
-    expect(blocks.map((block) => (block.kind !== 'diff' ? block.text.length : block.files.map((file) => `${file.operation} ${file.path}`)))).toEqual([
+    expect(blocks.map((block) => (block.kind === 'diff' ? block.files.map((file) => `${file.operation} ${file.path}`) : block.kind === 'image' ? block.src : block.text.length))).toEqual([
       ['add a.ts'],
       half.length,
       ['add a.ts'],

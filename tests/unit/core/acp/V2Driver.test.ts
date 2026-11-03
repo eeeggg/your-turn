@@ -406,6 +406,10 @@ describe('V2Driver', () => {
       await driver.prompt('s1', go);
       await notify(client, { sessionUpdate: 'user_message', messageId: 'local', content: [text('go')] });
       await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'local', content: text('go') });
+      await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'local', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
+      await notify(client, { sessionUpdate: 'user_message', messageId: 'local', content: [
+        { type: 'resource', resource: { uri: 'file:///image.png', mimeType: 'image/png', blob: 'AAAA' } },
+      ] });
       await notify(client, { sessionUpdate: 'user_message', messageId: 'other', content: [text('external')] });
       await driver.listSessions({});
       expect(updates).toEqual([
@@ -572,6 +576,129 @@ describe('V2Driver', () => {
   });
 
   describe('session updates', () => {
+    it.each([
+      ['agent_message', 'agent_message_chunk', 'agentRichMessage', 'agentMessage', 'agentImage'],
+      ['agent_thought', 'agent_thought_chunk', 'thoughtRichMessage', 'thoughtMessage', 'thoughtImage'],
+      ['user_message', 'user_message_chunk', 'promptRichMessage', 'promptMessage', 'promptImage'],
+    ] as const)('preserves image-only %s, omission, null, empty content and later chunks', async (whole, chunk, rich, cleared, image) => {
+      const block: V2.ContentBlock = { type: 'image', data: 'AAAA', mimeType: 'image/png', _meta: { arbitrary: 'ignored' } };
+      const content = [block];
+      const updates: V2.SessionUpdate[] = whole === 'agent_message'
+        ? [{ sessionUpdate: whole, messageId: 'm', content }, { sessionUpdate: whole, messageId: 'm' }, { sessionUpdate: whole, messageId: 'm', content: null }, { sessionUpdate: whole, messageId: 'm', content: [] }]
+        : whole === 'agent_thought'
+          ? [{ sessionUpdate: whole, messageId: 'm', content }, { sessionUpdate: whole, messageId: 'm' }, { sessionUpdate: whole, messageId: 'm', content: null }, { sessionUpdate: whole, messageId: 'm', content: [] }]
+          : [{ sessionUpdate: whole, messageId: 'm', content }, { sessionUpdate: whole, messageId: 'm' }, { sessionUpdate: whole, messageId: 'm', content: null }, { sessionUpdate: whole, messageId: 'm', content: [] }];
+      updates.push(chunk === 'agent_message_chunk' ? { sessionUpdate: chunk, messageId: 'm', content: block }
+        : chunk === 'agent_thought_chunk' ? { sessionUpdate: chunk, messageId: 'm', content: block }
+          : { sessionUpdate: chunk, messageId: 'm', content: block });
+      expect(await updatesFor(...updates)).toEqual([
+        { kind: rich, messageId: 'm', content: [{ kind: 'image', data: 'AAAA', mimeType: 'image/png' }] },
+        { kind: cleared, messageId: 'm', text: '' }, { kind: cleared, messageId: 'm', text: '' },
+        { kind: image, messageId: 'm', data: 'AAAA', mimeType: 'image/png' },
+      ]);
+    });
+
+    it.each([
+      ['agent_message', 'agentRichMessage'],
+      ['agent_thought', 'thoughtRichMessage'],
+      ['user_message', 'promptRichMessage'],
+    ] as const)('preserves ordered resources and references in %s replacements', async (sessionUpdate, kind) => {
+      const content: V2.ContentBlock[] = [
+        text('before'),
+        { type: 'resource', resource: { uri: 'file:///graph.png', mimeType: 'image/png', blob: 'AAAA' } },
+        { type: 'resource_link', uri: 'https://example.com/graph.png', name: 'graph', mimeType: 'image/png' },
+        { type: 'image', data: 'hidden', mimeType: 'image/png', annotations: { audience: ['assistant'] } },
+        text('after'),
+      ];
+      const update: V2.SessionUpdate = sessionUpdate === 'agent_message'
+        ? { sessionUpdate, messageId: 'm1', content }
+        : sessionUpdate === 'agent_thought'
+          ? { sessionUpdate, messageId: 'm1', content }
+          : { sessionUpdate, messageId: 'm1', content };
+      expect(await updatesFor(update)).toEqual([{ kind, messageId: 'm1', content: [
+        { kind: 'text', text: 'before' },
+        { kind: 'image', data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'image', data: '', mimeType: 'image/png', reference: true },
+        { kind: 'text', text: 'after' },
+      ] }]);
+    });
+
+    it('replaces and appends tool image resources without exposing excluded content', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+          { type: 'content', content: { type: 'resource', resource: { uri: 'file:///graph.png', mimeType: 'image/png', blob: 'AAAA' } } },
+          { type: 'content', content: text('hidden', ['assistant']) },
+        ] },
+        { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: {
+          type: 'content', content: { type: 'resource_link', uri: 'https://example.com/image', name: 'image', mimeType: 'image/png' },
+        } },
+        { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [] },
+      )).toEqual([
+        { kind: 'toolCall', toolCallId: 'c1', content: [{ kind: 'image', data: 'AAAA', mimeType: 'image/png' }] },
+        { kind: 'toolCall', toolCallId: 'c1', content: [
+          { kind: 'image', data: 'AAAA', mimeType: 'image/png' },
+          { kind: 'image', data: '', mimeType: 'image/png', reference: true },
+        ] },
+        { kind: 'toolCall', toolCallId: 'c1', content: [] },
+      ]);
+    });
+
+    it('passes embedded image resources and image references without dereferencing them', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: { type: 'resource', resource: { uri: 'file:///graph.png', mimeType: 'image/png', blob: 'AAAA' } } },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: { type: 'resource_link', uri: 'https://example.com/graph.png', name: 'graph.png', mimeType: 'image/png' } },
+      )).toEqual([
+        { kind: 'agentImage', messageId: 'a1', data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'agentImage', messageId: 'a1', data: '', mimeType: 'image/png', reference: true },
+      ]);
+    });
+
+    it('preserves images among tool-call content', async () => {
+      expect(await updatesFor({ sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+        { type: 'content', content: text('before') },
+        { type: 'content', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { type: 'content', content: text('after') },
+      ] })).toEqual([{ kind: 'toolCall', toolCallId: 'c1', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', data: 'AAAA', mimeType: 'image/png' }, { kind: 'text', text: 'after' },
+      ] }]);
+    });
+
+    it('passes user-visible image chunks in their reported order and keeps their message ID', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('before') },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: { type: 'image', data: 'BBBB', mimeType: 'image/png', annotations: { audience: ['assistant'] } } },
+        { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('after') },
+      )).toEqual([
+        { kind: 'agentText', messageId: 'a1', text: 'before' },
+        { kind: 'agentImage', messageId: 'a1', data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'agentText', messageId: 'a1', text: 'after' },
+      ]);
+    });
+
+    it('passes ordered image blocks in whole-message replacements', async () => {
+      expect(await updatesFor({
+        sessionUpdate: 'agent_message', messageId: 'a1', content: [
+          text('before'), { type: 'image', data: 'AAAA', mimeType: 'image/png' }, text('after'),
+        ],
+      })).toEqual([{
+        kind: 'agentRichMessage', messageId: 'a1', content: [
+          { kind: 'text', text: 'before' }, { kind: 'image', data: 'AAAA', mimeType: 'image/png' }, { kind: 'text', text: 'after' },
+        ],
+      }]);
+    });
+
+    it('passes user-visible image chunks in thoughts and replayed prompts', async () => {
+      expect(await updatesFor(
+        { sessionUpdate: 'agent_thought_chunk', messageId: 't1', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { sessionUpdate: 'user_message_chunk', messageId: 'u1', content: { type: 'image', data: 'BBBB', mimeType: 'image/png' } },
+        { sessionUpdate: 'agent_thought_chunk', messageId: 't1', content: { type: 'image', data: 'CCCC', mimeType: 'image/png', annotations: { audience: ['assistant'] } } },
+      )).toEqual([
+        { kind: 'thoughtImage', messageId: 't1', data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'promptImage', messageId: 'u1', data: 'BBBB', mimeType: 'image/png' },
+      ]);
+    });
+
     it('tags every session update it passes up with its schema, v2', async () => {
       const { driver, schemas } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.session.new, async ({ client }) => {
@@ -597,6 +724,7 @@ describe('V2Driver', () => {
       )).toEqual([
         { kind: 'thoughtText', messageId: 't1', text: '' },
         { kind: 'agentText', messageId: 'a1', text: 'Hello' },
+        { kind: 'agentImage', messageId: 'a1', data: 'AAAA', mimeType: 'image/png' },
         { kind: 'agentMessage', messageId: 'a1', text: 'Hello, world' },
         { kind: 'thoughtMessage', messageId: 't1', text: 'Pondering' },
       ]);

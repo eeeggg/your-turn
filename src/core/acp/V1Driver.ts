@@ -260,14 +260,41 @@ function permissionResponse(outcome: PermissionOutcome): Acp.RequestPermissionRe
 function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
   switch (update.sessionUpdate) {
     case 'agent_message_chunk': {
+      const resource = imageResourceForUser(update.content);
+      if (resource) { return { kind: 'agentImage', messageId: update.messageId ?? null, ...resource }; }
+      if (update.content.type === 'image') {
+        const audience = update.content.annotations?.audience;
+        return audience && !audience.includes('user') ? null : {
+          kind: 'agentImage', messageId: update.messageId ?? null,
+          data: update.content.data, mimeType: update.content.mimeType,
+        };
+      }
       const text = textForUser(update.content);
       return text ? { kind: 'agentText', messageId: update.messageId ?? null, text } : null;
     }
     case 'agent_thought_chunk': {
+      const resource = imageResourceForUser(update.content);
+      if (resource) { return { kind: 'thoughtImage', messageId: update.messageId ?? null, ...resource }; }
+      if (update.content.type === 'image') {
+        const audience = update.content.annotations?.audience;
+        return audience && !audience.includes('user') ? null : {
+          kind: 'thoughtImage', messageId: update.messageId ?? null,
+          data: update.content.data, mimeType: update.content.mimeType,
+        };
+      }
       const text = textForUser(update.content);
       return text === null ? null : { kind: 'thoughtText', messageId: update.messageId ?? null, text };
     }
     case 'user_message_chunk': {
+      const resource = imageResourceForUser(update.content);
+      if (resource) { return { kind: 'promptImage', messageId: update.messageId ?? null, ...resource }; }
+      if (update.content.type === 'image') {
+        const audience = update.content.annotations?.audience;
+        return audience && !audience.includes('user') ? null : {
+          kind: 'promptImage', messageId: update.messageId ?? null,
+          data: update.content.data, mimeType: update.content.mimeType,
+        };
+      }
       const text = textForUser(update.content);
       return text === null ? null : { kind: 'promptText', messageId: update.messageId ?? null, text };
     }
@@ -323,6 +350,17 @@ function sessionUpdate(update: Acp.SessionUpdate): SessionUpdate | null {
   }
 }
 
+function imageResourceForUser(content: Acp.ContentBlock): { data: string; mimeType: string; reference?: true } | null {
+  if (content.type !== 'resource' && content.type !== 'resource_link') { return null; }
+  const audience = content.annotations?.audience;
+  if (audience && !audience.includes('user')) { return null; }
+  if (content.type === 'resource_link') {
+    return content.mimeType?.startsWith('image/') ? { data: '', mimeType: content.mimeType, reference: true } : null;
+  }
+  const resource = content.resource;
+  return 'blob' in resource && resource.mimeType?.startsWith('image/') ? { data: resource.blob, mimeType: resource.mimeType } : null;
+}
+
 /** A chunk's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
 function textForUser(content: Acp.ContentBlock): string | null {
   if (content.type !== 'text') {
@@ -336,8 +374,16 @@ function textForUser(content: Acp.ContentBlock): string | null {
 function toolCallContent(content: readonly Acp.ToolCallContent[]): ToolCallContent[] {
   return content.flatMap((block): ToolCallContent[] => {
     switch (block.type) {
-      case 'content':
-        return block.content.type === 'text' && block.content.text ? [{ kind: 'text', text: block.content.text }] : [];
+      case 'content': {
+        const resource = imageResourceForUser(block.content);
+        if (resource) { return [{ kind: 'image', ...resource }]; }
+        if (block.content.type === 'image') {
+          const audience = block.content.annotations?.audience;
+          return audience && !audience.includes('user') ? [] : [{ kind: 'image', data: block.content.data, mimeType: block.content.mimeType }];
+        }
+        const text = textForUser(block.content);
+        return text ? [{ kind: 'text', text }] : [];
+      }
       case 'diff':
         return [{ kind: 'diff', diff: { kind: 'wholeFile', path: block.path, oldText: block.oldText ?? null, newText: block.newText } }];
       default:

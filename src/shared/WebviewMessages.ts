@@ -6,9 +6,18 @@
 
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 
+type MessageContent = { kind: 'text'; text: string } | ({ kind: 'image' } & ImagePresentation);
+
+export interface ImagePresentation {
+  src: string | null;
+  reference?: true;
+  fallback?: string;
+}
+
 /** A tool call's content, in the order the agent reported it; diffs only while `acp.showToolCallDiffs` is on. */
 export type ToolCallContent =
   | { kind: 'text'; text: string }
+  | ({ kind: 'image' } & ImagePresentation)
   /** A diff's files, each shown whole or cut to the tool call's line limit across its diffs. */
   | { kind: 'diff'; files: DiffFile[] }
   /** A command's output the agent sent as text, cleaned as a terminal shows it; `truncated` when earlier output is not in it. */
@@ -155,12 +164,18 @@ export type ExtensionToWebviewMessage =
   | { type: 'sessionEnded'; message: string }
   /** More of the agent's answer; text with another `messageId` is another message. */
   | { type: 'agentText'; messageId: string | null; text: string }
+  | ({ type: 'agentImage'; messageId: string | null } & ImagePresentation)
+  | ({ type: 'thoughtImage'; messageId: string | null } & ImagePresentation)
+  | ({ type: 'promptImage'; messageId: string | null } & ImagePresentation)
   /** More of the agent's thinking, as for `agentText`. */
   | { type: 'thoughtText'; messageId: string | null; text: string }
   /** More of a prompt that a load replays, as for `agentText`. */
   | { type: 'promptText'; messageId: string | null; text: string }
   /** The whole text of the agent's answer with this `messageId`, replacing what the latest one had; without one, a new answer. */
   | { type: 'agentMessage'; messageId: string; text: string }
+  | { type: 'agentRichMessage'; messageId: string; content: MessageContent[] }
+  | { type: 'thoughtRichMessage'; messageId: string; content: MessageContent[] }
+  | { type: 'promptRichMessage'; messageId: string; content: MessageContent[] }
   /** The whole text of the agent's thinking, as for `agentMessage`. */
   | { type: 'thoughtMessage'; messageId: string; text: string }
   /** The whole text of a prompt that a load replays, as for `agentMessage`. */

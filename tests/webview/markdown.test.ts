@@ -29,6 +29,154 @@ function answer(...chunks: string[]): void {
 }
 
 describe('markdown while it streams', () => {
+  it('drops image payloads when replay replaces a transcript and when its session changes', () => {
+    const src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    page.send({ type: 'agentImage', messageId: 'm', src });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
+    page.send({ type: 'loadSessionStart' });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(0);
+    page.send({ type: 'agentImage', messageId: 'm', src });
+    page.send({ type: 'loadSessionEnd', ok: true });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
+    page.send({ type: 'state', activeSessionId: 'other', session: { sessionId: 'other', agentName: 'Other', cwd: '/other', pickers: [], commands: [] } });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(0);
+  });
+
+  it('replaces tool images and reference fallbacks without leaving old payloads', () => {
+    const src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    page.send({ type: 'toolCall', toolCallId: 't', content: [{ kind: 'image', src }, { kind: 'image', src: null, reference: true }] });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
+    expect(page.document.querySelector('#messages')?.textContent).toContain('Image reference not displayed');
+    page.send({ type: 'toolCall', toolCallId: 't', status: 'completed' });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
+    page.send({ type: 'toolCall', toolCallId: 't', content: [] });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(0);
+    expect(page.document.querySelector('#messages')?.textContent).not.toContain('Image reference not displayed');
+  });
+
+  it('keeps adjacent whole-message text as one Markdown span before an image', () => {
+    page.send({ type: 'agentRichMessage', messageId: 'm1', content: [
+      { kind: 'text', text: '**bo' }, { kind: 'text', text: 'ld**' }, { kind: 'image', src: null, fallback: 'Invalid image data' },
+    ] });
+    expect(bold()).toEqual(['bold']);
+    expect(page.document.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Image from agent: Image not displayed: Invalid image data');
+  });
+
+  it.each(['https://example.invalid/blocked.png', 'http://example.invalid/blocked.png', './blocked.png', '/blocked.png', 'file:///blocked.png', 'data:image/png;base64,AAAA'])('never creates an image request for Markdown source %s', (source) => {
+    answer(`Before ![Blocked picture](${source}) after`);
+    expect(message().querySelectorAll('img, source, picture, link')).toHaveLength(0);
+    expect(message().textContent).toContain('Blocked picture');
+    expect(message().textContent).toContain('not displayed');
+    expect(page.takePosted()).toEqual([]);
+  });
+
+  it('explains browser decoding failure and retries a replacement image', async () => {
+    const src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    page.send({ type: 'agentRichMessage', messageId: 'm1', content: [{ kind: 'image', src }] });
+    const image = page.document.querySelector('#messages img');
+    expect(image).not.toBeNull();
+    const changed = new Promise<void>((resolve) => {
+      const observer = new page.window.MutationObserver(() => {
+        if (page.document.querySelector('#messages')?.textContent.includes('Image not displayed')) {
+          observer.disconnect();
+          resolve();
+        }
+      });
+      observer.observe(page.byId('messages'), { childList: true, subtree: true, characterData: true });
+    });
+    image?.dispatchEvent(new page.window.Event('error'));
+    await changed;
+    expect(page.document.querySelector('#messages')?.textContent).toContain('Image not displayed: browser could not render it');
+    expect(page.document.querySelector('#messages img')).toBeNull();
+    page.send({ type: 'agentRichMessage', messageId: 'm1', content: [{ kind: 'image', src: `${src}AAAA` }] });
+    expect(page.document.querySelector('#messages img')?.getAttribute('src')).toBe(`${src}AAAA`);
+  });
+
+  it.each([
+    ['thoughtRichMessage', 'thoughtText', 'thoughtMessage', 'thoughtImage'],
+    ['promptRichMessage', 'promptText', 'promptMessage', 'promptImage'],
+  ] as const)('replaces, appends and clears mixed %s content', (type, chunk, clear, image) => {
+    const src = 'data:image/png;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+    page.send({ type: chunk, messageId: 'm1', text: 'obsolete' });
+    page.send({ type: image, messageId: 'm1', src });
+    page.send({ type, messageId: 'm1', content: [
+      { kind: 'text', text: 'before' }, { kind: 'image', src }, { kind: 'text', text: 'after' },
+    ] });
+    page.send({ type: chunk, messageId: 'm1', text: ' appended' });
+    const messages = page.document.querySelector('#messages');
+    expect(messages?.querySelectorAll('img')).toHaveLength(1);
+    expect(messages?.textContent).not.toContain('obsolete');
+    expect(messages?.textContent).toContain('before');
+    expect(messages?.textContent).toContain('after appended');
+    page.send({ type: clear, messageId: 'm1', text: '' });
+    expect(messages?.querySelectorAll('img')).toHaveLength(0);
+    expect(messages?.textContent).not.toContain('before');
+    expect(messages?.textContent).not.toContain('after');
+  });
+
+  it('renders a delivered agent image between surrounding text', () => {
+    const src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+    answer('Before');
+    page.send({ type: 'agentImage', messageId: null, src });
+    agentText(page, 'After');
+
+    const messages = page.document.querySelector('#messages');
+    const image = messages?.querySelector('img');
+    expect(image?.getAttribute('src')).toBe(src);
+    expect(image?.getAttribute('alt')).toBe('Image from agent');
+    expect(messages?.textContent).toContain('Before');
+    expect(messages?.textContent).toContain('After');
+    expect(image?.previousElementSibling?.textContent).toContain('Before');
+    expect(image?.nextElementSibling?.textContent).toContain('After');
+  });
+
+  it('shows a readable fallback for an image reference', () => {
+    page.send({ type: 'promptStart' });
+    page.send({ type: 'agentImage', messageId: 'a1', src: null, reference: true });
+    expect(page.document.querySelector('#messages')?.textContent).toContain('Image reference not displayed');
+    expect(page.document.querySelector('#messages img')).toBeNull();
+  });
+
+  it('replaces streamed text and images with a whole message and clears them later', () => {
+    const src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+    page.send({ type: 'promptStart' });
+    page.send({ type: 'agentText', messageId: 'a1', text: 'old' });
+    page.send({ type: 'agentImage', messageId: 'a1', src });
+    page.send({ type: 'agentRichMessage', messageId: 'a1', content: [
+      { kind: 'text', text: 'before' }, { kind: 'image', src }, { kind: 'text', text: 'after' },
+    ] });
+    const messages = page.document.querySelector('#messages');
+    expect(messages?.querySelectorAll('img')).toHaveLength(1);
+    expect(messages?.textContent).not.toContain('old');
+    expect(messages?.textContent).toContain('before');
+    expect(messages?.textContent).toContain('after');
+
+    page.send({ type: 'agentMessage', messageId: 'a1', text: '' });
+    expect(messages?.querySelectorAll('img')).toHaveLength(0);
+    expect(messages?.textContent).not.toContain('before');
+    expect(messages?.textContent).not.toContain('after');
+  });
+
+  it('shows images from a replayed prompt and an agent thought', () => {
+    const src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+    page.send({ type: 'promptText', messageId: 'u1', text: 'Question' });
+    page.send({ type: 'promptImage', messageId: 'u1', src });
+    page.send({ type: 'thoughtText', messageId: 't1', text: 'Thinking' });
+    page.send({ type: 'thoughtImage', messageId: 't1', src });
+
+    expect(page.document.querySelector('img[alt="Image in user prompt"]')?.getAttribute('src')).toBe(src);
+    expect(page.document.querySelector('img[alt="Image in agent thought"]')?.getAttribute('src')).toBe(src);
+  });
+
+  it('shows a tool-call image among its content', () => {
+    const src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+    page.send({ type: 'promptStart' });
+    page.send({ type: 'toolCall', toolCallId: 't1', title: 'Inspect', content: [
+      { kind: 'text', text: 'before' }, { kind: 'image', src }, { kind: 'text', text: 'after' },
+    ] });
+    expect(page.document.querySelector('img[alt="Image in tool output"]')?.getAttribute('src')).toBe(src);
+  });
+
   it('renders each chunk as it arrives, closing what is half-written', () => {
     answer('Some **bo');
     expect(bold()).toEqual(['bo']);
@@ -57,6 +205,17 @@ describe('markdown while it streams', () => {
 });
 
 describe('what the agent cannot put on the page', () => {
+  it('shows image descriptions without loading Markdown image sources', () => {
+    answer('Before ![Sales chart](https://example.com/chart.png) and ![Local graph](./graph.png) after');
+
+    expect(message().querySelectorAll('img')).toHaveLength(0);
+    expect(message().textContent).toContain('Sales chart');
+    expect(message().textContent).toContain('Local graph');
+    expect(message().textContent).toContain('not displayed');
+    expect(message().textContent).toContain('Before');
+    expect(message().textContent).toContain('after');
+  });
+
   it('drops scripts, styles and frames', () => {
     answer('<script>window.injected = true</script>\n\n<style>body { display: none }</style>\n\n<iframe src="https://example.com"></iframe>\n\nafter');
 

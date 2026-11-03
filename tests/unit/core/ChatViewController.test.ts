@@ -1193,6 +1193,202 @@ describe('ChatViewController', () => {
   });
 
   describe('session updates', () => {
+    it('does not charge a background command output image to the displayed transcript', async () => {
+      vi.useFakeTimers();
+      onTestFinished(() => { vi.useRealTimers(); });
+      const { environment, controller, sessions } = setup();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'background', toolKind: 'execute', content: [
+        { kind: 'text', text: 'command output' }, { kind: 'image', data, mimeType: 'image/png' },
+      ] });
+      sessions.activeId = 's2';
+      controller.notifyActiveSessionChanged();
+      await vi.runAllTimersAsync();
+      for (let index = 0; index < 5; index++) {
+        controller.handleSessionUpdate('s2', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+      }
+      const received = environment.take();
+      expect(received.filter((message) => message.type === 'agentImage').map((message) => message.src !== null)).toEqual([true, true, true, true, true]);
+      expect(received.filter((message) => message.type === 'toolCall' && message.content !== undefined)).toEqual([]);
+    });
+
+    it.each([
+      ['image/gif', '47494638396101000100800000000000ffffff2c00000000010001000002014c003b'],
+      ['image/jpeg', 'ffd8ffe000104a46494600010100000100010000ffc00011080001000103012200021101031101ffd9'],
+      ['image/webp', '5249464616000000574542505650384c090000002f000000000710111100'],
+    ])('presents %s after inspecting its actual header', (mimeType, hex) => {
+      const { environment, controller } = setup();
+      const data = Buffer.from(hex, 'hex').toString('base64');
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: `data:${mimeType};base64,${data}` }]);
+    });
+
+    it.each([
+      [16384, 1, true], [1, 16384, true], [8000, 5000, true],
+      [16385, 1, false], [1, 16385, false], [8000, 5001, false], [0, 1, false],
+    ])('checks a %s by %s header before presentation', (width, height, accepted) => {
+      const { environment, controller } = setup();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      header.writeUInt32BE(width, 16);
+      header.writeUInt32BE(height, 20);
+      const data = header.toString('base64');
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', ...(accepted
+        ? { src: `data:image/png;base64,${data}` }
+        : { src: null, fallback: width === 0 ? 'Invalid image dimensions' : 'Image exceeds dimension or pixel limit' }) }]);
+    });
+
+    it.each([10 * 1024 * 1024, 10 * 1024 * 1024 + 1, 10 * 1024 * 1024 + 3])('bounds a %s byte payload', (length) => {
+      const { environment, controller } = setup();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(length - header.length)]).toString('base64');
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', ...(length === 10 * 1024 * 1024
+        ? { src: `data:image/png;base64,${data}` }
+        : { src: null, fallback: 'Image exceeds 10 MiB payload limit' }) }]);
+    });
+
+    it.each(['', 'A===', 'AAAA=', 'AA A', 'AB==', 'data:image/png;base64,AAAA'])('rejects noncanonical base64 %j', (data) => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback: 'Invalid image data' }]);
+    });
+
+    it.each(['agent', 'thought', 'prompt', 'tool'] as const)('releases %s images on content clearing without evicting other images', (surface) => {
+      const { environment, controller } = setup();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
+      for (let index = 0; index < 4; index++) {
+        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `kept${index}`, data, mimeType: 'image/png' });
+      }
+      const content = [{ kind: 'image' as const, data, mimeType: 'image/png' }];
+      controller.handleSessionUpdate('s1', surface === 'tool'
+        ? { kind: 'toolCall', toolCallId: 'replace', content }
+        : { kind: surface === 'agent' ? 'agentRichMessage' : surface === 'thought' ? 'thoughtRichMessage' : 'promptRichMessage', messageId: 'replace', content });
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'blocked', data, mimeType: 'image/png' });
+      expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'blocked', src: null, fallback: 'Session image budget exceeded' });
+      controller.handleSessionUpdate('s1', surface === 'tool'
+        ? { kind: 'toolCall', toolCallId: 'replace', content: [] }
+        : { kind: surface === 'agent' ? 'agentMessage' : surface === 'thought' ? 'thoughtMessage' : 'promptMessage', messageId: 'replace', text: '' });
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'fits', data, mimeType: 'image/png' });
+      expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'fits', src: `data:image/png;base64,${data}` });
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'stillBlocked', data: header.toString('base64'), mimeType: 'image/png' });
+      expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'stillBlocked', src: null, fallback: 'Session image budget exceeded' });
+    });
+
+    it.each(['clear', 'replay', 'switch'] as const)('starts a fresh displayed image budget after %s', (operation) => {
+      const { environment, controller, sessions } = setup();
+      controller.notifyActiveSessionChanged();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
+      for (let index = 0; index < 5; index++) {
+        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+      }
+      if (operation === 'clear') { controller.clearTranscript(); }
+      else if (operation === 'replay') { controller.notifyLoadSessionStart('s1'); }
+      else { sessions.activeId = 's2'; controller.notifyActiveSessionChanged(); }
+      environment.take();
+      controller.handleSessionUpdate(sessions.activeId ?? '', { kind: 'agentImage', messageId: 'fresh', data, mimeType: 'image/png' });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'fresh', src: `data:image/png;base64,${data}` }]);
+    });
+
+    it.each([
+      ['image/png', '!!!!', 'Invalid image data'],
+      ['image/svg+xml', 'PHN2Zz48L3N2Zz4=', 'Unsupported image format'],
+      ['image/jpeg', 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'Image MIME type does not match its bytes'],
+    ])('explains rejected %s content', (mimeType, data, fallback) => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback }]);
+    });
+
+    it('does not reset the displayed image budget when a background replay starts', () => {
+      const { environment, controller } = setup();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
+      for (let index = 0; index < 5; index++) {
+        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+      }
+      environment.take();
+      controller.notifyLoadSessionStart('background');
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'late', data: header.toString('base64'), mimeType: 'image/png' });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'late', src: null, fallback: 'Session image budget exceeded' }]);
+    });
+
+    it.each(['thoughtRichMessage', 'promptRichMessage'] as const)('translates %s in content order', (kind) => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind, messageId: 'm1', content: [
+        { kind: 'text', text: 'before' },
+        { kind: 'image', data: '', mimeType: 'image/png', reference: true },
+        { kind: 'text', text: 'after' },
+      ] });
+      expect(environment.take()).toEqual([{ type: kind, messageId: 'm1', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', src: null, reference: true }, { kind: 'text', text: 'after' },
+      ] }]);
+    });
+
+    it('validates an image before delivering it after buffered text', () => {
+      const { environment, controller } = setup();
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+      controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: 'm1', text: 'Before' });
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data: png, mimeType: 'image/png' });
+      expect(environment.take()).toEqual([
+        { type: 'agentText', messageId: 'm1', text: 'Before' },
+        { type: 'agentImage', messageId: 'm1', src: `data:image/png;base64,${png}` },
+      ]);
+    });
+
+    it('delivers ordered whole-message content with validated images', () => {
+      const { environment, controller } = setup();
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+      controller.handleSessionUpdate('s1', { kind: 'agentRichMessage', messageId: 'm1', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', mimeType: 'image/png', data: png }, { kind: 'text', text: 'after' },
+      ] });
+      expect(environment.take()).toEqual([{ type: 'agentRichMessage', messageId: 'm1', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', src: `data:image/png;base64,${png}` }, { kind: 'text', text: 'after' },
+      ] }]);
+    });
+
+    it('delivers validated images in thoughts and replayed prompts', () => {
+      const { environment, controller } = setup();
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+      controller.handleSessionUpdate('s1', { kind: 'thoughtImage', messageId: 't1', data: png, mimeType: 'image/png' });
+      controller.handleSessionUpdate('s1', { kind: 'promptImage', messageId: 'u1', data: png, mimeType: 'image/png' });
+      expect(environment.take()).toEqual([
+        { type: 'thoughtImage', messageId: 't1', src: `data:image/png;base64,${png}` },
+        { type: 'promptImage', messageId: 'u1', src: `data:image/png;base64,${png}` },
+      ]);
+    });
+
+    it('labels an image resource link as a reference without loading its URI', () => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data: '', mimeType: 'image/png', reference: true });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, reference: true }]);
+    });
+
+    it('delivers validated tool-call images in content order', () => {
+      const { environment, controller } = setup();
+      const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
+      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 't1', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', data: png, mimeType: 'image/png' }, { kind: 'text', text: 'after' },
+      ] });
+      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', src: `data:image/png;base64,${png}` }, { kind: 'text', text: 'after' },
+      ] }]);
+    });
+
+    it.each([
+      ['malformed base64', '!!!!', 'image/png', 'Invalid image data'],
+      ['unsupported SVG', 'PHN2Zz48L3N2Zz4=', 'image/svg+xml', 'Unsupported image format'],
+      ['incorrect MIME type', 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'image/jpeg', 'Image MIME type does not match its bytes'],
+      ['truncated bytes', 'iVBORw0KGgo=', 'image/png', 'Invalid image data'],
+    ])('reports a fallback for %s', (_reason, data, mimeType, fallback) => {
+      const { environment, controller } = setup();
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback }]);
+    });
+
     function translated(update: SessionUpdate, session: SessionInfo = sessionInfo()): ExtensionToWebviewMessage[] {
       const { sessions, environment, controller } = setup();
       sessions.session = session;
@@ -1227,6 +1423,21 @@ describe('ChatViewController', () => {
         { type: 'usage', usage: { used: 15000, size: 100000, cost: null } },
         { type: 'usage', usage: { used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } } },
       ]);
+    });
+
+    it('bounds retained image bytes and reclaims a replaced message budget', () => {
+      const { environment, controller } = setup();
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(9 * 1024 * 1024 - header.length)]).toString('base64');
+      for (let index = 0; index < 6; index++) {
+        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+      }
+      const received = environment.take().filter((message) => message.type === 'agentImage');
+      expect(received.map((message) => message.src !== null)).toEqual([true, true, true, true, true, false]);
+      controller.handleSessionUpdate('s1', { kind: 'agentMessage', messageId: 'm0', text: '' });
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm6', data, mimeType: 'image/png' });
+      const after = environment.take().filter((message) => message.type === 'agentImage');
+      expect(after.map((message) => message.src !== null)).toEqual([true]);
     });
 
     it('delivers compaction patches and chunks in order between buffered text messages', () => {

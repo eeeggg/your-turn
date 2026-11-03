@@ -15,7 +15,7 @@ export function renderChatHtml({ cspSource, nonce, styleUri, scriptUri }: ChatHt
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';">
   <title>ACP Chat</title>
   <link href="${styleUri}" rel="stylesheet">
 </head>

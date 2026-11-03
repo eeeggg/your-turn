@@ -16,6 +16,7 @@ import {
   type FileChange,
   type FileDiff,
   type ListedSession,
+  type MessageContent,
   type NewSession,
   type PermissionOption,
   type PermissionOutcome,
@@ -329,24 +330,64 @@ class Translator {
   translate(sessionId: string, update: Acp.SessionUpdate): SessionUpdate | null {
     const updates = Acp.SessionUpdate;
     if (updates.isAgentMessageChunk(update)) {
+      const resource = imageResourceForUser(update.content);
+      if (resource) { return { kind: 'agentImage', messageId: update.messageId, ...resource }; }
+      if (Acp.ContentBlock.isImage(update.content)) {
+        const audience = update.content.annotations?.audience;
+        return audience && !audience.includes('user') ? null : {
+          kind: 'agentImage', messageId: update.messageId,
+          data: update.content.data, mimeType: update.content.mimeType,
+        };
+      }
       const text = textForUser(update.content);
       return text ? { kind: 'agentText', messageId: update.messageId, text } : null;
     }
     if (updates.isAgentThoughtChunk(update)) {
+      const resource = imageResourceForUser(update.content);
+      if (resource) { return { kind: 'thoughtImage', messageId: update.messageId, ...resource }; }
+      if (Acp.ContentBlock.isImage(update.content)) {
+        const audience = update.content.annotations?.audience;
+        return audience && !audience.includes('user') ? null : {
+          kind: 'thoughtImage', messageId: update.messageId,
+          data: update.content.data, mimeType: update.content.mimeType,
+        };
+      }
       const text = textForUser(update.content);
       return text === null ? null : { kind: 'thoughtText', messageId: update.messageId, text };
     }
     if (updates.isUserMessageChunk(update)) {
+      const resource = this.isLocalPrompt(sessionId, update.messageId) ? null : imageResourceForUser(update.content);
+      if (resource) { return { kind: 'promptImage', messageId: update.messageId, ...resource }; }
+      if (!this.isLocalPrompt(sessionId, update.messageId) && Acp.ContentBlock.isImage(update.content)) {
+        const audience = update.content.annotations?.audience;
+        return audience && !audience.includes('user') ? null : {
+          kind: 'promptImage', messageId: update.messageId,
+          data: update.content.data, mimeType: update.content.mimeType,
+        };
+      }
       const text = this.isLocalPrompt(sessionId, update.messageId) ? null : textForUser(update.content);
       return text === null ? null : { kind: 'promptText', messageId: update.messageId, text };
     }
     if (updates.isAgentMessage(update)) {
+      const content = messageContent(update.content ?? []);
+      if (content.some((block) => block.kind === 'image')) {
+        return { kind: 'agentRichMessage', messageId: update.messageId, content };
+      }
       return update.content === undefined ? null : { kind: 'agentMessage', messageId: update.messageId, text: messageText(update.content) };
     }
     if (updates.isAgentThought(update)) {
+      const content = messageContent(update.content ?? []);
+      if (content.some((block) => block.kind === 'image')) {
+        return { kind: 'thoughtRichMessage', messageId: update.messageId, content };
+      }
       return update.content === undefined ? null : { kind: 'thoughtMessage', messageId: update.messageId, text: messageText(update.content) };
     }
     if (updates.isUserMessage(update)) {
+      if (this.isLocalPrompt(sessionId, update.messageId)) { return null; }
+      const content = messageContent(update.content ?? []);
+      if (content.some((block) => block.kind === 'image')) {
+        return { kind: 'promptRichMessage', messageId: update.messageId, content };
+      }
       return update.content === undefined || this.isLocalPrompt(sessionId, update.messageId)
         ? null
         : { kind: 'promptMessage', messageId: update.messageId, text: messageText(update.content) };
@@ -444,6 +485,17 @@ class Translator {
   }
 }
 
+function imageResourceForUser(content: Acp.ContentBlock): { data: string; mimeType: string; reference?: true } | null {
+  if (!Acp.ContentBlock.isResource(content) && !Acp.ContentBlock.isResourceLink(content)) { return null; }
+  const audience = content.annotations?.audience;
+  if (audience && !audience.includes('user')) { return null; }
+  if (Acp.ContentBlock.isResourceLink(content)) {
+    return content.mimeType?.startsWith('image/') ? { data: '', mimeType: content.mimeType, reference: true } : null;
+  }
+  const resource = content.resource;
+  return 'blob' in resource && resource.mimeType?.startsWith('image/') ? { data: resource.blob, mimeType: resource.mimeType } : null;
+}
+
 /** A block's text, unless its `audience` leaves out the user, as an agent marks what it adds for the model alone. */
 function textForUser(block: Acp.ContentBlock): string | null {
   if (!Acp.ContentBlock.isText(block)) {
@@ -458,6 +510,20 @@ function messageText(content: Acp.ContentBlock[] | null): string {
   return (content ?? []).flatMap((block) => textForUser(block) ?? []).join('');
 }
 
+function messageContent(content: readonly Acp.ContentBlock[]): MessageContent[] {
+  return content.flatMap((block): MessageContent[] => {
+    if ((Acp.ContentBlock.isImage(block) || Acp.ContentBlock.isText(block))
+      && block.annotations?.audience && !block.annotations.audience.includes('user')) { return []; }
+    const resource = imageResourceForUser(block);
+    if (resource) { return [{ kind: 'image' as const, ...resource }]; }
+    if (Acp.ContentBlock.isImage(block)) {
+      return [{ kind: 'image' as const, data: block.data, mimeType: block.mimeType }];
+    }
+    const text = textForUser(block);
+    return text === null ? [] : [{ kind: 'text' as const, text }];
+  });
+}
+
 /**
  * A tool call's non-empty text blocks, its diffs and its terminals, but not a diff with no change the interface can
  * hold, which says nothing about any file.
@@ -465,7 +531,14 @@ function messageText(content: Acp.ContentBlock[] | null): string {
 function toolCallContent(content: readonly Acp.ToolCallContent[], toolCallId: string): ToolCallContent[] {
   return content.flatMap((item): ToolCallContent[] => {
     if (Acp.ToolCallContent.isContent(item)) {
-      return Acp.ContentBlock.isText(item.content) && item.content.text ? [{ kind: 'text', text: item.content.text }] : [];
+      const resource = imageResourceForUser(item.content);
+      if (resource) { return [{ kind: 'image', ...resource }]; }
+      if (Acp.ContentBlock.isImage(item.content)) {
+        const audience = item.content.annotations?.audience;
+        return audience && !audience.includes('user') ? [] : [{ kind: 'image', data: item.content.data, mimeType: item.content.mimeType }];
+      }
+      const text = textForUser(item.content);
+      return text ? [{ kind: 'text', text }] : [];
     }
     if (Acp.ToolCallContent.isTerminal(item)) {
       return [{ kind: 'terminal', terminalId: item.terminalId }];

@@ -109,9 +109,12 @@ export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 /** What a tool call does, as ACP names it; `other` is a kind ACP added after this was written, or one an agent added. */
 export type ToolKind = 'read' | 'edit' | 'delete' | 'move' | 'search' | 'execute' | 'think' | 'fetch' | 'switch_mode' | 'other';
 
+export type MessageContent = { kind: 'text'; text: string } | { kind: 'image'; data: string; mimeType: string; reference?: true };
+
 /** A tool call's content, in the order the agent reported it. */
 export type ToolCallContent =
   | { kind: 'text'; text: string }
+  | Extract<MessageContent, { kind: 'image' }>
   | { kind: 'diff'; diff: FileDiff }
   /** Where an agent-owned terminal shows; its state comes in its own updates, before or after this. */
   | { kind: 'terminal'; terminalId: string };
@@ -204,11 +207,17 @@ export type ForegroundState = 'idle' | 'running' | 'requiresAction';
 export type SessionUpdate =
   | { kind: 'foreground'; state: ForegroundState }
   | { kind: 'agentText'; messageId: string | null; text: string }
+  | { kind: 'agentImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
+  | { kind: 'thoughtImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
+  | { kind: 'promptImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
   | { kind: 'thoughtText'; messageId: string | null; text: string }
   /** More of a prompt that a load replays. */
   | { kind: 'promptText'; messageId: string | null; text: string }
   /** The whole text of the agent message with this ID, replacing what it had. */
   | { kind: 'agentMessage'; messageId: string; text: string }
+  | { kind: 'agentRichMessage'; messageId: string; content: MessageContent[] }
+  | { kind: 'thoughtRichMessage'; messageId: string; content: MessageContent[] }
+  | { kind: 'promptRichMessage'; messageId: string; content: MessageContent[] }
   /** As for an agent message. */
   | { kind: 'thoughtMessage'; messageId: string; text: string }
   /** The whole text of a prompt that a load replays, replacing what the prompt with this ID had. */

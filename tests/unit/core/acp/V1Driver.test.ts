@@ -35,6 +35,23 @@ const modelOption: Acp.SessionConfigOption = {
 };
 
 describe('V1Driver', () => {
+  it('preserves embedded resources and references in tool content and excludes private content', async () => {
+    const updates = await translated({ sessionUpdate: 'tool_call', toolCallId: 'c1', title: 'Images', content: [
+      { type: 'content', content: { type: 'resource', resource: { uri: 'file:///graph.png', mimeType: 'image/png', blob: 'AAAA' } } },
+      { type: 'content', content: { type: 'resource_link', uri: 'https://example.com/image', name: 'image', mimeType: 'image/png' } },
+      { type: 'content', content: { type: 'text', text: 'hidden', annotations: { audience: ['assistant'] } } },
+      { type: 'content', content: { type: 'resource', annotations: { audience: ['assistant'] }, resource: { uri: 'file:///private.png', mimeType: 'image/png', blob: 'hidden' } } },
+      { type: 'content', content: { type: 'text', text: 'after' } },
+    ] });
+    expect(updates.filter((update) => update.kind === 'toolCall')).toEqual([
+      { kind: 'toolCall', toolCallId: 'c1', title: 'Images', content: [
+        { kind: 'image', data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'image', data: '', mimeType: 'image/png', reference: true },
+        { kind: 'text', text: 'after' },
+      ] },
+    ]);
+  });
+
   it('keeps both overlapping requests pending through cancellation until their responses arrive', async () => {
     const replies: (() => void)[] = [];
     let cancelled!: () => void;
@@ -129,6 +146,50 @@ describe('V1Driver', () => {
   });
 
   describe('session updates', () => {
+    it('passes user-visible image chunks in their reported order', async () => {
+      expect(await translated(
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'before' } },
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'image', data: 'BBBB', mimeType: 'image/png', annotations: { audience: ['assistant'] } } },
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'after' } },
+      )).toEqual([
+        { kind: 'agentText', messageId: null, text: 'before' },
+        { kind: 'agentImage', messageId: null, data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'agentText', messageId: null, text: 'after' },
+      ]);
+    });
+
+    it('passes images in thoughts and replayed prompts without showing assistant-only images', async () => {
+      expect(await translated(
+        { sessionUpdate: 'agent_thought_chunk', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { sessionUpdate: 'user_message_chunk', messageId: 'u1', content: { type: 'image', data: 'BBBB', mimeType: 'image/png' } },
+        { sessionUpdate: 'agent_thought_chunk', content: { type: 'image', data: 'CCCC', mimeType: 'image/png', annotations: { audience: ['assistant'] } } },
+      )).toEqual([
+        { kind: 'thoughtImage', messageId: null, data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'promptImage', messageId: 'u1', data: 'BBBB', mimeType: 'image/png' },
+      ]);
+    });
+
+    it('preserves image content in tool calls in the reported order', async () => {
+      expect(await translated({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'Inspect', content: [
+        { type: 'content', content: { type: 'text', text: 'before' } },
+        { type: 'content', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } },
+        { type: 'content', content: { type: 'text', text: 'after' } },
+      ] })).toEqual([{ kind: 'toolCall', toolCallId: 't1', title: 'Inspect', content: [
+        { kind: 'text', text: 'before' }, { kind: 'image', data: 'AAAA', mimeType: 'image/png' }, { kind: 'text', text: 'after' },
+      ] }]);
+    });
+
+    it('passes embedded image resources and image references without dereferencing them', async () => {
+      expect(await translated(
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'resource', resource: { uri: 'file:///graph.png', mimeType: 'image/png', blob: 'AAAA' } } },
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'resource_link', uri: 'https://example.com/graph.png', name: 'graph.png', mimeType: 'image/png' } },
+      )).toEqual([
+        { kind: 'agentImage', messageId: null, data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'agentImage', messageId: null, data: '', mimeType: 'image/png', reference: true },
+      ]);
+    });
+
     it("passes on the agent's answer, thinking and replayed prompts as text, with their message IDs", async () => {
       expect(await translated(
         { sessionUpdate: 'agent_message_chunk', messageId: 'm1', content: { type: 'text', text: 'Hi' } },
@@ -141,7 +202,7 @@ describe('V1Driver', () => {
       ]);
     });
 
-    it('drops text meant for the model alone, content other than text, and empty answer text', async () => {
+    it('drops text meant for the model alone and empty answer text', async () => {
       const forModel: Acp.ContentBlock = { type: 'text', text: 'file contents', annotations: { audience: ['assistant'] } };
       const image: Acp.ContentBlock = { type: 'image', data: 'AAAA', mimeType: 'image/png' };
       const chunks = (['agent_message_chunk', 'agent_thought_chunk', 'user_message_chunk'] as const).flatMap((sessionUpdate) => [
@@ -153,7 +214,12 @@ describe('V1Driver', () => {
         ...chunks,
         { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '' } },
         { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'both', annotations: { audience: ['user', 'assistant'] } } },
-      )).toEqual([{ kind: 'agentText', messageId: null, text: 'both' }]);
+      )).toEqual([
+        { kind: 'agentImage', messageId: null, data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'thoughtImage', messageId: null, data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'promptImage', messageId: null, data: 'AAAA', mimeType: 'image/png' },
+        { kind: 'agentText', messageId: null, text: 'both' },
+      ]);
     });
 
     it('drops what an agent replays of a file read into the prompt, keeping what the user typed', async () => {

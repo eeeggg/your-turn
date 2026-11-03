@@ -115,6 +115,8 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
           {entry.text}
         </CopyableMessage>
       );
+    case 'promptImage':
+      return <AgentImageView src={entry.src} alt="Image in user prompt" reference={entry.reference} fallback={entry.fallback} />;
     case 'turn':
       return <TurnView turn={entry} />;
     case 'compaction':
@@ -164,6 +166,8 @@ const PartView = memo(function PartView({
   switch (part.kind) {
     case 'message':
       return <AgentMessageView message={part} streaming={streaming} />;
+    case 'image':
+      return <AgentImageView src={part.src} reference={part.reference} fallback={part.fallback} />;
     case 'thought':
       return <ThoughtBlock turnId={turnId} index={index} thought={part} />;
     case 'toolCalls':
@@ -176,6 +180,19 @@ const PartView = memo(function PartView({
       return <QuestionRecordBlock record={part.record} open={part.open} />;
   }
 });
+
+function AgentImageView({ src, alt = 'Image from agent', reference, fallback }: { src: string | null; alt?: string; reference?: true | undefined; fallback?: string | undefined }) {
+  const [image, setImage] = useState({ src, failed: false });
+  if (image.src !== src) {
+    setImage({ src, failed: false });
+  }
+  const failed = image.src === src && image.failed;
+  return src && !failed
+    ? <img src={src} alt={alt} className="h-auto w-auto max-h-96 max-w-full self-start object-contain" onError={() => setImage({ src, failed: true })} />
+    : <span role="img" aria-label={`${alt}: ${reference ? 'Image reference not displayed' : failed ? 'Image not displayed: browser could not render it' : `Image not displayed${fallback ? `: ${fallback}` : ''}`}`}>
+      {reference ? 'Image reference not displayed' : failed ? 'Image not displayed: browser could not render it' : `Image not displayed${fallback ? `: ${fallback}` : ''}`}
+    </span>;
+}
 
 const QuestionRecordBlock = memo(function QuestionRecordBlock({ record, open }: { record: QuestionRecord; open: boolean }) {
   const dispatch = useDispatch();
@@ -261,7 +278,7 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
       <div
         className={`thought-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal text-muted-foreground italic ${plainText}`}
       >
-        {thought.text}
+        {thought.imageSrc === undefined ? <Markdown text={thought.text} streaming={thinking} /> : <AgentImageView src={thought.imageSrc} alt="Image in agent thought" reference={thought.imageReference} fallback={thought.imageFallback} />}
       </div>
     </details>
   );
@@ -506,6 +523,8 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
                       {block.text}
                     </div>
                   );
+                case 'image':
+                  return <AgentImageView key={index} src={block.src} alt="Image in tool output" reference={block.reference} fallback={block.fallback} />;
                 case 'command':
                   return <CommandOutputView key={index} block={block} sessionId={sessionId} toolCallId={call.toolCallId} title={title} />;
                 case 'diff':

@@ -1,20 +1,44 @@
 import { useEffect, useState, type ComponentProps } from 'react';
-import { defaultComponents, Streamdown, type Components, type ExtraProps } from 'streamdown';
+import { defaultComponents, defaultRemarkPlugins, Streamdown, type Components, type ExtraProps } from 'streamdown';
 
 export const copyFeedbackDuration = 2000;
 const DefaultLink = defaultComponents.a;
 
 // Its modal opens links with `window.open`, which a webview ignores; a plain link's click goes to VS Code, which opens it.
 const linkSafety = { enabled: false };
-const components: Components = { a: Link };
+const components: Components = { a: Link, img: ImageFallback };
+const remarkPlugins = [...Object.values(defaultRemarkPlugins), imageReferencesAsText];
+
+interface MarkdownNode {
+  type: string;
+  alt?: string | null;
+  children?: MarkdownNode[];
+}
+
+function imageReferencesAsText() {
+  return function replaceImages(node: MarkdownNode): void {
+    if (!node.children) { return; }
+    node.children = node.children.map((child) => {
+      if (child.type === 'image' || child.type === 'imageReference') {
+        return { type: 'text', value: child.alt ? `${child.alt} — image not displayed` : 'Image not displayed' };
+      }
+      replaceImages(child);
+      return child;
+    });
+  };
+}
 
 /** An agent message's markdown, rendered again as it streams. */
 export function Markdown({ text, streaming }: { text: string; streaming: boolean }) {
   return (
-    <Streamdown isAnimating={streaming} linkSafety={linkSafety} components={components}>
+    <Streamdown isAnimating={streaming} linkSafety={linkSafety} components={components} remarkPlugins={remarkPlugins}>
       {text}
     </Streamdown>
   );
+}
+
+function ImageFallback({ alt }: ComponentProps<'img'> & ExtraProps) {
+  return <span>{alt ? `${alt} — image not displayed` : 'Image not displayed'}</span>;
 }
 
 function Link(props: ComponentProps<'a'> & ExtraProps) {

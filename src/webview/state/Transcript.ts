@@ -2,6 +2,7 @@ import type {
   DiffFile,
   ExitStatus,
   ExtensionToWebviewMessage,
+  ImagePresentation,
   PlanStep,
   PlanStepStatus,
   QuestionRecord,
@@ -25,6 +26,15 @@ interface Prompt {
   readonly text: string;
 }
 
+interface PromptImage extends Readonly<ImagePresentation> {
+  readonly kind: 'promptImage';
+  readonly id: EntryId;
+  readonly messageId: string | null;
+  readonly src: string | null;
+  readonly text: '';
+  readonly reference?: true;
+}
+
 /** The agent's side of a turn, an entry of its own after the prompt that started it. */
 export interface Turn {
   readonly kind: 'turn';
@@ -33,7 +43,14 @@ export interface Turn {
   readonly parts: readonly TurnPart[];
 }
 
-export type TurnPart = AgentMessage | Thought | ToolCallGroup | Plan | Compaction | SettledQuestion;
+export type TurnPart = AgentMessage | AgentImage | Thought | ToolCallGroup | Plan | Compaction | SettledQuestion;
+
+interface AgentImage extends Readonly<ImagePresentation> {
+  readonly kind: 'image';
+  readonly messageId: string | null;
+  readonly src: string | null;
+  readonly reference?: true;
+}
 
 interface SettledQuestion {
   readonly kind: 'question';
@@ -73,6 +90,9 @@ export interface Thought {
   /** As for an agent message. */
   readonly messageId: string | null;
   readonly text: string;
+  readonly imageSrc?: string | null;
+  readonly imageReference?: true;
+  readonly imageFallback?: string;
   readonly startedAt: number;
   /** Null while the agent is still thinking. */
   readonly endedAt: number | null;
@@ -106,7 +126,7 @@ interface TranscriptError {
   readonly text: string;
 }
 
-export type TranscriptEntry = Prompt | Turn | TranscriptError | ((Compaction | SettledQuestion) & { readonly id: EntryId });
+export type TranscriptEntry = Prompt | PromptImage | Turn | TranscriptError | ((Compaction | SettledQuestion) & { readonly id: EntryId });
 
 /** An agent's terminal as last reported; its command runs while `exitStatus` is null. */
 interface Terminal {
@@ -260,6 +280,7 @@ type CommandStatus = 'running' | 'disconnected' | 'ended';
 
 export type ShownBlock =
   | { readonly kind: 'text'; readonly text: string }
+  | ({ readonly kind: 'image' } & Readonly<ImagePresentation>)
   /** `firstFile` is the place of its first file across the tool call's diffs, by which the extension opens a file. */
   | { readonly kind: 'diff'; readonly files: readonly DiffFile[]; readonly firstFile: number }
   /**
@@ -297,6 +318,10 @@ export function shownContent(
   let truncated = false;
   let running = false;
   for (const item of content) {
+    if (item.kind === 'image') {
+      blocks.push({ ...item });
+      continue;
+    }
     if (item.kind === 'commandOutput') {
       blocks.push({ kind: 'command', text: item.text, truncated: item.truncated, status: 'ended', failure: null, terminalId: null });
       continue;
@@ -412,12 +437,38 @@ export function updateTranscript(
     case 'agentText':
     case 'thoughtText':
       return stateOnly(withAgentText(transcript, action, now));
+    case 'agentImage':
+      return stateOnly(inCurrentTurn(transcript, (turn) => withLastPart(turn, {
+        kind: 'image', messageId: action.messageId, src: action.src, ...(action.reference ? { reference: true } : {}), ...(action.fallback ? { fallback: action.fallback } : {}),
+      }, 'adding', now)));
+    case 'thoughtImage':
+      return stateOnly(inCurrentTurn(transcript, (turn) => withLastPart(turn, {
+        kind: 'thought', messageId: action.messageId, text: '', imageSrc: action.src, startedAt: now, endedAt: null, open: true,
+        ...(action.reference ? { imageReference: true } : {}),
+        ...(action.fallback ? { imageFallback: action.fallback } : {}),
+      }, 'adding', now)));
+    case 'promptImage':
+      return stateOnly(appended(endTurn(transcript, now), (id) => ({ kind: 'promptImage', id, messageId: action.messageId, src: action.src, text: '', ...(action.reference ? { reference: true } : {}), ...(action.fallback ? { fallback: action.fallback } : {}) })));
     case 'promptText':
       return stateOnly(withReplayedPrompt(transcript, action, now));
     case 'agentMessage':
+      return stateOnly(transcript.entries.some((entry) => entry.kind === 'turn' && entry.parts.some((part) => part.kind === 'image' && part.messageId === action.messageId))
+        ? withAgentReplaced(transcript, action.messageId, action.text ? [{ kind: 'text', text: action.text }] : [], now)
+        : withMessageReplaced(transcript, action, now));
+    case 'agentRichMessage':
+      return stateOnly(withAgentReplaced(transcript, action.messageId, action.content, now));
+    case 'thoughtRichMessage':
+      return stateOnly(withThoughtReplaced(transcript, action.messageId, action.content, now));
+    case 'promptRichMessage':
+      return stateOnly(withPromptContentReplaced(transcript, action.messageId, action.content, now));
     case 'thoughtMessage':
-      return stateOnly(withMessageReplaced(transcript, action, now));
+      return stateOnly(transcript.entries.some((entry) => entry.kind === 'turn' && entry.parts.some((part) => part.kind === 'thought' && part.imageSrc !== undefined && part.messageId === action.messageId))
+        ? withThoughtReplaced(transcript, action.messageId, action.text ? [{ kind: 'text', text: action.text }] : [], now)
+        : withMessageReplaced(transcript, action, now));
     case 'promptMessage':
+      if (transcript.entries.some((entry) => entry.kind === 'promptImage' && entry.messageId === action.messageId)) {
+        return stateOnly(withPromptContentReplaced(transcript, action.messageId, action.text ? [{ kind: 'text', text: action.text }] : [], now));
+      }
       return stateOnly(withPromptReplaced(transcript, action, now));
     case 'toolCall':
       return stateOnly(withToolCallReported(transcript, action, now));
@@ -549,13 +600,85 @@ function withAgentText(
   const kind = type === 'agentText' ? 'message' : 'thought';
   return inCurrentTurn(transcript, (turn) => {
     const last = turn.parts.at(-1);
-    if ((last?.kind === 'message' || last?.kind === 'thought') && last.kind === kind && sameMessage(last.messageId, messageId)) {
+    if ((last?.kind === 'message' || (last?.kind === 'thought' && last.imageSrc === undefined)) && last.kind === kind && sameMessage(last.messageId, messageId)) {
       return withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now);
     }
     const part: TurnPart =
       kind === 'message' ? { kind, messageId, text } : { kind, messageId, text, startedAt: now, endedAt: null, open: true };
     return withLastPart(turn, part, 'adding', now);
   });
+}
+
+function withAgentReplaced(
+  transcript: TranscriptState,
+  messageId: string,
+  content: Extract<ExtensionToWebviewMessage, { type: 'agentRichMessage' }>['content'],
+  now: number,
+): TranscriptState {
+  const parts: TurnPart[] = joinedText(content).flatMap((block): TurnPart[] => block.kind === 'image'
+    ? [{ ...block, messageId }]
+    : block.text ? [{ kind: 'message', messageId, text: block.text }] : []);
+  const matches = (part: TurnPart) => (part.kind === 'message' || part.kind === 'image') && part.messageId === messageId;
+  for (let at = transcript.entries.length - 1; at >= 0; at--) {
+    const entry = transcript.entries[at];
+    if (entry?.kind !== 'turn') { continue; }
+    const first = entry.parts.findIndex(matches);
+    if (first < 0) { continue; }
+    const before = entry.parts.slice(0, first);
+    const after = entry.parts.slice(first).filter((part) => !matches(part));
+    return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [...before, ...parts, ...after] }));
+  }
+  return parts.length ? inCurrentTurn(transcript, (turn) => parts.reduce((current, part) => withLastPart(current, part, 'adding', now), turn)) : transcript;
+}
+
+function withThoughtReplaced(
+  transcript: TranscriptState,
+  messageId: string,
+  content: Extract<ExtensionToWebviewMessage, { type: 'thoughtRichMessage' }>['content'],
+  now: number,
+): TranscriptState {
+  const parts: Thought[] = joinedText(content).flatMap((block): Thought[] => block.kind === 'image'
+    ? [{ kind: 'thought', messageId, text: '', imageSrc: block.src, ...(block.reference ? { imageReference: true } : {}), ...(block.fallback ? { imageFallback: block.fallback } : {}), startedAt: now, endedAt: null, open: true }]
+    : block.text ? [{ kind: 'thought', messageId, text: block.text, startedAt: now, endedAt: null, open: true }] : []);
+  const matches = (part: TurnPart) => part.kind === 'thought' && part.messageId === messageId;
+  for (let at = transcript.entries.length - 1; at >= 0; at--) {
+    const entry = transcript.entries[at];
+    if (entry?.kind !== 'turn') { continue; }
+    const first = entry.parts.findIndex(matches);
+    if (first < 0) { continue; }
+    return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [
+      ...entry.parts.slice(0, first), ...parts, ...entry.parts.slice(first).filter((part) => !matches(part)),
+    ] }));
+  }
+  return parts.length ? inCurrentTurn(transcript, (turn) => parts.reduce((current, part) => withLastPart(current, part, 'adding', now), turn)) : transcript;
+}
+
+function withPromptContentReplaced(
+  transcript: TranscriptState,
+  messageId: string,
+  content: Extract<ExtensionToWebviewMessage, { type: 'promptRichMessage' }>['content'],
+  now: number,
+): TranscriptState {
+  const matches = (entry: TranscriptEntry) => (entry.kind === 'prompt' || entry.kind === 'promptImage') && entry.messageId === messageId;
+  const first = transcript.entries.findIndex(matches);
+  const before = first < 0 ? endTurn(transcript, now) : { ...transcript, entries: transcript.entries.slice(0, first) };
+  const filled = joinedText(content).reduce((state, block) => appended(state, (id) => block.kind === 'image'
+    ? { ...block, kind: 'promptImage', id, messageId, text: '' }
+    : { kind: 'prompt', id, messageId, text: block.text }), before);
+  return first < 0 ? filled : { ...filled, entries: [...filled.entries, ...transcript.entries.slice(first).filter((entry) => !matches(entry))] };
+}
+
+function joinedText(content: Extract<ExtensionToWebviewMessage, { type: 'agentRichMessage' }>['content']) {
+  const joined: typeof content = [];
+  for (const block of content) {
+    const last = joined.at(-1);
+    if (block.kind === 'text' && last?.kind === 'text') {
+      joined[joined.length - 1] = { kind: 'text', text: last.text + block.text };
+    } else {
+      joined.push(block);
+    }
+  }
+  return joined;
 }
 
 /** Only a load replays prompts; each one ends the turn before it. */

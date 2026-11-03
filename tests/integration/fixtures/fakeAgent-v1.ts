@@ -1,5 +1,5 @@
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
-import type { AgentContext, SessionConfigOption } from '@agentclientprotocol/sdk';
+import type { AgentContext, ContentBlock, SessionConfigOption } from '@agentclientprotocol/sdk';
 import { appendFileSync, readFileSync, unlinkSync, watch, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -106,6 +106,26 @@ async function replay(client: AgentContext, sessionId: string): Promise<void> {
     client.notify(methods.client.session.update, { sessionId, update: { sessionUpdate, content: { type: 'text', text } } });
   await update('user_message_chunk', 'earlier question');
   await update('agent_message_chunk', 'earlier answer');
+}
+
+async function images(client: AgentContext, sessionId: string): Promise<void> {
+  const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+  gif.writeUInt16LE(1000, 6);
+  gif.writeUInt16LE(2000, 8);
+  const data = gif.toString('base64');
+  const send = (content: ContentBlock) => client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'agent_message_chunk', content },
+  });
+  await send({ type: 'text', text: 'Before image.' });
+  await send({ type: 'image', data, mimeType: 'image/gif', uri: 'https://example.invalid/not-fetched' });
+  await send({ type: 'text', text: 'After image. ![Blocked picture](https://example.invalid/blocked.png)' });
+  await send({ type: 'image', data: 'R0lGODlhAQABAIAA', mimeType: 'image/gif' });
+  await send({ type: 'resource_link', uri: 'file:///not-read.png', name: 'reference', mimeType: 'image/png' });
+  await client.notify(methods.client.session.update, { sessionId, update: {
+    sessionUpdate: 'tool_call', toolCallId: 'image-tool', title: 'Image output', status: 'completed', content: [
+      { type: 'content', content: { type: 'resource', resource: { uri: 'file:///not-read.gif', mimeType: 'image/gif', blob: data } } },
+    ],
+  } });
 }
 
 async function replayCompaction(client: AgentContext, sessionId: string): Promise<void> {
@@ -386,6 +406,10 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
     const text = params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('');
+    if (text === 'images') {
+      await images(client, params.sessionId);
+      return { stopReason: 'end_turn' };
+    }
     if (text === 'url-elicitation') {
       const response = await client.request(methods.client.elicitation.create, {
         mode: 'url', sessionId: params.sessionId, elicitationId: 'desktop-url',

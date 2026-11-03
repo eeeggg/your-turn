@@ -102,6 +102,27 @@ async function replay(client: AgentContext, sessionId: string): Promise<void> {
   await update({ sessionUpdate: 'agent_message_chunk', messageId: 'earlier-answer', content: { type: 'text', text: 'earlier answer' } });
 }
 
+async function images(client: AgentContext, sessionId: string): Promise<void> {
+  const gif = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+  gif.writeUInt16LE(1000, 6);
+  gif.writeUInt16LE(2000, 8);
+  const data = gif.toString('base64');
+  await client.notify(methods.client.session.update, { sessionId, update: {
+    sessionUpdate: 'agent_message', messageId: 'images', content: [
+      { type: 'text', text: 'Before image.' },
+      { type: 'image', data, mimeType: 'image/gif', uri: 'https://example.invalid/not-fetched' },
+      { type: 'text', text: 'After image. ![Blocked picture](https://example.invalid/blocked.png)' },
+      { type: 'image', data: 'R0lGODlhAQABAIAA', mimeType: 'image/gif' },
+      { type: 'resource_link', uri: 'file:///not-read.png', name: 'reference', mimeType: 'image/png' },
+    ],
+  } });
+  await client.notify(methods.client.session.update, { sessionId, update: {
+    sessionUpdate: 'tool_call_update', toolCallId: 'image-tool', title: 'Image output', status: 'completed', content: [
+      { type: 'content', content: { type: 'resource', resource: { uri: 'file:///not-read.gif', mimeType: 'image/gif', blob: data } } },
+    ],
+  } });
+}
+
 function modelOption(currentValue: string): SessionConfigOption {
   return {
     configId: 'model',
@@ -483,7 +504,13 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, ({ params, client }) => {
     const text = promptText(params.prompt);
-    if (text === 'steer-check' && autonomousSessions.has(params.sessionId)) {
+    if (text === 'images') {
+      void (async () => {
+        await reportState(client, params.sessionId, { state: 'running' });
+        await images(client, params.sessionId);
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
+    } else if (text === 'steer-check' && autonomousSessions.has(params.sessionId)) {
       void say(client, params.sessionId, 'Steering received without cancellation.');
     } else if (text.startsWith('autonomous ')) {
       void autonomousWork(client, params.sessionId, text.slice('autonomous '.length));

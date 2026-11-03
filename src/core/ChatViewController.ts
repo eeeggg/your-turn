@@ -1,3 +1,4 @@
+import { imageSize } from 'image-size';
 import type {
   ConfigOption,
   ConfigValueGroup,
@@ -190,6 +191,7 @@ export class ChatViewController {
   private shownSessionId: string | null = null;
   /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
   private shownSessionEnded = false;
+  private readonly imageBytes = new Map<string, number>();
   private _queuedPrompts = 0;
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -215,8 +217,11 @@ export class ChatViewController {
     private readonly workspace?: Pick<SessionEnvironment, 'workspaceRoots'>,
   ) {
     this.commandOutput = new CommandOutputFeed(terminals, {
-      toolCallContent: (sessionId, toolCallId, content) =>
-        this.postAbout(sessionId, { type: 'toolCall', toolCallId, content: this.toolCallContent(sessionId, toolCallId, content) }),
+      toolCallContent: (sessionId, toolCallId, content) => {
+        if (!this.disposed && sessionId === this.sessions.getActiveSessionId()) {
+          this.post({ type: 'toolCall', toolCallId, content: this.toolCallContent(sessionId, toolCallId, content) });
+        }
+      },
       terminal: (sessionId, terminalId, { text, truncated }, exitStatus) =>
         this.postAbout(sessionId, {
           type: 'terminal',
@@ -378,6 +383,7 @@ export class ChatViewController {
       this.setTurnInProgress(this.isRunning(this.shownSessionId));
       // The chat view clears the transcript, unless it has no session to show and keeps the one whose agent exited.
       if (this.shownSessionId !== null || !this.shownSessionEnded) {
+        this.imageBytes.clear();
         this.shownSessionEnded = false;
         this.terminals.forgetEndedSessions();
       }
@@ -418,6 +424,8 @@ export class ChatViewController {
    * disables input, and shows a loading overlay until {@link notifyLoadSessionEnd}.
    */
   notifyLoadSessionStart(sessionId: string): void {
+    if (sessionId !== this.sessions.getActiveSessionId()) { return; }
+    this.imageBytes.clear();
     this.diffs.forgetSession(sessionId);
     this.post({ type: 'loadSessionStart' });
   }
@@ -430,6 +438,7 @@ export class ChatViewController {
 
   /** Clear the transcript, as when a new session starts. */
   clearTranscript(): void {
+    this.imageBytes.clear();
     this.terminals.forgetEndedSessions();
     this.post({ type: 'clearTranscript' });
   }
@@ -439,6 +448,7 @@ export class ChatViewController {
     this.disposed = true;
     if (this.pendingText) { clearTimeout(this.pendingText.timer); }
     this.pendingText = null;
+    this.imageBytes.clear();
     this.turnListeners.clear();
     for (const source of this.elicitationSources.values()) { source.unsubscribe(); }
     this.elicitationSources.clear();
@@ -582,15 +592,34 @@ export class ChatViewController {
     switch (update.kind) {
       case 'agentText':
         return { type: 'agentText', messageId: update.messageId, text: update.text };
+      case 'agentImage': {
+        return { type: 'agentImage', messageId: update.messageId, ...this.boundedImage(imageKey('agent', update.messageId), update.data, update.mimeType, update.reference) };
+      }
+      case 'thoughtImage':
+        return { type: 'thoughtImage', messageId: update.messageId, ...this.boundedImage(imageKey('thought', update.messageId), update.data, update.mimeType, update.reference) };
+      case 'promptImage':
+        return { type: 'promptImage', messageId: update.messageId, ...this.boundedImage(imageKey('prompt', update.messageId), update.data, update.mimeType, update.reference) };
       case 'thoughtText':
         return { type: 'thoughtText', messageId: update.messageId, text: update.text };
       case 'promptText':
         return { type: 'promptText', messageId: update.messageId, text: update.text };
       case 'agentMessage':
+        this.imageBytes.delete(imageKey('agent', update.messageId));
         return { type: 'agentMessage', messageId: update.messageId, text: update.text };
+      case 'agentRichMessage':
+      case 'thoughtRichMessage':
+      case 'promptRichMessage': {
+        const key = imageKey(update.kind === 'agentRichMessage' ? 'agent' : update.kind === 'thoughtRichMessage' ? 'thought' : 'prompt', update.messageId);
+        this.imageBytes.delete(key);
+        return { type: update.kind, messageId: update.messageId, content: update.content.map((block) => block.kind === 'text'
+          ? { kind: 'text', text: block.text }
+          : { kind: 'image', ...this.boundedImage(key, block.data, block.mimeType, block.reference) }) };
+      }
       case 'thoughtMessage':
+        this.imageBytes.delete(imageKey('thought', update.messageId));
         return { type: 'thoughtMessage', messageId: update.messageId, text: update.text };
       case 'promptMessage':
+        this.imageBytes.delete(imageKey('prompt', update.messageId));
         return { type: 'promptMessage', messageId: update.messageId, text: update.text };
       case 'toolCall': {
         const content = this.commandOutput.toolCallContent(sessionId, update.toolCallId, update.toolKind, update.content);
@@ -638,8 +667,21 @@ export class ChatViewController {
     }
   }
 
+  private boundedImage(key: string, data: string, mimeType: string, reference?: true): { src: string | null; fallback?: string; reference?: true } {
+    if (reference) { return { src: null, reference: true }; }
+    const src = imageSource(data, mimeType);
+    if (src.src === null) { return src; }
+    const bytes = Buffer.byteLength(data, 'base64');
+    const total = [...this.imageBytes.values()].reduce((sum, size) => sum + size, 0);
+    if (total + bytes > 50 * 1024 * 1024) { return { src: null, fallback: 'Session image budget exceeded' }; }
+    this.imageBytes.set(key, (this.imageBytes.get(key) ?? 0) + bytes);
+    return src;
+  }
+
   /** The tool call's content as the contract has it; its diffs' files as shown, only while `acp.showToolCallDiffs` is on. */
   private toolCallContent(sessionId: string, toolCallId: string, content: readonly ShownContent[]): WebviewToolCallContent[] {
+    const imageBudgetKey = imageKey('tool', toolCallId);
+    this.imageBytes.delete(imageBudgetKey);
     const showsDiffs = this.environment.showsToolCallDiffs();
     const diffs = showsDiffs ? content.flatMap((item) => (item.kind === 'diff' ? [item.diff] : [])) : [];
     const shown = this.diffs.shown(sessionId, toolCallId, diffs, this.sessions.getSession(sessionId)?.cwd ?? null);
@@ -648,6 +690,8 @@ export class ChatViewController {
       switch (item.kind) {
         case 'text':
           return [{ kind: 'text', text: item.text }];
+        case 'image':
+          return [{ kind: 'image', ...this.boundedImage(imageBudgetKey, item.data, item.mimeType, item.reference) }];
         case 'commandOutput':
           return [{ kind: 'commandOutput', text: item.output.text, truncated: item.output.truncated }];
         case 'diff':
@@ -686,6 +730,31 @@ export class ChatViewController {
     this.pendingText = null;
     clearTimeout(pending.timer);
     this.environment.post(pending.message);
+  }
+}
+
+function imageKey(kind: string, id: string | null): string {
+  return JSON.stringify([kind, id]);
+}
+
+function imageSource(data: string, mimeType: string): { src: string | null; fallback?: string } {
+  const types: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+  const type = types[mimeType];
+  if (!type) { return { src: null, fallback: 'Unsupported image format' }; }
+  if (data.length > Math.ceil((10 * 1024 * 1024) / 3) * 4) { return { src: null, fallback: 'Image exceeds 10 MiB payload limit' }; }
+  if (data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) { return { src: null, fallback: 'Invalid image data' }; }
+  const bytes = Buffer.from(data, 'base64');
+  if (bytes.length > 10 * 1024 * 1024) { return { src: null, fallback: 'Image exceeds 10 MiB payload limit' }; }
+  if (bytes.length === 0 || bytes.toString('base64') !== data) { return { src: null, fallback: 'Invalid image data' }; }
+  try {
+    const size = imageSize(bytes);
+    if (!Number.isSafeInteger(size.width) || !Number.isSafeInteger(size.height) || size.width <= 0 || size.height <= 0) { return { src: null, fallback: 'Invalid image dimensions' }; }
+    if (!size.type) { return { src: null, fallback: 'Invalid image data' }; }
+    if (size.type !== type) { return { src: null, fallback: 'Image MIME type does not match its bytes' }; }
+    if (size.width > 16384 || size.height > 16384 || size.width * size.height > 40_000_000) { return { src: null, fallback: 'Image exceeds dimension or pixel limit' }; }
+    return { src: `data:${mimeType};base64,${data}` };
+  } catch {
+    return { src: null, fallback: 'Invalid image data' };
   }
 }
 

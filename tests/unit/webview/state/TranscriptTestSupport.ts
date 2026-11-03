@@ -73,6 +73,8 @@ function partSummary(part: TurnPart): string {
   switch (part.kind) {
     case 'message':
       return part.text;
+    case 'image':
+      return 'image';
     case 'thought':
       return `thought ${part.text}`;
     case 'toolCalls':
