@@ -113,12 +113,13 @@ async function images(client: AgentContext, sessionId: string): Promise<void> {
   gif.writeUInt16LE(1000, 6);
   gif.writeUInt16LE(2000, 8);
   const data = gif.toString('base64');
+  writeFileSync(join(process.cwd(), 'transcript-image.gif'), gif);
   const send = (content: ContentBlock) => client.notify(methods.client.session.update, {
     sessionId, update: { sessionUpdate: 'agent_message_chunk', content },
   });
   await send({ type: 'text', text: 'Before image.' });
   await send({ type: 'image', data, mimeType: 'image/gif', uri: 'https://example.invalid/not-fetched' });
-  await send({ type: 'text', text: 'After image. ![Blocked picture](https://example.invalid/blocked.png)' });
+  await send({ type: 'text', text: `After image. ![Blocked picture](https://example.invalid/blocked.png)\n\n![Markdown data picture](data:image/gif;base64,${data})\n\n![Markdown local picture](./transcript-image.gif)` });
   await send({ type: 'image', data: 'R0lGODlhAQABAIAA', mimeType: 'image/gif' });
   await send({ type: 'resource_link', uri: 'file:///not-read.png', name: 'reference', mimeType: 'image/png' });
   await client.notify(methods.client.session.update, { sessionId, update: {

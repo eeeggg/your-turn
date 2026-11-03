@@ -1,4 +1,7 @@
 import { imageSize } from 'image-size';
+import { readMarkdownImage } from './MarkdownImageFiles';
+import { ImageLoads } from './ImageLoads';
+import { fetchMarkdownImage, type ImageNetwork } from './MarkdownImageNetwork';
 import type {
   ConfigOption,
   ConfigValueGroup,
@@ -73,6 +76,7 @@ export interface ChatViewEnvironment extends Commands {
   post(message: ExtensionToWebviewMessage): void;
   /** The `acp.showToolCallDiffs` setting, read for each tool call update. */
   showsToolCallDiffs(): boolean;
+  imageRequestOrigin?(): string;
 }
 
 /**
@@ -192,6 +196,13 @@ export class ChatViewController {
   /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
   private shownSessionEnded = false;
   private readonly imageBytes = new Map<string, number>();
+  private markdownImageContext = 0;
+  private markdownImageSession: string | null = null;
+  private readonly markdownImages = new Set<number>();
+  private readonly markdownReads = new Map<number, AbortController>();
+  private readonly localImageLoads = new ImageLoads(10000);
+  private readonly networkImageLoads = new ImageLoads(30000);
+  private readonly markdownSources = new Map<number, { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }>();
   private _queuedPrompts = 0;
   /** Text not yet posted, sent when its window closes or before anything else is posted. */
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -215,6 +226,7 @@ export class ChatViewController {
     private readonly editor: FileEditor,
     private readonly terminals: AgentTerminals,
     private readonly workspace?: Pick<SessionEnvironment, 'workspaceRoots'>,
+    private readonly imageNetwork?: ImageNetwork,
   ) {
     this.commandOutput = new CommandOutputFeed(terminals, {
       toolCallContent: (sessionId, toolCallId, content) => {
@@ -251,6 +263,60 @@ export class ChatViewController {
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     if (this.disposed) { return; }
     switch (message.type) {
+      case 'loadMarkdownImage':
+        if (this.currentMarkdownContext(message.context)) {
+          const slot = this.markdownSources.get(message.occurrence);
+          if (slot && (slot.status === 'consent' || slot.status === 'retry')) {
+            await this.loadMarkdownSource(message.context, message.occurrence, slot);
+          }
+        }
+        break;
+      case 'markdownImageContext':
+        if (message.sessionId === this.sessions.getActiveSessionId()) {
+          if (message.sessionId !== this.markdownImageSession) {
+            this.resetMarkdownImages();
+            this.markdownImageSession = message.sessionId;
+          }
+          this.post({ type: 'markdownImageContext', sessionId: message.sessionId, context: this.markdownImageContext,
+            ...(this.environment.imageRequestOrigin ? { origin: this.environment.imageRequestOrigin() } : {}) });
+        }
+        break;
+      case 'resolveMarkdownImage':
+        if (this.currentMarkdownContext(message.context) && !this.markdownImages.has(message.occurrence)) {
+          this.markdownImages.add(message.occurrence);
+          if (/^https:/i.test(message.source)) {
+            try {
+              const url = new URL(message.source);
+              if (url.username || url.password) { throw new Error('Image URL credentials are not allowed'); }
+              this.markdownSources.set(message.occurrence, { source: message.source, status: 'consent' });
+              this.post({ type: 'markdownImage', context: message.context, occurrence: message.occurrence, src: null, status: 'consent' });
+            } catch {
+              this.post({ type: 'markdownImage', context: message.context, occurrence: message.occurrence, src: null, fallback: 'Invalid image URL or URL credentials' });
+            }
+            break;
+          }
+          const source = /^data:([^;,]+);base64,([\s\S]*)$/i.exec(message.source);
+          const image = source
+            ? this.boundedImage(imageKey('markdown', String(message.occurrence)), source[2] ?? '', (source[1] ?? '').toLowerCase())
+            : { src: null, fallback: /^data:/i.test(message.source) ? 'Invalid image data URI' : 'Image source not supported' };
+          if (!/^data:|^https?:/i.test(message.source)) {
+            const slot = { source: message.source, status: 'loading' as const };
+            this.markdownSources.set(message.occurrence, slot);
+            await this.loadMarkdownSource(message.context, message.occurrence, slot, false);
+            break;
+          }
+          this.post({ type: 'markdownImage', context: message.context, occurrence: message.occurrence, ...image });
+        }
+        break;
+      case 'releaseMarkdownImage':
+        if (this.currentMarkdownContext(message.context)) {
+          this.markdownImages.delete(message.occurrence);
+          this.markdownSources.delete(message.occurrence);
+          this.markdownReads.get(message.occurrence)?.abort();
+          this.markdownReads.delete(message.occurrence);
+          this.imageBytes.delete(imageKey('markdown', String(message.occurrence)));
+        }
+        break;
       case 'selectSessionTab':
         await this.navigation?.selectTab(message.tabId);
         break;
@@ -282,6 +348,7 @@ export class ChatViewController {
         await this.choosePickerValue(message.pickerId, message.value);
         break;
       case 'ready':
+        this.resetMarkdownImages();
         logInfo('Chat view ready');
         this._queuedPrompts = 0;
         this.sendCurrentState();
@@ -384,6 +451,7 @@ export class ChatViewController {
       // The chat view clears the transcript, unless it has no session to show and keeps the one whose agent exited.
       if (this.shownSessionId !== null || !this.shownSessionEnded) {
         this.imageBytes.clear();
+        this.resetMarkdownImages();
         this.shownSessionEnded = false;
         this.terminals.forgetEndedSessions();
       }
@@ -392,6 +460,10 @@ export class ChatViewController {
 
   /** The session is gone, whether its agent exited or the user disconnected it. */
   notifySessionRemoved(sessionId: string): void {
+    if (sessionId === this.markdownImageSession) {
+      for (const read of this.markdownReads.values()) { read.abort(); }
+      this.markdownReads.clear();
+    }
     this.sessions.clearActivity(sessionId);
     this.sendTabs();
     this.commandOutput.forgetSession(sessionId);
@@ -426,6 +498,7 @@ export class ChatViewController {
   notifyLoadSessionStart(sessionId: string): void {
     if (sessionId !== this.sessions.getActiveSessionId()) { return; }
     this.imageBytes.clear();
+    this.resetMarkdownImages();
     this.diffs.forgetSession(sessionId);
     this.post({ type: 'loadSessionStart' });
   }
@@ -439,6 +512,7 @@ export class ChatViewController {
   /** Clear the transcript, as when a new session starts. */
   clearTranscript(): void {
     this.imageBytes.clear();
+    this.resetMarkdownImages();
     this.terminals.forgetEndedSessions();
     this.post({ type: 'clearTranscript' });
   }
@@ -449,6 +523,7 @@ export class ChatViewController {
     if (this.pendingText) { clearTimeout(this.pendingText.timer); }
     this.pendingText = null;
     this.imageBytes.clear();
+    this.resetMarkdownImages();
     this.turnListeners.clear();
     for (const source of this.elicitationSources.values()) { source.unsubscribe(); }
     this.elicitationSources.clear();
@@ -665,6 +740,46 @@ export class ChatViewController {
       case 'terminalOutput':
         return null;
     }
+  }
+
+  private currentMarkdownContext(context: number): boolean {
+    return context === this.markdownImageContext && this.markdownImageSession !== null
+      && (this.markdownImageSession === this.sessions.getActiveSessionId() || this.shownSessionEnded);
+  }
+
+  private async loadMarkdownSource(context: number, occurrence: number, slot: { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }, announce = true): Promise<void> {
+    slot.status = 'loading';
+    const cancellation = new AbortController();
+    this.markdownReads.set(occurrence, cancellation);
+    if (announce) { this.post({ type: 'markdownImage', context, occurrence, src: null, status: 'loading' }); }
+    try {
+      const remote = /^https:/i.test(slot.source);
+      const root = this.sessions.getSession(this.markdownImageSession ?? '')?.cwd;
+      const result = await (remote ? this.networkImageLoads : this.localImageLoads).run(cancellation.signal, (signal) => remote
+        ? fetchMarkdownImage(slot.source, signal, this.imageNetwork) : readMarkdownImage(root, slot.source, signal));
+      if (!this.currentMarkdownContext(context) || cancellation.signal.aborted || this.markdownSources.get(occurrence) !== slot) { return; }
+      const image = this.boundedImage(imageKey('markdown', String(occurrence)), result.data, result.mimeType);
+      slot.status = image.src ? 'done' : 'retry';
+      this.post({ type: 'markdownImage', context, occurrence, ...image, ...(image.src ? {} : { status: 'retry' as const }) });
+    } catch (error) {
+      if (!this.currentMarkdownContext(context) || cancellation.signal.aborted || this.markdownSources.get(occurrence) !== slot) { return; }
+      slot.status = 'retry';
+      this.post({ type: 'markdownImage', context, occurrence, src: null, fallback: error instanceof Error ? error.message : 'Could not load image', status: 'retry' });
+    } finally {
+      if (this.markdownReads.get(occurrence) === cancellation) { this.markdownReads.delete(occurrence); }
+    }
+  }
+
+  private resetMarkdownImages(): void {
+    for (const read of this.markdownReads.values()) { read.abort(); }
+    this.markdownReads.clear();
+    this.markdownSources.clear();
+    for (const occurrence of this.markdownImages) {
+      this.imageBytes.delete(imageKey('markdown', String(occurrence)));
+    }
+    this.markdownImages.clear();
+    this.markdownImageSession = null;
+    this.markdownImageContext++;
   }
 
   private boundedImage(key: string, data: string, mimeType: string, reference?: true): { src: string | null; fallback?: string; reference?: true } {

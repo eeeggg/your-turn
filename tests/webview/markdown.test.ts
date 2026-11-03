@@ -29,6 +29,110 @@ function answer(...chunks: string[]): void {
 }
 
 describe('markdown while it streams', () => {
+  const rasterUri = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+  function resolveDataImage(): Extract<ReturnType<ChatPage['takePosted']>[number], { type: 'resolveMarkdownImage' }> {
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42 });
+    const requests = page.takePosted();
+    expect(requests).toHaveLength(1);
+    const request = requests[0];
+    if (request?.type !== 'resolveMarkdownImage') { throw new Error('No image validation request'); }
+    expect(request.source).toBe(rasterUri);
+    expect(message().querySelector('img')).toBeNull();
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: rasterUri });
+    return request;
+  }
+
+  it('displays a Markdown data image only after core validation and retains it on append', () => {
+    answer(`Before ![Tiny picture](${rasterUri}) after`);
+    resolveDataImage();
+    const image = message().querySelector('img');
+    expect(image?.getAttribute('src')).toBe(rasterUri);
+    expect(image?.getAttribute('alt')).toBe('Tiny picture');
+    expect(message().textContent).toContain('Before');
+    expect(message().textContent).toContain('after');
+    agentText(page, ' appended');
+    expect(message().querySelector('img')).toBe(image);
+    expect(page.takePosted()).toEqual([]);
+  });
+
+  it('resolves a reference-style data image without exposing its source to the browser', () => {
+    answer(`![Tiny picture][picture]\n\n[picture]: ${rasterUri}`);
+    resolveDataImage();
+    expect(message().querySelector('img')?.getAttribute('src')).toBe(rasterUri);
+  });
+
+  it('releases a removed image and ignores its late result', () => {
+    page.send({ type: 'agentText', messageId: 'a1', text: `![Tiny picture](${rasterUri})` });
+    const request = resolveDataImage();
+    page.send({ type: 'agentMessage', messageId: 'a1', text: 'replacement' });
+    expect(page.takePosted()).toContainEqual({ type: 'releaseMarkdownImage', context: 42, occurrence: request.occurrence });
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: rasterUri });
+    expect(message().querySelector('img')).toBeNull();
+  });
+
+  it('shows the alt text and core failure without creating an image', () => {
+    answer(`![Broken picture](data:image/png;base64,AAAA)`);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42 });
+    const request = page.takePosted()[0];
+    if (request?.type !== 'resolveMarkdownImage') { throw new Error('No image validation request'); }
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: null, fallback: 'Invalid image data' });
+    expect(message().textContent).toContain('Broken picture');
+    expect(message().textContent).toContain('Invalid image data');
+    expect(message().querySelector('img')).toBeNull();
+  });
+
+  it('allocates separate slots for duplicate images in different Markdown blocks', () => {
+    answer(`![First](${rasterUri})\n\n![Second](${rasterUri})`);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42 });
+    const requests = page.takePosted();
+    expect(requests).toHaveLength(2);
+    const occurrences = requests.map((request) => {
+      if (request.type !== 'resolveMarkdownImage') { throw new Error('No image validation request'); }
+      page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: rasterUri });
+      return request.occurrence;
+    });
+    expect(new Set(occurrences).size).toBe(2);
+    expect([...message().querySelectorAll('img')].map((image) => image.alt)).toEqual(['First', 'Second']);
+  });
+
+  it.each(['clear', 'replay', 'switch'] as const)('rejects a late result and creates new slots after %s', (change) => {
+    answer(`![Tiny picture](${rasterUri})`);
+    const original = resolveDataImage();
+    if (change === 'clear') { page.send({ type: 'clearTranscript' }); connect(page); }
+    else if (change === 'replay') { page.send({ type: 'loadSessionStart' }); }
+    else {
+      page.send({ type: 'state', activeSessionId: 'other', session: { sessionId: 'other', agentName: 'Other', cwd: '/other', pickers: [], commands: [] } });
+      connect(page);
+    }
+    page.takePosted();
+    answer(`![Tiny picture](${rasterUri})`);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImage', context: 42, occurrence: original.occurrence, src: rasterUri });
+    expect(message().querySelector('img')).toBeNull();
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 43 });
+    const request = page.takePosted()[0];
+    if (request?.type !== 'resolveMarkdownImage') { throw new Error('No fresh image validation request'); }
+    expect(request.occurrence).not.toBe(original.occurrence);
+    page.send({ type: 'markdownImage', context: 43, occurrence: request.occurrence, src: rasterUri });
+    expect(message().querySelector('img')?.getAttribute('src')).toBe(rasterUri);
+  });
+
+  it('revalidates identical images when whole-message replacement recreates their content', () => {
+    page.send({ type: 'agentText', messageId: 'a1', text: `![Tiny picture](${rasterUri})` });
+    const original = resolveDataImage();
+    page.send({ type: 'agentMessage', messageId: 'a1', text: `![Tiny picture](${rasterUri})` });
+    const requests = page.takePosted();
+    expect(requests).toContainEqual({ type: 'releaseMarkdownImage', context: 42, occurrence: original.occurrence });
+    const fresh = requests.find((request) => request.type === 'resolveMarkdownImage');
+    expect(fresh?.type === 'resolveMarkdownImage' && fresh.occurrence).not.toBe(original.occurrence);
+    expect(fresh?.type).toBe('resolveMarkdownImage');
+    expect(message().querySelector('img')).toBeNull();
+  });
+
   it('drops image payloads when replay replaces a transcript and when its session changes', () => {
     const src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
     page.send({ type: 'agentImage', messageId: 'm', src });
@@ -62,12 +166,102 @@ describe('markdown while it streams', () => {
     expect(page.document.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe('Image from agent: Image not displayed: Invalid image data');
   });
 
-  it.each(['https://example.invalid/blocked.png', 'http://example.invalid/blocked.png', './blocked.png', '/blocked.png', 'file:///blocked.png', 'data:image/png;base64,AAAA'])('never creates an image request for Markdown source %s', (source) => {
+  it.each(['http://example.invalid/blocked.png', 'ftp://example.invalid/blocked.png'])('never creates an image request for Markdown source %s', (source) => {
     answer(`Before ![Blocked picture](${source}) after`);
     expect(message().querySelectorAll('img, source, picture, link')).toHaveLength(0);
     expect(message().textContent).toContain('Blocked picture');
     expect(message().textContent).toContain('not displayed');
     expect(page.takePosted()).toEqual([]);
+  });
+
+  it.each(['local extension host', 'remote extension host (ssh-remote)'])('asks per-occurrence HTTPS consent and explains the %s origin', (origin) => {
+    const source = 'https://images.example/picture.gif?token=secret';
+    answer(`Before ![Remote picture](${source}) after`);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42, origin });
+    const request = page.takePosted()[0];
+    if (request?.type !== 'resolveMarkdownImage') { throw new Error('No image occurrence'); }
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: null, status: 'consent' });
+    expect(message().textContent).toContain('images.example');
+    expect(message().textContent).toContain(source);
+    expect(message().textContent).toContain(origin);
+    expect(message().textContent).toContain('redirect');
+    expect(message().textContent).toContain('external server');
+    expect(message().querySelector('img')).toBeNull();
+    expect(page.takePosted()).toEqual([]);
+    const load = [...message().querySelectorAll('button')].find((button) => button.textContent === 'Load image');
+    expect(load).toBeDefined();
+    load?.click();
+    expect(page.takePosted()).toEqual([{ type: 'loadMarkdownImage', context: 42, occurrence: request.occurrence }]);
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: rasterUri });
+    expect(message().querySelector('img')?.getAttribute('src')).toBe(rasterUri);
+    agentText(page, ' appended');
+    expect(page.takePosted()).toEqual([]);
+    expect(message().querySelector('img')?.getAttribute('src')).toBe(rasterUri);
+  });
+
+  it('automatically requests local images, retains validated bytes, and offers an explicit retry after failure', () => {
+    answer('Before ![Local picture](./tiny.gif) after');
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42 });
+    const request = page.takePosted()[0];
+    if (request?.type !== 'resolveMarkdownImage') { throw new Error('No local image request'); }
+    expect(request.source).toBe('./tiny.gif');
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: null, fallback: 'Could not read image file', status: 'retry' });
+    expect(message().querySelector('img')).toBeNull();
+    const retry = [...message().querySelectorAll('button')].find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    retry?.click();
+    expect(page.takePosted()).toEqual([{ type: 'loadMarkdownImage', context: 42, occurrence: request.occurrence }]);
+    page.send({ type: 'markdownImage', context: 42, occurrence: request.occurrence, src: rasterUri });
+    expect(message().querySelector('img')?.getAttribute('alt')).toBe('Local picture');
+    agentText(page, ' appended');
+    expect(page.takePosted()).toEqual([]);
+  });
+
+  it.each(['agentRichMessage', 'thoughtRichMessage', 'toolCall'] as const)('invalidates HTTPS consent on an identical %s content replacement', (surface) => {
+    const text = '![Picture](https://images.example/picture.gif)';
+    const send = () => {
+      if (surface === 'toolCall') { page.send({ type: 'toolCall', toolCallId: 'image-tool', content: [{ kind: 'text', text }] }); }
+      else { page.send({ type: surface, messageId: 'image-message', content: [{ kind: 'text', text }] }); }
+    };
+    send();
+    if (surface === 'toolCall') { page.byId('tc-image-tool').querySelector('summary')?.click(); }
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: 's1' }]);
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42 });
+    const first = page.takePosted()[0];
+    if (first?.type !== 'resolveMarkdownImage') { throw new Error('No first image occurrence'); }
+    page.send({ type: 'markdownImage', context: 42, occurrence: first.occurrence, src: rasterUri });
+    expect(page.document.querySelector('#messages img')).not.toBeNull();
+    send();
+    const requests = page.takePosted();
+    expect(requests).toContainEqual({ type: 'releaseMarkdownImage', context: 42, occurrence: first.occurrence });
+    const fresh = requests.find((request) => request.type === 'resolveMarkdownImage');
+    expect(fresh?.type).toBe('resolveMarkdownImage');
+    expect(fresh?.type === 'resolveMarkdownImage' && fresh.occurrence).not.toBe(first.occurrence);
+    expect(page.document.querySelector('#messages img')).toBeNull();
+  });
+
+  it('keeps duplicate HTTPS approvals independent and ignores replies after the source changes', () => {
+    page.send({ type: 'agentText', messageId: 'a1', text: '![One](https://images.example/a) ![Two](https://images.example/a)' });
+    page.takePosted();
+    page.send({ type: 'markdownImageContext', sessionId: 's1', context: 42, origin: 'remote extension host (ssh-remote)' });
+    const requests = page.takePosted();
+    const slots = requests.filter((request) => request.type === 'resolveMarkdownImage');
+    expect(slots).toHaveLength(2);
+    for (const slot of slots) { page.send({ type: 'markdownImage', context: 42, occurrence: slot.occurrence, src: null, status: 'consent' }); }
+    const buttons = [...message().querySelectorAll('button')].filter((button) => button.textContent === 'Load image');
+    buttons[0]?.click();
+    expect(page.takePosted()).toEqual([{ type: 'loadMarkdownImage', context: 42, occurrence: slots[0]?.occurrence }]);
+    expect([...message().querySelectorAll('button')].filter((button) => button.textContent === 'Load image')).toHaveLength(1);
+    page.send({ type: 'agentMessage', messageId: 'a1', text: '![Replacement](https://other.example/b)' });
+    const fresh = page.takePosted().find((request) => request.type === 'resolveMarkdownImage');
+    for (const slot of slots) { page.send({ type: 'markdownImage', context: 42, occurrence: slot.occurrence, src: rasterUri }); }
+    expect(message().querySelector('img')).toBeNull();
+    if (fresh?.type !== 'resolveMarkdownImage') { throw new Error('No replacement image occurrence'); }
+    page.send({ type: 'markdownImage', context: 42, occurrence: fresh.occurrence, src: null, status: 'consent' });
+    expect(message().textContent).toContain('other.example');
+    expect([...message().querySelectorAll('button')].find((button) => button.textContent === 'Load image')).toBeDefined();
   });
 
   it('explains browser decoding failure and retries a replacement image', async () => {

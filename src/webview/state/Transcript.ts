@@ -78,6 +78,7 @@ export interface Compaction {
 export type PartIndex = number;
 
 export interface AgentMessage {
+  readonly markdownRevision?: number;
   readonly kind: 'message';
   /** The agent's ID for the message, when it sends one; text with another ID is another message. */
   readonly messageId: string | null;
@@ -86,6 +87,7 @@ export interface AgentMessage {
 }
 
 export interface Thought {
+  readonly markdownRevision?: number;
   readonly kind: 'thought';
   /** As for an agent message. */
   readonly messageId: string | null;
@@ -107,6 +109,7 @@ export interface ToolCallGroup {
 }
 
 export interface ToolCall {
+  readonly markdownRevision?: number;
   readonly toolCallId: string;
   readonly title: string;
   readonly status: ToolCallStatus;
@@ -143,6 +146,10 @@ export interface QueuedPrompt {
 }
 
 export interface TranscriptState {
+  readonly markdownContext: number | null;
+  readonly markdownContextRequested: boolean;
+  readonly markdownOrigin: string | null;
+  readonly markdownImages: ReadonlyMap<number, { source: string; presentation: (ImagePresentation & { status?: 'consent' | 'loading' | 'retry' }) | null }>;
   /** The session the entries belong to; a `state` for any other session clears them, unless {@link sessionEnded}. */
   readonly sessionId: string | null;
   /** Its agent exited, ending the session; the entries stay through the sessionless `state` that follows, until another session replaces them. */
@@ -164,6 +171,9 @@ export interface TranscriptState {
 }
 
 export type TranscriptAction =
+  | { type: 'markdownImageLoad'; occurrence: number }
+  | { type: 'markdownImageMounted'; occurrence: number; source: string }
+  | { type: 'markdownImageUnmounted'; occurrence: number }
   | { type: 'questionRecordToggled'; interactionId: string; open: boolean }
   | { type: 'thoughtToggled'; turnId: EntryId; part: PartIndex; open: boolean }
   | { type: 'compactionToggled'; compactionId: string; open: boolean }
@@ -181,6 +191,10 @@ export type TranscriptAction =
   | { type: 'queuedPromptCancelled'; id: EntryId };
 
 export const initialTranscript: TranscriptState = {
+  markdownContext: null,
+  markdownContextRequested: false,
+  markdownOrigin: null,
+  markdownImages: new Map(),
   sessionId: null,
   sessionEnded: false,
   entries: [],
@@ -385,6 +399,42 @@ export function updateTranscript(
   loading = false,
 ): Transition<TranscriptState, WebviewToExtensionMessage> {
   switch (action.type) {
+    case 'markdownImageLoad': {
+      const image = transcript.markdownImages.get(action.occurrence);
+      if (transcript.markdownContext === null || !image || !['consent', 'retry'].includes(image.presentation?.status ?? '')) { return stateOnly(transcript); }
+      return { state: { ...transcript, markdownImages: new Map(transcript.markdownImages).set(action.occurrence, {
+        ...image, presentation: { src: null, status: 'loading' },
+      }) }, outgoing: [{ type: 'loadMarkdownImage', context: transcript.markdownContext, occurrence: action.occurrence }] };
+    }
+    case 'markdownImageMounted': {
+      if (transcript.sessionId === null || transcript.markdownImages.has(action.occurrence)) { return stateOnly(transcript); }
+      const images = new Map(transcript.markdownImages).set(action.occurrence, { source: action.source, presentation: null });
+      return {
+        state: { ...transcript, markdownImages: images, markdownContextRequested: true },
+        outgoing: transcript.markdownContext !== null
+          ? [{ type: 'resolveMarkdownImage', context: transcript.markdownContext, occurrence: action.occurrence, source: action.source }]
+          : transcript.markdownContextRequested ? [] : [{ type: 'markdownImageContext', sessionId: transcript.sessionId }],
+      };
+    }
+    case 'markdownImageUnmounted': {
+      if (!transcript.markdownImages.has(action.occurrence)) { return stateOnly(transcript); }
+      const images = new Map(transcript.markdownImages);
+      images.delete(action.occurrence);
+      return { state: { ...transcript, markdownImages: images }, outgoing: transcript.markdownContext === null ? []
+        : [{ type: 'releaseMarkdownImage', context: transcript.markdownContext, occurrence: action.occurrence }] };
+    }
+    case 'markdownImageContext':
+      if (action.sessionId !== transcript.sessionId || !transcript.markdownContextRequested || transcript.markdownContext !== null) { return stateOnly(transcript); }
+      return { state: { ...transcript, markdownContext: action.context, markdownOrigin: action.origin ?? null }, outgoing: [...transcript.markdownImages].map(([occurrence, image]) => ({
+        type: 'resolveMarkdownImage', context: action.context, occurrence, source: image.source,
+      })) };
+    case 'markdownImage': {
+      const image = transcript.markdownImages.get(action.occurrence);
+      if (action.context !== transcript.markdownContext || !image) { return stateOnly(transcript); }
+      return stateOnly({ ...transcript, markdownImages: new Map(transcript.markdownImages).set(action.occurrence, {
+        source: image.source, presentation: { src: action.src, ...(action.fallback ? { fallback: action.fallback } : {}), ...(action.status ? { status: action.status } : {}) },
+      }) });
+    }
     case 'questionSettled': {
       if (loading || action.record.sessionId !== transcript.sessionId || transcript.entries.some((entry) => entry.kind === 'question'
         ? entry.record.interactionId === action.record.interactionId
@@ -626,7 +676,8 @@ function withAgentReplaced(
     if (first < 0) { continue; }
     const before = entry.parts.slice(0, first);
     const after = entry.parts.slice(first).filter((part) => !matches(part));
-    return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [...before, ...parts, ...after] }));
+    const revision = Math.max(0, ...entry.parts.filter(matches).map((part) => part.kind === 'message' ? part.markdownRevision ?? 0 : 0)) + 1;
+    return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [...before, ...parts.map((part) => part.kind === 'message' ? { ...part, markdownRevision: revision } : part), ...after] }));
   }
   return parts.length ? inCurrentTurn(transcript, (turn) => parts.reduce((current, part) => withLastPart(current, part, 'adding', now), turn)) : transcript;
 }
@@ -646,8 +697,9 @@ function withThoughtReplaced(
     if (entry?.kind !== 'turn') { continue; }
     const first = entry.parts.findIndex(matches);
     if (first < 0) { continue; }
+    const revision = Math.max(0, ...entry.parts.filter(matches).map((part) => part.kind === 'thought' ? part.markdownRevision ?? 0 : 0)) + 1;
     return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [
-      ...entry.parts.slice(0, first), ...parts, ...entry.parts.slice(first).filter((part) => !matches(part)),
+      ...entry.parts.slice(0, first), ...parts.map((part) => ({ ...part, markdownRevision: revision })), ...entry.parts.slice(first).filter((part) => !matches(part)),
     ] }));
   }
   return parts.length ? inCurrentTurn(transcript, (turn) => parts.reduce((current, part) => withLastPart(current, part, 'adding', now), turn)) : transcript;
@@ -712,7 +764,8 @@ function withMessageReplaced(
     const index = lastPartIndex(entry, (part) => (part.kind === 'message' || part.kind === 'thought') && part.kind === kind && part.messageId === messageId);
     if (index !== -1) {
       return withTurn(transcript, entry.id, (turn) =>
-        withPart(turn, index, (part) => ((part.kind === 'message' || part.kind === 'thought') && part.text !== text ? { ...part, text } : part)),
+        withPart(turn, index, (part) => ((part.kind === 'message' || part.kind === 'thought')
+          ? { ...part, text, ...(text ? { markdownRevision: (part.markdownRevision ?? 0) + 1 } : {}) } : part)),
       );
     }
   }
@@ -834,6 +887,7 @@ function revised(call: ToolCall, reported: Extract<ExtensionToWebviewMessage, { 
     title: reported.title || call.title,
     status,
     content: reported.content ?? call.content,
+    ...(reported.content ? { markdownRevision: (call.markdownRevision ?? 0) + 1 } : {}),
     open: call.open || (status === 'failed' && call.status !== 'failed'),
   };
 }
@@ -879,12 +933,16 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
   const empty =
-    transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0 && transcript.cancelledPrompts.length === 0;
+    !transcript.markdownContextRequested && transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0 && transcript.cancelledPrompts.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
     : {
       ...transcript,
       sessionId,
+      markdownContext: null,
+      markdownContextRequested: false,
+      markdownOrigin: null,
+      markdownImages: new Map(),
       sessionEnded: false,
       entries: [],
       terminals: new Map(),

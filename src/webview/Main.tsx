@@ -12,7 +12,13 @@ const posting = createStore(initialState, update, postMessage);
 // is handled, so each dispatch renders before it returns.
 const store: Store<RootState, Action> = {
   ...posting,
-  dispatch: (action) => flushSync(() => posting.dispatch(action)),
+  dispatch: (action) => {
+    if (action.type === 'markdownImageMounted' || action.type === 'markdownImageUnmounted') {
+      posting.dispatch(action);
+    } else {
+      flushSync(() => posting.dispatch(action));
+    }
+  },
 };
 
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => store.dispatch(event.data));

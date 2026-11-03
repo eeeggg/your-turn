@@ -36,7 +36,14 @@ for (const agentVersion of ['v1', 'v2'] as const) {
       expect(dimensions.width / dimensions.height).toBeCloseTo(0.5, 1);
       await expect(transcript).toContainText('Before image.');
       await expect(transcript).toContainText('After image.');
-      await expect(transcript).toContainText('Blocked picture — image not displayed');
+      await expect(transcript.getByRole('button', { name: 'Load image', exact: true })).toBeVisible();
+      await expect(transcript).toContainText('local extension host');
+      for (const alt of ['Markdown data picture', 'Markdown local picture']) {
+        const markdown = transcript.locator(`img[alt="${alt}"]`);
+        await expect(markdown).toBeVisible();
+        await markdown.evaluate(async (element) => { await (element as HTMLImageElement).decode(); });
+        expect(await markdown.getAttribute('src')).toMatch(/^data:image\/gif;base64,/);
+      }
       await expect(transcript).toContainText('Image not displayed: browser could not render it');
       await expect(transcript).toContainText('Image reference not displayed');
       await transcript.locator('#tc-image-tool > summary').click();

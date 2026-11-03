@@ -104,7 +104,7 @@ describe('tool calls', () => {
     assert.exists(first);
     expect(first.parts[2]).toEqual({
       kind: 'toolCalls',
-      toolCalls: [{ toolCallId: 't1', title: 'Read foo.ts', status: 'completed', content: texts('body'), open: false }],
+      toolCalls: [{ toolCallId: 't1', title: 'Read foo.ts', status: 'completed', content: texts('body'), open: false, markdownRevision: 1 }],
       collapsed: false,
     });
   });

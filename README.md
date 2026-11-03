@@ -53,6 +53,34 @@ Run through `npx` instead, the same agent is `"command": "npx", "args": ["@openc
 
 ## Extension Settings
 
+### Transcript images
+
+Agent messages, thoughts, and tool text support inline and reference-style Markdown images.
+PNG, JPEG, GIF, and WebP base64 data URIs render automatically after validation.
+On Linux extension hosts, relative paths, contained absolute paths, and hostless `file:` URLs
+load automatically from the originating session's working directory. Symlink targets must stay
+inside that directory. Other platforms fail closed for local images until a race-resistant reader
+is available. Existing files are eligible, not only files created by the agent.
+
+HTTPS images require **Load image** for each occurrence. The approval shows the destination and
+request origin. The extension host downloads the image, including on Remote-SSH; the browser never
+receives the external URL as an image source. Only public HTTPS destinations are allowed, including
+at most five validated redirects. HTTP, SVG, outside-directory paths, and arbitrary resource
+providers are unsupported. Failures offer an explicit **Retry** where loading can be attempted again.
+
+Each image is limited to 10 MiB, 16,384 pixels per dimension, and 40 million pixels. All displayed
+images share a 50 MiB session payload budget. Successful images remain in memory without automatic
+rereads or downloads. Replay, replacement, and session changes create new image lifetimes.
+Header validation does not guarantee browser decoding or bound animation memory.
+
+To tell an agent about these source forms, include explicit instructions such as:
+
+> Use `![description](./path/to/picture.png)` for raster images inside this session's working
+> directory, or a base64 raster data URI. Public HTTPS raster images need my approval before loading.
+> Do not use SVG, HTTP, or paths outside this session's directory. Keep each image under 10 MiB.
+
+The extension does not inject these instructions or advertise a non-standard ACP capability.
+
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `acp.agents` | `{}` | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |

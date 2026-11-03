@@ -278,7 +278,7 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
       <div
         className={`thought-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal text-muted-foreground italic ${plainText}`}
       >
-        {thought.imageSrc === undefined ? <Markdown text={thought.text} streaming={thinking} /> : <AgentImageView src={thought.imageSrc} alt="Image in agent thought" reference={thought.imageReference} fallback={thought.imageFallback} />}
+        {thought.imageSrc === undefined ? <Markdown key={thought.markdownRevision ?? 0} text={thought.text} streaming={thinking} /> : <AgentImageView src={thought.imageSrc} alt="Image in agent thought" reference={thought.imageReference} fallback={thought.imageFallback} />}
       </div>
     </details>
   );
@@ -287,7 +287,7 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
 const AgentMessageView = memo(function AgentMessageView({ message, streaming }: { message: AgentMessage; streaming: boolean }) {
   return (
     <CopyableMessage author="agent" markdown={message.text} className={`${messageBox} self-start border border-border bg-card wrap-anywhere`}>
-      <Markdown text={message.text} streaming={streaming} />
+      <Markdown key={message.markdownRevision ?? 0} text={message.text} streaming={streaming} />
     </CopyableMessage>
   );
 });
@@ -520,7 +520,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
                 case 'text':
                   return (
                     <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
-                      {block.text}
+                      <Markdown key={call.markdownRevision ?? 0} text={block.text} streaming={call.status === 'running'} />
                     </div>
                   );
                 case 'image':

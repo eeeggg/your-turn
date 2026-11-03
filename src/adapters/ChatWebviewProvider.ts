@@ -19,6 +19,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
 
   get visible(): boolean { return this.view?.visible ?? false; }
 
+  imageRequestOrigin(): string {
+    return vscode.env.remoteName ? `remote extension host (${vscode.env.remoteName})` : 'local extension host';
+  }
+
   showInformationMessage<T extends string>(message: string, ...items: T[]): Thenable<T | undefined> {
     return vscode.window.showInformationMessage(message, ...items);
   }

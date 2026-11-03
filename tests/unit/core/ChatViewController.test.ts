@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { Readable } from 'node:stream';
+import type { ImageNetwork } from '@/core/MarkdownImageNetwork';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
@@ -182,7 +187,7 @@ class FakeEditor implements FileEditor {
   showInformationMessage = vi.fn<FileEditor['showInformationMessage']>(async () => undefined);
 }
 
-function setup() {
+function setup(network?: ImageNetwork) {
   const sessions = new FakeSessions();
   onTestFinished(() => { expect(sessions.prompts, 'chat prompts left pending by the test').toHaveLength(0); });
   const environment = new FakeEnvironment();
@@ -195,7 +200,7 @@ function setup() {
   });
   const controller = new ChatViewController(sessions, environment, editor, terminals, {
     workspaceRoots: () => ({ cwd: '/work/project', additionalDirectories: ['/other'] }),
-  });
+  }, network);
   onTestFinished(async () => {
     const disposed = controller.dispose();
     if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
@@ -216,6 +221,248 @@ function sendPrompt(controller: ChatViewController, sessions: FakeSessions, text
 const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
+  const rasterUri = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+  async function imageContext(controller: ChatViewController, environment: FakeEnvironment): Promise<number> {
+    await controller.handleMessage({ type: 'markdownImageContext', sessionId: 's1' });
+    const response = environment.take().find((message) => message.type === 'markdownImageContext');
+    if (response?.type !== 'markdownImageContext') { throw new Error('No Markdown image context'); }
+    return response.context;
+  }
+
+  it('validates Markdown raster data URIs in the displayed session', async () => {
+    const { controller, environment } = setup();
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: rasterUri }]);
+  });
+
+  it('never downloads HTTPS before occurrence consent, retries only explicitly, and validates MIME bytes', async () => {
+    let requests = 0;
+    const { controller, environment } = setup({
+      lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      request: async () => {
+        requests++;
+        return { status: 200, headers: { 'content-type': requests === 1 ? 'image/png' : 'image/gif' },
+          body: Readable.from([Buffer.from(rasterUri.split(',')[1] ?? '', 'base64')]) };
+      },
+    });
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'https://images.example/a?secret=token' });
+    expect(requests).toBe(0);
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: null, status: 'consent' }]);
+    await controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
+    expect(requests).toBe(1);
+    expect(environment.take()).toEqual([
+      { type: 'markdownImage', context, occurrence: 1, src: null, status: 'loading' },
+      { type: 'markdownImage', context, occurrence: 1, src: null, fallback: 'Image MIME type does not match its bytes', status: 'retry' },
+    ]);
+    await controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
+    expect(requests).toBe(2);
+    expect(environment.take()).toEqual([
+      { type: 'markdownImage', context, occurrence: 1, src: null, status: 'loading' },
+      { type: 'markdownImage', context, occurrence: 1, src: rasterUri },
+    ]);
+    await controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
+    expect(requests).toBe(2);
+    expect(environment.take()).toEqual([]);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: 'https://images.example/a?secret=token' });
+    expect(requests).toBe(2);
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 2, src: null, status: 'consent' }]);
+  });
+
+  it.each(['remove', 'clear', 'switch', 'close'] as const)('cancels an approved download on %s and rejects its late result', async (change) => {
+    const reply = deferred<{ status: number; headers: Record<string, string>; body: Readable }>();
+    const started = deferred<AbortSignal>();
+    const { controller, environment, sessions } = setup({
+      lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      request: (_url, _address, signal) => { started.resolve(signal); return reply.promise; },
+    });
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'https://images.example/a' });
+    const loading = controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
+    const signal = await started.promise;
+    if (change === 'remove') { await controller.handleMessage({ type: 'releaseMarkdownImage', context, occurrence: 1 }); }
+    else if (change === 'clear') { controller.clearTranscript(); }
+    else if (change === 'close') { controller.notifySessionRemoved('s1'); }
+    else { sessions.activeId = 's2'; sessions.session = sessionInfo({ sessionId: 's2' }); controller.notifyActiveSessionChanged(); }
+    expect(signal.aborted).toBe(true);
+    environment.take();
+    reply.resolve({ status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([Buffer.from(rasterUri.split(',')[1] ?? '', 'base64')]) });
+    await loading;
+    expect(environment.take()).toEqual([]);
+  });
+
+  it('charges asynchronous images in completion order without evicting native images', async () => {
+    const first = deferred<{ status: number; headers: Record<string, string>; body: Readable }>();
+    const started = deferred<undefined>();
+    const header = Buffer.from(rasterUri.split(',')[1] ?? '', 'base64');
+    const bytes = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]);
+    const data = bytes.toString('base64');
+    const { controller, environment } = setup({
+      lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      request: async (url) => {
+        if (url.pathname === '/first') { started.resolve(undefined); return first.promise; }
+        return { status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([bytes]) };
+      },
+    });
+    const context = await imageContext(controller, environment);
+    for (let index = 0; index < 4; index++) {
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
+    }
+    for (const occurrence of [1, 2]) {
+      await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence, source: `https://images.example/${occurrence === 1 ? 'first' : 'second'}` });
+    }
+    const pending = controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
+    await started.promise;
+    environment.take();
+    await controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 2 });
+    expect(environment.take()).toEqual([
+      { type: 'markdownImage', context, occurrence: 2, src: null, status: 'loading' },
+      { type: 'markdownImage', context, occurrence: 2, src: `data:image/gif;base64,${data}` },
+    ]);
+    first.resolve({ status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([bytes]) });
+    await pending;
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: null, fallback: 'Session image budget exceeded', status: 'retry' }]);
+  });
+
+  async function localImages() {
+    const directory = await mkdtemp('/tmp/opencode/transcript-images-');
+    onTestFinished(() => rm(directory, { recursive: true, force: true }));
+    const root = join(directory, 'session');
+    await mkdir(root);
+    const bytes = Buffer.from(rasterUri.split(',')[1] ?? '', 'base64');
+    await writeFile(join(root, 'tiny.gif'), bytes);
+    await writeFile(join(directory, 'outside.gif'), bytes);
+    const state = setup();
+    state.sessions.session = sessionInfo({ cwd: root });
+    const context = await imageContext(state.controller, state.environment);
+    return { ...state, root, directory, bytes, context };
+  }
+
+  it.each(['relative', 'absolute', 'file URL', 'symlink'] as const)('automatically reads a contained %s raster on the session filesystem', async (syntax) => {
+    const { controller, environment, root, context } = await localImages();
+    await symlink('tiny.gif', join(root, 'alias.gif'));
+    const source = syntax === 'relative' ? './tiny.gif' : syntax === 'absolute' ? join(root, 'tiny.gif')
+      : syntax === 'file URL' ? pathToFileURL(join(root, 'tiny.gif')).href : 'alias.gif';
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: rasterUri }]);
+  });
+
+  it.each(['traversal', 'absolute', 'symlink', 'directory', 'missing', 'SVG', 'oversized'] as const)('blocks a local %s image', async (kind) => {
+    const { controller, environment, root, directory, context } = await localImages();
+    await symlink('../outside.gif', join(root, 'escape.gif'));
+    await writeFile(join(root, 'unsupported.gif'), '<svg/>');
+    await writeFile(join(root, 'large.gif'), Buffer.alloc(10 * 1024 * 1024 + 1));
+    const source = { traversal: '../outside.gif', absolute: join(directory, 'outside.gif'), symlink: 'escape.gif',
+      directory: '.', missing: 'missing.gif', SVG: 'unsupported.gif', oversized: 'large.gif' }[kind];
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
+    const response = environment.take();
+    expect(response).toHaveLength(1);
+    expect(response[0]).toMatchObject({ type: 'markdownImage', context, occurrence: 1, src: null });
+    expect(response[0]).toHaveProperty('fallback', expect.stringMatching(/outside|regular|read|format|large/i));
+  });
+
+  it('retains local bytes without rereading until an occurrence is explicitly recreated', async () => {
+    const { controller, environment, root, context } = await localImages();
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'tiny.gif' });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: rasterUri }]);
+    await rm(join(root, 'tiny.gif'));
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'tiny.gif' });
+    expect(environment.take()).toEqual([]);
+    await controller.handleMessage({ type: 'releaseMarkdownImage', context, occurrence: 1 });
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: 'tiny.gif' });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 2, src: null, fallback: 'Could not read image file', status: 'retry' }]);
+  });
+
+  it.each([
+    ['data:image/png;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'Image MIME type does not match its bytes'],
+    ['data:image/gif;base64,AA!A', 'Invalid image data'],
+    ['data:image/svg+xml;base64,PHN2Zy8+', 'Unsupported image format'],
+    ['data:image/gif,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'Invalid image data URI'],
+    ['http://example.invalid/image.png', 'Image source not supported'],
+  ])('rejects unsupported or invalid Markdown source %s', async (source, fallback) => {
+    const { controller, environment } = setup();
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: null, fallback }]);
+  });
+
+  it('binds each Markdown occurrence to its source until released', async () => {
+    const { controller, environment } = setup();
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
+    environment.take();
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'data:image/gif;base64,AAAA' });
+    expect(environment.take()).toEqual([]);
+    await controller.handleMessage({ type: 'releaseMarkdownImage', context, occurrence: 1 });
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 2, src: rasterUri }]);
+  });
+
+  it.each(['clear', 'replay', 'switch'] as const)('rejects obsolete Markdown requests after %s', async (change) => {
+    const { controller, environment, sessions } = setup();
+    controller.notifyActiveSessionChanged();
+    environment.take();
+    const context = await imageContext(controller, environment);
+    if (change === 'clear') { controller.clearTranscript(); }
+    else if (change === 'replay') { controller.notifyLoadSessionStart('s1'); }
+    else {
+      sessions.activeId = 's2';
+      sessions.session = sessionInfo({ sessionId: 's2' });
+      controller.notifyActiveSessionChanged();
+      sessions.activeId = 's1';
+      sessions.session = sessionInfo();
+      controller.notifyActiveSessionChanged();
+    }
+    environment.take();
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
+    expect(environment.take()).toEqual([]);
+    const fresh = await imageContext(controller, environment);
+    expect(fresh).not.toBe(context);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context: fresh, occurrence: 1, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context: fresh, occurrence: 1, src: rasterUri }]);
+  });
+
+  it('does not give a background session a Markdown image context', async () => {
+    const { controller, environment } = setup();
+    await controller.handleMessage({ type: 'markdownImageContext', sessionId: 'other' });
+    expect(environment.take()).toEqual([]);
+  });
+
+  it('starts a new consent lifetime when the webview is recreated', async () => {
+    const { controller, environment } = setup();
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
+    await controller.handleMessage({ type: 'ready' });
+    environment.take();
+    const fresh = await imageContext(controller, environment);
+    expect(fresh).not.toBe(context);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context: fresh, occurrence: 1, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context: fresh, occurrence: 1, src: rasterUri }]);
+  });
+
+  it('shares native and Markdown budgets without charging an unchanged occurrence twice', async () => {
+    const { controller, environment } = setup();
+    const header = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
+    const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
+    const source = `data:image/gif;base64,${data}`;
+    const context = await imageContext(controller, environment);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: source }]);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
+    expect(environment.take()).toEqual([]);
+    for (let index = 0; index < 4; index++) {
+      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
+      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: `native-${index}`, src: source }]);
+    }
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 2, src: null, fallback: 'Session image budget exceeded' }]);
+    await controller.handleMessage({ type: 'releaseMarkdownImage', context, occurrence: 1 });
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 3, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 3, src: rasterUri }]);
+  });
+
   it('routes opaque tab requests to session commands without changing content', async () => {
     const { controller, environment } = setup();
     const requests: string[] = [];

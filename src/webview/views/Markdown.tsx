@@ -1,30 +1,49 @@
 import { useEffect, useState, type ComponentProps } from 'react';
 import { defaultComponents, defaultRemarkPlugins, Streamdown, type Components, type ExtraProps } from 'streamdown';
+import { useDispatch, useSelector } from './StoreContext';
 
 export const copyFeedbackDuration = 2000;
 const DefaultLink = defaultComponents.a;
 
 // Its modal opens links with `window.open`, which a webview ignores; a plain link's click goes to VS Code, which opens it.
 const linkSafety = { enabled: false };
-const components: Components = { a: Link, img: ImageFallback };
-const remarkPlugins = [...Object.values(defaultRemarkPlugins), imageReferencesAsText];
+const components: Components = { a: Link, img: MarkdownImage };
+const remarkPlugins = [...Object.values(defaultRemarkPlugins), imageReferences];
+// A transport through Markdown's URL sanitization, never a browser image source.
+const imageSourcePrefix = 'https://markdown-image.invalid/';
 
 interface MarkdownNode {
   type: string;
   alt?: string | null;
+  url?: string;
+  identifier?: string;
   children?: MarkdownNode[];
 }
 
-function imageReferencesAsText() {
+function imageReferences() {
   return function replaceImages(node: MarkdownNode): void {
-    if (!node.children) { return; }
-    node.children = node.children.map((child) => {
-      if (child.type === 'image' || child.type === 'imageReference') {
-        return { type: 'text', value: child.alt ? `${child.alt} — image not displayed` : 'Image not displayed' };
-      }
-      replaceImages(child);
-      return child;
-    });
+    const definitions = new Map<string, string>();
+    const collect = (current: MarkdownNode): void => {
+      if (current.type === 'definition' && current.identifier && current.url) { definitions.set(current.identifier.toLowerCase(), current.url); }
+      current.children?.forEach(collect);
+    };
+    collect(node);
+    replace(node);
+    function replace(node: MarkdownNode): void {
+      if (!node.children) { return; }
+      node.children = node.children.map((child) => {
+        if (child.type === 'image' || child.type === 'imageReference') {
+          const source = child.url ?? definitions.get(child.identifier?.toLowerCase() ?? '');
+          if (source && !/^http:|^(?!data:|https:|file:)[a-z][a-z\d+.-]*:/i.test(source)) {
+            return { ...child, type: 'image', url: `${imageSourcePrefix}${encodeURIComponent(source)}` };
+          }
+          const explanation = source && /^http:/i.test(source) ? ': HTTP images are blocked; HTTPS is required' : ': unsupported image source';
+          return { type: 'text', value: `${child.alt ? `${child.alt} — image not displayed` : 'Image not displayed'}${explanation}` };
+        }
+        replace(child);
+        return child;
+      });
+    }
   };
 }
 
@@ -37,8 +56,44 @@ export function Markdown({ text, streaming }: { text: string; streaming: boolean
   );
 }
 
-function ImageFallback({ alt }: ComponentProps<'img'> & ExtraProps) {
-  return <span>{alt ? `${alt} — image not displayed` : 'Image not displayed'}</span>;
+let nextOccurrence = 1;
+
+function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
+  let source: string | null = null;
+  if (typeof src === 'string' && src.startsWith(imageSourcePrefix)) {
+    try {
+      const decoded = decodeURIComponent(src.slice(imageSourcePrefix.length));
+      source = decoded;
+    } catch { /* An agent can supply malformed URLs in raw HTML. */ }
+  }
+  return source ? <ValidatedImage source={source} alt={alt ?? ''} />
+    : <span>{alt ? `${alt} — image not displayed` : 'Image not displayed'}</span>;
+}
+
+function ValidatedImage({ source, alt }: { source: string; alt: string }) {
+  const dispatch = useDispatch();
+  const [image, setImage] = useState(() => ({ source, occurrence: nextOccurrence++, failed: false }));
+  if (image.source !== source) { setImage({ source, occurrence: nextOccurrence++, failed: false }); }
+  const { occurrence, failed } = image;
+  const presentation = useSelector((state) => state.transcript.markdownImages.get(occurrence)?.presentation);
+  const origin = useSelector((state) => state.transcript.markdownOrigin);
+  useEffect(() => {
+    dispatch({ type: 'markdownImageMounted', occurrence, source });
+    return () => dispatch({ type: 'markdownImageUnmounted', occurrence });
+  }, [dispatch, occurrence, source]);
+  return presentation?.src && !failed
+    ? <img src={presentation.src} alt={alt} className="h-auto w-auto max-h-96 max-w-full object-contain" onError={() => setImage({ ...image, failed: true })} />
+    : <span>
+      <span role="img" aria-label={alt || 'Image from agent'}>{alt ? `${alt} — ` : ''}{presentation?.status === 'loading' ? 'Loading image' : 'Image not displayed'}{failed
+        ? ': browser could not render it' : presentation?.fallback ? `: ${presentation.fallback}` : ''}</span>
+      {presentation?.status === 'consent' && <span className="block break-all text-sm">
+        <strong>{new URL(source).hostname}</strong> — {source}<br />
+        Loading contacts an external server from the {origin ?? 'extension host (location unknown)'}. The destination may redirect.
+      </span>}
+      {(presentation?.status === 'consent' || presentation?.status === 'retry') && <button type="button" className="text-link" onClick={() => dispatch({ type: 'markdownImageLoad', occurrence })}>
+        {presentation.status === 'consent' ? 'Load image' : 'Retry'}
+      </button>}
+    </span>;
 }
 
 function Link(props: ComponentProps<'a'> & ExtraProps) {

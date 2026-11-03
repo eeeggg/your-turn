@@ -149,6 +149,8 @@ export interface SessionTabsSnapshot {
 type CompactionContent = null | boolean | number | string | CompactionContent[] | { [key: string]: CompactionContent };
 
 export type ExtensionToWebviewMessage =
+  | { type: 'markdownImageContext'; sessionId: string; context: number; origin?: string }
+  | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)
   | ({ type: 'sessionTabs' } & SessionTabsSnapshot)
   | { type: 'questionOpen'; interactionId: string }
   | { type: 'questionSettled'; record: QuestionRecord }
@@ -210,6 +212,10 @@ export type ExtensionToWebviewMessage =
   | { type: 'file-attached'; path: string; name: string };
 
 export type WebviewToExtensionMessage =
+  | { type: 'markdownImageContext'; sessionId: string }
+  | { type: 'resolveMarkdownImage'; context: number; occurrence: number; source: string }
+  | { type: 'loadMarkdownImage'; context: number; occurrence: number }
+  | { type: 'releaseMarkdownImage'; context: number; occurrence: number }
   | { type: 'selectSessionTab'; tabId: string }
   | { type: 'closeSessionTab'; tabId: string }
   | { type: 'questionDraft'; interactionId: string; draft: Readonly<Record<string, QuestionValue>> }
