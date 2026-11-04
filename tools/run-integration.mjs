@@ -1,67 +1,36 @@
-import { availableParallelism } from 'node:os';
-import { readdir, readFile, readlink, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { readdir, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { windowKinds } from './integration-windows.mjs';
+import { vscodeVersion } from './vscode-test.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const testDirectory = join(root, 'dist', 'test');
 const cli = join(root, 'node_modules', '@vscode', 'test-cli', 'out', 'bin.mjs');
 const jobWatchdogMs = 10 * 60 * 1000;
 const shutdownWatchdogMs = 5000;
-const inotifyInstancesPerJob = 32;
 const coverage = process.argv.includes('--coverage');
 
-async function detectInotifyCapacity() {
-  if (process.platform !== 'linux' || process.getuid === undefined) {
-    return { jobs: Number.POSITIVE_INFINITY, limit: undefined, used: undefined };
-  }
-
-  const limit = Number.parseInt(
-    await readFile('/proc/sys/fs/inotify/max_user_instances', 'utf8'),
-    10,
-  );
-  let used = 0;
-  const uid = process.getuid();
-
-  for (const processId of await readdir('/proc')) {
-    if (!/^\d+$/.test(processId)) { continue; }
-    const processDirectory = join('/proc', processId);
-    try {
-      if ((await stat(processDirectory)).uid !== uid) { continue; }
-      for (const descriptor of await readdir(join(processDirectory, 'fd'))) {
-        if (await readlink(join(processDirectory, 'fd', descriptor)) === 'anon_inode:inotify') {
-          used += 1;
-        }
-      }
-    } catch {
-      // Processes and descriptors can disappear while /proc is being inspected.
-    }
-  }
-
-  return {
-    jobs: Math.max(1, Math.floor((limit - used) / inotifyInstancesPerJob)),
-    limit,
-    used,
-  };
+const requestedText = process.env['TEST_JOBS'] || '1';
+const requestedJobs = Number(requestedText);
+if (!/^[1-9]\d*$/.test(requestedText) || !Number.isSafeInteger(requestedJobs)) {
+  throw new Error('Integration jobs must be a positive integer');
 }
 
-const cpuJobs = Math.max(1, Math.floor(availableParallelism() / 2));
-const inotify = await detectInotifyCapacity();
-const detectedJobs = Math.min(cpuJobs, inotify.jobs);
-const requestedJobs = Number.parseInt(process.env['ACP_TEST_JOBS'] ?? '', 10);
-const jobs = Number.isInteger(requestedJobs) && requestedJobs > 0 ? requestedJobs : detectedJobs;
-
-const requestedFiles = process.env['ACP_TEST_FILES']?.split(',').filter(Boolean);
-const testFiles = (await readdir(testDirectory, { recursive: true }))
-  .filter((file) => file.endsWith('.test.js'))
+const requestedFiles = process.env['TEST_FILES']?.split(',').filter(Boolean);
+const compiledFiles = (await readdir(testDirectory, { recursive: true }))
+  .map((file) => file.replaceAll('\\', '/'))
+  .filter((file) => file.endsWith('.test.js'));
+const missing = requestedFiles?.filter((file) => !compiledFiles.includes(file)) ?? [];
+if (missing.length > 0) { throw new Error(`Unmatched compiled integration tests: ${missing.join(', ')}`); }
+const testFiles = compiledFiles
   .filter((file) => !requestedFiles || requestedFiles.includes(file))
   .sort();
 
 if (testFiles.length === 0) {
-  throw new Error(`No compiled integration tests found in ${testDirectory}; run make compile first`);
+  throw new Error(`No compiled integration tests found in ${testDirectory}; run npm run compile first`);
 }
 
 /** @param {string} file */
@@ -72,29 +41,50 @@ if (unplaced.length > 0) {
 }
 
 /** @typedef {{ kind: typeof windowKinds[number], files: string[] }} Group */
-const byKind = windowKinds
-  .map((kind) => ({ kind, files: testFiles.filter((file) => kindOf(file) === kind) }))
+const groups = windowKinds
+  .map((kind) => ({ kind, files: testFiles.filter((file) => kindOf(file) === kind).map((file) => join(testDirectory, file)) }))
   .filter(({ files }) => files.length > 0);
-// Each kind present gets a job; each further job goes to the kind with the most files per job.
-const jobCounts = byKind.map(() => 1);
-for (let total = byKind.length; total < jobs; total += 1) {
-  let busiest = -1;
-  byKind.forEach(({ files }, index) => {
-    const count = jobCounts[index] ?? 1;
-    const busiestLoad = busiest === -1 ? 0 : (byKind[busiest]?.files.length ?? 0) / (jobCounts[busiest] ?? 1);
-    if (count < files.length && files.length / count > busiestLoad) { busiest = index; }
-  });
-  if (busiest === -1) { break; }
-  jobCounts[busiest] = (jobCounts[busiest] ?? 1) + 1;
+
+let jobs = Math.min(requestedJobs, groups.length);
+const displayPolicy = process.env['TEST_DISPLAY'] || 'auto';
+if (!['auto', 'xvfb', 'existing'].includes(displayPolicy)) { throw new Error('Test display must be auto, xvfb or existing'); }
+let isolatedDisplay = false;
+/** @param {number} count */
+async function probeDisplays(count) {
+  const results = await Promise.allSettled(Array.from({ length: count }, () => runSetup('xvfb-run', ['-a', process.execPath, '-e', ''], 10_000)));
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure?.status === 'rejected') { throw failure.reason; }
 }
-/** @type {Group[]} */
-const groups = byKind.flatMap(({ kind, files }, index) => {
-  const kindGroups = Array.from({ length: jobCounts[index] ?? 1 }, () => /** @type {Group} */ ({ kind, files: [] }));
-  files.forEach((file, fileIndex) => { kindGroups[fileIndex % kindGroups.length]?.files.push(join(testDirectory, file)); });
-  return kindGroups;
-});
-const profiles = await mkdtemp(join(tmpdir(), 'acp-integration-'));
-const configDirectory = await mkdtemp(join(root, '.vscode-test', 'parallel-config-'));
+async function selectDisplay() {
+  if (process.platform === 'linux') {
+    if (displayPolicy !== 'existing') {
+      try {
+        await probeDisplays(jobs);
+        isolatedDisplay = true;
+      } catch (error) {
+        if (stopping) { throw error; }
+        if (displayPolicy === 'xvfb' || !process.env['DISPLAY']) {
+          throw new Error('Integration tests need working Xvfb (xvfb-run); auto mode can also use an existing DISPLAY', { cause: error });
+        }
+        console.log(`Xvfb unavailable; falling back to serial on existing DISPLAY=${process.env['DISPLAY']}. Test windows may appear on your desktop or SSH-forwarded display.`);
+        jobs = 1;
+      }
+    } else {
+      if (!process.env['DISPLAY']) { throw new Error('Existing-display mode requires DISPLAY; use auto or install Xvfb'); }
+      if (jobs > 1) { console.log('Existing-display policy: falling back to serial for display isolation'); }
+      jobs = 1;
+    }
+  } else if (displayPolicy === 'xvfb') {
+    throw new Error('Xvfb display mode is supported only on Linux; use auto or existing');
+  }
+  console.log(`Integration execution: requested jobs=${requestedJobs}, effective jobs=${jobs}, display=${isolatedDisplay ? 'xvfb' : process.platform === 'linux' ? 'existing' : 'native'} (policy=${displayPolicy})`);
+}
+
+/** @type {string | undefined} */
+let profiles;
+/** @type {string | undefined} */
+let configDirectory;
+let executablePath = '';
 /** @type {string | undefined} */
 let coverageDirectory;
 let stopping = false;
@@ -120,14 +110,61 @@ function terminate() {
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', terminate);
 
+/** @param {import('node:child_process').ChildProcess} child @param {NodeJS.Signals} signal */
+function signalProcessGroup(child, signal) {
+  if (child.pid === undefined) { return; }
+  if (process.platform === 'win32') { child.kill(signal); return; }
+  try { process.kill(-child.pid, signal); } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH') { throw error; }
+  }
+}
+
+/** @param {string} command @param {string[]} args @param {number} timeout @returns {Promise<string>} */
+function runSetup(command, args, timeout) {
+  return new Promise((resolveSetup, reject) => {
+    if (stopping) { reject(new Error('Integration preparation interrupted')); return; }
+    const child = spawn(command, args, {
+      cwd: root, detached: process.platform !== 'win32',
+      stdio: command === process.execPath ? ['ignore', 'inherit', 'inherit', 'ipc'] : ['ignore', 'inherit', 'inherit'],
+    });
+    let value = '';
+    /** @type {Error | undefined} */
+    let failure;
+    /** @type {ReturnType<typeof setTimeout> | undefined} */
+    let escalation;
+    const stop = () => {
+      if (escalation !== undefined) { return; }
+      signalProcessGroup(child, 'SIGTERM');
+      escalation = setTimeout(() => { signalProcessGroup(child, 'SIGKILL'); }, shutdownWatchdogMs);
+    };
+    activeJobs.add(stop);
+    const watchdog = setTimeout(() => {
+      failure = new Error(`${command} preparation timed out after ${timeout / 1000} seconds`);
+      stop();
+    }, timeout);
+    child.on('message', (message) => { if (typeof message === 'string') { value = message; } });
+    child.on('error', (error) => { failure = error; });
+    child.on('close', (code) => {
+      clearTimeout(watchdog);
+      clearTimeout(escalation);
+      activeJobs.delete(stop);
+      try { signalProcessGroup(child, 'SIGKILL'); } catch (error) { reject(new Error('Could not close preparation process group', { cause: error })); return; }
+      if (failure || stopping || code !== 0) { reject(failure ?? new Error(`${command} preparation ${stopping ? 'interrupted' : `exited with code ${String(code)}`}`)); }
+      else { resolveSetup(value); }
+    });
+  });
+}
+
 /** @typedef {{ code: number, output: string }} RunResult */
 
 /** @param {Group} group @param {number} index */
-async function runGroup({ kind, files }, index) {
+async function prepareGroup({ kind, files }, index) {
+  if (!profiles || !configDirectory) { throw new Error('Integration directories are not prepared'); }
+  const profileDirectory = profiles;
   const profile = join(profiles, `profile-${index}`);
   const config = join(configDirectory, `config-${index}.mjs`);
   // Under the run's temporary directory, so outside any Git worktree, and removed with the profiles.
-  const folders = Array.from({ length: kind.folders }, (_, folder) => join(profiles, `folder-${index}-${folder + 1}`));
+  const folders = Array.from({ length: kind.folders }, (_, folder) => join(profileDirectory, `folder-${index}-${folder + 1}`));
   await Promise.all(folders.map((folder) => mkdir(folder)));
   const workspaceFile = kind.saved ? join(profiles, `workspace-${index}.code-workspace`) : undefined;
   if (workspaceFile !== undefined) { await writeFile(workspaceFile, JSON.stringify({ folders: folders.map((path) => ({ path })) })); }
@@ -135,6 +172,7 @@ async function runGroup({ kind, files }, index) {
   const workspaceFolder = workspaceFile ?? (folders.length === 1 ? folders[0] : undefined);
   const launchArgs = JSON.stringify([
     `--user-data-dir=${profile}`,
+    `--extensions-dir=${join(profiles, `extensions-${index}`)}`,
     '--disable-extensions',
     ...(workspaceFolder === undefined ? folders : []),
   ]);
@@ -142,6 +180,8 @@ async function runGroup({ kind, files }, index) {
 export default {
   ...base,
   tests: [{
+    version: ${JSON.stringify(vscodeVersion)},
+    useInstallation: { fromPath: ${JSON.stringify(executablePath)} },
     files: ${JSON.stringify(files)},
     extensionDevelopmentPath: ${JSON.stringify(root)},${workspaceFolder === undefined ? '' : `
     workspaceFolder: ${JSON.stringify(workspaceFolder)},`}
@@ -150,18 +190,22 @@ export default {
   }],
 };\n`;
 
-  /** @returns {Promise<RunResult>} */
-  const run = () => new Promise((resolveRun) => {
+  await writeFile(config, configText);
+  return config;
+}
+
+/** @param {Group} group @param {number} index @param {string} config @returns {Promise<RunResult>} */
+function executeGroup({ kind, files }, index, config) {
+  return new Promise((resolveRun) => {
     if (stopping) { resolveRun({ code: 1, output: '' }); return; }
     console.log(`[integration ${index + 1}] Starting ${kind.name} window for ${files.map((file) => relative(testDirectory, file)).join(' ')}`);
-    const command = process.platform === 'linux' ? 'xvfb-run' : process.execPath;
-    const display = 1000 + (process.pid % 50000) + index;
+    const command = isolatedDisplay ? 'xvfb-run' : process.execPath;
     const coverageArgs = coverageDirectory === undefined
       ? []
       : ['--coverage', '--coverage-output', join(coverageDirectory, `job-${index + 1}`)];
-    const args = process.platform === 'linux'
-      ? [`--server-num=${display}`, process.execPath, cli, '--config', config, ...coverageArgs]
-      : [cli, '--config', config, ...coverageArgs];
+    const args = isolatedDisplay
+      ? ['-a', process.execPath, cli, '--config', config, '--fail-zero', ...coverageArgs]
+      : [cli, '--config', config, '--fail-zero', ...coverageArgs];
     const child = spawn(command, args, {
       cwd: root,
       env: { ...process.env, VSCODE_TEST_GROUP: String(index + 1) },
@@ -176,16 +220,9 @@ export default {
     let shutdownWatchdog;
     /** @param {NodeJS.Signals} signal */
     const signalJob = (signal) => {
-      if (child.pid === undefined) { return; }
-      if (process.platform === 'win32') {
-        child.kill(signal);
-      } else {
-        try { process.kill(-child.pid, signal); } catch (error) {
-          if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH') {
-            failed = true;
-            console.error(`Could not signal integration job ${index + 1}:`, error);
-          }
-        }
+      try { signalProcessGroup(child, signal); } catch (error) {
+        failed = true;
+        console.error(`Could not signal integration job ${index + 1}:`, error);
       }
     };
     const stop = () => {
@@ -221,6 +258,8 @@ export default {
       stop();
     }, jobWatchdogMs);
     child.on('close', (code) => {
+      // Closed stdio does not prove the remaining process-group members exited.
+      signalJob('SIGKILL');
       clearTimeout(watchdog);
       clearTimeout(shutdownWatchdog);
       activeJobs.delete(stop);
@@ -228,8 +267,12 @@ export default {
       resolveRun({ code: timedOut || failed ? 1 : code ?? 1, output: completeOutput });
     });
   });
-  await writeFile(config, configText);
-  return run();
+}
+
+/** @param {Group} group @param {number} index */
+async function runGroup(group, index) {
+  const config = await prepareGroup(group, index);
+  return executeGroup(group, index, config);
 }
 
 /** Run every group, at most `jobs` at once, settling in group order. */
@@ -257,6 +300,12 @@ async function runGroups() {
 }
 
 try {
+  await selectDisplay();
+  executablePath = await runSetup(process.execPath, ['--input-type=module', '-e',
+    `import { prepareVSCode } from ${JSON.stringify(pathToFileURL(join(root, 'tools/vscode-test.mjs')).href)}; process.send(await prepareVSCode(${JSON.stringify(root)})); process.disconnect();`,
+  ], jobWatchdogMs);
+  configDirectory = await mkdtemp(join(root, '.vscode-test', 'integration-config-'));
+  profiles = await mkdtemp(join(tmpdir(), 'integration-'));
   if (coverage) {
     const reports = join(root, 'test-results', 'integration', 'coverage');
     await mkdir(reports, { recursive: true });
@@ -268,10 +317,7 @@ try {
     })), null, 2));
     console.log(`Per-job coverage reports (not combined): ${coverageDirectory}`);
   }
-  const inotifyDetails = inotify.limit === undefined
-    ? ''
-    : `, ${inotify.used}/${inotify.limit} inotify instances already used, budgeting ${inotifyInstancesPerJob} per job`;
-  console.log(`Running ${testFiles.length} integration files in ${groups.length} VS Code jobs, at most ${jobs} at once (default ${detectedJobs}, ${availableParallelism()} available CPUs${inotifyDetails})`);
+  console.log(`Running ${testFiles.length} integration files in ${groups.length} VS Code jobs, at most ${jobs} at once`);
   const settled = await runGroups();
   const errors = settled.filter((result) => result.status === 'rejected');
   if (errors.length > 0) { throw new AggregateError(errors.map((result) => /** @type {unknown} */ (result.reason)), 'Integration jobs could not run'); }
@@ -290,9 +336,16 @@ try {
   } else {
     console.log(`Integration run passed: ${passed} tests across ${results.length} jobs`);
   }
+} catch (error) {
+  if (interruptedExitCode !== 0) {
+    console.error('Integration run interrupted; owned preparation and jobs have closed');
+    process.exitCode = interruptedExitCode;
+  } else { throw error; }
 } finally {
   process.off('SIGINT', interrupt);
   process.off('SIGTERM', terminate);
-  await rm(configDirectory, { recursive: true, force: true });
-  await rm(profiles, { recursive: true, force: true });
+  await Promise.all([
+    configDirectory ? rm(configDirectory, { recursive: true, force: true }) : undefined,
+    profiles ? rm(profiles, { recursive: true, force: true }) : undefined,
+  ]);
 }

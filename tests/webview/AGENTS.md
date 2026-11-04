@@ -14,11 +14,11 @@
 ## Verification
 
 - Follow the shared tooling policy in `tests/AGENTS.md`.
-- Every test and coverage Make target runs typecheck and lint before preparation
-  or test execution; a failed check stops the target.
-- Run `make test-webview`. For focused repeated runs, use
-  `make test-webview FILES='tests/webview/markdown.test.ts' REPEAT=3`.
-- Make prepares the bundle once per batch. Do not invoke Vitest or load a stale
+- Every test and coverage command runs typecheck, ESLint and Knip before
+  preparation or test execution; a failed check stops the command.
+- Run `npm run test:webview`. For focused repeated runs, use
+  `npm run test:webview -- tests/webview/markdown.test.ts --repeat 3`.
+- The coordinator prepares the bundle once per batch. Do not invoke Vitest or load a stale
   bundle through a separate script.
-- Before handoff, run `make test-webview` or `make test`; both typecheck and lint
+- Before handoff, run `npm run test:webview` or `npm test`; both typecheck and lint
   before running their test suites. Report scope and repeat count.

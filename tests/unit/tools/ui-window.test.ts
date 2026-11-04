@@ -1,10 +1,10 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
+import { afterEach, assert, expect, it, onTestFinished, vi } from 'vitest';
 
 const boundary = vi.hoisted(() => ({ launch: vi.fn(), download: vi.fn() }));
 vi.mock('@vscode/test-electron', () => ({ downloadAndUnzipVSCode: boundary.download }));
@@ -25,7 +25,7 @@ interface WindowFixture {
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); });
 
 async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: boolean; setupFailure?: boolean; statusFailure?: boolean; launchFailure?: boolean; detachedDescendant?: boolean; hang?: 'diagnostics' | 'trace' | 'close' } = {}) {
-  const directory = await mkdtemp(join(tmpdir(), 'acp-ui-cleanup-test-'));
+  const directory = await mkdtemp(join(tmpdir(), 'ui-cleanup-test-'));
   onTestFinished(async () => { await rm(directory, { recursive: true, force: true }); });
   const status = join(directory, 'namespace.jsonl');
   const stop = join(directory, 'stop');
@@ -39,7 +39,7 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
     });
     setInterval(() => {}, 1000);
   `], {
-    env: { ...process.env, ACP_UI_EXECUTABLE: process.execPath, ACP_UI_STATUS: status },
+    env: { ...process.env, UI_EXECUTABLE: process.execPath, UI_STATUS: status },
     detached: true, stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
   });
   let closed = false;
@@ -123,8 +123,8 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
   boundary.download.mockResolvedValue('/unused-vscode');
   boundary.launch.mockImplementation(async (launch: { args: string[]; executablePath: string; env: Record<string, string> }) => {
     expect(launch.executablePath).toBe(resolve('tests/ui/electron.sh'));
-    expect(launch.env['ACP_UI_EXECUTABLE']).toBe('/unused-vscode');
-    const target = launch.env['ACP_UI_STATUS'];
+    expect(launch.env['UI_EXECUTABLE']).toBe('/unused-vscode');
+    const target = launch.env['UI_STATUS'];
     expect(target).toBeDefined();
     if (target) { await writeFile(target, options.statusFailure ? 'invalid status' : await readFile(status)); }
     paths.push(...launch.args.filter((arg) => arg.startsWith('--user-data-dir=') || arg.startsWith('--extensions-dir=')).map((arg) => arg.slice(arg.indexOf('=') + 1)));
@@ -215,12 +215,64 @@ it('preserves launch failure and removes directories before an application handl
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
 
+it('real Playwright launch failure contains a detached descendant before returning', async () => {
+  const { _electron } = await vi.importActual<typeof import('@playwright/test')>('@playwright/test');
+  const directory = await mkdtemp(join(tmpdir(), 'ui-launch-failure-'));
+  const ready = join(directory, 'ready');
+  const release = join(directory, 'release');
+  const status = join(directory, 'status');
+  const executable = join(directory, 'launch');
+  const descendant = `require('node:fs').writeFileSync(${JSON.stringify(ready)}, 'ready'); setInterval(() => {}, 1000);`;
+  const workload = `
+    const fs = require('node:fs');
+    require('node:inspector').open(0);
+    const watcher = fs.watch(${JSON.stringify(directory)}, () => {
+      if (fs.existsSync(${JSON.stringify(release)})) { watcher.close(); process.stderr.write('Unable to open X display\\n'); }
+    });
+    require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], { detached: true, stdio: 'ignore' });
+  `;
+  await writeFile(executable, '#!/bin/sh\nexec /bin/sh "$UI_WRAPPER" -e "$UI_WORKLOAD"\n', { mode: 0o755 });
+  const watcher = watch(directory);
+  const started = new Promise<void>((resolveReady) => {
+    watcher.on('change', () => { if (existsSync(ready)) { resolveReady(); } });
+  });
+  onTestFinished(async () => {
+    watcher.close();
+    const contents = await readFile(status, 'utf8').catch(() => '');
+    if (contents) {
+      const pid = (JSON.parse(contents.split('\n')[0] ?? '') as { 'child-pid': number })['child-pid'];
+      try { process.kill(pid, 'SIGKILL'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') { throw error; } }
+    }
+    await rm(directory, { recursive: true, force: true });
+  });
+  const launch = _electron.launch({
+    executablePath: executable, timeout: 10_000,
+    env: { ...process.env, UI_WRAPPER: resolve('tests/ui/electron.sh'), UI_WORKLOAD: workload, UI_EXECUTABLE: process.execPath, UI_STATUS: status },
+  });
+  const rejected = expect(launch).rejects.toThrow();
+  await Promise.race([started, launch.then(() => { throw new Error('Unexpected successful launch'); })]);
+  const namespace = (JSON.parse((await readFile(status, 'utf8')).split('\n')[0] ?? '') as { 'child-pid': number })['child-pid'];
+  const application = (await readFile(`/proc/${namespace}/task/${namespace}/children`, 'utf8')).trim().split(/\s+/)[0];
+  expect(application).toMatch(/^\d+$/);
+  assert(application !== undefined);
+  const descendantPid = (await readFile(`/proc/${application}/task/${application}/children`, 'utf8')).trim();
+  expect(descendantPid).toMatch(/^\d+$/);
+  await writeFile(release, '');
+  await rejected;
+  const remaining = await readFile(`/proc/${descendantPid}/stat`, 'utf8').catch((error: unknown) => {
+    if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) { throw error; }
+    return undefined;
+  });
+  if (remaining) { expect(remaining.slice(remaining.lastIndexOf(')') + 2).split(' ')[0]).toBe('Z'); }
+});
+
 it('falls back to the contained launch group when namespace status is unreadable', async () => {
   const state = await fixture({ statusFailure: true, closeFailure: true, detachedDescendant: true });
 
   await expect(state.run(async () => {})).rejects.toBe(state.closeError);
 
   expect(state.closed()).toBe(true);
+  expect(await state.descendantRunning()).toBe(false);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
 
@@ -230,6 +282,7 @@ it('terminates descendants that created their own process group', async () => {
   await expect(state.run(async () => {})).rejects.toBe(state.closeError);
 
   expect(state.closed()).toBe(true);
+  expect(await state.descendantRunning()).toBe(false);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
 

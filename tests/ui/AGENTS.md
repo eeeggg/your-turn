@@ -44,27 +44,31 @@
 
 ## Verification
 
-- Make is the supported developer entry point. Do not invoke Playwright, Electron,
+- npm scripts are the supported developer entry point. Do not invoke Playwright, Electron,
   framework CLIs, or runner scripts directly.
-- Every test and coverage Make target runs typecheck and lint before preparation
-  or test execution; a failed check stops the target.
+- Every test and coverage command runs typecheck, ESLint and Knip before
+  preparation or execution; a failed check stops the command.
 - During development, run targeted UI test files with:
-  `make test-ui FILES='tests/ui/reveal-chat.test.ts' REPEAT=3`
-- `FILES` accepts explicit whitespace-separated repo-relative source test paths
+  `npm run test:ui -- tests/ui/reveal-chat.test.ts --repeat 3`
+- Positional arguments accept explicit space-separated repo-relative source paths
   (no globs or unmatched paths).
-- `REPEAT` runs fresh sequential executions (positive integer, default `1`) and
+- `--repeat N` runs fresh sequential executions (positive integer, default `1`) and
   stops immediately on the first failure. Bundles are prepared once per batch.
-- `JOBS` is not supported for `test-ui` (`JOBS` is supported for `test-integration`
-  and `coverage-integration` only).
+- `--jobs`, `--display` and integration `.env.test.local` preferences do not
+  apply to UI execution. Local `.env.test.local` setting `UI_JOBS` sets a positive
+  integer Playwright worker cap using file-level scheduling. Default is one
+  worker; CI ignores the local file. UI owns its displays separately and keeps
+  retries disabled. Do not wrap the command in another Xvfb launcher.
+- UI and integration use the shared pinned editor in `tools/vscode-test.mjs`.
+  See `tests/AGENTS.md` for prerequisites and unverified platform support.
 - Inspect the named passing screenshot when a test establishes visual behavior.
   Failure artifacts (screenshots, traces, DOM state, focus logs) belong under
   `test-results/ui/`.
 - Keep retries disabled while measuring reliability. Ensure full cleanup runs
   when fixture setup, the test body, or diagnostics fail.
-- `make test` is the unfiltered gate running typecheck, lint, bundle, Vitest
-  (unit and bundled webview), and integration suites in that order. It rejects
-  `FILES`, `REPEAT`, `JOBS`, or inherited legacy selection overrides.
-- Always report the exact Make command, scope, repeat count, and results; a
+- `npm test` is the unfiltered checked unit/webview and integration gate.
+  It rejects paths, CLI controls and inherited legacy execution overrides.
+- Always report the exact npm command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
-- Before handoff, run `make test-ui`; the full gate `make test` does not run UI
+- Before handoff, run `npm run test:ui`; the full gate `npm test` does not run UI
   tests. Both commands typecheck and lint before running their test suites.

@@ -5,8 +5,8 @@ if ! command -v bwrap >/dev/null 2>&1; then
   echo 'Linux UI tests require bubblewrap (bwrap) with user namespaces enabled.' >&2
   exit 125
 fi
-: "${ACP_UI_EXECUTABLE:?Missing UI executable}"
-: "${ACP_UI_STATUS:?Missing UI namespace status path}"
+: "${UI_EXECUTABLE:?Missing UI executable}"
+: "${UI_STATUS:?Missing UI namespace status path}"
 
 # Keep the launch group intact for Playwright's launch-failure cleanup.
 exec bwrap --unshare-user --unshare-pid --die-with-parent --as-pid-1 \
@@ -18,4 +18,4 @@ exec bwrap --unshare-user --unshare-pid --die-with-parent --as-pid-1 \
     exec 5<&-
     { cat <&3 >/dev/null; kill -KILL -1; } &
     wait "$command"
-  ' sh "$ACP_UI_EXECUTABLE" "$@" 9>"$ACP_UI_STATUS"
+  ' sh "$UI_EXECUTABLE" "$@" 9>"$UI_STATUS"

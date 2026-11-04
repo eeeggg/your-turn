@@ -6,81 +6,92 @@ directory when one exists.
 
 ## Tooling Policy
 
-Use the supported Make targets for tests, coverage, type checking and linting.
+Use the supported npm scripts for tests, coverage, typechecking and linting.
 
-- Do not directly invoke `npm`, `npx`, framework CLIs (Vitest, Mocha,
-  Playwright) or runner script files for an operation provided by a Make
-  target; those commands belong inside shared tooling. `npm`/`npx` may be used
-  directly for operations without a Make target when appropriate.
+- Use `npm run <script>` rather than framework CLIs (Vitest, Mocha,
+  Playwright), runner scripts or raw compiled tests directly. Keep checked
+  preparation and process ownership inside the shared tooling.
 - If a test or verification workflow operation is missing, extend and verify
   the shared tooling first; ask when facing meaningful trade-offs.
-- Every test and coverage Make target runs repository typechecking, then linting,
-  before bundling, test preparation, or test execution. A failed check stops
-  the target. Standalone `make typecheck` and `make lint` remain available.
+- Every test and coverage command runs repository typechecking, ESLint and
+  Knip before bundling or test execution. A failed check stops the command.
+  `npm run typecheck` checks types only; `npm run lint` runs ESLint and Knip.
+  `npm run check` runs both, without building or testing. `npm run compile`
+  typechecks and builds development bundles, without linting or testing.
 - Do not create or rely on separate temporary-script verification workflows.
 - Repeated runs stop on the first failure; never retry until green.
-- Always report the exact Make command, scope, repeat count, and results; a
+- Always report the exact npm command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
 
-## Make Interface
+## npm Interface
 
 ### Prerequisites
 
-- The test environment requires Linux, Node 24, `bubblewrap` (`bwrap`) with
-  permission to create user/PID namespaces, and Xvfb. Linux and bubblewrap are
-  unconditional requirements, including for the process regressions in the
-  default unit suite; cross-platform test portability is not a gate.
+- Use Node 24 (`.nvmrc`) and installed project dependencies.
+- Linux integration needs working Xvfb (`xvfb-run`) or an accepted existing
+  display. Integration does not use bubblewrap. Linux desktop UI and its
+  containment regressions require `bubblewrap` (`bwrap`), permission to create
+  user/PID namespaces, and Xvfb.
+- Do not describe the entire test system as Linux-only or claim verified
+  macOS/Windows support. Portability gaps remain in process, filesystem-image
+  and temporary-directory fixtures. Preserve Linux-specific coverage and test
+  unsupported-platform behavior explicitly. Do not hide portability failures
+  with broad skips or weaker assertions.
 - Keep prerequisite declarations within this repository; do not modify shared
   host-level provisioning outside it. Missing containment prerequisites must
   fail, never silently disable cleanup.
 
 ### Commands
 
-- `make typecheck` — Type-check the repository.
-- `make lint` — Run ESLint and Knip over the repository.
-- `make test` — Unfiltered gate running typecheck, lint, bundle, Vitest (unit
-  and bundled webview), and integration suites in that order. Rejects `FILES`,
-  `REPEAT`, `JOBS`, or inherited legacy selection overrides.
-- `make test-vitest` — Typecheck and lint, bundle, then run all Vitest suites
-  (unit and bundled webview).
-- `make test-unit` — Typecheck and lint, then run the in-process Vitest unit
-  suite.
-  Example: `make test-unit FILES='tests/unit/core/AgentManager.test.ts'`
-- `make test-webview` — Typecheck and lint, bundle, then run the bundled-webview
-  Vitest suite. Prepares the webview bundle once per batch where needed.
-  Example: `make test-webview FILES='tests/webview/markdown.test.ts'`
-- `make test-integration` — Typecheck and lint, bundle, then run the isolated
-  VS Code integration suite under Xvfb. Prepares bundles once per batch where needed.
-  Example: `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
-- `make test-ui` — Typecheck and lint, bundle, then drive pinned desktop VS Code
-  with Playwright under Xvfb. Prepares bundles once per batch where needed.
-  Example: `make test-ui FILES='tests/ui/reveal-chat.test.ts' REPEAT=3`
-- `make coverage` — Typecheck and lint, then unit test coverage entry point, controlling the same
-  unit layer and scope controls as `test-unit`.
-- `make coverage-integration` — Typecheck and lint, bundle, then integration test coverage entry point,
-  controlling the same integration layer and scope controls (`FILES`, `REPEAT`,
-  `JOBS`) as `test-integration`.
-
-All test and coverage targets perform typecheck and lint before any test-layer
-preparation or execution, including focused and repeated runs.
+- `npm test` — Unfiltered checked gate: build once, then unit/webview and
+  integration suites. UI runs separately. Rejects paths and CLI controls.
+- `npm run test:in-process` — Checked unit and bundled-webview suites.
+- `npm run test:unit` — Checked unit suite; no bundle build.
+  Example: `npm run test:unit -- tests/unit/core/AgentManager.test.ts`
+- `npm run test:webview` — Checked bundled-webview suite.
+  Example: `npm run test:webview -- tests/webview/markdown.test.ts`
+- `npm run test:integration` — Checked isolated VS Code integration suite.
+  Example: `npm run test:integration -- tests/integration/terminal-displays.test.ts --repeat 3 --jobs 4 --display xvfb`
+- `npm run test:ui` — Checked pinned desktop VS Code suite using Playwright.
+  Example: `npm run test:ui -- tests/ui/reveal-chat.test.ts --repeat 3`
+- `npm run coverage` — Checked unit coverage; same paths/repeat controls as
+  `test:unit`. HTML reports: `test-results/unit/coverage/`.
+- `npm run coverage:integration` — Checked integration coverage; same controls
+  as `test:integration`. Per-job reports, not combined:
+  `test-results/integration/coverage/run-*/job-*/`.
 
 ### Scope and Execution Controls
 
-- `FILES` — Whitespace-separated explicit repo-relative test file paths. Every
-  path is validated against the chosen test layer; an unmatched or cross-layer
-  selection produces an error. Integration paths may name a window kind's
-  directory, such as `tests/integration/empty/unavailable.test.ts`.
-- `REPEAT` — Positive integer repeat count, default `1`. Repeated runs stop on
-  the first failure.
-- `JOBS` — Positive integer cap on VS Code windows running at once, supported
-  for `test-integration` and `coverage-integration` only; other targets
-  preserve their default.
-- Bundle preparation — Executed once per batch where needed by the Make targets
-  (`test-vitest`, `test-webview`, `test-integration`, `test-ui`, `coverage-integration`).
-- Legacy environment variables — `ACP_TEST_FILES` and `ACP_TEST_JOBS` are
-  internal integration diagnostic controls superseded by Make `FILES` and
-  `JOBS`. Never execute raw compiled bundle runs or invoke runner scripts
-  directly.
+- Pass options and explicit repo-relative source paths after npm's `--`.
+  Separate paths with spaces; do not pass globs or one quoted list. Unmatched
+  and cross-layer paths fail validation. `test:in-process` accepts both unit
+  and webview paths. Integration accepts files in represented workspace
+  directories, such as `tests/integration/empty/unavailable.test.ts`.
+- `--repeat N` — Positive integer, default `1`; stop on the first failure.
+  Checks and required bundles run once before repetitions.
+- `--jobs N` — Integration/coverage:integration only. Positive concurrency cap,
+  bounded by represented workspace groups (at most four). Default is one;
+  there are no CPU/inotify scans or automatic worker scaling.
+- `--display auto|xvfb|existing` — Integration/coverage:integration only.
+  Linux `auto` prefers owned Xvfb, even serially; if unavailable, announce a
+  serial existing-DISPLAY fallback before tests. Forwarded displays can show
+  windows on the user's desktop. `xvfb` fails rather than falling back.
+  `existing` requires DISPLAY and serializes deliberately. Other platforms
+  use native displays; `xvfb` is Linux-only. Missing prerequisites fail with
+  actionable errors. Never rerun failed parallel tests serially to hide failures.
+- Optional `.env.test.local` accepts only `TEST_JOBS`, `TEST_DISPLAY` and
+  `UI_JOBS`. Integration CLI values override local preferences, then defaults.
+  CI ignores the file. `TEST_JOBS` and `TEST_DISPLAY` affect integration inside
+  `npm test` too, without filtering the gate or changing checks/retries/coverage.
+  `UI_JOBS` affects only `test:ui`: a positive integer Playwright worker cap,
+  using file-level scheduling. UI defaults to one worker, with retries disabled.
+  The file stays out of Git and the VSIX; do not change user preferences
+  without permission.
+- Do not export legacy `FILES`, `REPEAT`, `JOBS` or internal `TEST_FILES`,
+  `TEST_JOBS`, `TEST_DISPLAY`. Public commands reject inherited nonempty controls
+  rather than silently narrowing execution. The same `TEST_JOBS` and
+  `TEST_DISPLAY` names are permitted as data in `.env.test.local`, not as exported
+  environment controls.
 
 ## Verification and the Release Gate
 
@@ -94,10 +105,10 @@ preparation or execution, including focused and repeated runs.
   not exist yet needs no breaks; say which breaks were skipped and why when
   reporting. If only the build catches a break, use a compiling variant; an
   undetected break needs a test or exposes dead code.
-- Run `make test` for the unfiltered typecheck, lint, bundle, unit/webview and
-  integration gate. Run `make test-ui` separately for
+- Run `npm test` for the unfiltered typecheck, lint, bundle, unit/webview and
+  integration gate. Run `npm run test:ui` separately for
   rendered workbench behavior; it also performs typecheck and lint first. These
-  isolated runs must not touch the user's Stable or Insiders windows.
+  isolated runs must not attach to or modify the user's VS Code instances.
 - Await observable completion. Do not add sleeps, polling delays or arbitrary
   synchronization yields. Timeouts protect wall-clock execution, not readiness.
   Preserve failures and cleanup ownership; do not skip, delete, suppress or
@@ -110,8 +121,9 @@ preparation or execution, including focused and repeated runs.
   A test layer's existence does not prove a scenario is covered. Do not ask the
   user to repeat established automated scenarios; automate repeated manual
   checks where feasible.
-- The user installs candidates in Insiders and explicitly accepts the focused
-  manual release gate. A green automated gate alone does not authorize release.
+- Report remaining manual checks for an explicitly authorized package or
+  release. Do not require the retired Insiders/dev-prerelease ceremony.
+  A green automated gate does not authorize installation, release or publishing.
 
 ## ACP Test Exchanges
 
@@ -129,14 +141,14 @@ preparation or execution, including focused and repeated runs.
 ### Vitest
 
 Vitest provides the fast in-process test system. Run all Vitest projects with
-`make test-vitest`.
+`npm run test:in-process`.
 
 - `tests/unit/` exercises source modules and React views directly. Prefer this
   project whenever behavior does not require a shipped bundle or real VS Code
   host. Read `tests/unit/AGENTS.md` before changing it.
-- `tests/webview/` loads the compiled production webview bundle into a fresh
+- `tests/webview/` loads the compiled webview bundle into a fresh
   jsdom page. Use it for behavior at the bundled webview boundary. Read
-  `tests/webview/AGENTS.md` before changing it. Run with `make test-webview`.
+  `tests/webview/AGENTS.md` before changing it. Run with `npm run test:webview`.
 
 ### VS Code integration
 
@@ -144,14 +156,14 @@ Vitest provides the fast in-process test system. Run all Vitest projects with
 extension host without driving the rendered workbench. Its files run in a
 window on a temporary folder, or in the workspace shape their directory under
 `tests/integration/` names: `empty/`, `untitled-workspace/` or
-`saved-workspace/`. Run it with `make test-integration`. Read
+`saved-workspace/`. Run it with `npm run test:integration`. Read
 `tests/integration/AGENTS.md` before changing its tests, fixtures or runner.
 
 ### Desktop UI
 
 `tests/ui/` drives a real pinned desktop VS Code window with Playwright. Use
 it only for rendered workbench behavior, focus, layout and interaction that
-lower layers cannot observe. Run it with `make test-ui`. Read
+lower layers cannot observe. Run it with `npm run test:ui`. Read
 `tests/ui/AGENTS.md` before changing its tests, fixtures or runner.
 
 ## Adding a test framework

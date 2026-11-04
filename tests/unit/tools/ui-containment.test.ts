@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { expect, it, onTestFinished } from 'vitest';
 
-it.each(['application exit', 'forced shutdown', 'owner socket closes', 'owner socket closes during startup', 'owner socket unavailable', 'bubblewrap unavailable'] as const)('contains a detached descendant after %s', async (ending) => {
-  const directory = await mkdtemp(join(tmpdir(), 'acp-ui-containment-'));
+// electron.sh shells out to bwrap and reads /proc directly; neither exists outside Linux.
+it.skipIf(process.platform !== 'linux').each(['application exit', 'forced shutdown', 'owner socket closes', 'owner socket closes during startup', 'owner socket unavailable', 'bubblewrap unavailable'] as const)('contains a detached descendant after %s', async (ending) => {
+  const directory = await mkdtemp(join(tmpdir(), 'ui-containment-'));
   const status = join(directory, 'status');
   const stop = join(directory, 'stop');
   const descendant = `process.send('ready'); setInterval(() => {}, 1000);`;
@@ -20,7 +21,7 @@ it.each(['application exit', 'forced shutdown', 'owner socket closes', 'owner so
     child.once('message', () => console.log('ready'));
   `;
   const child = spawn('/bin/sh', [resolve('tests/ui/electron.sh'), '-e', workload], {
-    env: { ...process.env, ...(ending === 'bubblewrap unavailable' ? { PATH: directory } : {}), ACP_UI_EXECUTABLE: process.execPath, ACP_UI_STATUS: status },
+    env: { ...process.env, ...(ending === 'bubblewrap unavailable' ? { PATH: directory } : {}), UI_EXECUTABLE: process.execPath, UI_STATUS: status },
     detached: true,
     stdio: ['ignore', 'pipe', 'pipe', ending === 'owner socket unavailable' ? 'ignore' : 'pipe', 'pipe'],
   });

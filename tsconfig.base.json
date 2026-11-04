@@ -17,7 +17,8 @@
     "allowUnreachableCode": false,
 
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@tools/*": ["./tools/*"]
     }
   }
 }

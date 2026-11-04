@@ -131,23 +131,70 @@ npm install
 npm run compile          # Development build: tsc type-checks, esbuild bundles the extension, webview, and integration suite
 ```
 
-Press `F5` in VS Code to compile and launch the Extension Development Host. Development bundles carry source maps; `npm run package` minifies and leaves out the integration suite.
+Press `F5` in VS Code to compile and launch the Extension Development Host. Development bundles carry source maps; `npm run build:production` minifies and leaves out the integration suite.
 
 ### Testing
 
+All test and coverage commands first typecheck the repository, run ESLint,
+and run Knip. A failed check stops execution. Required development bundles
+are prepared once per batch; repeated runs stop on the first failure.
+
+| Everyday command | Scope |
+| --- | --- |
+| `npm run check` | Typecheck, ESLint, and Knip; no build or tests |
+| `npm test` | Unfiltered unit, webview, and VS Code integration gate; UI separate |
+| `npm run test:unit` | Unit tests; no bundle build |
+| `npm run test:webview` | Bundled-webview tests |
+| `npm run test:in-process` | Unit and webview tests; no VS Code launch |
+| `npm run test:integration` | Tests inside isolated VS Code instances |
+| `npm run test:ui` | Separate desktop UI suite using Playwright |
+| `npm run coverage` | Unit coverage; HTML in `test-results/unit/coverage/` |
+| `npm run coverage:integration` | Per-job integration coverage in `test-results/integration/coverage/` |
+| `npm run package:vsix` | Production build, then create the distributable VSIX |
+
+Focused layer commands accept explicit source paths and `--repeat N`:
+
 ```bash
-npm run pretest    # Type-check every project, build, lint
-npm test           # Vitest suites (tests/unit, tests/webview), then VS Code integration suites (tests/integration)
-xvfb-run -a npm test   # Same, on Linux without a display (what `make test` runs)
-npx vitest run     # Vitest suites only; webview tests need a current `npm run compile`
-npm run coverage   # Unit suite under coverage; HTML report in test-results/unit/coverage/
+npm run test:unit -- tests/unit/core/AgentManager.test.ts --repeat 3
+npm run test:integration -- --jobs 4 --display xvfb
 ```
+
+Integration defaults to one worker. On Linux, `auto` display policy prefers
+Xvfb, with an announced serial fallback to an inherited display if Xvfb is
+unavailable. `xvfb` requires Xvfb; `existing` deliberately uses the inherited
+display serially. The UI suite has separate Linux containment and Xvfb
+prerequisites. Cross-platform test execution is not yet verified.
+
+Optional, Git-ignored `.env.test.local` preferences control integration
+(including integration inside `npm test`) and the separate UI suite:
+
+```dotenv
+TEST_JOBS=4
+TEST_DISPLAY=xvfb
+UI_JOBS=2
+```
+
+`TEST_JOBS` and `TEST_DISPLAY` affect integration only. `UI_JOBS` sets the UI
+worker cap through Playwright's file-level scheduler; it must be a positive
+integer. UI defaults to one worker and keeps retries disabled. Integration CLI
+arguments override local preferences. CI ignores the local file.
+
+### Lower-level checks and builds
+
+| Command | Behavior |
+| --- | --- |
+| `npm run typecheck` | TypeScript typechecking only |
+| `npm run lint` | ESLint and Knip only |
+| `npm run compile` | Typecheck, then build development bundles; no lint or tests |
+| `npm run build:production` | Typecheck, then build production bundles; no lint or tests |
+
+`vscode:prepublish` is the packaging hook used by VSCE, not a separate
+developer entry point. It invokes `build:production`.
 
 ### Packaging
 
 ```bash
-npm run package    # Production build
-npx @vscode/vsce package   # Create .vsix
+npm run package:vsix     # Build production bundles and create .vsix
 ```
 
 ## Architecture

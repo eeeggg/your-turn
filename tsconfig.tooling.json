@@ -15,6 +15,7 @@
     "vitest.config.mts",
     "tools/integration-windows.mjs",
     "tools/run-integration.mjs",
-    "tools/run-tests.mjs"
+    "tools/run-tests.mjs",
+    "tools/vscode-test.mjs"
   ]
 }

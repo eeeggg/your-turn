@@ -4,8 +4,8 @@
 
 - Every integration test file is an independently schedulable lifecycle. It
   must pass alone, in any file order and concurrently with every other file.
-- Use concise hyphenated file names. Split slow files at real lifecycle or
-  protocol boundaries so the runner can schedule the pieces independently.
+- Use concise hyphenated file names. Split files at real lifecycle or
+  protocol boundaries, not to invent extra parallel shards.
   Never partition tests with Mocha grep expressions or runner-known suite
   names.
 - Keep the runner generic. It may discover, group and execute files and open
@@ -63,44 +63,59 @@
 - A wait that hangs usually means setup failed or the awaited event can no
   longer occur. Diagnose that cause instead of weakening the assertion.
 
-## Parallel-runner resources
+## Runner resources and concurrency
 
 - Every job gets an isolated VS Code user-data directory and, on Linux, an
-  isolated X display. Do not share either resource between jobs.
-- Default job count is bounded by both half the available CPUs and remaining
-  Linux inotify instances, budgeted at 32 instances per VS Code job.
+  owned X display in Xvfb mode. Existing-display mode is serial.
+- Keep one fixed group per represented workspace shape, independent of worker
+  count. Each group owns fresh profiles, extensions and workspaces.
+- Default concurrency is one. `--jobs N` declares a positive concurrency cap,
+  bounded only by represented groups (at most four). Do not add CPU/inotify
+  scans, allocation probes or automatic worker scaling.
+- Integration and UI share the pinned editor in `tools/vscode-test.mjs`.
+  Prepare/download the editor once before integration workers start.
+- Serial and parallel modes retain the same isolation, watchdogs, interruption
+  handling, cleanup, reporting and failed-run coverage. Do not rerun failed
+  parallel tests serially to conceal failures.
 - Dispose filesystem watchers. New global resources require explicit ownership
   and teardown, and must leave enough headroom for hundreds of future tests.
-- Legacy `ACP_TEST_*` environment variables (`ACP_TEST_FILES`, `ACP_TEST_JOBS`)
-  are internal diagnostic controls superseded by Make controls (`FILES`, `JOBS`).
-  Never execute raw compiled bundle runs or invoke runner scripts directly.
+- Do not set legacy or internal execution environment controls. Use public npm
+  arguments and the narrow local preferences described in `tests/AGENTS.md`.
+  Never execute raw compiled bundles or invoke runner scripts directly.
 
 ## Verification
 
-- Make is the supported developer entry point. Do not invoke runner script files,
-  framework CLIs (Mocha), or `npm` directly.
-- Every test and coverage Make target runs typecheck and lint before preparation
-  or test execution; a failed check stops the target.
+- Follow the npm tooling policy in `tests/AGENTS.md`. Do not invoke runner
+  scripts or framework CLIs directly.
+- Every test and coverage command runs typecheck, ESLint and Knip before
+  preparation or execution; a failed check stops the command.
 - During development, run targeted integration test files with:
-  `make test-integration FILES='tests/integration/terminal-displays.test.ts' REPEAT=3 JOBS=4`
-- `FILES` accepts explicit whitespace-separated repo-relative source test paths
+  `npm run test:integration -- tests/integration/terminal-displays.test.ts --repeat 3 --jobs 4 --display xvfb`
+- Positional arguments accept explicit space-separated repo-relative source paths
   (no globs or unmatched paths), including those in a window kind's directory,
   such as `tests/integration/empty/unavailable.test.ts`.
-- `REPEAT` runs fresh sequential executions (positive integer, default `1`) and
+- `--repeat N` runs fresh sequential executions (positive integer, default `1`) and
   stops immediately on the first failure. Bundles and extension are prepared
   once per batch.
-- `JOBS` sets a positive integer parallel worker count: at most that many
-  VS Code windows run at once (supported for `test-integration` and
-  `coverage-integration` only).
+- `--jobs N` sets the concurrency cap on integration commands only. A focused
+  run representing one workspace shape still runs one group.
+- `--display auto|xvfb|existing` overrides local preferences. Linux `auto`
+  prefers owned Xvfb even serially; unavailable Xvfb permits an announced serial
+  fallback only with DISPLAY. `xvfb` fails instead of falling back. `existing`
+  requires DISPLAY and serializes deliberately. SSH-forwarded displays can show
+  test windows on the user's desktop. UI display ownership is separate.
+- Optional `.env.test.local` accepts only `TEST_JOBS` and
+  `TEST_DISPLAY`. CLI arguments win, then local settings, then defaults
+  (one worker, `auto`). CI ignores the file. Preferences also affect integration
+  inside `npm test`, without filtering it. Never change user preferences without
+  permission. See `tests/AGENTS.md` for platform limits and prerequisites.
 - Run integration coverage with:
-  `make coverage-integration`
-  (accepts `FILES`, `REPEAT`, and `JOBS`).
-- Legacy `ACP_TEST_*` environment variables are internal diagnostic controls;
-  use Make entry points and controls instead.
-- `make test` is the unfiltered gate running typecheck, lint, bundle, Vitest
-  (unit and bundled webview), and integration suites in that order. It rejects
-  `FILES`, `REPEAT`, `JOBS`, or inherited legacy selection overrides.
-- Always report the exact Make command, scope, repeat count, and results; a
+  `npm run coverage:integration`
+  (accepts paths, `--repeat`, `--jobs` and `--display` after npm's `--`). Reports
+  are per job, not combined, under `test-results/integration/coverage/`.
+- `npm test` is the unfiltered checked unit/webview and integration gate.
+  It rejects paths, CLI controls and inherited legacy execution overrides.
+- Always report the exact npm command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
-- Before handoff, run `make test-integration` (or full gate `make test`); both
+- Before handoff, run `npm run test:integration` (or full gate `npm test`); both
   typecheck and lint before running their test suites.

@@ -49,17 +49,21 @@
 
 ## Verification
 
-- Make is the supported developer entry point. Do not invoke `vitest`, `npm`,
-  or test runner scripts directly.
+- Follow the npm tooling policy in `tests/AGENTS.md`. Do not invoke Vitest or
+  test runner scripts directly.
 - During development, run targeted test files with:
-  `make test-unit FILES='tests/unit/core/AgentManager.test.ts'`
+  `npm run test:unit -- tests/unit/core/AgentManager.test.ts`
   Separate multiple paths with whitespace.
-- To verify stability, pass `REPEAT=<n>` (e.g. `REPEAT=3`). Repeated runs stop
+- To verify stability, append `--repeat N` (e.g. `--repeat 3`). Repeated runs stop
   immediately on the first failure; never retry until green.
-- Run unit test coverage with `make coverage` (accepts `FILES` and `REPEAT`).
-- All test and coverage targets, including focused unit runs, typecheck and lint
-  before compiling or running tests; a failed check stops the target.
-- Always report the exact Make command, scope, repeat count, and results; a
+- Run unit coverage with `npm run coverage`; pass source paths and `--repeat N`
+  after npm's `--`. Unit execution and coverage do not build bundles.
+- All test and coverage commands, including focused unit runs, typecheck and
+  run ESLint and Knip first; a failed check stops the command.
+- Keep Linux containment prerequisites mandatory on Linux. Test unsupported
+  platforms explicitly where behavior differs; do not hide portability gaps
+  with broad skips. See the platform limits in `tests/AGENTS.md`.
+- Always report the exact npm command, scope, repeat count, and results; a
   focused test pass is not a substitute for the full gate.
-- Before handoff, run `make test-unit` (or the full gate `make test`); both
+- Before handoff, run `npm run test:unit` (or the full gate `npm test`); both
   include typecheck and lint before the test run.

@@ -33,6 +33,16 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "files": [
+    "dist/extension.js",
+    "dist/webview/chat.js",
+    "dist/webview/chat.css",
+    "resources/icon.png",
+    "resources/icon.svg",
+    "resources/screenshot.png",
+    "README.md",
+    "LICENSE"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -629,22 +639,21 @@
     }
   },
   "scripts": {
-    "vscode:prepublish": "npm run package",
-    "compile": "npm run check-types && npm run bundle",
-    "bundle": "node esbuild.mjs",
-    "check-types": "tsc -b",
-    "package": "npm run check-types && node esbuild.mjs --production",
+    "vscode:prepublish": "npm run build:production",
+    "compile": "node tools/run-tests.mjs compile",
+    "check": "node tools/run-tests.mjs check",
+    "typecheck": "tsc -b",
+    "build:production": "npm run typecheck && node esbuild.mjs --production",
     "lint": "eslint . --max-warnings 0 && knip",
-    "pretest": "npm run compile && npm run lint",
-    "test": "vitest run && npm run test:integration",
-    "test:unit": "vitest run --project unit",
-    "test:vitest": "vitest run",
-    "test:webview": "vitest run --project webview",
-    "test:integration": "node tools/run-integration.mjs",
-    "test:ui": "playwright test --config playwright.config.mts",
-    "coverage": "npm run check-types && npm run lint && vitest run --project unit --coverage",
-    "coverage:unit": "vitest run --project unit --coverage",
-    "coverage:integration": "npm run compile && npm run lint && node tools/run-integration.mjs --coverage"
+    "test": "node tools/run-tests.mjs test",
+    "test:unit": "node tools/run-tests.mjs test:unit",
+    "test:in-process": "node tools/run-tests.mjs test:in-process",
+    "test:webview": "node tools/run-tests.mjs test:webview",
+    "test:integration": "node tools/run-tests.mjs test:integration",
+    "test:ui": "node tools/run-tests.mjs test:ui",
+    "coverage": "node tools/run-tests.mjs coverage",
+    "coverage:integration": "node tools/run-tests.mjs coverage:integration",
+    "package:vsix": "vsce package"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.1.0",
@@ -695,10 +704,9 @@
   "knip": {
     "entry": [
       ".vscode-test.mjs",
-      "tools/run-tests.mjs"
+      "tools/run-integration.mjs"
     ],
     "ignoreBinaries": [
-      "make",
       "mkfifo",
       "Xvfb"
     ]

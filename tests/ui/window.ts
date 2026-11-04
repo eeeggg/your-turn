@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { downloadAndUnzipVSCode } from '@vscode/test-electron';
+import { prepareVSCode } from '@tools/vscode-test.mjs';
 import {
   _electron,
   test as base,
@@ -15,7 +15,6 @@ import {
 import { acpContainerControl } from './workbench';
 
 const root = resolve(__dirname, '../..');
-const vscodeVersion = '1.143.1';
 const windowSize = { width: 1400, height: 900 };
 const teardownWatchdogMs = 5000;
 
@@ -206,7 +205,7 @@ export const test = base.extend<UiFixtures>({
     }
   },
   workspace: async ({ workspaceFiles, gitRepository }, use) => {
-    const workspace = await mkdtemp(join(tmpdir(), 'acp-ui-workspace-'));
+    const workspace = await mkdtemp(join(tmpdir(), 'ui-workspace-'));
     try {
       await Promise.all(Object.entries(workspaceFiles).map(([name, text]) => writeFile(join(workspace, name), text)));
       if (gitRepository) {
@@ -236,8 +235,8 @@ export const test = base.extend<UiFixtures>({
     };
 
     try {
-      profile = await mkdtemp(join(tmpdir(), 'acp-ui-profile-'));
-      extensions = await mkdtemp(join(tmpdir(), 'acp-ui-extensions-'));
+      profile = await mkdtemp(join(tmpdir(), 'ui-profile-'));
+      extensions = await mkdtemp(join(tmpdir(), 'ui-extensions-'));
       await mkdir(join(profile, 'User'), { recursive: true });
       await writeFile(join(profile, 'User', 'settings.json'), JSON.stringify({
         'extensions.autoCheckUpdates': false,
@@ -265,21 +264,18 @@ export const test = base.extend<UiFixtures>({
         },
       }, undefined, 2));
 
-      const executablePath = await downloadAndUnzipVSCode({
-        version: vscodeVersion,
-        cachePath: join(root, '.vscode-test'),
-      });
+      const executablePath = await prepareVSCode(root);
       const contained = process.platform === 'linux';
       application = await _electron.launch({
         executablePath: contained ? join(root, 'tests/ui/electron.sh') : executablePath,
         env: {
           ...process.env,
           ...(display ? { DISPLAY: display } : {}),
-          ...(contained ? { ACP_UI_EXECUTABLE: executablePath, ACP_UI_STATUS: join(profile, 'namespace.jsonl') } : {}),
+          ...(contained ? { UI_EXECUTABLE: executablePath, UI_STATUS: join(profile, 'namespace.jsonl') } : {}),
         },
         cwd: root,
         args: [
-          '--disable-updates',
+        '--disable-updates',
           '--disable-workspace-trust',
           '--new-window',
           '--skip-release-notes',
