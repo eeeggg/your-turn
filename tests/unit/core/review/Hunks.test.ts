@@ -1,7 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { lineChanges, splitLines } from '@/core/diff/LineChanges';
 import { setLogSink } from '@/core/Log';
-import { keptChange, savedOver, takenOver, undoneChange, type Change, type TextEdit, type UserEdit } from '@/core/review/Hunks';
+import {
+  keptChange,
+  savedOver,
+  takenOver,
+  undoneChange,
+  type Change,
+  type TextEdit,
+  type UserEdit
+} from '@/core/review/Hunks';
 import { editedTexts } from '@tests/unit/core/diff/editedTexts';
 
 let warnings: string[] = [];

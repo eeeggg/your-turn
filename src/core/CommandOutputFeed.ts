@@ -1,7 +1,7 @@
 import type { TerminalExitStatus, ToolCallContent, ToolKind } from '@/core/acp/AcpDriver';
-import type { AgentTerminals } from './AgentTerminals';
-import { cleaned, type ShownOutput } from './CommandOutput';
-import { logError } from './Log';
+import type { AgentTerminals } from '@/core/AgentTerminals';
+import { cleaned, type ShownOutput } from '@/core/CommandOutput';
+import { logError } from '@/core/Log';
 
 /** A terminal's changes within this many milliseconds reach the chat view as one message. */
 const TERMINAL_POST_INTERVAL_MS = 250;

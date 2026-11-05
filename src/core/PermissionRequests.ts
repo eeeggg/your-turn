@@ -1,8 +1,8 @@
 import type { PermissionOption, PermissionOutcome, PermissionRequest } from '@/core/acp/AcpDriver';
-import type { Permissions } from './ClientHandlers';
-import { logDebug, logError } from './Log';
+import type { Permissions } from '@/core/ClientHandlers';
+import { logDebug, logError } from '@/core/Log';
 
-/** The `acp.autoApprovePermissions` setting. */
+/** The `your-turn.autoApprovePermissions` setting. */
 export type AutoApprove = 'ask' | 'allowAll';
 
 /** What the user is asked: the request's title, and what it is about and why, when the agent says. */

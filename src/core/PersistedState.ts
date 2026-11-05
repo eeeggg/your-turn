@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { logError } from './Log';
+import { logError } from '@/core/Log';
 
 /** Persistent key-value storage; VS Code's `workspaceState` and `globalState` satisfy it. */
 export interface KeyValueStore {
@@ -10,7 +10,7 @@ export interface KeyValueStore {
 
 /** Where a session lives and how the extension reaches it. */
 export interface SessionAddress {
-  /** The `acp.agents` name the session was last used through. */
+  /** The `your-turn.agents` name the session was last used through. */
   readonly configuredName: string;
   readonly sessionId: string;
   /** The session's absolute agent cwd, immutable for the session. */
@@ -61,13 +61,14 @@ export interface ObservedListing {
 
 const REFERENCES_VERSION = 3;
 const WORKSPACE_VERSION = 2;
-const REFERENCES_KEY = 'acp.sessionReferences';
-const WORKSPACE_KEY = 'acp.workspace';
-const STARTUP_REQUESTS_KEY = 'acp.startupRequests';
+const REFERENCES_KEY = 'your-turn.sessionReferences';
+const WORKSPACE_KEY = 'your-turn.workspace';
+const STARTUP_REQUESTS_KEY = 'your-turn.startupRequests';
 const STARTUP_REQUESTS_VERSION = 1;
+/** Add only keys explicitly retired by future Your Turn state changes. */
+const RETIRED_WORKSPACE_KEYS: readonly string[] = [];
 /** Allowing for a slow Remote-SSH connection or server installation in the window the request is for. */
 const REQUESTS_EXPIRE_AFTER = 10 * 60 * 1000;
-const RETIRED_WORKSPACE_KEYS = ['acp.sessionHistory.v1'];
 const CAPACITY = 500;
 const DAY = 24 * 60 * 60 * 1000;
 /** How long an instance keeps its own changes, as a read can never confirm them stored. */
@@ -404,7 +405,10 @@ function withoutRevision({ revision: _revision, ...reference }: StoredReference)
 export class WorkspaceState {
   private readonly writes = new Writes();
 
-  constructor(private readonly workspaceState: KeyValueStore) {}
+  constructor(
+    private readonly workspaceState: KeyValueStore,
+    private readonly retiredKeys: readonly string[] = RETIRED_WORKSPACE_KEYS,
+  ) {}
 
   /** The session last active in this workspace. */
   lastActiveSession(): SessionAddress | undefined {
@@ -430,12 +434,12 @@ export class WorkspaceState {
     return last?.configuredName === from ? this.change({ lastActiveSession: { ...last, configuredName: to } }) : Promise.resolve();
   }
 
-  /** Delete what earlier versions kept, without reading it. */
+  /** Delete explicitly retired keys without reading or interpreting their contents. */
   discardRetired(): Promise<void> {
     if (this.writes.disposed) {
       return Promise.resolve();
     }
-    const discarding = Promise.all(RETIRED_WORKSPACE_KEYS.map((key) => write(this.workspaceState, key, undefined, 'retired workspace state')));
+    const discarding = Promise.all(this.retiredKeys.map((key) => write(this.workspaceState, key, undefined, 'retired workspace state')));
     return this.writes.track(discarding.then(() => undefined));
   }
 

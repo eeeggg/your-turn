@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { QuestionRecord } from '@/shared/WebviewMessages';
-import { chatView } from './TranscriptTestSupport';
+import { chatView } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 const record: QuestionRecord = {
   interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: null, description: null, fields: [], response: { action: 'accept', content: {} },

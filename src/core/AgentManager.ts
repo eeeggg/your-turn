@@ -1,7 +1,7 @@
 import { Readable, Writable } from 'node:stream';
 import { execa } from 'execa';
 import which from 'which';
-import { logDebug, logError, logTrace } from './Log';
+import { logDebug, logError, logTrace } from '@/core/Log';
 
 /**
  * Configuration for a single ACP agent.
@@ -23,7 +23,7 @@ export interface AgentRename {
 }
 
 /**
- * The configurations renamed between two `acp.agents` maps: a removed name and an added name whose entries launch the
+ * The configurations renamed between two `your-turn.agents` maps: a removed name and an added name whose entries launch the
  * same command with the same arguments and environment, that entry being the only one of its kind on each side.
  * Anything ambiguous is no rename, as nothing can tell which name took which sessions.
  */

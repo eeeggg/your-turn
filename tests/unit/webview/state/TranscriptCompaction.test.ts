@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action } from '@/webview/state/RootState';
-import { chatView, promptEnd } from './TranscriptTestSupport';
+import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('session compaction', () => {
   type Patch = Extract<Action, { type: 'compactionUpdate' }>;

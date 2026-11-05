@@ -23,7 +23,7 @@ const network: ImageNetwork = {
       servername: isIP(hostname) ? undefined : hostname, path: `${url.pathname}${url.search}`,
       method: 'GET', agent: false, signal, rejectUnauthorized: true,
       headers: { Host: url.host, Accept: 'image/png, image/jpeg, image/gif, image/webp', 'Accept-Encoding': 'gzip, deflate, br',
-        'User-Agent': 'ACP-Client (https://github.com/formulahendry/vscode-acp)' },
+        'User-Agent': 'Your-Turn (https://github.com/eeeggg/your-turn)' },
     }, (response) => resolve({ status: response.statusCode ?? 0, headers: response.headers, body: response }));
     req.on('error', () => reject(new Error('Could not download image')));
     req.end();

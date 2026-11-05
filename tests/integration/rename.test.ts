@@ -12,12 +12,12 @@ suite('Renaming an agent configuration in a folder window', () => {
   const after = `fake-rename-after-${group}`;
   const sessionId = `rename-${group}`;
   const entry = { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } };
-  const config = () => vscode.workspace.getConfiguration('acp');
+  const config = () => vscode.workspace.getConfiguration('your-turn');
   let api: ExtensionTestApi;
   let original: unknown;
 
   suiteSetup(async () => {
-    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
     const activated = await extension?.activate();
     assert.ok(activated, 'the extension returns its test API in extension tests');
     api = activated;
@@ -28,7 +28,7 @@ suite('Renaming an agent configuration in a folder window', () => {
   teardown(async function () {
     const { workspaceState } = api.storage;
     await cleanup(this.currentTest, [
-      () => vscode.commands.executeCommand('acp.disconnectAgent', before),
+      () => vscode.commands.executeCommand('your-turn.disconnectAgent', before),
       () => api.persistedStateSettled(),
       ...workspaceState.keys().map((key) => () => workspaceState.update(key, undefined)),
       () => api.sessionReferences.reset(),
@@ -41,7 +41,7 @@ suite('Renaming an agent configuration in a folder window', () => {
 
   test("rebinds the session's reference and this workspace's last active session to the new name", async () => {
     await config().update('agents', { [before]: entry }, vscode.ConfigurationTarget.Global);
-    await vscode.commands.executeCommand('acp.connectAgent', before);
+    await vscode.commands.executeCommand('your-turn.connectAgent', before);
     await api.persistedStateSettled();
     const id = (configuredName: string) => ({ host: 'file://', configuredName, sessionId });
     assert.ok(api.sessionReferences.get(id(before)), 'the session has a reference under its first name');
@@ -50,7 +50,7 @@ suite('Renaming an agent configuration in a folder window', () => {
     // the time this one runs; settling then waits for the writes it started.
     const handled = new Promise<void>((resolve) => {
       const subscription = vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('acp.agents')) {
+        if (event.affectsConfiguration('your-turn.agents')) {
           subscription.dispose();
           resolve();
         }

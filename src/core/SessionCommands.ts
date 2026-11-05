@@ -1,9 +1,14 @@
 import type { ReviewControls } from '@/core/review/ReviewControls';
-import type { ChatViewController } from './ChatViewController';
-import { logError, messageOf } from './Log';
-import type { SessionManager } from './SessionManager';
-import { openingFailure, type OpeningFailure, type SessionStartup, type StartupOutcome } from './SessionStartup';
-import { ProgressLocation, type Commands, type Window } from './VsCodeApi';
+import type { ChatViewController } from '@/core/ChatViewController';
+import { logError, messageOf } from '@/core/Log';
+import type { SessionManager } from '@/core/SessionManager';
+import {
+  openingFailure,
+  type OpeningFailure,
+  type SessionStartup,
+  type StartupOutcome
+} from '@/core/SessionStartup';
+import { ProgressLocation, type Commands, type Window } from '@/core/VsCodeApi';
 
 /** What commands need from the chat view. */
 export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompts' | 'clearTranscript' | 'sessionTabs' | 'notifyTabsChanged'>;
@@ -123,7 +128,7 @@ export class SessionCommands {
     if (choice === RETRY) {
       await again.retry();
     } else if (choice === CHOOSE_SESSION) {
-      await this.commands.executeCommand('acp-sessions.focus');
+      await this.commands.executeCommand('your-turn-sessions.focus');
     } else if (choice === CHOOSE_AGENT) {
       const configuredName = await this.pickAgent({ title: 'Choose Agent', placeHolder: 'Open the session through which agent?' });
       if (configuredName) { await again.chooseAgent(configuredName); }
@@ -374,14 +379,14 @@ export class SessionCommands {
   private async pickAgent(options = { placeHolder: 'Select an agent to connect', title: 'Connect to Agent' }): Promise<string | undefined> {
     const agentNames = this.agentNames();
     if (agentNames.length === 0) {
-      void this.window.showWarningMessage('No ACP agents configured. Add agents in Settings > ACP > Agents.');
+      void this.window.showWarningMessage('No ACP agents configured. Add agents in Settings > Your Turn > Agents.');
       return undefined;
     }
     return this.window.showQuickPick(agentNames, options);
   }
 
   private async focusChatView(): Promise<void> {
-    await this.commands.executeCommand('acp-chat.focus');
+    await this.commands.executeCommand('your-turn-chat.focus');
   }
 
   private selectActiveTab(): void {

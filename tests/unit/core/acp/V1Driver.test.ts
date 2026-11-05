@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type * as Acp from '@agentclientprotocol/sdk';
 import { PermissionRequests, type PermissionChooser } from '@/core/PermissionRequests';
-import { AuthRequired, UnknownSession, type ConfigOption, type SessionRoots, type SessionUpdate } from '@/core/acp/AcpDriver';
+import {
+  AuthRequired,
+  UnknownSession,
+  type ConfigOption,
+  type SessionRoots,
+  type SessionUpdate
+} from '@/core/acp/AcpDriver';
 import { v1InitializeRequest } from '@/core/acp/V1Driver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { connectedDriver, fakeAgent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';

@@ -4,7 +4,7 @@ import { clearTraffic, captureTraffic, getTrafficJsonl, setTrafficCaptureEnabled
 const host = vi.hoisted(() => {
   let configurationChanged: ((event: { affectsConfiguration(section: string): boolean }) => void) | undefined;
   const configuration = { logTraffic: true };
-  let affectedConfiguration = 'acp.logTraffic';
+  let affectedConfiguration = 'your-turn.logTraffic';
   const showSaveDialog = vi.fn<() => Promise<{ fsPath: string } | undefined>>();
   const writeFile = vi.fn(async (_uri: { fsPath: string }, _bytes: Uint8Array) => {});
   const commands = new Map<string, (...args: unknown[]) => unknown>();
@@ -15,7 +15,7 @@ const host = vi.hoisted(() => {
     writeFile,
     commands,
     workspaceFolders,
-    getConfiguration: vi.fn(() => ({ get: (_key: string) => configuration.logTraffic })),
+    getConfiguration: vi.fn((section: string) => ({ get: (_key: string) => section === 'your-turn' ? configuration.logTraffic : true })),
     onDidChangeConfiguration: vi.fn((listener: typeof configurationChanged) => {
       configurationChanged = listener;
       return { dispose: () => { configurationChanged = undefined; } };
@@ -54,7 +54,7 @@ describe('ACP Traffic adapter', () => {
     clearTraffic();
     setTrafficCaptureEnabled(true);
     host.configuration.logTraffic = true;
-    host.setAffectedConfiguration('acp.logTraffic');
+    host.setAffectedConfiguration('your-turn.logTraffic');
     host.showSaveDialog.mockReset();
     host.writeFile.mockClear();
     host.commands.clear();
@@ -68,7 +68,7 @@ describe('ACP Traffic adapter', () => {
     expect(getTrafficJsonl()).toBe('');
 
     host.configuration.logTraffic = true;
-    host.setAffectedConfiguration('acp.logTraffic');
+    host.setAffectedConfiguration('your-turn.logTraffic');
     host.fireConfigurationChanged();
     captureTraffic('send', { id: 2 });
 
@@ -79,7 +79,7 @@ describe('ACP Traffic adapter', () => {
     host.configuration.logTraffic = false;
     registerTrafficAdapter(subscriptions);
     host.configuration.logTraffic = true;
-    host.setAffectedConfiguration('acp.agents');
+    host.setAffectedConfiguration('your-turn.agents');
     host.fireConfigurationChanged();
     captureTraffic('send', { id: 3 });
 
@@ -91,7 +91,7 @@ describe('ACP Traffic adapter', () => {
     registerTrafficAdapter(subscriptions);
     captureTraffic('send', { method: 'initialize' });
 
-    const command = host.commands.get('acp.exportTraffic');
+    const command = host.commands.get('your-turn.exportTraffic');
     expect(command).toBeDefined();
     if (!command) { throw new Error('Export command was not registered'); }
     await command();

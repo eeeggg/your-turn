@@ -1,4 +1,14 @@
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import {
+  memo,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject
+} from 'react';
 import { useStickToBottom } from 'use-stick-to-bottom';
 import type { QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
 import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
@@ -549,8 +559,8 @@ function commandOutputContext(block: CommandBlock, sessionId: string | null, too
   if (sessionId === null) {
     return undefined;
   }
-  const source = block.terminalId !== null ? { acpTerminalId: block.terminalId } : { acpToolCallId: toolCallId };
-  return JSON.stringify({ webviewSection: 'commandOutput', acpSessionId: sessionId, acpTitle: title, ...source });
+  const source = block.terminalId !== null ? { yourTurnTerminalId: block.terminalId } : { yourTurnToolCallId: toolCallId };
+  return JSON.stringify({ webviewSection: 'commandOutput', yourTurnSessionId: sessionId, yourTurnTitle: title, ...source });
 }
 
 function CommandOutputView({ block, sessionId, toolCallId, title }: {

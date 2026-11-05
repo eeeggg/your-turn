@@ -1,5 +1,10 @@
-import { acpContainerControl, agentsViewRow, chatTranscript, promptInput } from './workbench';
-import { expect, test } from './window';
+import {
+  yourTurnContainerControl,
+  agentsViewRow,
+  chatTranscript,
+  promptInput
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 for (const agentVersion of ['v1', 'v2'] as const) {
   test.describe(agentVersion, () => {
@@ -10,7 +15,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
       window.on('request', (request) => {
         if (request.url().includes('example.invalid') || request.url().includes('not-read')) { requests.push(request.url()); }
       });
-      await acpContainerControl(window).click();
+      await yourTurnContainerControl(window).click();
       await agentsViewRow(window, `fake-${agentVersion}`).hover();
       await window.getByRole('button', { name: 'Connect to Agent' }).click();
       const prompt = promptInput(window);

@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentConnector } from '@agentclientprotocol/sdk';
-import { connectedDriver, fakeAgent, fakeV2Agent, InProcessAgents } from './InProcessAgents';
+import {
+  connectedDriver,
+  fakeAgent,
+  fakeV2Agent,
+  InProcessAgents
+} from '@tests/unit/core/InProcessAgents';
 
 const hooks = vi.hoisted(() => ({ cleanup: [] as (() => Promise<void>)[] }));
 vi.mock('vitest', async (original) => ({

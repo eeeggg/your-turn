@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionSnapshot, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { highlightedIndex, matchingCommands, placeholder, type PromptBoxState } from '@/webview/state/PromptBox';
+import {
+  highlightedIndex,
+  matchingCommands,
+  placeholder,
+  type PromptBoxState
+} from '@/webview/state/PromptBox';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 

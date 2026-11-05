@@ -1,4 +1,9 @@
-import type { Picker, PickerCategory, PickerValue, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type {
+  Picker,
+  PickerCategory,
+  PickerValue,
+  WebviewToExtensionMessage
+} from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
 

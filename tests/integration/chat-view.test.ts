@@ -6,12 +6,12 @@ import type { ExtensionTestApi } from '@/extension';
 
 suite('Chat View Test Suite', () => {
   test('Boots when focused: its script loads and its first message reaches the extension', async () => {
-    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
     assert.ok(extension);
     const api = await extension.activate();
     assert.ok(api, 'activate returns the test API in extension tests');
 
-    await vscode.commands.executeCommand('acp-chat.focus');
+    await vscode.commands.executeCommand('your-turn-chat.focus');
 
     await api.chatViewReady;
   });

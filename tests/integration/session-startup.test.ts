@@ -29,7 +29,7 @@ for (const version of [1, 2]) {
   suite(`Loading the last active session as the window starts, ACP v${version}`, () => {
     const agentName = `fake-startup-v${version}`;
     const otherName = `fake-startup-other-v${version}`;
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
     let original: unknown;
     let records: string;
     /** Disposals of what a test built, run in teardown. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { promptHistory } from '@/webview/state/Transcript';
-import { chatView, promptEnd, queuedPrompts } from './TranscriptTestSupport';
+import { chatView, promptEnd, queuedPrompts } from '@tests/unit/webview/state/TranscriptTestSupport';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
 describe('prompts', () => {

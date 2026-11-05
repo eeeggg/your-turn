@@ -4,7 +4,12 @@
     "allowJs": true,
     "checkJs": true,
     "lib": ["es2022", "dom"],
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      "@/*": ["../../src/*"],
+      "@tests/*": ["../*"],
+      "@tools/*": ["../../tools/*"]
+    }
   },
   "include": ["./**/*.ts"]
 }

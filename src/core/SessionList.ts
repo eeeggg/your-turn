@@ -1,9 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { formatDistanceStrict } from 'date-fns';
 import type { AgentCapabilities, ListedSession, SessionPage } from '@/core/acp/AcpDriver';
-import { logError, messageOf } from './Log';
-import type { SessionReferences, WorkspaceTarget } from './PersistedState';
-import { AuthenticationCancelled, type SessionManager, type SessionOpening } from './SessionManager';
+import { logError, messageOf } from '@/core/Log';
+import type { SessionReferences, WorkspaceTarget } from '@/core/PersistedState';
+import {
+  AuthenticationCancelled,
+  type SessionManager,
+  type SessionOpening
+} from '@/core/SessionManager';
 
 export interface AgentEntry {
   readonly name: string;

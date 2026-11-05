@@ -1,4 +1,4 @@
-import { commandNotFound, type AgentLauncher } from './AgentManager';
+import { commandNotFound, type AgentLauncher } from '@/core/AgentManager';
 
 /** The package runners an agent from the agent registry can be added through. */
 export type PackageRunner = 'npx' | 'uvx';
@@ -14,7 +14,7 @@ export function checkPackageRunner(launcher: AgentLauncher, runner: PackageRunne
       error: (error) => { reason = error.code === 'ENOENT' ? commandNotFound(runner) : error.message; },
       exit: (code) => {
         if (reason === undefined && code !== 0) {
-          reason = `"${runner} --version" exited with code ${String(code)}; its output is in the ACP log (ACP: Show Log).`;
+          reason = `"${runner} --version" exited with code ${String(code)}; its output is in the Your Turn log (Your Turn: Show Log).`;
         }
         resolve(reason === undefined ? { works: true } : { works: false, reason });
       },

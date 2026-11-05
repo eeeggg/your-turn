@@ -6,7 +6,11 @@ import { Readable } from 'node:stream';
 import type { ImageNetwork } from '@/core/MarkdownImageNetwork';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
-import { ChatViewController, type ChatSessions, type ChatViewEnvironment } from '@/core/ChatViewController';
+import {
+  ChatViewController,
+  type ChatSessions,
+  type ChatViewEnvironment
+} from '@/core/ChatViewController';
 import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
@@ -14,7 +18,7 @@ import type { FileEditor } from '@/core/ReportedFiles';
 import { SessionManager, type SessionInfo } from '@/core/SessionManager';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { InProcessAgents, unusedHandlers, work } from './InProcessAgents';
+import { InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
 import { initialState, update } from '@/webview/state/RootState';
 
@@ -545,7 +549,7 @@ describe('ChatViewController', () => {
     controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
     environment.post = post;
     expect(controller.hasRunningTurn).toBe(true);
-    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', true);
+    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
     sessions.answer();
     await next;
   });
@@ -563,7 +567,7 @@ describe('ChatViewController', () => {
     await first;
     environment.post = post;
     expect(controller.hasRunningTurn).toBe(true);
-    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', true);
+    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
     sessions.answer();
     await next;
   });
@@ -1048,7 +1052,7 @@ describe('ChatViewController', () => {
       expect(state.transcript.currentTurn).toBe(streaming.transcript.currentTurn);
       expect(state.transcript.entries).toEqual(streaming.transcript.entries);
       expect(messages.map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
-      expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'acp.turnInProgress', true]]);
+      expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'your-turn.turnInProgress', true]]);
     });
 
     it.each(['answer', 'fail'] as const)('does not end newer autonomous work when an older prompt settles via %s', async (outcome) => {
@@ -1144,7 +1148,7 @@ describe('ChatViewController', () => {
 
     it('tells the editor a turn is in progress until it ends, also when it fails', async () => {
       const { sessions, environment, controller } = setup();
-      const inProgress = (value: boolean) => ['setContext', 'acp.turnInProgress', value];
+      const inProgress = (value: boolean) => ['setContext', 'your-turn.turnInProgress', value];
 
       const turn = sendPrompt(controller, sessions, 'hello');
       expect(environment.executeCommand.mock.calls).toEqual([inProgress(true)]);
@@ -1217,8 +1221,8 @@ describe('ChatViewController', () => {
         switchTo(sessions, controller, 's1');
 
         expect(environment.executeCommand.mock.calls).toEqual([
-          ['setContext', 'acp.turnInProgress', false],
-          ['setContext', 'acp.turnInProgress', true],
+          ['setContext', 'your-turn.turnInProgress', false],
+          ['setContext', 'your-turn.turnInProgress', true],
         ]);
         sessions.answer();
         await turn;
@@ -1806,7 +1810,7 @@ describe('ChatViewController', () => {
       ]);
     });
 
-    it("passes on a tool call's diffs of both kinds as their files, while acp.showToolCallDiffs is on, in the order reported among its texts", () => {
+    it("passes on a tool call's diffs of both kinds as their files, while your-turn.showToolCallDiffs is on, in the order reported among its texts", () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
       environment.showsDiffs = true;
@@ -1844,7 +1848,7 @@ describe('ChatViewController', () => {
       ] }]);
     });
 
-    it('reads acp.showToolCallDiffs for each tool call update', () => {
+    it('reads your-turn.showToolCallDiffs for each tool call update', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
       const edited: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', content: [

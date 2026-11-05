@@ -1,14 +1,14 @@
-import { acpChatWebview, acpContainerControl, promptInput } from './workbench';
-import { expect, test } from './window';
+import { chatWebview, yourTurnContainerControl, promptInput } from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
-test('clicking ACP Client reveals ACP Chat in a fresh VS Code window', async ({ window }, testInfo) => {
-  const chatWebview = acpChatWebview(window);
-  await expect(chatWebview).toBeHidden();
+test('clicking Your Turn reveals its chat view in a fresh VS Code window', async ({ window }, testInfo) => {
+  const webview = chatWebview(window);
+  await expect(webview).toBeHidden();
 
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
 
-  await expect(acpContainerControl(window)).toHaveAttribute('aria-selected', 'true');
-  await expect(chatWebview).toBeVisible();
+  await expect(yourTurnContainerControl(window)).toHaveAttribute('aria-selected', 'true');
+  await expect(webview).toBeVisible();
   const prompt = promptInput(window);
   await expect(prompt).toBeVisible();
 
@@ -16,5 +16,5 @@ test('clicking ACP Client reveals ACP Chat in a fresh VS Code window', async ({ 
     type: 'prompt focus before connection',
     description: await prompt.isEnabled() ? 'enabled' : 'disabled',
   });
-  await window.screenshot({ path: testInfo.outputPath('acp-chat-revealed.png') });
+  await window.screenshot({ path: testInfo.outputPath('chat-revealed.png') });
 });

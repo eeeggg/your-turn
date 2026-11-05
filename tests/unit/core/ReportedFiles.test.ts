@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { changeSides, openReportedChanges, openReportedFile, type FileEditor, type PatchHunk as DiffHunk, type ReportedFile } from '@/core/ReportedFiles';
+import {
+  changeSides,
+  openReportedChanges,
+  openReportedFile,
+  type FileEditor,
+  type PatchHunk as DiffHunk,
+  type ReportedFile
+} from '@/core/ReportedFiles';
 
 /** As the chat view sends them, from jsdiff's `parsePatch`, which starts an empty side at line 1 where Git writes 0. */
 const hunks = (...given: DiffHunk[]) => ({ kind: 'hunks' as const, hunks: given });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Picker } from '@/shared/WebviewMessages';
-import { connect, loadChatPage, type ChatPage } from './chatPage';
+import { connect, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 

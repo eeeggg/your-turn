@@ -11,8 +11,8 @@ import { Reviews } from '@/core/review/Reviews';
 import { Takeovers } from '@/core/review/Takeovers';
 import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { createReviewEditors, ReviewPresenters } from '@/adapters/review/ReviewPresenters';
-import { observed } from './observed';
 import { ReviewSourceControl } from '@/adapters/review/ReviewSourceControl';
+import { observed } from '@tests/integration/observed';
 
 function deferred() {
   let resolve: () => void = () => {};
@@ -39,13 +39,13 @@ suite('Native review diff', () => {
   };
   const input = () => vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   const ownedTabs = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) =>
-    tab.input instanceof vscode.TabInputTextDiff && tab.input.original.scheme === 'acp-review-diff');
+    tab.input instanceof vscode.TabInputTextDiff && tab.input.original.scheme === 'your-turn-review-diff');
 
   setup(async () => {
     owned = {};
     folder = '';
-    prior = vscode.workspace.getConfiguration('acp').inspect('review.presentation')?.globalValue;
-    await vscode.workspace.getConfiguration('acp').update('review.presentation', 'diffEditor', vscode.ConfigurationTarget.Global);
+    prior = vscode.workspace.getConfiguration('your-turn').inspect('review.presentation')?.globalValue;
+    await vscode.workspace.getConfiguration('your-turn').update('review.presentation', 'diffEditor', vscode.ConfigurationTarget.Global);
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-native-review-'));
     file = path.join(folder, 'file.txt');
     fs.writeFileSync(file, after);
@@ -79,7 +79,7 @@ suite('Native review diff', () => {
     await cleanup(() => owned.reviews?.dispose());
     await cleanup(() => vscode.commands.executeCommand('workbench.action.files.revert'));
     await cleanup(() => vscode.commands.executeCommand('workbench.action.closeAllEditors'));
-    await cleanup(() => vscode.workspace.getConfiguration('acp').update('review.presentation', prior, vscode.ConfigurationTarget.Global));
+    await cleanup(() => vscode.workspace.getConfiguration('your-turn').update('review.presentation', prior, vscode.ConfigurationTarget.Global));
     await cleanup(() => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } });
     if (failures.length > 0) {
       const error = new AggregateError(failures, 'Failed to clean up review diff');
@@ -93,13 +93,13 @@ suite('Native review diff', () => {
     assert.equal(diff.modified.toString(), vscode.Uri.file(file).toString());
     const original = await vscode.workspace.openTextDocument(diff.original);
     assert.equal(original.getText(), before);
-    const keep = (await lenses()).find((lens) => lens.command?.command === 'acp.keepDiffChange');
+    const keep = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
     assert.ok(keep);
     await presentation.decide('keep', keep.command?.arguments?.[0]);
     assert.equal(controls.baseline(file), 'one\nTWO\nthree\nfour\nfive\nsix\nseven\n');
     assert.equal(fs.readFileSync(file, 'utf8'), after);
     assert.equal(ownedTabs().length, 1);
-    assert.equal((await lenses()).filter((lens) => lens.command?.command === 'acp.undoDiffChange').length, 1);
+    assert.equal((await lenses()).filter((lens) => lens.command?.command === 'your-turn.undoDiffChange').length, 1);
   });
 
   test('SCM resource clicks open review diffs and reject entries from another shown session', async () => {
@@ -129,7 +129,7 @@ suite('Native review diff', () => {
     await click(resource.command);
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
-    assert.equal(diff.modified.scheme, 'acp-review-diff');
+    assert.equal(diff.modified.scheme, 'your-turn-review-diff');
     assert.deepEqual(presentation.provideFileDecoration(diff.original), { badge: 'D', tooltip: 'Deleted' });
     assert.deepEqual(presentation.provideFileDecoration(diff.modified), { badge: 'D', tooltip: 'Deleted' });
     assert.deepEqual(presentation.provideFileDecoration(vscode.Uri.file(deleted)), { badge: 'D', tooltip: 'Deleted' });
@@ -162,7 +162,7 @@ suite('Native review diff', () => {
     await presentation.settled();
     const deleted = ownedTabs()[0]?.input;
     assert.ok(deleted instanceof vscode.TabInputTextDiff);
-    assert.equal(deleted.modified.scheme, 'acp-review-diff');
+    assert.equal(deleted.modified.scheme, 'your-turn-review-diff');
     assert.equal((await vscode.workspace.openTextDocument(deleted.original)).getText(), before);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, other);
     assert.equal(presentation.pathOf(original.original), undefined);
@@ -218,7 +218,7 @@ suite('Native review diff', () => {
   });
 
   test('SCM quick-diff clicks retain real editors for existing files and native diffs for deleted files', async () => {
-    await vscode.workspace.getConfiguration('acp').update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
+    await vscode.workspace.getConfiguration('your-turn').update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
     const control = owned.control = vscode.scm.createSourceControl('checkpoint-quick-review', 'Checkpoint Quick Review');
     const create = control.createResourceGroup.bind(control);
     let group: vscode.SourceControlResourceGroup | undefined;
@@ -240,7 +240,7 @@ suite('Native review diff', () => {
     await vscode.commands.executeCommand(resource.command.command, ...(resource.command.arguments ?? []) as unknown[]);
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
-    assert.equal(diff.modified.scheme, 'acp-review-diff');
+    assert.equal(diff.modified.scheme, 'your-turn-review-diff');
     assert.equal(fs.existsSync(deleted), false);
     fs.writeFileSync(deleted, 'recreated\n');
     reviews.shown()?.read(deleted, 'recreated\n');
@@ -255,7 +255,7 @@ suite('Native review diff', () => {
     for (const setting of ['diffEditor', 'quickDiff']) {
       test(`reviews ${baseline === '' ? 'empty' : 'nonempty'} deletion with ${setting} without opening a disk document`, async () => {
         const deleted = path.join(folder, 'deleted.txt');
-        await vscode.workspace.getConfiguration('acp').update('review.presentation', setting, vscode.ConfigurationTarget.Global);
+        await vscode.workspace.getConfiguration('your-turn').update('review.presentation', setting, vscode.ConfigurationTarget.Global);
         await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
           kind: 'toolCall', toolCallId: 'delete', status: 'completed',
           content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: baseline, newText: '' } }],
@@ -264,7 +264,7 @@ suite('Native review diff', () => {
         await presentation.open(deleted);
         const diff = input();
         assert.ok(diff instanceof vscode.TabInputTextDiff);
-        assert.equal(diff.original.scheme, 'acp-review-diff');
+        assert.equal(diff.original.scheme, 'your-turn-review-diff');
         assert.notEqual(diff.modified.scheme, 'file');
         assert.notEqual(diff.original.toString(), diff.modified.toString());
         const original = await vscode.workspace.openTextDocument(diff.original);
@@ -418,7 +418,7 @@ suite('Native review diff', () => {
   });
 
   test('rejects a stale lens even when an intervening edit preserves the hunk coordinates', async () => {
-    const keep = (await lenses()).find((lens) => lens.command?.command === 'acp.keepDiffChange');
+    const keep = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
     assert.ok(keep);
     const document = await vscode.workspace.openTextDocument(file);
     const edit = new vscode.WorkspaceEdit();
@@ -506,14 +506,14 @@ suite('Native review diff', () => {
   });
 
   test('rejects a retained lens after an earlier decision reindexes the remaining hunk, then accepts its fresh lens', async () => {
-    const undo = (await lenses()).filter((lens) => lens.command?.command === 'acp.undoDiffChange');
+    const undo = (await lenses()).filter((lens) => lens.command?.command === 'your-turn.undoDiffChange');
     assert.equal(undo.length, 2);
     await presentation.decide('undo', undo[0]?.command?.arguments?.[0]);
     const remaining = 'one\ntwo\nthree\nfour\nfive\nsix\nSEVEN\n';
     assert.equal(fs.readFileSync(file, 'utf8'), remaining);
     await presentation.decide('undo', undo[1]?.command?.arguments?.[0]);
     assert.equal(fs.readFileSync(file, 'utf8'), remaining, 'a stale lens cannot act on another hunk');
-    const fresh = (await lenses()).find((lens) => lens.command?.command === 'acp.undoDiffChange');
+    const fresh = (await lenses()).find((lens) => lens.command?.command === 'your-turn.undoDiffChange');
     assert.ok(fresh);
     const completed = new Promise<void>((resolve) => {
       reviews.addListener(() => { if (reviews.shown()?.files().length === 0) { resolve(); } });
@@ -576,7 +576,7 @@ suite('Native review diff', () => {
     }
   });
 
-  test('retries Open ACP Review after an opening fails without changing the unresolved review', async () => {
+  test('retries Open Review after an opening fails without changing the unresolved review', async () => {
     await vscode.window.tabGroups.close(ownedTabs(), true);
     openDiff = async () => { throw new Error('opening failed'); };
     await assert.rejects(controls.openReview(), /opening failed/);

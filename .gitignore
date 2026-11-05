@@ -1,5 +1,7 @@
 node_modules/
 dist/
+icon.png
+icon.svg
 test-results/
 *.tsbuildinfo
 *.vsix

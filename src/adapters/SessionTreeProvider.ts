@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
-import { otherWorkspaces, type OtherSession, type OtherWorkspace, type WorkspaceConfiguration } from '@/core/OtherWorkspaces';
+import {
+  otherWorkspaces,
+  type OtherSession,
+  type OtherWorkspace,
+  type WorkspaceConfiguration
+} from '@/core/OtherWorkspaces';
 import type { SessionAddress, SessionReferences } from '@/core/PersistedState';
 import type { WorkspaceOpening } from '@/core/WorkspaceOpening';
 import type { AgentSessions, SessionList, SessionRow } from '@/core/SessionList';
@@ -20,7 +25,7 @@ class AgentTreeItem extends vscode.TreeItem {
         new vscode.ThemeColor('testing.iconPassed'),
       );
       this.description = 'in session';
-      this.command = { command: 'acp.openChat', title: 'Open Chat View' };
+      this.command = { command: 'your-turn.openChat', title: 'Open Chat View' };
     } else {
       this.contextValue = 'agent-without-session';
       this.iconPath = new vscode.ThemeIcon('circle-outline');
@@ -35,7 +40,7 @@ class AgentTreeItem extends vscode.TreeItem {
 
 /**
  * Tier 2: a past session of an agent. Clicking it routes to
- * `acp.openSession`, which loads or resumes it.
+ * `your-turn.openSession`, which loads or resumes it.
  */
 class SessionTreeItem extends vscode.TreeItem {
   public readonly sessionId: string;
@@ -61,7 +66,7 @@ class SessionTreeItem extends vscode.TreeItem {
       this.iconPath = new vscode.ThemeIcon('comment-discussion');
     }
     this.command = {
-      command: 'acp.openSession',
+      command: 'your-turn.openSession',
       title: 'Open Session',
       arguments: [{ agentName, sessionId: row.sessionId }],
     };
@@ -149,7 +154,7 @@ class OtherSessionTreeItem extends vscode.TreeItem {
       this.description = session.age;
     }
     this.tooltip = session.tooltip;
-    this.command = { command: 'acp.openSessionInWorkspace', title: 'Open Session in Its Workspace', arguments: [session.reference] };
+    this.command = { command: 'your-turn.openSessionInWorkspace', title: 'Open Session in Its Workspace', arguments: [session.reference] };
   }
 }
 
@@ -159,7 +164,7 @@ type TreeNode = AgentTreeItem | SessionTreeItem | InfoTreeItem | WorkspaceTreeIt
 export type AgentsViewMode = 'agents' | 'otherWorkspaces';
 
 /**
- * The ACP Agents view: configured agents, each with its session list, or in Other Workspaces mode, the workspaces in
+ * The Agents view: configured agents, each with its session list, or in Other Workspaces mode, the workspaces in
  * the session references other than this window's. A window where the extension is unavailable has no agents.
  */
 export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
@@ -240,17 +245,17 @@ export function createAgentsView(
   opening: Pick<WorkspaceOpening, 'open'>,
 ): { provider: SessionTreeProvider; treeView: vscode.TreeView<TreeNode>; disposable: vscode.Disposable } {
   const provider = new SessionTreeProvider(sessionList, references, thisWorkspaceUri);
-  const treeView = vscode.window.createTreeView('acp-sessions', { treeDataProvider: provider });
+  const treeView = vscode.window.createTreeView('your-turn-sessions', { treeDataProvider: provider });
   const show = (mode: AgentsViewMode) => {
     provider.show(mode);
     treeView.title = mode === 'otherWorkspaces' ? 'Other Workspaces' : 'Agents';
-    return vscode.commands.executeCommand('setContext', 'acp.showingOtherWorkspaces', mode === 'otherWorkspaces');
+    return vscode.commands.executeCommand('setContext', 'your-turn.showingOtherWorkspaces', mode === 'otherWorkspaces');
   };
   const disposable = vscode.Disposable.from(
     treeView,
-    vscode.commands.registerCommand('acp.showOtherWorkspaces', () => show('otherWorkspaces')),
-    vscode.commands.registerCommand('acp.showAgents', () => show('agents')),
-    vscode.commands.registerCommand('acp.openSessionInWorkspace', (address?: SessionAddress) => address && opening.open(address)),
+    vscode.commands.registerCommand('your-turn.showOtherWorkspaces', () => show('otherWorkspaces')),
+    vscode.commands.registerCommand('your-turn.showAgents', () => show('agents')),
+    vscode.commands.registerCommand('your-turn.openSessionInWorkspace', (address?: SessionAddress) => address && opening.open(address)),
     treeView.onDidChangeVisibility(({ visible }) => {
       if (visible) {
         provider.refresh();
@@ -272,13 +277,13 @@ function childrenOf(agentName: string, sessions: AgentSessions): (SessionTreeIte
       return [new InfoTreeItem('loading', agentName, 'Loading sessions…')];
     case 'auth-required':
       return [new InfoTreeItem('auth-required', agentName, 'Authentication required', 'Click to retry authentication.', {
-        command: 'acp.refreshSessions',
+        command: 'your-turn.refreshSessions',
         title: 'Retry authentication',
         arguments: [agentName],
       })];
     case 'failed':
       return [new InfoTreeItem('error', agentName, 'Failed to load sessions', sessions.message, {
-        command: 'acp.refreshSessions',
+        command: 'your-turn.refreshSessions',
         title: 'Retry',
         arguments: [agentName],
       })];
@@ -305,7 +310,7 @@ function childrenOf(agentName: string, sessions: AgentSessions): (SessionTreeIte
   }
 
   const items: (SessionTreeItem | InfoTreeItem)[] = rows.map((row) => new SessionTreeItem(agentName, row, source));
-  const loadMore: vscode.Command = { command: 'acp.loadMoreSessions', title: 'Load more sessions', arguments: [agentName] };
+  const loadMore: vscode.Command = { command: 'your-turn.loadMoreSessions', title: 'Load more sessions', arguments: [agentName] };
   switch (more.kind) {
     case 'available':
       items.push(new InfoTreeItem('load-more', agentName, 'Load more…', undefined, loadMore));

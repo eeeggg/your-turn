@@ -32,7 +32,11 @@ import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { attachUrlElicitations } from '@/core/UrlElicitations';
 import { urlElicitationQuickPick } from '@/adapters/UrlElicitationQuickPick';
-import { createWorkspaceEnvironment, openWorkspace, workspaceUnavailability } from '@/adapters/WorkspaceEnvironment';
+import {
+  createWorkspaceEnvironment,
+  openWorkspace,
+  workspaceUnavailability
+} from '@/adapters/WorkspaceEnvironment';
 import { WorkspaceOpening } from '@/core/WorkspaceOpening';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
@@ -90,8 +94,8 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
   setLogSink(outputChannelSink);
   const unavailability = workspaceUnavailability(vscode.workspace);
   if (unavailability) {
-    logInfo('ACP Client is unavailable in this window', { unavailability });
-    void vscode.commands.executeCommand('setContext', 'acp.workspaceUnavailable', unavailability);
+    logInfo('Your Turn is unavailable in this window', { unavailability });
+    void vscode.commands.executeCommand('setContext', 'your-turn.workspaceUnavailable', unavailability);
     // Only the Agents view's Other Workspaces mode, which opens a workspace where the extension is available.
     const opening = new WorkspaceOpening(new StartupRequests(context.globalState), openWorkspace, vscode.window);
     context.subscriptions.push(
@@ -101,7 +105,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     return undefined;
   }
   registerTrafficAdapter(context.subscriptions);
-  logInfo('ACP Client extension activating');
+  logInfo('Your Turn extension activating');
 
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
@@ -168,13 +172,13 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
   // The Agents view's welcome is shown on this rather than on the tree being empty, which VS Code assumes until the
-  // tree's first items arrive; `when` clauses cannot test the `acp.agents` object for emptiness themselves.
-  const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'acp.noAgentsConfigured', getAgentNames().length === 0);
+  // tree's first items arrive; `when` clauses cannot test the `your-turn.agents` object for emptiness themselves.
+  const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'your-turn.noAgentsConfigured', getAgentNames().length === 0);
   markNoAgentsConfigured();
   // The change event carries no previous value, so renames are found against the map as it was last read.
   let agentConfigs = getAgentConfigs();
   const agentsChanged = vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('acp.agents')) {
+    if (e.affectsConfiguration('your-turn.agents')) {
       const previous = agentConfigs;
       agentConfigs = getAgentConfigs();
       sessionManager.agentsChanged(previous, agentConfigs);
@@ -217,7 +221,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     disposal = Promise.allSettled([output, terminals, takeovers, presenters, diffs, review, sessions, turnEndShown]).then((results) => {
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
-        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down ACP Client');
+        throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down Your Turn');
       }
     });
     return disposal;
@@ -300,7 +304,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }
   });
   const agentConfigurations = new AgentConfigurations(
-    () => vscode.workspace.getConfiguration('acp'),
+    () => vscode.workspace.getConfiguration('your-turn'),
     sessionManager,
     vscode.window,
     {
@@ -310,7 +314,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
       platform: registryPlatform(),
     },
   );
-  const focusChatView = () => vscode.commands.executeCommand('acp-chat.focus');
+  const focusChatView = () => vscode.commands.executeCommand('your-turn-chat.focus');
   /**
    * The review's decisions wait for the agent's turn to end, so none acts on a file the agent is writing. Their
    * `enablement` disables their buttons and keys, but not `executeCommand`, which runs a command regardless.
@@ -333,87 +337,87 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     chatMessageSubscription,
     reportedFileEditor,
     statusBarManager,
-    vscode.commands.registerCommand('acp.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.newSession', (arg?: unknown) => sessionCommands.newSession(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.restartAgent', (arg?: unknown) => sessionCommands.restart(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.cancelTurn', () => sessionCommands.cancelTurn()),
-    vscode.commands.registerCommand('acp.setMode', (modeId?: string) => sessionCommands.setMode(modeId)),
-    vscode.commands.registerCommand('acp.setModel', (modelId?: string) => sessionCommands.setModel(modelId)),
-    vscode.commands.registerCommand('acp.openSession', (arg?: SessionArgument) => sessionCommands.open(arg?.agentName, arg?.sessionId)),
-    vscode.commands.registerCommand('acp.openChat', focusChatView),
-    vscode.commands.registerCommand('acp.sendPrompt', focusChatView),
-    vscode.commands.registerCommand('acp.showLog', () => getOutputChannel().show()),
-    vscode.commands.registerCommand('acp.refreshSessions', async (arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.newSession', (arg?: unknown) => sessionCommands.newSession(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.restartAgent', (arg?: unknown) => sessionCommands.restart(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.cancelTurn', () => sessionCommands.cancelTurn()),
+    vscode.commands.registerCommand('your-turn.setMode', (modeId?: string) => sessionCommands.setMode(modeId)),
+    vscode.commands.registerCommand('your-turn.setModel', (modelId?: string) => sessionCommands.setModel(modelId)),
+    vscode.commands.registerCommand('your-turn.openSession', (arg?: SessionArgument) => sessionCommands.open(arg?.agentName, arg?.sessionId)),
+    vscode.commands.registerCommand('your-turn.openChat', focusChatView),
+    vscode.commands.registerCommand('your-turn.sendPrompt', focusChatView),
+    vscode.commands.registerCommand('your-turn.showLog', () => getOutputChannel().show()),
+    vscode.commands.registerCommand('your-turn.refreshSessions', async (arg?: unknown) => {
       const agentName = agentNameOf(arg);
       if (agentName) {
         await sessionList.startOver(agentName);
       }
     }),
-    vscode.commands.registerCommand('acp.loadMoreSessions', async (agentName?: string) => {
+    vscode.commands.registerCommand('your-turn.loadMoreSessions', async (agentName?: string) => {
       if (agentName) {
         await sessionList.loadMore(agentName);
       }
     }),
-    vscode.commands.registerCommand('acp.copySessionId', async (arg?: SessionArgument) => {
+    vscode.commands.registerCommand('your-turn.copySessionId', async (arg?: SessionArgument) => {
       if (!arg?.sessionId) { return; }
       await vscode.env.clipboard.writeText(arg.sessionId);
       void vscode.window.showInformationMessage(`Copied session ID: ${arg.sessionId}`);
     }),
-    vscode.commands.registerCommand('acp.removeFromHistory', async (arg?: SessionArgument) => {
+    vscode.commands.registerCommand('your-turn.removeFromHistory', async (arg?: SessionArgument) => {
       if (arg?.agentName && arg.sessionId) {
         await sessionManager.removeFromHistory(arg.agentName, arg.sessionId);
       }
     }),
     persistedStateCommands,
-    vscode.commands.registerCommand('acp.showPersistedState', () => persistedStateCommands.show()),
-    vscode.commands.registerCommand('acp.resetPersistedState', async () => {
+    vscode.commands.registerCommand('your-turn.showPersistedState', () => persistedStateCommands.show()),
+    vscode.commands.registerCommand('your-turn.resetPersistedState', async () => {
       if (await persistedStateCommands.reset()) {
         sessionTreeProvider.refresh();
       }
     }),
-    vscode.commands.registerCommand('acp.addAgent', () => agentConfigurations.add()),
-    vscode.commands.registerCommand('acp.detectAgents', () => agentConfigurations.detect()),
-    vscode.commands.registerCommand('acp.removeAgent', (arg?: unknown) => agentConfigurations.remove(agentNameOf(arg))),
-    vscode.commands.registerCommand('acp.openToolCallFile', (arg?: unknown) => chooseDiffFile(arg, 'file')),
-    vscode.commands.registerCommand('acp.openToolCallChanges', (arg?: unknown) => chooseDiffFile(arg, 'changes')),
-    vscode.commands.registerCommand('acp.openCommandOutput', (arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.addAgent', () => agentConfigurations.add()),
+    vscode.commands.registerCommand('your-turn.detectAgents', () => agentConfigurations.detect()),
+    vscode.commands.registerCommand('your-turn.removeAgent', (arg?: unknown) => agentConfigurations.remove(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.openToolCallFile', (arg?: unknown) => chooseDiffFile(arg, 'file')),
+    vscode.commands.registerCommand('your-turn.openToolCallChanges', (arg?: unknown) => chooseDiffFile(arg, 'changes')),
+    vscode.commands.registerCommand('your-turn.openCommandOutput', (arg?: unknown) => {
       const output = commandOutputOf(arg);
       if (output && !agentTerminals.open(output.sessionId, output.source, output.name)) {
         logWarning('Command output is no longer retained', { outputName: output.name });
       }
     }),
-    vscode.commands.registerCommand('acp.openReview', unlessTurnRuns(() => reviewControls.openReview())),
-    vscode.commands.registerCommand('acp.previousReviewFile', async (arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.openReview', unlessTurnRuns(() => reviewControls.openReview())),
+    vscode.commands.registerCommand('your-turn.previousReviewFile', async (arg?: unknown) => {
       await reviewControls.previous(reviewPathOf(arg, reviewDiffs));
       await reviewPresenters.navigated();
     }),
-    vscode.commands.registerCommand('acp.nextReviewFile', async (arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.nextReviewFile', async (arg?: unknown) => {
       await reviewControls.next(reviewPathOf(arg, reviewDiffs));
       await reviewPresenters.navigated();
     }),
-    vscode.commands.registerCommand('acp.undoFile', unlessTurnRuns((arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.undoFile', unlessTurnRuns((arg?: unknown) => {
       const path = reviewPathOf(arg, reviewDiffs);
       if (arg instanceof vscode.Uri && path === undefined) { return; }
       return reviewControls.undoFile(path);
     })),
-    vscode.commands.registerCommand('acp.keepFile', unlessTurnRuns((arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.keepFile', unlessTurnRuns((arg?: unknown) => {
       const path = reviewPathOf(arg, reviewDiffs);
       if (arg instanceof vscode.Uri && path === undefined) { return; }
       return reviewControls.keepFile(path);
     })),
-    vscode.commands.registerCommand('acp.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
-    vscode.commands.registerCommand('acp.keepChange', unlessTurnRuns((...args: unknown[]) => {
+    vscode.commands.registerCommand('your-turn.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
+    vscode.commands.registerCommand('your-turn.keepChange', unlessTurnRuns((...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
       return change && reviewControls.keepChange(change.path, change.change);
     })),
-    vscode.commands.registerCommand('acp.keepDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('keep', arg))),
-    vscode.commands.registerCommand('acp.undoDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('undo', arg))),
-    vscode.commands.registerCommand('acp.undoChange', unlessTurnRuns((...args: unknown[]) => {
+    vscode.commands.registerCommand('your-turn.keepDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('keep', arg))),
+    vscode.commands.registerCommand('your-turn.undoDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('undo', arg))),
+    vscode.commands.registerCommand('your-turn.undoChange', unlessTurnRuns((...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
       return change && reviewControls.undoChange(change.path, change.change);
     })),
-    vscode.commands.registerCommand('acp.attachFile', async () => {
+    vscode.commands.registerCommand('your-turn.attachFile', async () => {
       const [uri] = await vscode.window.showOpenDialog({
         canSelectMany: false,
         openLabel: 'Attach',
@@ -425,7 +429,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     }),
     {
       dispose: () => {
-        void stop().catch((error: unknown) => logError('Failed to shut down ACP Client', error));
+        void stop().catch((error: unknown) => logError('Failed to shut down Your Turn', error));
         chatWebviewProvider.dispose();
         sessionList.dispose();
         disposeChannels();
@@ -433,7 +437,7 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
     },
   );
 
-  logInfo('ACP Client extension activated');
+  logInfo('Your Turn extension activated');
   if (context.extensionMode !== vscode.ExtensionMode.Test) {
     return undefined;
   }
@@ -462,10 +466,10 @@ export function activate(context: vscode.ExtensionContext): ExtensionTestApi | u
 
 export async function deactivate(): Promise<void> {
   await shutdown?.();
-  logInfo('ACP Client extension deactivated');
+  logInfo('Your Turn extension deactivated');
 }
 
-/** A session tree item, or the argument of its `acp.openSession` command. */
+/** A session tree item, or the argument of its `your-turn.openSession` command. */
 interface SessionArgument {
   agentName?: string;
   sessionId?: string;
@@ -482,9 +486,9 @@ function agentNameOf(arg: unknown): string | undefined {
 
 /** The context menu on a diff's file passes the `data-vscode-context` the chat view gave it. */
 function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileChoice | undefined {
-  const context = arg as { acpToolCallId?: unknown; acpDiffFile?: unknown } | undefined;
-  const toolCallId = context?.acpToolCallId;
-  const file = context?.acpDiffFile;
+  const context = arg as { yourTurnToolCallId?: unknown; yourTurnDiffFile?: unknown } | undefined;
+  const toolCallId = context?.yourTurnToolCallId;
+  const file = context?.yourTurnDiffFile;
   return typeof toolCallId === 'string' && typeof file === 'number' ? { toolCallId, file, open } : undefined;
 }
 
@@ -511,8 +515,8 @@ function quickDiffChangeOf([uri, changes, index]: unknown[]): { path: string; ch
 
 /** The context menu on a command's output passes the `data-vscode-context` the chat view gave it. */
 function commandOutputOf(arg: unknown): { sessionId: string; source: CommandSource; name: string } | undefined {
-  const context = arg as { acpSessionId?: unknown; acpToolCallId?: unknown; acpTerminalId?: unknown; acpTitle?: unknown } | undefined;
-  const { acpSessionId: sessionId, acpToolCallId: toolCallId, acpTerminalId: terminalId, acpTitle: name } = context ?? {};
+  const context = arg as { yourTurnSessionId?: unknown; yourTurnToolCallId?: unknown; yourTurnTerminalId?: unknown; yourTurnTitle?: unknown } | undefined;
+  const { yourTurnSessionId: sessionId, yourTurnToolCallId: toolCallId, yourTurnTerminalId: terminalId, yourTurnTitle: name } = context ?? {};
   if (typeof sessionId !== 'string' || typeof name !== 'string') { return undefined; }
   if (typeof terminalId === 'string') { return { sessionId, source: { kind: 'terminal', terminalId }, name }; }
   return typeof toolCallId === 'string' ? { sessionId, source: { kind: 'toolCall', toolCallId }, name } : undefined;

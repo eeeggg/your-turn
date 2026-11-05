@@ -41,7 +41,7 @@ describe('checkPackageRunner, through the real launcher', () => {
 
     expect(await checkPackageRunner(new AgentManager(), 'uvx', bin)).toEqual({
       works: false,
-      reason: '"uvx --version" exited with code 2; its output is in the ACP log (ACP: Show Log).',
+      reason: '"uvx --version" exited with code 2; its output is in the Your Turn log (Your Turn: Show Log).',
     });
   });
 

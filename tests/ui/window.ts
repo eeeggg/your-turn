@@ -12,7 +12,7 @@ import {
   type Page,
   type TestInfo,
 } from '@playwright/test';
-import { acpContainerControl } from './workbench';
+import { yourTurnContainerControl } from '@tests/ui/workbench';
 
 const root = resolve(__dirname, '../..');
 const windowSize = { width: 1400, height: 900 };
@@ -76,7 +76,7 @@ async function vscodeLogs(profile: string): Promise<Record<string, string>> {
         await visit(child);
       } else if (entry.isFile() && entry.name.endsWith('.log')) {
         const name = relative(directory, child);
-        if (/^\d+\/main\.log$|\/exthost\/exthost\.log$|ACP Client\.log$/.test(name)) {
+        if (/^\d+\/main\.log$|\/exthost\/exthost\.log$|Your Turn\.log$/.test(name)) {
           found.push(child);
         }
       }
@@ -247,8 +247,8 @@ export const test = base.extend<UiFixtures>({
         'window.dialogStyle': 'custom',
         'workbench.startupEditor': 'none',
         ...(gitRepository ? { 'git.enabled': true } : {}),
-        ...(reviewPresentation ? { 'acp.review.presentation': reviewPresentation } : {}),
-        'acp.agents': {
+        ...(reviewPresentation ? { 'your-turn.review.presentation': reviewPresentation } : {}),
+        'your-turn.agents': {
           [`fake-${agentVersion}`]: {
             command: process.execPath,
             args: [join(root, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion}.js`)],
@@ -310,7 +310,7 @@ export const test = base.extend<UiFixtures>({
         BrowserWindow.getAllWindows()[0]?.setBounds({ x: 0, y: 0, ...size });
       }, windowSize);
 
-      await acpContainerControl(window).waitFor({ state: 'visible' });
+      await yourTurnContainerControl(window).waitFor({ state: 'visible' });
       await use(window);
     } catch (error) {
       originalFailure = error;

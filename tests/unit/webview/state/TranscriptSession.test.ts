@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action } from '@/webview/state/RootState';
-import { chatView, promptEnd, queuedPrompts } from './TranscriptTestSupport';
+import { chatView, promptEnd, queuedPrompts } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('the transcript session', () => {
   it('leaves room for the empty state only without a session and an empty transcript', () => {

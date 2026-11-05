@@ -1,9 +1,32 @@
-import type { ExtensionToWebviewMessage, SessionTabsSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { updateActiveSession, withPromptsPosted, type ActiveSession } from '@/webview/state/ActiveSession';
-import { initialPickers, updatePickers, type PickerAction, type PickersState } from '@/webview/state/Pickers';
-import { initialPromptBox, updatePromptBox, type PromptBoxAction, type PromptBoxState } from '@/webview/state/PromptBox';
+import type {
+  ExtensionToWebviewMessage,
+  SessionTabsSnapshot,
+  WebviewToExtensionMessage
+} from '@/shared/WebviewMessages';
+import {
+  updateActiveSession,
+  withPromptsPosted,
+  type ActiveSession
+} from '@/webview/state/ActiveSession';
+import {
+  initialPickers,
+  updatePickers,
+  type PickerAction,
+  type PickersState
+} from '@/webview/state/Pickers';
+import {
+  initialPromptBox,
+  updatePromptBox,
+  type PromptBoxAction,
+  type PromptBoxState
+} from '@/webview/state/PromptBox';
 import type { Transition } from '@/webview/state/Store';
-import { initialQuestions, updateQuestions, type QuestionAction, type QuestionsState } from './Questions';
+import {
+  initialQuestions,
+  updateQuestions,
+  type QuestionAction,
+  type QuestionsState
+} from '@/webview/state/Questions';
 import {
   initialTranscript,
   updateTranscript,

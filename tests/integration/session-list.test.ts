@@ -4,17 +4,17 @@ import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { AgentSessions } from '@/core/SessionList';
 import type { ExtensionTestApi } from '@/extension';
-import { cleanup } from './cleanup';
+import { cleanup } from '@tests/integration/cleanup';
 
 for (const version of [1, 2]) {
   suite(`Session list, ACP v${version}`, () => {
     const agentName = `fake-list-v${version}`;
     let api: ExtensionTestApi;
     let original: unknown;
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
 
     suiteSetup(async () => {
-      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
       api = activated;
@@ -28,7 +28,7 @@ for (const version of [1, 2]) {
 
     suiteTeardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => vscode.commands.executeCommand('your-turn.disconnectAgent', agentName),
         () => config().update('agents', original, vscode.ConfigurationTarget.Global),
       ]);
     });
@@ -55,7 +55,7 @@ for (const version of [1, 2]) {
     test('Refresh Sessions shows what the agent lists now in place of what it listed before', async () => {
       assert.deepStrictEqual(await listed(), ['Listed 1']);
 
-      await vscode.commands.executeCommand('acp.refreshSessions', agentName);
+      await vscode.commands.executeCommand('your-turn.refreshSessions', agentName);
 
       assert.deepStrictEqual(shown(await api.sessionsOf(agentName)), ['Listed 2']);
     });

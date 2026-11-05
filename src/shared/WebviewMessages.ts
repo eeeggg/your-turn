@@ -14,7 +14,7 @@ export interface ImagePresentation {
   fallback?: string;
 }
 
-/** A tool call's content, in the order the agent reported it; diffs only while `acp.showToolCallDiffs` is on. */
+/** A tool call's content, in the order the agent reported it; diffs only while `your-turn.showToolCallDiffs` is on. */
 export type ToolCallContent =
   | { kind: 'text'; text: string }
   | ({ kind: 'image' } & ImagePresentation)

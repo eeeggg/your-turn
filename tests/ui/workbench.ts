@@ -1,10 +1,10 @@
 import type { FrameLocator, Locator, Page } from '@playwright/test';
 
-const extensionId = 'formulahendry.acp-client';
+const extensionId = 'eeeggg.your-turn';
 
 /** The extension-owned workbench control, wherever VS Code places its view container. */
-export function acpContainerControl(window: Page): Locator {
-  return window.getByRole('tab', { name: 'ACP Client', exact: true });
+export function yourTurnContainerControl(window: Page): Locator {
+  return window.getByRole('tab', { name: 'Your Turn', exact: true });
 }
 
 /** VS Code's Explorer control in the activity bar, whose accessible name continues with its shortcut. */
@@ -46,10 +46,10 @@ export function agentsViewWelcome(window: Page): Locator {
 
 /**
  * VS Code hosts extension webviews in an outer workbench iframe and an
- * `#active-frame` iframe. The extension ID distinguishes ACP Chat from the
+ * `#active-frame` iframe. The extension ID distinguishes Your Turn's chat view from the
  * built-in Chat webview, which may be visible at the same time.
  */
-function acpChatFrame(window: Page): FrameLocator {
+function chatFrame(window: Page): FrameLocator {
   return window
     .locator(`iframe.webview[src*="extensionId=${extensionId}"]`)
     .contentFrame()
@@ -57,22 +57,22 @@ function acpChatFrame(window: Page): FrameLocator {
     .contentFrame();
 }
 
-export function acpChatWebview(window: Page): Locator {
+export function chatWebview(window: Page): Locator {
   return window.locator(`iframe.webview[src*="extensionId=${extensionId}"]`);
 }
 
 /** VS Code's private pane DOM identifies the chat view by its header icon; its webview is in an overlay outside it. */
 export function chatStop(window: Page): Locator {
   return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-comment-discussion') })
-    .locator('.pane-header .actions').getByRole('button', { name: 'ACP: Cancel Current Turn', exact: true });
+    .locator('.pane-header .actions').getByRole('button', { name: 'Your Turn: Cancel Current Turn', exact: true });
 }
 
 export function promptInput(window: Page): Locator {
-  return acpChatFrame(window).locator('#promptInput');
+  return chatFrame(window).locator('#promptInput');
 }
 
 export function sessionTabs(window: Page): Locator {
-  return acpChatFrame(window).getByRole('tablist', { name: 'Sessions', exact: true });
+  return chatFrame(window).getByRole('tablist', { name: 'Sessions', exact: true });
 }
 
 /** The chat view's header uses VS Code's private pane DOM, identified by its contributed icon. */
@@ -82,19 +82,19 @@ export function chatViewTitle(window: Page): Locator {
 }
 
 export function questionSurface(window: Page): Locator {
-  return acpChatFrame(window).getByRole('region', { name: 'Elicitations', exact: true });
+  return chatFrame(window).getByRole('region', { name: 'Elicitations', exact: true });
 }
 
 export function questionNotification(window: Page): Locator {
-  return acpChatFrame(window).getByRole('button', { name: /elicitation.*awaiting your response$/ });
+  return chatFrame(window).getByRole('button', { name: /elicitation.*awaiting your response$/ });
 }
 
 export function pendingQuestions(window: Page): Locator {
-  return acpChatFrame(window).getByLabel('Pending elicitations', { exact: true });
+  return chatFrame(window).getByLabel('Pending elicitations', { exact: true });
 }
 
 export function queuedPrompts(window: Page): Locator {
-  return acpChatFrame(window).locator('#queuedPrompts');
+  return chatFrame(window).locator('#queuedPrompts');
 }
 
 /** VS Code's private notification-list DOM groups a native message with its action buttons. */
@@ -103,28 +103,28 @@ export function nativeQuestionNotification(window: Page): Locator {
 }
 
 export function questionRecords(window: Page): Locator {
-  return acpChatFrame(window).locator('.question-record');
+  return chatFrame(window).locator('.question-record');
 }
 
 export function sessionUsage(window: Page): Locator {
-  return acpChatFrame(window).getByRole('button', { name: 'Session usage', exact: true });
+  return chatFrame(window).getByRole('button', { name: 'Session usage', exact: true });
 }
 
 export function sessionUsageDetails(window: Page): Locator {
-  return acpChatFrame(window).getByRole('region', { name: 'Session usage details', exact: true });
+  return chatFrame(window).getByRole('region', { name: 'Session usage details', exact: true });
 }
 
-/** The prompts ACP Chat's transcript shows, by the webview's own classes. */
+/** The prompts the chat view's transcript shows, by the webview's own classes. */
 export function chatUserMessages(window: Page): Locator {
-  return acpChatFrame(window).locator('.message.user');
+  return chatFrame(window).locator('.message.user');
 }
 
 export function chatTranscript(window: Page): Locator {
-  return acpChatFrame(window).locator('#messages');
+  return chatFrame(window).locator('#messages');
 }
 
 export function chatCompactions(window: Page): Locator {
-  return acpChatFrame(window).locator('.compaction-block');
+  return chatFrame(window).locator('.compaction-block');
 }
 
 /** VS Code's quick-input control, used by the command palette and file picker. */
@@ -143,7 +143,7 @@ export function editorTab(window: Page, name: string): Locator {
 }
 
 export function plainFileTab(window: Page, name: string): Locator {
-  return editorTab(window, name).filter({ hasNotText: '— ACP Review' });
+  return editorTab(window, name).filter({ hasNotText: '— Review' });
 }
 
 /**
@@ -161,11 +161,11 @@ export function reviewQuickDiff(window: Page, fileName: string): Locator {
 
 /** The extension-owned review status item in VS Code's workbench status bar. */
 export function reviewStatus(window: Page): Locator {
-  return window.locator('[id="formulahendry.acp-client.acp.review"]');
+  return window.locator('[id="eeeggg.your-turn.your-turn.review"]');
 }
 
 export function reviewChangeStatus(window: Page): Locator {
-  return window.locator('[id="formulahendry.acp-client.acp.review.change"]');
+  return window.locator('[id="eeeggg.your-turn.your-turn.review.change"]');
 }
 
 /** VS Code's native selection status reports the cursor without reading editor internals. */
@@ -176,7 +176,7 @@ export function editorSelection(window: Page): Locator {
 /** VS Code's native diff editor container; its private DOM is the rendered split editor boundary. */
 export function reviewDiffEditor(window: Page): Locator {
   return window.locator('.monaco-diff-editor:visible').filter({
-    has: window.locator('.monaco-editor[data-uri^="acp-review-diff:"]'),
+    has: window.locator('.monaco-editor[data-uri^="your-turn-review-diff:"]'),
   });
 }
 
@@ -222,7 +222,7 @@ export function gitWorkingTreeChange(window: Page, name: string): Locator {
   return window.getByRole('treeitem', { name: `${name}, Modified`, exact: true });
 }
 
-/** SCM's private repository DOM groups resource rows under its provider, separating ACP from Git. */
+/** SCM's private repository DOM groups resource rows under its provider, separating the Review Buffer from Git. */
 export function reviewedFile(window: Page, name: string): Locator {
   return window.locator('.scm-view .monaco-list-row').filter({ hasText: name });
 }
@@ -238,7 +238,7 @@ export function plainFileEditor(window: Page): Locator {
     .locator('.monaco-editor[data-uri^="file:"]');
 }
 
-/** A native Git comparison must retain Git's original URI, distinct from ACP's baseline. */
+/** A native Git comparison must retain Git's original URI, distinct from the review baseline. */
 export function gitDiffEditor(window: Page): Locator {
   return window.locator('.monaco-diff-editor:visible').filter({
     has: window.locator('.monaco-editor[data-uri^="git:"]'),

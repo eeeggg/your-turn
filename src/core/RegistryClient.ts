@@ -1,6 +1,6 @@
 import * as z from 'zod';
-import type { AgentConfigEntry } from './AgentManager';
-import { logDebug, logInfo, logWarning } from './Log';
+import type { AgentConfigEntry } from '@/core/AgentManager';
+import { logDebug, logInfo, logWarning } from '@/core/Log';
 
 /** An agent in the ACP registry, with what Add Agent needs to configure it. */
 export interface RegistryAgent {

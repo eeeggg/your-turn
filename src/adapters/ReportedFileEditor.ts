@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { FileEditor } from '@/core/ReportedFiles';
 
-const scheme = 'acp-reported';
+const scheme = 'your-turn-reported';
 
 /**
  * Opens a tool call's files in VS Code's editors. Open Changes's two sides are documents it serves itself, which VS

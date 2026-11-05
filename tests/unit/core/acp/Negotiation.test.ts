@@ -5,16 +5,22 @@ import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled } from '@/core/
 import { setLogSink } from '@/core/Log';
 import { V1Driver, v1InitializeRequest } from '@/core/acp/V1Driver';
 import { V2Driver, v2InitializeRequest } from '@/core/acp/V2Driver';
-import { connectedDriver, fakeAgent, fakeV2Agent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';
+import {
+  connectedDriver,
+  fakeAgent,
+  fakeV2Agent,
+  work,
+  type AgentScript
+} from '@tests/unit/core/InProcessAgents';
 
 const v2Request = {
   protocolVersion: 2,
-  info: { name: 'vscode-acp-client', version: '0.0.0-test' },
+  info: { name: 'vscode-your-turn', version: '0.0.0-test' },
   capabilities: { elicitation: { form: {}, url: {} } },
 };
 const v1Request = {
   protocolVersion: 1,
-  clientInfo: { name: 'vscode-acp-client', version: '0.0.0-test' },
+  clientInfo: { name: 'vscode-your-turn', version: '0.0.0-test' },
   clientCapabilities: { elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
 };
 

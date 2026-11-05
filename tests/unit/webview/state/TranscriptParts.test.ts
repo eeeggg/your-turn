@@ -1,6 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import { planStepIcon, thoughtSummary, turnShown } from '@/webview/state/Transcript';
-import { chatView, promptEnd } from './TranscriptTestSupport';
+import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('agent messages', () => {
   it('collects the text of a turn into one message, and starts a turn per prompt', () => {

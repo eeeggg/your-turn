@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { lineChanges, splitLines } from '@/core/diff/LineChanges';
 import { unifiedHunks } from '@/core/diff/UnifiedHunks';
 import { setLogSink } from '@/core/Log';
-import { editedTexts } from './editedTexts';
+import { editedTexts } from '@tests/unit/core/diff/editedTexts';
 
 let warnings: string[] = [];
 beforeEach(() => {

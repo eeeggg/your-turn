@@ -1,6 +1,12 @@
 import { Fragment, useLayoutEffect, useRef, type ReactNode, type RefObject } from 'react';
 import type { Picker } from '@/shared/WebviewMessages';
-import { categoryIcon, currentValue, isOpen, tooltipText, type PickerItemId } from '@/webview/state/Pickers';
+import {
+  categoryIcon,
+  currentValue,
+  isOpen,
+  tooltipText,
+  type PickerItemId
+} from '@/webview/state/Pickers';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 /** The hovered item's element, which the tooltip is placed beside. */

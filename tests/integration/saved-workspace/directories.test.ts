@@ -17,7 +17,7 @@ import { cleanup } from '@tests/integration/cleanup';
 
 suite('In a saved workspace', () => {
   test('is available, with both its folders on disk', async () => {
-    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
     assert.ok(await extension?.activate(), 'the extension returns its test API in extension tests');
     assert.deepStrictEqual(
       [vscode.workspace.workspaceFile?.scheme, vscode.workspace.workspaceFolders?.map(({ uri }) => uri.scheme)],
@@ -30,7 +30,7 @@ suite('In a saved workspace', () => {
 for (const version of [1, 2]) {
   suite(`The directories a session in a saved workspace is given, ACP v${version}`, () => {
     const agentName = `fake-directories-v${version}`;
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
     let original: unknown;
     let records: string;
     /** Disposals of what a test built, run in teardown. */

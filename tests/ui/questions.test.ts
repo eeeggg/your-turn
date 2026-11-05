@@ -1,15 +1,30 @@
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { acpChatWebview, acpContainerControl, chatTranscript, explorerControl, nativeQuestionNotification, pendingQuestions, promptInput, questionNotification, questionRecords, questionSurface, queuedPrompts, quickInputRow, sessionUsage, sessionUsageDetails } from './workbench';
-import { expect, test } from './window';
+import {
+  chatWebview,
+  yourTurnContainerControl,
+  chatTranscript,
+  explorerControl,
+  nativeQuestionNotification,
+  pendingQuestions,
+  promptInput,
+  questionNotification,
+  questionRecords,
+  questionSurface,
+  queuedPrompts,
+  quickInputRow,
+  sessionUsage,
+  sessionUsageDetails
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 for (const agentVersion of ['v1', 'v2'] as const) {
   test.describe(`${agentVersion} URL questions`, () => {
     test.use({ agentVersion });
 
     test('shows the full destination on hover and returns decline or dismissal without opening a browser', async ({ window }, testInfo) => {
-      await acpContainerControl(window).click();
+      await yourTurnContainerControl(window).click();
       await window.getByRole('treeitem', { name: new RegExp(`fake-${agentVersion}`) }).hover();
       await window.getByRole('button', { name: 'Connect to Agent' }).click();
       const prompt = promptInput(window);
@@ -39,7 +54,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
     test.use({ agentVersion, authenticationQuestion: true });
 
     test('answers a form during authentication and retries session creation without a response record', async ({ window }, testInfo) => {
-      await acpContainerControl(window).click();
+      await yourTurnContainerControl(window).click();
       await window.getByRole('treeitem', { name: new RegExp(`fake-${agentVersion}`) }).hover();
       await window.getByRole('button', { name: 'Connect to Agent' }).click();
       await quickInputRow(window, 'Authenticate').click();
@@ -60,7 +75,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
     });
 
     test('cleans up a cancelled authentication form and permits a fresh connection', async ({ window }) => {
-      await acpContainerControl(window).click();
+      await yourTurnContainerControl(window).click();
       const agent = window.getByRole('treeitem', { name: new RegExp(`fake-${agentVersion}`) });
       await agent.hover();
       await window.getByRole('button', { name: 'Connect to Agent' }).click();
@@ -94,7 +109,7 @@ test.describe('v2 pre-session questions', () => {
   test.use({ agentVersion: 'v2', preSessionQuestion: true });
 
   test('answers a request-scoped setup form before session creation completes without creating a session record', async ({ window }, testInfo) => {
-    await acpContainerControl(window).click();
+    await yourTurnContainerControl(window).click();
     await window.getByRole('treeitem', { name: /fake-v2/ }).hover();
     await window.getByRole('button', { name: 'Connect to Agent' }).click();
     const prompt = promptInput(window);
@@ -120,7 +135,7 @@ test.describe('v2 concurrent questions', () => {
   test.use({ agentVersion: 'v2' });
 
   test('withdrawing a form rejects a stale submission without changing another draft or its replacement', async ({ window, workspace }, testInfo) => {
-    await acpContainerControl(window).click();
+    await yourTurnContainerControl(window).click();
     await window.getByRole('treeitem', { name: /fake-v2/ }).hover();
     await window.getByRole('button', { name: 'Connect to Agent' }).click();
     const prompt = promptInput(window);
@@ -142,7 +157,7 @@ test.describe('v2 concurrent questions', () => {
     await questionNotification(window).click();
     const surface = questionSurface(window);
     await surface.getByRole('form', { name: 'Surviving settings', exact: true }).getByLabel('Answer *', { exact: true }).fill('preserved draft');
-    await window.getByRole('button', { name: 'ACP: Cancel Current Turn', exact: true }).click();
+    await window.getByRole('button', { name: 'Your Turn: Cancel Current Turn', exact: true }).click();
     await expect(chatTranscript(window)).toContainText('cancel-ack');
     await expect(questionNotification(window)).toHaveAccessibleName('Two elicitations are awaiting your response');
     await expect(surface.getByRole('form', { name: 'Surviving settings', exact: true }).getByLabel('Answer *', { exact: true })).toHaveValue('preserved draft');
@@ -182,7 +197,7 @@ test.describe('v2 concurrent questions', () => {
   });
 
   test('answering concurrent forms does not release a queued prompt before agent idle', async ({ window, workspace }, testInfo) => {
-    await acpContainerControl(window).click();
+    await yourTurnContainerControl(window).click();
     await window.getByRole('treeitem', { name: /fake-v2/ }).hover();
     await window.getByRole('button', { name: 'Connect to Agent' }).click();
     const prompt = promptInput(window);
@@ -221,7 +236,7 @@ test.describe('v2 concurrent questions', () => {
 });
 
 test('a question preserves prompt composition and local Escape restores its selection', async ({ window }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
   const prompt = promptInput(window);
@@ -269,7 +284,7 @@ test('a question preserves prompt composition and local Escape restores its sele
 });
 
 test('long questions scroll internally and appending a request preserves the active field and scroll position', async ({ window }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
   const prompt = promptInput(window);
@@ -324,7 +339,7 @@ test('long questions scroll internally and appending a request preserves the act
 });
 
 test('questions and session usage share one expansion space without losing question drafts', async ({ window }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
   const prompt = promptInput(window);
@@ -362,7 +377,7 @@ test('questions and session usage share one expansion space without losing quest
 });
 
 test('a hidden agent question stays pending until native Open and submits typed answers with a collapsed record', async ({ window, workspace }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
   const prompt = promptInput(window);
@@ -371,13 +386,13 @@ test('a hidden agent question stays pending until native Open and submits typed 
   await prompt.press('Enter');
   await expect(chatTranscript(window)).toContainText('Question armed.');
   await explorerControl(window).click();
-  await expect(acpChatWebview(window)).toBeHidden();
+  await expect(chatWebview(window)).toBeHidden();
   await writeFile(join(workspace, 'question.trigger'), 'open');
   const notification = nativeQuestionNotification(window);
   await expect(notification).toContainText('fake-v1 has a question for ui-');
-  await expect(acpChatWebview(window)).toBeHidden();
+  await expect(chatWebview(window)).toBeHidden();
   await notification.getByRole('button', { name: 'Open', exact: true }).click();
-  await expect(acpChatWebview(window)).toBeVisible();
+  await expect(chatWebview(window)).toBeVisible();
   const surface = questionSurface(window);
   await expect(surface.getByRole('heading', { name: 'Desktop settings', exact: true })).toBeFocused();
   await expect(questionRecords(window)).toHaveCount(0);

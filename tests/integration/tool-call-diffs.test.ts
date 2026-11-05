@@ -6,8 +6,8 @@ import { setup, suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { observed } from './observed';
-import { cleanup } from './cleanup';
+import { observed } from '@tests/integration/observed';
+import { cleanup } from '@tests/integration/cleanup';
 
 type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
 
@@ -42,7 +42,7 @@ for (const version of [1, 2]) {
     const posts: ExtensionToWebviewMessage[] = [];
     const answers: WebviewToExtensionMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
 
     const editCall = () => posts.find((post): post is ToolCallPost => post.type === 'toolCall' && post.toolCallId === 'edit-1');
     const prompt = async () => {
@@ -55,7 +55,7 @@ for (const version of [1, 2]) {
     const showDiffs = (on: boolean) => config().update('showToolCallDiffs', on, vscode.ConfigurationTarget.Global);
 
     suiteSetup(async () => {
-      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
       api = activated;
@@ -67,9 +67,9 @@ for (const version of [1, 2]) {
         { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
         vscode.ConfigurationTarget.Global,
       );
-      await vscode.commands.executeCommand('acp-chat.focus');
+      await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('acp.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
     });
 
     setup(() => {
@@ -80,7 +80,7 @@ for (const version of [1, 2]) {
 
     suiteTeardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => vscode.commands.executeCommand('your-turn.disconnectAgent', agentName),
         () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),
         () => original && config().update('agents', original.agents, vscode.ConfigurationTarget.Global),
         () => original && config().update('showToolCallDiffs', original.showToolCallDiffs, vscode.ConfigurationTarget.Global),
@@ -89,7 +89,7 @@ for (const version of [1, 2]) {
       ]);
     });
 
-    test('With acp.showToolCallDiffs off, the tool call reaches the chat view without its diffs', async () => {
+    test('With your-turn.showToolCallDiffs off, the tool call reaches the chat view without its diffs', async () => {
       await showDiffs(false);
 
       const call = await prompt();
@@ -131,11 +131,11 @@ for (const version of [1, 2]) {
       const a = join(dir, 'a.ts');
 
       answers.length = 0;
-      await vscode.commands.executeCommand('acp.openToolCallFile', { acpToolCallId: 'edit-1', acpDiffFile: 0 });
+      await vscode.commands.executeCommand('your-turn.openToolCallFile', { yourTurnToolCallId: 'edit-1', yourTurnDiffFile: 0 });
       await shownFile(a);
       assert.deepStrictEqual(answers, []);
 
-      await vscode.commands.executeCommand('acp.openToolCallChanges', { acpToolCallId: 'edit-1', acpDiffFile: 0 });
+      await vscode.commands.executeCommand('your-turn.openToolCallChanges', { yourTurnToolCallId: 'edit-1', yourTurnDiffFile: 0 });
       assert.deepStrictEqual(await shownChanges("a.ts (Agent's Change)"), { before: 'one\ntwo\n', after: 'one\nTWO\n' });
     });
 
@@ -144,7 +144,7 @@ for (const version of [1, 2]) {
       await prompt();
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 
-      await vscode.commands.executeCommand(version === 1 ? 'acp.openToolCallChanges' : 'acp.openToolCallFile', { acpToolCallId: 'edit-1', acpDiffFile: 1 });
+      await vscode.commands.executeCommand(version === 1 ? 'your-turn.openToolCallChanges' : 'your-turn.openToolCallFile', { yourTurnToolCallId: 'edit-1', yourTurnDiffFile: 1 });
 
       assert.deepStrictEqual(
         version === 1 ? await shownChanges("new.ts (Agent's Change)") : await shownChanges("gone.ts (Agent's Change)"),

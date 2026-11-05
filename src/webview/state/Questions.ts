@@ -1,6 +1,6 @@
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import type { Action } from './RootState';
-import type { Transition } from './Store';
+import type { Action } from '@/webview/state/RootState';
+import type { Transition } from '@/webview/state/Store';
 
 type Question = Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number];
 type Draft = NonNullable<Question['draft']>;

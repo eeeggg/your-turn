@@ -6,7 +6,7 @@ import type { AgentConfigEntry } from '@/core/AgentManager';
  * Returns a map of agent name → config.
  */
 export function getAgentConfigs(): Record<string, AgentConfigEntry> {
-  const config = vscode.workspace.getConfiguration('acp');
+  const config = vscode.workspace.getConfiguration('your-turn');
   const agents = config.get<Record<string, AgentConfigEntry>>('agents', {});
   return agents;
 }

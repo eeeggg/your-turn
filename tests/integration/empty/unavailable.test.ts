@@ -10,12 +10,12 @@ suite('In a window with no folder', () => {
   });
 
   test("activates registering only the commands of the Agents view's Other Workspaces mode, without giving tests its API", async () => {
-    const ext = vscode.extensions.getExtension('formulahendry.acp-client');
+    const ext = vscode.extensions.getExtension('eeeggg.your-turn');
     assert.ok(ext);
     assert.strictEqual(await ext.activate(), undefined);
     assert.deepStrictEqual(
-      (await vscode.commands.getCommands(true)).filter((command) => command.startsWith('acp.')).sort(),
-      ['acp.openSessionInWorkspace', 'acp.showAgents', 'acp.showOtherWorkspaces'],
+      (await vscode.commands.getCommands(true)).filter((command) => command.startsWith('your-turn.')).sort(),
+      ['your-turn.openSessionInWorkspace', 'your-turn.showAgents', 'your-turn.showOtherWorkspaces'],
     );
   });
 

@@ -1,6 +1,11 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { PermissionOption, PermissionOutcome, PermissionRequest } from '@/core/acp/AcpDriver';
-import { PermissionRequests, type AutoApprove, type PermissionChooser, type PermissionPrompt } from '@/core/PermissionRequests';
+import {
+  PermissionRequests,
+  type AutoApprove,
+  type PermissionChooser,
+  type PermissionPrompt
+} from '@/core/PermissionRequests';
 
 const allowOnce: PermissionOption = { id: 'allow', name: 'Allow', kind: 'allow_once' };
 const allowAlways: PermissionOption = { id: 'always', name: 'Always allow', kind: 'allow_always' };

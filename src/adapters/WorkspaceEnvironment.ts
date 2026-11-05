@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import type { WorkspaceState, WorkspaceTarget } from '@/core/PersistedState';
 import { logInfo } from '@/core/Log';
 import type { SessionEnvironment } from '@/core/SessionManager';
-import { getAgentConfigs } from './AgentConfig';
+import { getAgentConfigs } from '@/adapters/AgentConfig';
 
 /** The scheme and authority of `uri`, as VS Code parses them. */
 export function hostOf(uri: string): string {
@@ -78,7 +78,7 @@ export interface WorkspaceEnvironment extends SessionEnvironment {
 
 /** The document in the active editor, as a resource link for a prompt, unless the user turned that off. */
 export function activeFileLink(): ReturnType<SessionEnvironment['activeFileLink']> {
-  const cfg = vscode.workspace.getConfiguration('acp');
+  const cfg = vscode.workspace.getConfiguration('your-turn');
   if (!cfg.get<boolean>('includeActiveFile', true)) {
     return undefined;
   }

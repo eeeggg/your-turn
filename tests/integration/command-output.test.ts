@@ -4,8 +4,8 @@ import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { observed } from './observed';
-import { cleanup } from './cleanup';
+import { observed } from '@tests/integration/observed';
+import { cleanup } from '@tests/integration/cleanup';
 
 type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
 type TerminalPost = Extract<ExtensionToWebviewMessage, { type: 'terminal' }>;
@@ -23,17 +23,17 @@ for (const version of [1, 2]) {
     let original: unknown;
     const posts: ExtensionToWebviewMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
     /** The context the chat view gives the command's output, which VS Code's menu passes to Open in Terminal. */
     const context = {
-      acpSessionId: sessionId,
-      acpTitle: 'npm test',
-      ...(version === 1 ? { acpToolCallId: 'run-1' } : { acpTerminalId: 'term-1' }),
+      yourTurnSessionId: sessionId,
+      yourTurnTitle: 'npm test',
+      ...(version === 1 ? { yourTurnToolCallId: 'run-1' } : { yourTurnTerminalId: 'term-1' }),
     };
-    const openInTerminal = () => vscode.commands.executeCommand('acp.openCommandOutput', context);
+    const openInTerminal = () => vscode.commands.executeCommand('your-turn.openCommandOutput', context);
 
     suiteSetup(async () => {
-      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
       api = activated;
@@ -44,16 +44,16 @@ for (const version of [1, 2]) {
         { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
         vscode.ConfigurationTarget.Global,
       );
-      await vscode.commands.executeCommand('acp-chat.focus');
+      await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('acp.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
       await api.sendChatMessage({ type: 'sendPrompt', text: 'run' });
       await observed(api.chatPosts, () => posts.find((post) => post.type === 'promptEnd'));
     });
 
     suiteTeardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => vscode.commands.executeCommand('your-turn.disconnectAgent', agentName),
         ...vscode.window.terminals.map((terminal) => async () => {
           let closed: () => void = () => {};
           const completion = new Promise<void>((resolve) => { closed = resolve; });
@@ -103,7 +103,7 @@ for (const version of [1, 2]) {
     });
 
     test('Once the user disconnects the agent, the terminal open on its output stays, and its output is let go', async () => {
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.disconnectAgent', agentName);
       assert.strictEqual(named('npm test').length, 1);
 
       const closed = observed(vscode.window.onDidCloseTerminal, () => (named('npm test').length === 0 ? true : undefined));

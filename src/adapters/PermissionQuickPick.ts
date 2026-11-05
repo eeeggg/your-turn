@@ -4,7 +4,7 @@ import type { PermissionChooser } from '@/core/PermissionRequests';
 
 export const permissionQuickPick: PermissionChooser = {
   autoApprove() {
-    const setting = vscode.workspace.getConfiguration('acp').get<string>('autoApprovePermissions');
+    const setting = vscode.workspace.getConfiguration('your-turn').get<string>('autoApprovePermissions');
     return setting === 'allowAll' ? 'allowAll' : 'ask';
   },
 

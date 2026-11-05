@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { captureTraffic, clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled, TrafficBuffer } from '@/core/Traffic';
+import {
+  captureTraffic,
+  clearTraffic,
+  getTrafficJsonl,
+  setTrafficCaptureEnabled,
+  TrafficBuffer
+} from '@/core/Traffic';
 
 afterEach(() => {
   clearTraffic();

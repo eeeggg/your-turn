@@ -1,7 +1,7 @@
 import { basename, dirname } from 'node:path';
 import * as vscode from 'vscode';
 import type { ReviewFiles } from '@/core/review/Reviews';
-import { applyReviewEdit } from './ReviewTakeovers';
+import { applyReviewEdit } from '@/adapters/review/ReviewTakeovers';
 
 const notFound = (e: unknown) => e instanceof vscode.FileSystemError && e.code === 'FileNotFound';
 

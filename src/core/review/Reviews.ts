@@ -1,8 +1,8 @@
 import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
-import { FollowedFiles, type WatchFile } from './FollowedFiles';
-import { Review, type ReadFile, type RestoreFile, type ReviewedFile } from './Review';
-import { V1Guard } from './V1Guard';
-import { V2Guard } from './V2Guard';
+import { FollowedFiles, type WatchFile } from '@/core/review/FollowedFiles';
+import { Review, type ReadFile, type RestoreFile, type ReviewedFile } from '@/core/review/Review';
+import { V1Guard } from '@/core/review/V1Guard';
+import { V2Guard } from '@/core/review/V2Guard';
 
 /** What reviews need of the files they review. */
 export interface ReviewFiles {

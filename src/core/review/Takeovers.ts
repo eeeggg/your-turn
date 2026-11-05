@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { savedOver, takenOver, type TextEdit, type UserEdit } from './Hunks';
-import type { FileContent } from './Review';
-import type { Reviews } from './Reviews';
+import { savedOver, takenOver, type TextEdit, type UserEdit } from '@/core/review/Hunks';
+import type { FileContent } from '@/core/review/Review';
+import type { Reviews } from '@/core/review/Reviews';
 
 /**
  * Who changed a document under review, as the adapter tells them apart: the user, the review itself (Undo Change, Undo

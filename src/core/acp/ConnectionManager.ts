@@ -8,11 +8,11 @@ import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { captureTraffic } from '@/core/Traffic';
 import { logDebug, logError, logInfo } from '@/core/Log';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import type { AcpDriver } from './AcpDriver';
-import { negotiate } from './Negotiation';
-import { V1Driver } from './V1Driver';
-import { V2Driver } from './V2Driver';
-import { OutgoingRequests } from './OutgoingRequests';
+import type { AcpDriver } from '@/core/acp/AcpDriver';
+import { negotiate } from '@/core/acp/Negotiation';
+import { V1Driver } from '@/core/acp/V1Driver';
+import { V2Driver } from '@/core/acp/V2Driver';
+import { OutgoingRequests } from '@/core/acp/OutgoingRequests';
 
 /**
  * Opens client-side ACP connections to agents, each spoken through an ACP driver.

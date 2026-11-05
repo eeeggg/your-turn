@@ -1,6 +1,6 @@
-import { logError, messageOf } from './Log';
-import type { SessionAddress, StartupRequests } from './PersistedState';
-import type { Window } from './VsCodeApi';
+import { logError, messageOf } from '@/core/Log';
+import type { SessionAddress, StartupRequests } from '@/core/PersistedState';
+import type { Window } from '@/core/VsCodeApi';
 
 /**
  * Opens a session in the window of its workspace: a startup request asks the window opening the workspace to load the

@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { FileChange, FileDiff } from '@/core/acp/AcpDriver';
-import { diffFiles, shownPath, TOOL_CALL_DIFF_LINE_LIMIT, ToolCallDiffs, withinLineLimit, type DiffFile } from '@/core/ToolCallDiffs';
+import {
+  diffFiles,
+  shownPath,
+  TOOL_CALL_DIFF_LINE_LIMIT,
+  ToolCallDiffs,
+  withinLineLimit,
+  type DiffFile
+} from '@/core/ToolCallDiffs';
 
 /** As ACP asks: absolute paths, no `a/` or `b/`. Git writes no hunks for a binary file. */
 const gitPatch = `diff --git /work/logo.png /work/logo.png

@@ -1,14 +1,32 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
-import type { AgentApp, AuthMethod as AcpAuthMethod, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
+import type {
+  AgentApp,
+  AuthMethod as AcpAuthMethod,
+  SessionConfigOption,
+  SessionNotification
+} from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { UnknownSession, type AuthMethod, type ConfigOption, type FileLink, type SessionRoots, type SessionUpdate } from '@/core/acp/AcpDriver';
+import {
+  UnknownSession,
+  type AuthMethod,
+  type ConfigOption,
+  type FileLink,
+  type SessionRoots,
+  type SessionUpdate
+} from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { setLogSink } from '@/core/Log';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
-import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress, type WorkspaceTarget } from '@/core/PersistedState';
+import {
+  SessionReferences,
+  WorkspaceState,
+  type KeyValueStore,
+  type SessionAddress,
+  type WorkspaceTarget
+} from '@/core/PersistedState';
 import {
   AuthenticationCancelled,
   SessionManager,
@@ -18,7 +36,16 @@ import {
 } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { fakeAgent, fakeV2Agent, InProcessAgents, unusedEditor, unusedHandlers, work, type AgentScript, type ExitOrder } from './InProcessAgents';
+import {
+  fakeAgent,
+  fakeV2Agent,
+  InProcessAgents,
+  unusedEditor,
+  unusedHandlers,
+  work,
+  type AgentScript,
+  type ExitOrder
+} from '@tests/unit/core/InProcessAgents';
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -221,11 +248,11 @@ describe('SessionManager', () => {
     manager.on('session-ended', (id, reason) => chatView.notifySessionEnded(id, reason));
     await manager.connectToAgent('fake');
     chatView.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
-    expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', true);
+    expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
     if (ending === 'disconnect') { await manager.disconnectAgent('fake'); }
     else { await agents.running('fake')[0]?.crash(); }
     expect(chatView.hasRunningTurn).toBe(false);
-    expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'acp.turnInProgress', false);
+    expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', false);
   });
 
   it('keeps another agent opening snapshot when an unrelated connection exits', async () => {
@@ -1909,7 +1936,7 @@ describe('SessionManager', () => {
       it('fails to connect with the exit code of a command that exits before answering', async () => {
         const manager = realAgent({ command: process.execPath, args: ['-e', 'process.exitCode = 2'] });
 
-        await expect(manager.connectToAgent('broken')).rejects.toThrow('Agent "broken" exited with code 2 before connecting; its output is in the ACP log (ACP: Show Log).');
+        await expect(manager.connectToAgent('broken')).rejects.toThrow('Agent "broken" exited with code 2 before connecting; its output is in the Your Turn log (Your Turn: Show Log).');
       });
     });
 

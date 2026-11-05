@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import type { FileDiff, SessionUpdate, ToolCallStatus } from '@/core/acp/AcpDriver';
 import { logWarning, messageOf } from '@/core/Log';
-import type { FileContent, ReadFile, Review } from './Review';
+import type { FileContent, ReadFile, Review } from '@/core/review/Review';
 
 type WholeFile = Extract<FileDiff, { kind: 'wholeFile' }>;
 

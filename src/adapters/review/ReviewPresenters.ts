@@ -4,8 +4,8 @@ import { logError } from '@/core/Log';
 import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
-import { BASELINE_SCHEME } from './ReviewSourceControl';
-import { applyReviewEdit, saveForReview } from './ReviewTakeovers';
+import { BASELINE_SCHEME } from '@/adapters/review/ReviewSourceControl';
+import { applyReviewEdit, saveForReview } from '@/adapters/review/ReviewTakeovers';
 
 /** VS Code diffs a file some time after it opens or the agent writes it; quick diff's view has nothing to show before. */
 const VIEW_ATTEMPTS = 20;
@@ -29,8 +29,8 @@ export interface ReviewDisplay extends vscode.Disposable {
 function activePath(): string | undefined {
   const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
   const uri = input instanceof vscode.TabInputText ? input.uri : input instanceof vscode.TabInputTextDiff ? input.modified : undefined;
-  if (input instanceof vscode.TabInputTextDiff && input.original.scheme === 'acp-review-diff'
-    && input.modified.scheme === 'acp-review-diff' && input.original.fsPath === input.modified.fsPath) { return input.modified.fsPath; }
+  if (input instanceof vscode.TabInputTextDiff && input.original.scheme === 'your-turn-review-diff'
+    && input.modified.scheme === 'your-turn-review-diff' && input.original.fsPath === input.modified.fsPath) { return input.modified.fsPath; }
   return uri?.scheme === 'file' ? uri.fsPath : undefined;
 }
 
@@ -128,7 +128,7 @@ export function createReviewEditors(
     activePath,
     isOpen: (path) => viewShown(path) || vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
       input instanceof vscode.TabInputTextDiff
-      && input.original.scheme === 'acp-review-diff'
+      && input.original.scheme === 'your-turn-review-diff'
       && input.modified.scheme === 'file'
       && input.modified.fsPath === path)),
     /** `vscode.open`, as it opens a tab for a file not there too, which a text document cannot. */
@@ -185,15 +185,15 @@ export function createReviewEditors(
 }
 
 function vscodeReviewDisplay(): ReviewDisplay {
-  const item = vscode.window.createStatusBarItem('acp.review', vscode.StatusBarAlignment.Left, 99);
-  item.name = 'ACP Review';
-  item.command = 'acp.nextReviewFile';
+  const item = vscode.window.createStatusBarItem('your-turn.review', vscode.StatusBarAlignment.Left, 99);
+  item.name = 'Review Buffer';
+  item.command = 'your-turn.nextReviewFile';
   item.tooltip = 'Files under review: go to the next one';
   return {
     review: (sessionShown, files) => {
-      void vscode.commands.executeCommand('setContext', 'acp.reviewShown', sessionShown);
-      void vscode.commands.executeCommand('setContext', 'acp.reviewHasFiles', files.length > 0);
-      void vscode.commands.executeCommand('setContext', 'acp.reviewedFiles', files);
+      void vscode.commands.executeCommand('setContext', 'your-turn.reviewShown', sessionShown);
+      void vscode.commands.executeCommand('setContext', 'your-turn.reviewHasFiles', files.length > 0);
+      void vscode.commands.executeCommand('setContext', 'your-turn.reviewedFiles', files);
     },
     position: (text) => {
       if (text === undefined) {
@@ -250,7 +250,7 @@ export class ReviewPresenters implements vscode.Disposable {
     return this.disposal;
   }
 
-  /** The shown session's turn started or ended; the title area's buttons follow `acp.turnInProgress` themselves. */
+  /** The shown session's turn started or ended; the title area's buttons follow `your-turn.turnInProgress` themselves. */
   turnInProgress(inProgress: boolean): void {
     if (this.disposed) { return; }
     this.turnRuns = inProgress;
@@ -258,7 +258,7 @@ export class ReviewPresenters implements vscode.Disposable {
 
   /** A user's file-navigation command may open quick diff during a turn; agent-driven tab changes may not. */
   async navigated(): Promise<void> {
-    if (this.disposed || vscode.workspace.getConfiguration('acp').get<string>('review.presentation', 'diffEditor') !== 'quickDiff') { return; }
+    if (this.disposed || vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') !== 'quickDiff') { return; }
     const path = textTabPath();
     if (path !== undefined) { await this.controls.entered(path); }
   }
@@ -268,14 +268,14 @@ export class ReviewPresenters implements vscode.Disposable {
     return Promise.allSettled([this.latestPresentation, ...this.pending]).then(() => {});
   }
 
-  /** Only quick diff follows plain-tab entry; a normal editor must not reopen an ACP Review diff. */
+  /** Only quick diff follows plain-tab entry; a normal editor must not reopen a review diff. */
   private tabsChanged(): void {
     if (this.disposed) { return; }
     this.showAll();
     const path = textTabPath();
     if (path === this.tabPath) { return; }
     this.tabPath = path;
-    if (path !== undefined && !this.turnRuns && vscode.workspace.getConfiguration('acp').get<string>('review.presentation', 'diffEditor') === 'quickDiff') {
+    if (path !== undefined && !this.turnRuns && vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') === 'quickDiff') {
       this.latestPresentation = this.controls.entered(path).catch((e: unknown) => logError("Showing the file's change failed", e));
       const presentation = this.latestPresentation;
       this.pending.add(presentation);
@@ -289,7 +289,7 @@ export class ReviewPresenters implements vscode.Disposable {
     const uris = paths.map((path) => vscode.Uri.file(path));
     for (const { tabs } of vscode.window.tabGroups.all) {
       for (const { input } of tabs) {
-        if (input instanceof vscode.TabInputTextDiff && input.original.scheme === 'acp-review-diff'
+        if (input instanceof vscode.TabInputTextDiff && input.original.scheme === 'your-turn-review-diff'
           && paths.includes(input.modified.fsPath)) { uris.push(input.original, input.modified); }
       }
     }

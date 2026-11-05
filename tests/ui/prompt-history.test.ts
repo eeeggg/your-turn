@@ -1,8 +1,15 @@
 import type { Locator, Page } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { acpContainerControl, chatTranscript, chatUserMessages, promptInput, questionSurface, queuedPrompts } from './workbench';
-import { expect, test } from './window';
+import {
+  yourTurnContainerControl,
+  chatTranscript,
+  chatUserMessages,
+  promptInput,
+  questionSurface,
+  queuedPrompts
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 /** The fake agent ends a turn at once for a prompt starting `noted `. */
 const oldest = 'noted oldest';
@@ -11,7 +18,7 @@ const multiline = `${firstLine}\nmiddle line\nlast line`;
 const newest = 'noted newest';
 
 async function connectFakeAgent(window: Page): Promise<void> {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   const agent = window.getByRole('treeitem', { name: /fake-v1/ });
   await agent.hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();

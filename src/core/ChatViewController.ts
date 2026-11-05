@@ -1,7 +1,7 @@
 import { imageSize } from 'image-size';
-import { readMarkdownImage } from './MarkdownImageFiles';
-import { ImageLoads } from './ImageLoads';
-import { fetchMarkdownImage, type ImageNetwork } from './MarkdownImageNetwork';
+import { readMarkdownImage } from '@/core/MarkdownImageFiles';
+import { ImageLoads } from '@/core/ImageLoads';
+import { fetchMarkdownImage, type ImageNetwork } from '@/core/MarkdownImageNetwork';
 import type {
   ConfigOption,
   ConfigValueGroup,
@@ -20,16 +20,16 @@ import type {
   ToolCallContent as WebviewToolCallContent,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
-import type { SessionEnvironment, SessionInfo, SessionManager } from './SessionManager';
-import type { AgentTerminals } from './AgentTerminals';
-import { CommandOutputFeed, type ShownContent } from './CommandOutputFeed';
-import { logDebug, logError, logInfo, messageOf } from './Log';
-import { openReportedChanges, openReportedFile, type FileEditor } from './ReportedFiles';
-import { ToolCallDiffs, type DiffFile } from './ToolCallDiffs';
-import type { Commands, Window } from './VsCodeApi';
-import type { ElicitationInteractions } from './ClientHandlers';
-import { SessionTabs } from './SessionTabs';
-import type { SessionCommands } from './SessionCommands';
+import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/SessionManager';
+import type { AgentTerminals } from '@/core/AgentTerminals';
+import { CommandOutputFeed, type ShownContent } from '@/core/CommandOutputFeed';
+import { logDebug, logError, logInfo, messageOf } from '@/core/Log';
+import { openReportedChanges, openReportedFile, type FileEditor } from '@/core/ReportedFiles';
+import { ToolCallDiffs, type DiffFile } from '@/core/ToolCallDiffs';
+import type { Commands, Window } from '@/core/VsCodeApi';
+import type { ElicitationInteractions } from '@/core/ClientHandlers';
+import { SessionTabs } from '@/core/SessionTabs';
+import type { SessionCommands } from '@/core/SessionCommands';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<
@@ -74,7 +74,7 @@ export interface ChatViewEnvironment extends Commands {
   reveal(): PromiseLike<void>;
   /** Deliver a webview message; dropped while the chat view is not open. */
   post(message: ExtensionToWebviewMessage): void;
-  /** The `acp.showToolCallDiffs` setting, read for each tool call update. */
+  /** The `your-turn.showToolCallDiffs` setting, read for each tool call update. */
   showsToolCallDiffs(): boolean;
   imageRequestOrigin?(): string;
 }
@@ -793,7 +793,7 @@ export class ChatViewController {
     return src;
   }
 
-  /** The tool call's content as the contract has it; its diffs' files as shown, only while `acp.showToolCallDiffs` is on. */
+  /** The tool call's content as the contract has it; its diffs' files as shown, only while `your-turn.showToolCallDiffs` is on. */
   private toolCallContent(sessionId: string, toolCallId: string, content: readonly ShownContent[]): WebviewToolCallContent[] {
     const imageBudgetKey = imageKey('tool', toolCallId);
     this.imageBytes.delete(imageBudgetKey);
@@ -818,11 +818,11 @@ export class ChatViewController {
   }
 
   /**
-   * Shows the Cancel button in the chat view's title bar and disables the review's buttons (`acp.turnInProgress` in
+   * Shows the Cancel button in the chat view's title bar and disables the review's buttons (`your-turn.turnInProgress` in
    * package.json), and tells the listeners.
    */
   private setTurnInProgress(inProgress: boolean): void {
-    void this.environment.executeCommand('setContext', 'acp.turnInProgress', inProgress);
+    void this.environment.executeCommand('setContext', 'your-turn.turnInProgress', inProgress);
     for (const listener of this.turnListeners) { listener(inProgress); }
   }
 

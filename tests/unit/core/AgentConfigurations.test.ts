@@ -7,8 +7,8 @@ import type { RegistryAgent } from '@/core/RegistryClient';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { ConfigurationTarget, QuickPickItemKind, type WorkspaceConfiguration } from '@/core/VsCodeApi';
-import { fakeAgent, InProcessAgents, unusedHandlers, work } from './InProcessAgents';
-import { ScriptedUser } from './ScriptedUser';
+import { fakeAgent, InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
+import { ScriptedUser } from '@tests/unit/core/ScriptedUser';
 
 type Agents = Record<string, AgentConfigEntry>;
 

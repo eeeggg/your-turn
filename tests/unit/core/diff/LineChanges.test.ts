@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { lineChanges, splitLines, type LineChange } from '@/core/diff/LineChanges';
 import { setLogSink } from '@/core/Log';
-import { editedTexts } from './editedTexts';
+import { editedTexts } from '@tests/unit/core/diff/editedTexts';
 
 let warnings: string[] = [];
 beforeEach(() => {

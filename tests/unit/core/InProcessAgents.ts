@@ -4,7 +4,12 @@ import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { onTestFinished } from 'vitest';
 import type { AcpDriver, AcpSchema, SessionRoots, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import type { AgentConfigEntry, AgentLauncher, AgentProcess, AgentProcessEvents } from '@/core/AgentManager';
+import type {
+  AgentConfigEntry,
+  AgentLauncher,
+  AgentProcess,
+  AgentProcessEvents
+} from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import type { FileEditor } from '@/core/ReportedFiles';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';

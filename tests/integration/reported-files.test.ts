@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { ReportedFileEditor } from '@/adapters/ReportedFileEditor';
-import { cleanup } from './cleanup';
+import { cleanup } from '@tests/integration/cleanup';
 
 suite('Reported File Editor Test Suite', () => {
   let dir: string;

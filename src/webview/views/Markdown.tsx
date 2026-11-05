@@ -1,6 +1,12 @@
 import { useEffect, useState, type ComponentProps } from 'react';
-import { defaultComponents, defaultRemarkPlugins, Streamdown, type Components, type ExtraProps } from 'streamdown';
-import { useDispatch, useSelector } from './StoreContext';
+import {
+  defaultComponents,
+  defaultRemarkPlugins,
+  Streamdown,
+  type Components,
+  type ExtraProps
+} from 'streamdown';
+import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 export const copyFeedbackDuration = 2000;
 const DefaultLink = defaultComponents.a;

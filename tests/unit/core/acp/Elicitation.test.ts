@@ -7,7 +7,14 @@ import { v1Elicitation, v2Elicitation } from '@/core/acp/Elicitation';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
-import { connectedDriver, fakeAgent, fakeV2Agent, InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
+import {
+  connectedDriver,
+  fakeAgent,
+  fakeV2Agent,
+  InProcessAgents,
+  unusedHandlers,
+  work
+} from '@tests/unit/core/InProcessAgents';
 
 describe('versioned elicitation translation', () => {
   it('v2 preserves future string formats as unconstrained text', async () => {

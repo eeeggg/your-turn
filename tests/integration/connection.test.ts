@@ -40,7 +40,7 @@ for (const version of [1, 2]) {
 
     suiteSetup(async () => {
       clearTraffic();
-      const config = vscode.workspace.getConfiguration('acp');
+      const config = vscode.workspace.getConfiguration('your-turn');
       originalAutoApprove = config.get<string>('autoApprovePermissions');
       await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
 
@@ -97,7 +97,7 @@ for (const version of [1, 2]) {
         updates?.dispose();
         setLogSink(undefined);
         clearTraffic();
-        const config = vscode.workspace.getConfiguration('acp');
+        const config = vscode.workspace.getConfiguration('your-turn');
         await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);
       }
     });
@@ -120,12 +120,12 @@ for (const version of [1, 2]) {
       assert.deepStrictEqual(initializes.map(t => at(t.message, 'params')), [
         {
           protocolVersion: 2,
-          info: { name: 'vscode-acp-client', version: CLIENT_VERSION },
+          info: { name: 'vscode-your-turn', version: CLIENT_VERSION },
           capabilities: { elicitation: { form: {}, url: {} } },
         },
         ...(version === 1 ? [{
           protocolVersion: 1,
-          clientInfo: { name: 'vscode-acp-client', version: CLIENT_VERSION },
+          clientInfo: { name: 'vscode-your-turn', version: CLIENT_VERSION },
           clientCapabilities: { elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
         }] : []),
       ]);

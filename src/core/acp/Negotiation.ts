@@ -1,8 +1,8 @@
 import { RequestError } from '@agentclientprotocol/sdk';
 import type { AnyMessage, AnyResponse, ErrorResponse, Stream } from '@agentclientprotocol/sdk';
 
-import { v1InitializeRequest } from './V1Driver';
-import { v2InitializeRequest } from './V2Driver';
+import { v1InitializeRequest } from '@/core/acp/V1Driver';
+import { v2InitializeRequest } from '@/core/acp/V2Driver';
 
 type AcpVersion = 1 | 2;
 

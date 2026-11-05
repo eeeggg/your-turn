@@ -24,7 +24,7 @@ import {
   type AgentLauncher,
   type AgentProcess,
   type LaunchError,
-} from './AgentManager';
+} from '@/core/AgentManager';
 import { 
   Writes,
   type Selections,
@@ -33,8 +33,15 @@ import {
   type SessionReferences,
   type WorkspaceState,
   type WorkspaceTarget,
-} from './PersistedState';
-import { logDebug, logError, logInfo, logWarning, messageOf, type LogContext } from './Log';
+} from '@/core/PersistedState';
+import {
+  logDebug,
+  logError,
+  logInfo,
+  logWarning,
+  messageOf,
+  type LogContext
+} from '@/core/Log';
 
 /** What sessions need from the workspace the extension runs in. */
 export interface SessionEnvironment {
@@ -240,7 +247,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   }
 
   /**
-   * `acp.agents` changed from `before` to `after`. Each configuration renamed has its references on this host, and
+   * `your-turn.agents` changed from `before` to `after`. Each configuration renamed has its references on this host, and
    * this workspace's last active session, rebound to its new name; anything else rebinds nothing.
    */
   agentsChanged(before: Readonly<Record<string, AgentConfigEntry>>, after: Readonly<Record<string, AgentConfigEntry>>): void {
@@ -401,7 +408,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         throw outcome.launchError;
       }
       if (typeof outcome.exitCode === 'number') {
-        throw new Error(`Agent "${agentName}" exited with code ${outcome.exitCode} before connecting; its output is in the ACP log (ACP: Show Log).`);
+        throw new Error(`Agent "${agentName}" exited with code ${outcome.exitCode} before connecting; its output is in the Your Turn log (Your Turn: Show Log).`);
       }
       throw e;
     }

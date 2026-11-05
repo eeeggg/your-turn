@@ -1,4 +1,9 @@
-import { ElicitationError, type ElicitationForm, type ElicitationSchema, type ElicitationValue } from './acp/AcpDriver';
+import {
+  ElicitationError,
+  type ElicitationForm,
+  type ElicitationSchema,
+  type ElicitationValue
+} from '@/core/acp/AcpDriver';
 
 type FormField = ElicitationForm['fields'][number];
 type Choice = NonNullable<FormField['choices']>[number];

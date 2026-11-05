@@ -1,4 +1,4 @@
-# ACP Client for VS Code
+# Your Turn for VS Code
 
 A VS Code extension that lets a user work with any ACP agent from inside the editor: it launches the agent, speaks ACP to it, and shows each session's transcript in its chat view.
 
@@ -197,6 +197,10 @@ A command the agent advertises, invoked by typing `/` in the prompt box.
 _Avoid_: command (unqualified), action
 
 ### Review
+
+**Review Buffer**:
+The extension's Source Control entry for the shown session's review. Its Files Under Review group is separate from Git's working tree and staging area.
+_Avoid_: staging area, index, changeset
 
 **Review**:
 A session's files whose net change the user has yet to keep or undo, each from its baseline to what it holds now, whoever changed it since. Only evidence of an agent's change puts a file under review.

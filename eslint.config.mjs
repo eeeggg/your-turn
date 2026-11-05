@@ -79,15 +79,20 @@ const coreInContract = {
 // Flat config replaces a rule's options rather than merging them, so every
 // layer's rule repeats the parent-import ban.
 /**
- * @param {{ paths?: { name: string, message: string }[], patterns?: { group: string[], message: string }[] }} [restrictions]
+ * @param {{ paths?: { name: string, message: string }[], patterns?: { group: string[], message: string }[], allowSibling?: boolean }} [restrictions]
  * @returns {Pick<import("eslint/rules").ESLintRules, "no-restricted-imports">}
  */
-function restrictImports({ paths = [], patterns = [] } = {}) {
+function restrictImports({ paths = [], patterns = [], allowSibling = false } = {}) {
   return {
     "no-restricted-imports": ["error", {
       paths,
       patterns: [
-        { group: ["../*"], message: "Import across directories with @/; ./ is for the same directory." },
+        {
+          group: allowSibling ? ["../*"] : ["./*", "../*"],
+          message: allowSibling
+            ? "Use a runtime-supported path for tooling imports; parent-relative imports are not allowed."
+            : "Use rooted aliases for source and test imports: @/ for src/ and @tests/ for tests/, including siblings.",
+        },
         ...patterns,
       ],
     }],
@@ -143,9 +148,13 @@ export default defineConfig(
       curly: ["error", "all"],
       eqeqeq: ["error", "always", { null: "ignore" }],
       semi: "error",
-      ...restrictImports(),
+      ...restrictImports({ allowSibling: true }),
       ...monacoOutsideDiff,
     },
+  },
+  {
+    files: ["src/**/*.{ts,tsx}", "tests/**/*.{ts,tsx}"],
+    rules: restrictImports(),
   },
   {
     files: ["src/core/diff/**/*.ts"],

@@ -1,5 +1,5 @@
 import { logWarning, messageOf } from '@/core/Log';
-import type { ReadFile, Review } from './Review';
+import type { ReadFile, Review } from '@/core/review/Review';
 
 /** Watches what is at `path`, calling `changed` whenever it may have changed, until disposed. */
 export type WatchFile = (path: string, changed: () => void) => { dispose(): void };

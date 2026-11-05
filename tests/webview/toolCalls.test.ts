@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, texts, toolCall, type ChatPage } from './chatPage';
+import { connect, loadChatPage, texts, toolCall, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 
@@ -147,8 +147,8 @@ describe('tool calls', () => {
     for (const selector of ['.tc-command', 'summary']) {
       expect(JSON.parse(shown('t1').querySelector<HTMLElement>(selector)?.dataset['vscodeContext'] ?? 'null')).toMatchObject({
         webviewSection: 'commandOutput',
-        acpTitle: 'npm test',
-        acpTerminalId: 'term',
+        yourTurnTitle: 'npm test',
+        yourTurnTerminalId: 'term',
       });
     }
   });

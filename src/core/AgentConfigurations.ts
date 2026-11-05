@@ -1,11 +1,17 @@
 import { basename } from 'node:path';
 
-import { launchPath, type AgentConfigEntry } from './AgentManager';
-import { logError, logWarning, messageOf } from './Log';
-import type { PackageRunner, PackageRunnerCheck } from './PackageRunners';
-import type { RegistryAgent } from './RegistryClient';
-import type { SessionManager } from './SessionManager';
-import { ConfigurationTarget, QuickPickItemKind, type QuickPickItem, type Window, type WorkspaceConfiguration } from './VsCodeApi';
+import { launchPath, type AgentConfigEntry } from '@/core/AgentManager';
+import { logError, logWarning, messageOf } from '@/core/Log';
+import type { PackageRunner, PackageRunnerCheck } from '@/core/PackageRunners';
+import type { RegistryAgent } from '@/core/RegistryClient';
+import type { SessionManager } from '@/core/SessionManager';
+import {
+  ConfigurationTarget,
+  QuickPickItemKind,
+  type QuickPickItem,
+  type Window,
+  type WorkspaceConfiguration
+} from '@/core/VsCodeApi';
 
 type AgentConfigs = Record<string, AgentConfigEntry>;
 
@@ -31,10 +37,10 @@ type Source = 'custom' | { name: string; version: string; config: AgentConfigEnt
 
 const CUSTOM: QuickPickItem = { label: 'Custom…', detail: 'Enter a name, the command that starts the agent, and its arguments' };
 
-/** The commands that add and remove agent configurations, kept in the user's `acp.agents` setting. */
+/** The commands that add and remove agent configurations, kept in the user's `your-turn.agents` setting. */
 export class AgentConfigurations {
   constructor(
-    /** The `acp` section of the settings; VS Code's configuration objects are snapshots, so it is read fresh each time. */
+    /** The `your-turn` section of the settings; VS Code's configuration objects are snapshots, so it is read fresh each time. */
     private readonly configuration: () => WorkspaceConfiguration,
     private readonly sessions: SessionManager,
     private readonly window: Window,

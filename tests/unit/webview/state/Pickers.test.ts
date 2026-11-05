@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { Picker, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
-import { categoryIcon, currentValue, isOpen, tooltipText, type PickersState } from '@/webview/state/Pickers';
+import {
+  categoryIcon,
+  currentValue,
+  isOpen,
+  tooltipText,
+  type PickersState
+} from '@/webview/state/Pickers';
 import { createStore } from '@/webview/state/Store';
 
 const model: Picker = {

@@ -1,10 +1,16 @@
-import { acpContainerControl, agentsViewRow, chatViewTitle, promptInput, sessionTabs } from './workbench';
-import { expect, test } from './window';
+import {
+  yourTurnContainerControl,
+  agentsViewRow,
+  chatViewTitle,
+  promptInput,
+  sessionTabs
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 test.use({ listsSessions: true, compaction: true });
 
 test('session tabs wrap into rows with keyboard and close controls reachable in a narrow chat view', async ({ window, workspace }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await agentsViewRow(window, 'fake-v1').click();
   await agentsViewRow(window, 'Compaction session').click();
   await expect(promptInput(window)).toBeEnabled();
@@ -54,7 +60,7 @@ test('session tabs wrap into rows with keyboard and close controls reachable in 
   const agent = agentsViewRow(window, 'fake-v1');
   await expect(agent).toHaveAttribute('aria-label', /fake-v1 — no session/);
   await agent.click({ button: 'right' });
-  const newSession = window.getByRole('menuitem', { name: 'ACP: New Session', exact: true });
+  const newSession = window.getByRole('menuitem', { name: 'Your Turn: New Session', exact: true });
   // Home selects the first action in VS Code's menu model, not just its DOM focus.
   await newSession.focus();
   await newSession.press('Home');

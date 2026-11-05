@@ -1,6 +1,7 @@
 import { rmSync } from 'node:fs';
 import * as esbuild from 'esbuild';
 import { execa } from 'execa';
+import { generateIcons } from './tools/icons.mjs';
 
 const production = process.argv.includes('--production');
 
@@ -58,7 +59,7 @@ const webviewStyles = () =>
 rmSync('dist', { recursive: true, force: true });
 try {
 	const builds = production ? [extension, webview] : [extension, webview, integrationTests];
-	await Promise.all([...builds.map((options) => esbuild.build(options)), webviewStyles()]);
+	await Promise.all([...builds.map((options) => esbuild.build(options)), webviewStyles(), generateIcons('resources')]);
 } catch {
 	// esbuild and Tailwind have already printed the errors.
 	process.exit(1);

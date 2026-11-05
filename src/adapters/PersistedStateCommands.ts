@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { SessionReferences, WorkspaceTarget } from '@/core/PersistedState';
 
-const DOCUMENT = vscode.Uri.from({ scheme: 'acp-persisted-state', path: '/Persisted State.json' });
+const DOCUMENT = vscode.Uri.from({ scheme: 'your-turn-persisted-state', path: '/Persisted State.json' });
 const RESET = 'Reset';
 
 /**
@@ -36,7 +36,7 @@ export class PersistedStateCommands implements vscode.Disposable {
    * resolves to whether it did.
    */
   async reset(): Promise<boolean> {
-    const choice = await vscode.window.showWarningMessage('Reset ACP persisted state?', {
+    const choice = await vscode.window.showWarningMessage('Reset Your Turn persisted state?', {
       modal: true,
       detail: 'This clears the session references every window of this VS Code application shares, and what this workspace keeps. Agents keep their sessions.',
     }, RESET);

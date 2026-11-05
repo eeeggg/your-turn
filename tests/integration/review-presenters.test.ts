@@ -53,7 +53,7 @@ suite('Review presenters', () => {
   setup(async () => {
     owned = {};
     folder = '';
-    prior = vscode.workspace.getConfiguration('acp').inspect('review.presentation')?.globalValue;
+    prior = vscode.workspace.getConfiguration('your-turn').inspect('review.presentation')?.globalValue;
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-presenters-'));
     a = path.join(folder, 'a.txt');
     b = path.join(folder, 'b.txt');
@@ -82,7 +82,7 @@ suite('Review presenters', () => {
     ]);
     await cleanup(() => vscode.commands.executeCommand('workbench.action.files.revert'));
     await cleanup(() => vscode.commands.executeCommand('workbench.action.closeAllEditors'));
-    await cleanup(() => vscode.workspace.getConfiguration('acp').update('review.presentation', prior, vscode.ConfigurationTarget.Global));
+    await cleanup(() => vscode.workspace.getConfiguration('your-turn').update('review.presentation', prior, vscode.ConfigurationTarget.Global));
     await cleanup(() => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } });
     if (failures.length > 0) {
       const error = new AggregateError(failures, 'Failed to clean up review presenters');
@@ -103,7 +103,7 @@ suite('Review presenters', () => {
   });
 
   test('disposal stops display updates and drains a presentation already started by tab entry', async () => {
-    const config = vscode.workspace.getConfiguration('acp');
+    const config = vscode.workspace.getConfiguration('your-turn');
     let release: () => void = () => {};
     let started: () => void = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });

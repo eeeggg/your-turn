@@ -1,15 +1,15 @@
 import { basename } from 'node:path';
 import { lineChanges, splitLines } from '@/core/diff/LineChanges';
 import { messageOf } from '@/core/Log';
-import { keptChange, undoneChange, type Change, type TextEdit } from './Hunks';
-import type { FileContent } from './Review';
-import type { Reviews } from './Reviews';
+import { keptChange, undoneChange, type Change, type TextEdit } from '@/core/review/Hunks';
+import type { FileContent } from '@/core/review/Review';
+import type { Reviews } from '@/core/review/Reviews';
 
 /** The editors the review's controls act on, by a file's path. */
 export interface ReviewEditors {
   /** The file in the active editor, when it is one on disk. */
   activePath(): string | undefined;
-  /** Whether this file's ACP review presentation is open in an editor. */
+  /** Whether this file's review presentation is open in an editor. */
   isOpen(path: string): boolean;
   open(path: string): Promise<void>;
   /** Opens the file with quick diff's view showing the change after the cursor, once VS Code has diffed it. */

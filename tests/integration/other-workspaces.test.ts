@@ -3,7 +3,7 @@ import { suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
 import { SessionReferences, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
-import { cleanup } from './cleanup';
+import { cleanup } from '@tests/integration/cleanup';
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -69,7 +69,7 @@ suite('The Agents view', () => {
     const opens = sessions[0] && provider.getTreeItem(sessions[0]).command;
     assert.deepStrictEqual(
       [opens?.command, opens?.arguments?.map((argument: SessionAddress) => [argument.workspaceUri, argument.configuredName, argument.sessionId])],
-      ['acp.openSessionInWorkspace', [[API, 'Claude', 'a1']]],
+      ['your-turn.openSessionInWorkspace', [[API, 'Claude', 'a1']]],
     );
   });
 

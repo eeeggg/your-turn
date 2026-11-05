@@ -3,7 +3,7 @@ import { suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { createAuthMethodPicker } from '@/adapters/AuthMethodPicker';
 import type { AuthMethod } from '@/core/acp/AcpDriver';
-import { cleanup } from './cleanup';
+import { cleanup } from '@tests/integration/cleanup';
 
 const choices: Promise<AuthMethod | undefined>[] = [];
 

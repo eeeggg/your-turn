@@ -5,13 +5,13 @@ import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { createWorkspaceEnvironment, hostOf, windowWorkspaceUri, workspaceUnavailability, type WorkspaceView } from '@/adapters/WorkspaceEnvironment';
 import { SessionReferences, WorkspaceState, type SessionAddress } from '@/core/PersistedState';
 import type { ExtensionTestApi } from '@/extension';
-import { cleanup } from './cleanup';
-import { remoteWebview } from './webviews';
+import { cleanup } from '@tests/integration/cleanup';
+import { remoteWebview } from '@tests/integration/webviews';
 
 const REMOTE_FOLDER = 'vscode-remote://ssh-remote%2Bdevenv/home/me/work';
 const REMOTE_WORKSPACE_FILE = 'vscode-remote://ssh-remote%2Bdevenv/home/me/work.code-workspace';
 const DEVENV = 'vscode-remote://ssh-remote+devenv';
-const DOCUMENT_SCHEME = 'acp-persisted-state';
+const DOCUMENT_SCHEME = 'your-turn-persisted-state';
 
 const address = (sessionId: string): SessionAddress =>
   ({ configuredName: 'persisted-state-agent', sessionId, cwd: '/home/me/work', host: DEVENV, workspaceUri: REMOTE_FOLDER });
@@ -63,7 +63,7 @@ suite('Persisted state', () => {
   const owned: (() => unknown)[] = [];
 
   suiteSetup(async () => {
-    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
     const activated = await extension?.activate();
     assert.ok(activated, 'the extension returns its test API in extension tests');
     api = activated;
@@ -86,7 +86,7 @@ suite('Persisted state', () => {
 
   /** Show the persisted state, and read the document it shows. */
   async function shown(): Promise<unknown> {
-    await vscode.commands.executeCommand('acp.showPersistedState');
+    await vscode.commands.executeCommand('your-turn.showPersistedState');
     const document = vscode.window.activeTextEditor?.document;
     assert.strictEqual(document?.uri.scheme, DOCUMENT_SCHEME);
     assert.strictEqual(document.languageId, 'json');
@@ -110,7 +110,7 @@ suite('Persisted state', () => {
     return asked;
   }
 
-  const reset = (answer: string | undefined) => answering(answer, () => vscode.commands.executeCommand('acp.resetPersistedState'));
+  const reset = (answer: string | undefined) => answering(answer, () => vscode.commands.executeCommand('your-turn.resetPersistedState'));
 
   test('derives the host of a workspace URI from the scheme and authority VS Code parses', () => {
     assert.strictEqual(hostOf(vscode.Uri.file('/home/me/work').toString()), 'file://');
@@ -120,7 +120,7 @@ suite('Persisted state', () => {
   });
 
   function webview(): vscode.Webview {
-    const panel = vscode.window.createWebviewPanel('acp-persisted-state-test', 'Workspace URI', { viewColumn: vscode.ViewColumn.One, preserveFocus: true });
+    const panel = vscode.window.createWebviewPanel('your-turn-persisted-state-test', 'Workspace URI', { viewColumn: vscode.ViewColumn.One, preserveFocus: true });
     panels.push(panel);
     return panel.webview;
   }
@@ -270,7 +270,7 @@ suite('Persisted state', () => {
   });
 
   test("shows every stored key in each scope and the window's target, kept up to date when shown again", async () => {
-    await storage.workspaceState.update('acp.sessionHistory.v1', { version: 1, entries: [] });
+    await storage.workspaceState.update('example.extra', { entries: [] });
     await new WorkspaceState(storage.workspaceState).setLastActiveSession(address('shown'));
 
     // Global state is shown as VS Code's copy holds it, which may briefly be an earlier value, so only its shape is fixed.
@@ -278,17 +278,17 @@ suite('Persisted state', () => {
     assert.deepStrictEqual([first['window'], first['workspaceState']], [
       { workspaceTarget: vscode.workspace.workspaceFolders?.[0]?.uri.toString(), host: 'file://' },
       {
-        'acp.sessionHistory.v1': { version: 1, entries: [] },
-        'acp.workspace': { schemaVersion: 2, lastActiveSession: address('shown') },
+        'example.extra': { entries: [] },
+        'your-turn.workspace': { schemaVersion: 2, lastActiveSession: address('shown') },
       },
     ]);
     const global = first['globalState'] as Record<string, { schemaVersion?: unknown }>;
-    assert.ok(Object.keys(global).every((key) => key === 'acp.sessionReferences'), Object.keys(global).join());
-    assert.ok(global['acp.sessionReferences'] === undefined || global['acp.sessionReferences'].schemaVersion === 3);
+    assert.ok(Object.keys(global).every((key) => key === 'your-turn.sessionReferences'), Object.keys(global).join());
+    assert.ok(global['your-turn.sessionReferences'] === undefined || global['your-turn.sessionReferences'].schemaVersion === 3);
 
     await new WorkspaceState(storage.workspaceState).setLastActiveSession(address('shown again'));
     const again = await shown() as Record<string, Record<string, unknown>>;
-    assert.deepStrictEqual(again['workspaceState']?.['acp.workspace'], { schemaVersion: 2, lastActiveSession: address('shown again') });
+    assert.deepStrictEqual(again['workspaceState']?.['your-turn.workspace'], { schemaVersion: 2, lastActiveSession: address('shown again') });
     assert.strictEqual(vscode.window.tabGroups.all.flatMap((group) => group.tabs)
       .filter((tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.scheme === DOCUMENT_SCHEME).length, 1);
   });
@@ -298,19 +298,19 @@ suite('Persisted state', () => {
     const globalState = memento();
     const references = new SessionReferences(globalState);
     await references.used(address('before'));
-    await workspaceState.update('acp.workspace', { schemaVersion: 2, lastActiveSession: address('before') });
+    await workspaceState.update('your-turn.workspace', { schemaVersion: 2, lastActiveSession: address('before') });
     const commands = new PersistedStateCommands(workspaceState, globalState, references, () => undefined);
     owned.push(() => { commands.dispose(); });
 
     await answering(undefined, async () => assert.strictEqual(await commands.reset(), false));
-    assert.deepStrictEqual(workspaceState.keys(), ['acp.workspace']);
+    assert.deepStrictEqual(workspaceState.keys(), ['your-turn.workspace']);
     assert.strictEqual(references.get(idOf('before'))?.sessionId, 'before');
 
     await answering('Reset', async () => assert.strictEqual(await commands.reset(), true));
     assert.deepStrictEqual(workspaceState.keys(), []);
-    assert.deepStrictEqual(globalState.get('acp.sessionReferences'), { schemaVersion: 3, epoch: 1, references: [], removed: [] });
+    assert.deepStrictEqual(globalState.get('your-turn.sessionReferences'), { schemaVersion: 3, epoch: 1, references: [], removed: [] });
 
-    globalState.serveEarlier('acp.sessionReferences');
+    globalState.serveEarlier('your-turn.sessionReferences');
     assert.deepStrictEqual(references.list(DEVENV, 'persisted-state-agent', '/home/me/work'), []);
   });
 
@@ -321,9 +321,9 @@ suite('Persisted state', () => {
 
     const declined = await reset(undefined);
     assert.deepStrictEqual(declined.map(([message, options, ...items]) => [message, (options as vscode.MessageOptions).modal, items]), [
-      ['Reset ACP persisted state?', true, ['Reset']],
+      ['Reset Your Turn persisted state?', true, ['Reset']],
     ]);
-    assert.deepStrictEqual([storage.workspaceState.keys(), listed()], [['acp.workspace'], ['reset']]);
+    assert.deepStrictEqual([storage.workspaceState.keys(), listed()], [['your-turn.workspace'], ['reset']]);
 
     await reset('Reset');
     assert.deepStrictEqual([storage.workspaceState.keys(), listed()], [[], []]);

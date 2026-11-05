@@ -1,4 +1,4 @@
-import { normalizeForm, validateAnswers } from './ElicitationForm';
+import { normalizeForm, validateAnswers } from '@/core/ElicitationForm';
 import { 
   ElicitationError,
   type ElicitationRequest,
@@ -6,9 +6,9 @@ import {
   type ElicitationResponse,
   type ElicitationChange,
   type ElicitationResponseResult
-} from './acp/AcpDriver';
-import type { Elicitations } from './ClientHandlers';
-import { logError } from './Log';
+} from '@/core/acp/AcpDriver';
+import type { Elicitations } from '@/core/ClientHandlers';
+import { logError } from '@/core/Log';
 
 interface Pending {
   interaction: ElicitationInteraction;

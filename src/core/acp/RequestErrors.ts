@@ -1,6 +1,6 @@
 import { RequestError } from '@agentclientprotocol/sdk';
 import { messageOf } from '@/core/Log';
-import { AuthRequired, UnknownSession } from './AcpDriver';
+import { AuthRequired, UnknownSession } from '@/core/acp/AcpDriver';
 
 /** ACP's "resource not found", which names a session it is about in `data.sessionId`; the same in every version. */
 const RESOURCE_NOT_FOUND = -32002;

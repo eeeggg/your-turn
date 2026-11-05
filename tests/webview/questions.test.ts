@@ -1,6 +1,6 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { connect, loadChatPage } from './chatPage';
+import { connect, loadChatPage } from '@tests/webview/chatPage';
 
 const question: Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number] = {
   interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, draft: null,

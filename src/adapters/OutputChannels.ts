@@ -4,7 +4,7 @@ import type { LogSink } from '@/core/Log';
 let _outputChannel: vscode.LogOutputChannel | undefined;
 
 export function getOutputChannel(): vscode.LogOutputChannel {
-  _outputChannel ??= vscode.window.createOutputChannel('ACP Client', { log: true });
+  _outputChannel ??= vscode.window.createOutputChannel('Your Turn', { log: true });
   return _outputChannel;
 }
 

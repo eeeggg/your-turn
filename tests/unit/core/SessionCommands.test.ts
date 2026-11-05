@@ -2,18 +2,30 @@ import { describe, expect, it, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionReferences, StartupRequests, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
+import {
+  SessionReferences,
+  StartupRequests,
+  WorkspaceState,
+  type KeyValueStore,
+  type SessionAddress
+} from '@/core/PersistedState';
 import { SessionCommands } from '@/core/SessionCommands';
 import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionStartup } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { SessionTabs } from '@/core/SessionTabs';
 import { ProgressLocation } from '@/core/VsCodeApi';
-import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
-import { ScriptedUser, type Call } from './ScriptedUser';
+import {
+  fakeAgent,
+  InProcessAgents,
+  unusedHandlers,
+  work,
+  type AgentScript
+} from '@tests/unit/core/InProcessAgents';
+import { ScriptedUser, type Call } from '@tests/unit/core/ScriptedUser';
 
 const progress = (title: string): Call => ({ call: 'withProgress', options: { location: ProgressLocation.Notification, title, cancellable: false } });
-const focusChatView: Call = { call: 'executeCommand', command: 'acp-chat.focus' };
+const focusChatView: Call = { call: 'executeCommand', command: 'your-turn-chat.focus' };
 
 /**
  * An agent that numbers the sessions it creates across all its launches
@@ -111,7 +123,7 @@ const failedToOpen = (message: string, items: string[] = RETRY_CHOOSE): Call => 
 const choosingAgent = (items: string[]): Call => ({
   call: 'showQuickPick', items, options: { title: 'Choose Agent', placeHolder: 'Open the session through which agent?' },
 });
-const choosingSession: Call = { call: 'executeCommand', command: 'acp-sessions.focus' };
+const choosingSession: Call = { call: 'executeCommand', command: 'your-turn-sessions.focus' };
 
 /** An agent that can load, and refuses the first `refusals` loads as another client has the session open. */
 function refusingAgent(refusals = Infinity) {
@@ -303,7 +315,7 @@ describe('SessionCommands', () => {
       await commands.connect();
 
       expect(user.take()).toEqual([
-        { call: 'showWarningMessage', message: 'No ACP agents configured. Add agents in Settings > ACP > Agents.' },
+        { call: 'showWarningMessage', message: 'No ACP agents configured. Add agents in Settings > Your Turn > Agents.' },
       ]);
     });
 

@@ -9,9 +9,9 @@ import {
   type SessionReference,
 } from '@/core/PersistedState';
 
-const REFERENCES_KEY = 'acp.sessionReferences';
-const WORKSPACE_KEY = 'acp.workspace';
-const STARTUP_REQUESTS_KEY = 'acp.startupRequests';
+const REFERENCES_KEY = 'your-turn.sessionReferences';
+const WORKSPACE_KEY = 'your-turn.workspace';
+const STARTUP_REQUESTS_KEY = 'your-turn.startupRequests';
 
 const LOCAL = 'file:///home/me/work';
 const DEVENV = 'vscode-remote://ssh-remote%2Bdevenv/home/me/work';
@@ -857,20 +857,26 @@ describe('WorkspaceState', () => {
     expect(state.lastActiveSession()).toEqual(address('a', { configuredName: 'oc' }));
   });
 
-  it('deletes the session history earlier versions kept, leaving its own state', async () => {
+  it('retires only explicitly listed workspace keys without reading their contents', async () => {
     const workspaceState = memoryStore({
-      'acp.sessionHistory.v1': { version: 1, entries: [] },
+      'your-turn.retired.v1': { schemaVersion: 1 },
+      'acp.sessionHistory.v1': { version: 1 },
       [WORKSPACE_KEY]: { schemaVersion: 2, lastActiveSession: address('a') },
     });
+    await new WorkspaceState(workspaceState, ['your-turn.retired.v1']).discardRetired();
+    expect([...workspaceState.values.keys()]).toEqual(['acp.sessionHistory.v1', WORKSPACE_KEY]);
+    expect(new WorkspaceState(workspaceState).lastActiveSession()).toEqual(address('a'));
+  });
 
+  it('has no retired keys by default and leaves earlier extension data alone', async () => {
+    const workspaceState = memoryStore({ 'acp.sessionHistory.v1': { version: 1 } });
     await new WorkspaceState(workspaceState).discardRetired();
-
-    expect([...workspaceState.values.keys()]).toEqual([WORKSPACE_KEY]);
+    expect([...workspaceState.values.entries()]).toEqual([['acp.sessionHistory.v1', { version: 1 }]]);
   });
 
   it('settles once every write it started has, as its callers do not wait for them', async () => {
-    const workspaceState = heldStore({ 'acp.sessionHistory.v1': { version: 1, entries: [] } });
-    const state = new WorkspaceState(workspaceState);
+    const workspaceState = heldStore({ 'your-turn.retired.v1': {} });
+    const state = new WorkspaceState(workspaceState, ['your-turn.retired.v1']);
     const order: string[] = [];
     const discarding = state.discardRetired();
     const setting = state.setLastActiveSession(address('a'));
@@ -892,9 +898,8 @@ describe('WorkspaceState', () => {
   });
 
   it('on disposal, settles the writes it started and makes no more', async () => {
-    const retired = { version: 1, entries: [] };
-    const workspaceState = heldStore({ 'acp.sessionHistory.v1': retired });
-    const state = new WorkspaceState(workspaceState);
+    const workspaceState = heldStore({ 'your-turn.retired.v1': {} });
+    const state = new WorkspaceState(workspaceState, ['your-turn.retired.v1']);
     const order: string[] = [];
     const writing = state.setLastActiveSession(address('a'));
     const disposed = state.dispose().then(() => order.push('disposed'));
@@ -910,7 +915,7 @@ describe('WorkspaceState', () => {
     expect(order).toEqual(['written', 'disposed']);
     expect(state.lastActiveSession()).toEqual(address('a'));
     expect(state.workspaceTarget()).toBeUndefined();
-    expect(workspaceState.values.get('acp.sessionHistory.v1')).toBe(retired);
+    expect([...workspaceState.values.keys()]).toEqual(['your-turn.retired.v1', WORKSPACE_KEY]);
   });
 });
 

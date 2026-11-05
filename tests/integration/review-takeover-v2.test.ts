@@ -6,8 +6,8 @@ import { setup, suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { observed } from './observed';
-import { cleanup } from './cleanup';
+import { observed } from '@tests/integration/observed';
+import { cleanup } from '@tests/integration/cleanup';
 
 
 for (const version of [2]) {
@@ -17,13 +17,13 @@ for (const version of [2]) {
     let original: unknown;
     const posts: ExtensionToWebviewMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
     let folder: string;
     let modified: string;
     let deleted: string;
 
     suiteSetup(async () => {
-      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
       api = activated;
@@ -34,14 +34,14 @@ for (const version of [2]) {
         { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: `review-takeover-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}-${version}` } } },
         vscode.ConfigurationTarget.Global,
       );
-      await vscode.commands.executeCommand('acp-chat.focus');
+      await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('acp.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
     });
 
     suiteTeardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => vscode.commands.executeCommand('your-turn.disconnectAgent', agentName),
         () => config().update('agents', original, vscode.ConfigurationTarget.Global),
         ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
       ]);
@@ -76,7 +76,7 @@ for (const version of [2]) {
 
     teardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.keepAllFiles'),
+        () => vscode.commands.executeCommand('your-turn.keepAllFiles'),
         () => api.reviewPresentationSettled(),
         () => vscode.commands.executeCommand('workbench.action.files.revert'),
         () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),

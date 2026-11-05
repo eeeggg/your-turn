@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
-import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type {
+  DiffFile,
+  ExtensionToWebviewMessage,
+  ToolCallContent,
+  WebviewToExtensionMessage
+} from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
@@ -844,8 +849,8 @@ describe('tool calls', () => {
 
     const links = view.all('.tc-diff-link');
     expect(links.map((link): unknown[] => [link.textContent, JSON.parse(link.dataset['vscodeContext'] ?? 'null') as unknown])).toEqual([
-      ['a.ts', { webviewSection: 'toolCallDiffFile', acpToolCallId: 't1', acpDiffFile: 0, acpDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
-      ['src/math.ts', { webviewSection: 'toolCallDiffFile', acpToolCallId: 't1', acpDiffFile: 1, acpDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
+      ['a.ts', { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: 't1', yourTurnDiffFile: 0, yourTurnDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
+      ['src/math.ts', { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: 't1', yourTurnDiffFile: 1, yourTurnDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
     ]);
     expect(view.all('.tc-diff-path').map((path) => path.textContent)).toEqual(['a.ts', 'src/util.ts → src/math.ts', 'dist']);
 
@@ -863,8 +868,8 @@ describe('tool calls', () => {
     const contexts = (selector: string) => view.all(selector).map((element) => JSON.parse(element.dataset['vscodeContext'] ?? 'null') as unknown);
 
     const expected = [
-      { webviewSection: 'commandOutput', acpSessionId: 's1', acpTitle: 'npm test', acpTerminalId: 'term' },
-      { webviewSection: 'commandOutput', acpSessionId: 's1', acpTitle: 'Tool Call', acpToolCallId: 'c2' },
+      { webviewSection: 'commandOutput', yourTurnSessionId: 's1', yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
+      { webviewSection: 'commandOutput', yourTurnSessionId: 's1', yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
     ];
     expect(contexts('.tc-command')).toEqual(expected);
     expect(contexts('.tc-summary')).toEqual([...expected, null]);

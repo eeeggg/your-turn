@@ -1,10 +1,17 @@
-import { acpContainerControl, agentsViewRow, chatCompactions, chatTranscript, promptInput, quickInputRow } from './workbench';
-import { expect, test } from './window';
+import {
+  yourTurnContainerControl,
+  agentsViewRow,
+  chatCompactions,
+  chatTranscript,
+  promptInput,
+  quickInputRow
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 test.use({ listsSessions: true, compaction: true });
 
 test('loaded and live compactions retain their transcript position and user-controlled summary expansion', async ({ window }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await agentsViewRow(window, 'fake-v1').click();
   await agentsViewRow(window, 'Compaction session').click();
   const compactions = chatCompactions(window);

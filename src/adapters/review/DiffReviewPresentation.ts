@@ -4,10 +4,10 @@ import { logError } from '@/core/Log';
 import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
-import { createReviewEditors } from './ReviewPresenters';
+import { createReviewEditors } from '@/adapters/review/ReviewPresenters';
 
-const SCHEME = 'acp-review-diff';
-const enabled = () => vscode.workspace.getConfiguration('acp').get<string>('review.presentation', 'diffEditor') === 'diffEditor';
+const SCHEME = 'your-turn-review-diff';
+const enabled = () => vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') === 'diffEditor';
 
 interface Baseline {
   readonly uri: vscode.Uri;
@@ -42,7 +42,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   readonly onDidChangeCodeLenses = this.lensesChanged.event;
   private readonly subscriptions: vscode.Disposable[];
   private readonly registrations: vscode.Disposable[];
-  private readonly position = vscode.window.createStatusBarItem('acp.review.change', vscode.StatusBarAlignment.Left, 98);
+  private readonly position = vscode.window.createStatusBarItem('your-turn.review.change', vscode.StatusBarAlignment.Left, 98);
   private latest = Promise.resolve();
   private readonly pending = new Set<Promise<void>>();
   private disposed = false;
@@ -56,7 +56,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     private readonly closeTabs: (tabs: readonly vscode.Tab[]) => Thenable<boolean> = (tabs) => vscode.window.tabGroups.close(tabs, true),
   ) {
     this.review = reviews.shown();
-    this.position.name = 'ACP Current Change';
+    this.position.name = 'Current Change';
     this.position.tooltip = 'Keep Change and Undo Change in the editor title act on this change; move the cursor to choose another';
     this.registrations = [
       vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
@@ -72,7 +72,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       vscode.window.tabGroups.onDidChangeTabs(() => this.showPosition()),
       vscode.workspace.onDidChangeTextDocument(() => { this.lensesChanged.fire(); this.showPosition(); }),
       vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('acp.review.presentation')) { this.changed(); }
+        if (event.affectsConfiguration('your-turn.review.presentation')) { this.changed(); }
       }),
     ];
     reviews.addListener(this.reviewListener);
@@ -157,7 +157,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     const opening = (entry.opening ?? Promise.resolve()).then(async () => {
       if (this.baselines.get(path) !== target) { return; }
       // Tab decorations depend on workbench settings and diff-label rendering; the title remains explicit without them.
-      const title = `${basename(path)}${target.deleted ? ' (Deleted)' : ''} — ACP Review`;
+      const title = `${basename(path)}${target.deleted ? ' (Deleted)' : ''} — Review`;
       await this.openDiff(target.uri, target.deleted ? target.absent : vscode.Uri.file(path), title, {
         preview: false, selection: new vscode.Range(line, 0, line, 0), ...options,
       });
@@ -191,8 +191,8 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       const snapshot: LensChange = { review: String(this.generation), path, baseline: baseline ?? '', document: text, index };
       return [
         new vscode.CodeLens(range, { title: `Change ${index + 1} of ${changes.length}`, command: '' }),
-        new vscode.CodeLens(range, { title: 'Keep Change', command: 'acp.keepDiffChange', arguments: [snapshot] }),
-        new vscode.CodeLens(range, { title: 'Undo Change', command: 'acp.undoDiffChange', arguments: [snapshot] }),
+        new vscode.CodeLens(range, { title: 'Keep Change', command: 'your-turn.keepDiffChange', arguments: [snapshot] }),
+        new vscode.CodeLens(range, { title: 'Undo Change', command: 'your-turn.undoDiffChange', arguments: [snapshot] }),
       ];
     });
   }
@@ -275,7 +275,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   private showPosition(): void {
     if (this.disposed) { return; }
     const selected = enabled() ? this.selectedChange() : undefined;
-    void vscode.commands.executeCommand('setContext', 'acp.reviewDiffChange', selected !== undefined);
+    void vscode.commands.executeCommand('setContext', 'your-turn.reviewDiffChange', selected !== undefined);
     if (selected) { this.position.text = `Change ${selected.index + 1} of ${selected.total}`; this.position.show(); }
     else { this.position.hide(); }
   }

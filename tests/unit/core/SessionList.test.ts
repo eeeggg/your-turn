@@ -2,11 +2,23 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, ListSessionsResponse, SessionInfo } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress, type WorkspaceTarget } from '@/core/PersistedState';
+import {
+  SessionReferences,
+  WorkspaceState,
+  type KeyValueStore,
+  type SessionAddress,
+  type WorkspaceTarget
+} from '@/core/PersistedState';
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionManager, type AuthPrompt } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
+import {
+  fakeAgent,
+  InProcessAgents,
+  unusedHandlers,
+  work,
+  type AgentScript
+} from '@tests/unit/core/InProcessAgents';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
 

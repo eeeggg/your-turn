@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { StartupRequests, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 import { WorkspaceOpening } from '@/core/WorkspaceOpening';
-import { ScriptedUser } from './ScriptedUser';
+import { ScriptedUser } from '@tests/unit/core/ScriptedUser';
 
 const address: SessionAddress = {
   configuredName: 'Claude',

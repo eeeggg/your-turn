@@ -6,8 +6,8 @@ import { setup, suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { observed } from './observed';
-import { cleanup } from './cleanup';
+import { observed } from '@tests/integration/observed';
+import { cleanup } from '@tests/integration/cleanup';
 
 const activeFile = () => vscode.window.activeTextEditor?.document.uri.fsPath;
 
@@ -27,7 +27,7 @@ for (const version of [1]) {
     let originalPresentation: unknown;
     const posts: ExtensionToWebviewMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
-    const config = () => vscode.workspace.getConfiguration('acp');
+    const config = () => vscode.workspace.getConfiguration('your-turn');
     let folder: string;
     let modified: string;
     let created: string;
@@ -37,7 +37,7 @@ for (const version of [1]) {
     suiteSetup(async () => {
       originalPresentation = config().inspect('review.presentation')?.globalValue;
       await config().update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
-      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+      const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
       api = activated;
@@ -48,14 +48,14 @@ for (const version of [1]) {
         { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: `review-view-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}-${version}` } } },
         vscode.ConfigurationTarget.Global,
       );
-      await vscode.commands.executeCommand('acp-chat.focus');
+      await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('acp.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
     });
 
     suiteTeardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+        () => vscode.commands.executeCommand('your-turn.disconnectAgent', agentName),
         () => config().update('agents', original, vscode.ConfigurationTarget.Global),
         () => config().update('review.presentation', originalPresentation, vscode.ConfigurationTarget.Global),
         ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
@@ -93,7 +93,7 @@ for (const version of [1]) {
 
     teardown(async function () {
       await cleanup(this.currentTest, [
-        () => vscode.commands.executeCommand('acp.keepAllFiles'),
+        () => vscode.commands.executeCommand('your-turn.keepAllFiles'),
         () => vscode.commands.executeCommand('workbench.action.files.revert'),
         () => vscode.commands.executeCommand('workbench.action.closeAllEditors'),
         () => { if (folder) { fs.rmSync(folder, { recursive: true, force: true }); } },
@@ -109,7 +109,7 @@ for (const version of [1]) {
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(mismatched));
       await api.reviewPresentationSettled();
       assert.ok(!viewShown(modified));
-      await vscode.commands.executeCommand('acp.nextReviewFile');
+      await vscode.commands.executeCommand('your-turn.nextReviewFile');
       await api.reviewPresentationSettled();
       assert.ok(viewShown(modified));
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(mismatched));
@@ -130,8 +130,8 @@ for (const version of [1]) {
 
     test("A file the agent changes again after its review was kept shows its new change in quick diff's view", async function () {
       await vscode.commands.executeCommand('toggleQuickDiffWidgetFocus');
-      await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
-      await vscode.commands.executeCommand('acp.keepAllFiles');
+      await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
+      await vscode.commands.executeCommand('your-turn.keepAllFiles');
       assert.deepStrictEqual(api.reviewedFiles(), []);
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
@@ -148,7 +148,7 @@ for (const version of [1]) {
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(modified));
       await api.reviewPresentationSettled();
       assert.ok(viewShown(modified));
-      await vscode.commands.executeCommand('acp-chat.focus');
+      await vscode.commands.executeCommand('your-turn-chat.focus');
       const window = vscode.window as { showQuickPick: unknown };
       const original = window.showQuickPick;
       window.showQuickPick = async (items: readonly vscode.QuickPickItem[]) => items[0];
@@ -180,16 +180,16 @@ for (const version of [1]) {
       const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
       try {
         await asked;
-        await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
-        await vscode.commands.executeCommand('acp.undoFile', vscode.Uri.file(modified));
-        await vscode.commands.executeCommand('acp.keepAllFiles');
+        await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
+        await vscode.commands.executeCommand('your-turn.undoFile', vscode.Uri.file(modified));
+        await vscode.commands.executeCommand('your-turn.keepAllFiles');
         assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
         assert.strictEqual(fs.readFileSync(modified, 'utf8'), 'one\nTWO\n');
 
         answer?.(true);
         await Promise.all([turn, promptEnded]);
         await api.turnEndShown();
-        await vscode.commands.executeCommand('acp.keepFile', vscode.Uri.file(created));
+        await vscode.commands.executeCommand('your-turn.keepFile', vscode.Uri.file(created));
         assert.deepStrictEqual(api.reviewedFiles(), [modified, deleted]);
       } finally {
         try {
@@ -256,12 +256,12 @@ for (const version of [1]) {
       await api.reviewPresentationSettled();
       assert.ok(viewOn(2));
 
-      await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(three), changes(2, 15, 28), 1);
+      await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(three), changes(2, 15, 28), 1);
       assert.ok(viewOn(28));
-      await vscode.commands.executeCommand('acp.undoChange', vscode.Uri.file(three), changes(2, 28), 1);
+      await vscode.commands.executeCommand('your-turn.undoChange', vscode.Uri.file(three), changes(2, 28), 1);
       assert.ok(viewOn(2));
       assert.strictEqual(fs.readFileSync(three, 'utf8'), `${lines.map((line) => (['l2', 'l15'].includes(line) ? line.toUpperCase() : line)).join('\n')}\n`);
-      await vscode.commands.executeCommand('acp.keepChange', vscode.Uri.file(three), changes(2), 0);
+      await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(three), changes(2), 0);
       assert.ok(!api.reviewedFiles().includes(three));
       assert.ok(!viewShown(three), 'no view once the file has no change');
     });
@@ -272,11 +272,11 @@ for (const version of [1]) {
 
     test('Next File Under Review opens the first file from no argument, as the status bar gives, and the next from a URI', async () => {
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
-      await vscode.commands.executeCommand('acp.nextReviewFile');
+      await vscode.commands.executeCommand('your-turn.nextReviewFile');
       assert.strictEqual(activeFile(), modified);
-      await vscode.commands.executeCommand('acp.nextReviewFile', vscode.Uri.file(modified));
+      await vscode.commands.executeCommand('your-turn.nextReviewFile', vscode.Uri.file(modified));
       assert.strictEqual(activeFile(), created);
-      await vscode.commands.executeCommand('acp.previousReviewFile', vscode.Uri.file(created));
+      await vscode.commands.executeCommand('your-turn.previousReviewFile', vscode.Uri.file(created));
       assert.strictEqual(activeFile(), modified);
     });
 
@@ -290,12 +290,12 @@ for (const version of [1]) {
     test("Disconnecting the agent keeps its session's review, shown again once its session is", async () => {
       const baseline = await baselineDocument(modified);
       let changed = observed(vscode.workspace.onDidChangeTextDocument, () => (baseline.getText() === '' ? true : undefined));
-      await vscode.commands.executeCommand('acp.disconnectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.disconnectAgent', agentName);
       assert.deepStrictEqual(api.reviewedFiles(), []);
       assert.deepStrictEqual(api.reviewListedFiles(), []);
       await changed;
       changed = observed(vscode.workspace.onDidChangeTextDocument, () => (baseline.getText() === 'one\ntwo\n' ? true : undefined));
-      await vscode.commands.executeCommand('acp.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
       assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
       assert.deepStrictEqual(api.reviewListedFiles(), [modified, created, deleted]);
       await changed;

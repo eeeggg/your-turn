@@ -5,8 +5,8 @@ import * as path from 'node:path';
 import { setup, suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { createWorkspaceFiles, workspaceFiles } from '@/adapters/review/WorkspaceFiles';
-import { observed } from './observed';
-import { cleanup } from './cleanup';
+import { observed } from '@tests/integration/observed';
+import { cleanup } from '@tests/integration/cleanup';
 
 suite('Workspace files', () => {
   let folder: string;

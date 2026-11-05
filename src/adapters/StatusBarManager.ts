@@ -12,7 +12,7 @@ export class StatusBarManager {
       vscode.StatusBarAlignment.Left,
       100,
     );
-    this.statusBarItem.command = 'acp.connectAgent';
+    this.statusBarItem.command = 'your-turn.connectAgent';
     this.updateStatus();
 
     this.sessionManager.on('session-added', () => this.updateStatus());
@@ -27,11 +27,11 @@ export class StatusBarManager {
 
     const firstAgent = agentsWithSessions[0];
     if (firstAgent === undefined) {
-      this.statusBarItem.text = '$(hubot) ACP: No session';
+      this.statusBarItem.text = '$(hubot) Your Turn: No session';
       this.statusBarItem.tooltip = 'Click to connect to an agent';
     } else {
       const agentName = activeSession?.agentDisplayName || firstAgent;
-      this.statusBarItem.text = `$(hubot) ACP: ${agentName}`;
+      this.statusBarItem.text = `$(hubot) Your Turn: ${agentName}`;
       this.statusBarItem.tooltip = `In session with ${agentName}`;
     }
 

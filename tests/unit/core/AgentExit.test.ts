@@ -9,7 +9,14 @@ import type { WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { showsEmptyState } from '@/webview/state/Transcript';
-import { fakeAgent, InProcessAgents, unusedEditor, unusedHandlers, work, type ExitOrder } from './InProcessAgents';
+import {
+  fakeAgent,
+  InProcessAgents,
+  unusedEditor,
+  unusedHandlers,
+  work,
+  type ExitOrder
+} from '@tests/unit/core/InProcessAgents';
 
 /** The extension and the chat view's store, wired as `extension.ts` wires them, with a real agent behind them. */
 function setup() {

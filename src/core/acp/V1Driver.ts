@@ -1,4 +1,9 @@
-import { client as createClientApp, methods, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
+import {
+  client as createClientApp,
+  methods,
+  PROTOCOL_VERSION,
+  RequestError
+} from '@agentclientprotocol/sdk';
 import type * as Acp from '@agentclientprotocol/sdk';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
@@ -25,16 +30,16 @@ import type {
   SlashCommand,
   ToolCallContent,
   ToolCallStatus,
-} from './AcpDriver';
-import { authChecked, sessionChecked } from './RequestErrors';
-import { compactionContent } from './Compaction';
-import { v1Elicitation } from './Elicitation';
+} from '@/core/acp/AcpDriver';
+import { authChecked, sessionChecked } from '@/core/acp/RequestErrors';
+import { compactionContent } from '@/core/acp/Compaction';
+import { v1Elicitation } from '@/core/acp/Elicitation';
 
 /** The `initialize` request the v1 client sends, which the negotiation sends to the agent for it. */
 export function v1InitializeRequest(clientVersion: string): Acp.InitializeRequest {
   return {
     protocolVersion: PROTOCOL_VERSION,
-    clientInfo: { name: 'vscode-acp-client', version: clientVersion },
+    clientInfo: { name: 'vscode-your-turn', version: clientVersion },
     // Agents read and write files and run commands themselves; ACP v2 drops these client capabilities. Boolean config
     // options, which every v2 client supports, a v1 client must offer.
     clientCapabilities: { elicitation: { form: {}, url: {} }, session: { compaction: {}, configOptions: { boolean: {} } } },
@@ -54,7 +59,7 @@ export class V1Driver implements AcpDriver {
     const { permissions } = handlers;
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
-    const app = createClientApp({ name: 'vscode-acp-client' })
+    const app = createClientApp({ name: 'vscode-your-turn' })
       .onRequest(methods.client.elicitation.create, ({ params, requestId, signal }) => {
         const capabilities = v1InitializeRequest(clientVersion).clientCapabilities?.elicitation;
         if (!handlers.elicitations || (params.mode !== 'form' && params.mode !== 'url') || !capabilities?.[params.mode]) {

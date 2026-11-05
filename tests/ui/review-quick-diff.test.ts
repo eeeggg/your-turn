@@ -1,15 +1,15 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  acpContainerControl,
+  yourTurnContainerControl,
   editorTab,
   promptInput,
   quickInput,
   quickInputRow,
   reviewQuickDiff,
   reviewStatus,
-} from './workbench';
-import { expect, test } from './window';
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 test.use({ reviewPresentation: 'quickDiff' });
 
@@ -22,7 +22,7 @@ async function openFile(window: Parameters<typeof editorTab>[0], name: string): 
 }
 
 async function connectFakeAgent(window: Parameters<typeof editorTab>[0]): Promise<void> {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   const agent = window.getByRole('treeitem', { name: /fake-v1/ });
   await agent.hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
@@ -39,7 +39,7 @@ test("a completed turn preserves the already-open reviewed file's quick diff", a
   await expect(editorTab(window, 'a.ts')).toHaveClass(/active/);
 
   await connectFakeAgent(window);
-  await expect(acpContainerControl(window)).toHaveAttribute('aria-selected', 'true');
+  await expect(yourTurnContainerControl(window)).toHaveAttribute('aria-selected', 'true');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review-open ${workspace}`);

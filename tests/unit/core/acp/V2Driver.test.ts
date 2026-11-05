@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
-import { AuthRequired, UnknownSession, type ConfigOption, type PermissionOutcome, type PromptPart, type SessionRoots, type SessionUpdate, type ToolCallContent } from '@/core/acp/AcpDriver';
+import {
+  AuthRequired,
+  UnknownSession,
+  type ConfigOption,
+  type PermissionOutcome,
+  type PromptPart,
+  type SessionRoots,
+  type SessionUpdate,
+  type ToolCallContent
+} from '@/core/acp/AcpDriver';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { setLogSink } from '@/core/Log';

@@ -1,4 +1,4 @@
-import type { CompactionContent } from './AcpDriver';
+import type { CompactionContent } from '@/core/acp/AcpDriver';
 
 /** Copies schema-validated ACP content into the version-neutral JSON contract. */
 export function compactionContent(value: unknown): CompactionContent {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SlashCommand } from '@/shared/WebviewMessages';
-import { answer, connect, loadChatPage, replayed, type ChatPage } from './chatPage';
+import { answer, connect, loadChatPage, replayed, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 

@@ -2,8 +2,8 @@ import * as assert from 'assert';
 import { suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { pseudoterminalDisplays } from '@/adapters/PseudoterminalDisplays';
-import { observed } from './observed';
-import { cleanup } from './cleanup';
+import { observed } from '@tests/integration/observed';
+import { cleanup } from '@tests/integration/cleanup';
 
 const shown = (name: string) => observed(vscode.window.onDidChangeActiveTerminal, () => (vscode.window.activeTerminal?.name === name ? true : undefined));
 

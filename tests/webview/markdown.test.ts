@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { answer as agentText, connect, loadChatPage, type ChatPage } from './chatPage';
+import { answer as agentText, connect, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 

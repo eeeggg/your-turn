@@ -17,7 +17,7 @@ import { remoteWebview } from '@tests/integration/webviews';
 suite("The window's workspace target", () => {
   const agentName = 'fake-persisted-folder';
   const sessionId = `persisted-folder-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}`;
-  const config = () => vscode.workspace.getConfiguration('acp');
+  const config = () => vscode.workspace.getConfiguration('your-turn');
   let api: ExtensionTestApi;
   let folder: vscode.Uri;
   let original: unknown;
@@ -26,13 +26,13 @@ suite("The window's workspace target", () => {
   const owned: (() => unknown)[] = [];
 
   function webview(): vscode.Webview {
-    const panel = vscode.window.createWebviewPanel('acp-persisted-folder-test', 'Workspace URI', { viewColumn: vscode.ViewColumn.One, preserveFocus: true });
+    const panel = vscode.window.createWebviewPanel('your-turn-persisted-folder-test', 'Workspace URI', { viewColumn: vscode.ViewColumn.One, preserveFocus: true });
     panels.push(panel);
     return panel.webview;
   }
 
   suiteSetup(async () => {
-    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('formulahendry.acp-client');
+    const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
     const activated = await extension?.activate();
     assert.ok(activated, 'the extension returns its test API in extension tests');
     api = activated;
@@ -53,7 +53,7 @@ suite("The window's workspace target", () => {
     await cleanup(this.currentTest, [
       ...owned.splice(0),
       ...panels.splice(0).map((panel) => () => { panel.dispose(); }),
-      () => vscode.commands.executeCommand('acp.disconnectAgent', agentName),
+      () => vscode.commands.executeCommand('your-turn.disconnectAgent', agentName),
       () => api.persistedStateSettled(),
       ...workspaceState.keys().map((key) => () => workspaceState.update(key, undefined)),
       () => api.sessionReferences.reset(),
@@ -148,7 +148,7 @@ suite("The window's workspace target", () => {
   });
 
   test('records a session opened here as its reference and as the last active session of this workspace', async () => {
-    await vscode.commands.executeCommand('acp.connectAgent', agentName);
+    await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
     await api.persistedStateSettled();
 
     const address = { configuredName: agentName, sessionId, cwd: folder.fsPath, host: 'file://', workspaceUri: folder.toString() };

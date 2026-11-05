@@ -1,6 +1,6 @@
-import type { ElicitationInteractions } from './ClientHandlers';
-import type { ElicitationInteraction } from './acp/AcpDriver';
-import { logError } from './Log';
+import type { ElicitationInteractions } from '@/core/ClientHandlers';
+import type { ElicitationInteraction } from '@/core/acp/AcpDriver';
+import { logError } from '@/core/Log';
 
 type UrlInteraction = Extract<ElicitationInteraction, { mode: 'url' }>;
 

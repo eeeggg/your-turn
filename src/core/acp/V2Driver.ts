@@ -32,16 +32,16 @@ import {
   type ToolCallContent,
   type ToolCallStatus,
   type ToolKind,
-} from './AcpDriver';
-import { authChecked, isAuthRequired, sessionChecked } from './RequestErrors';
-import { compactionContent } from './Compaction';
-import { v2Elicitation } from './Elicitation';
+} from '@/core/acp/AcpDriver';
+import { authChecked, isAuthRequired, sessionChecked } from '@/core/acp/RequestErrors';
+import { compactionContent } from '@/core/acp/Compaction';
+import { v2Elicitation } from '@/core/acp/Elicitation';
 
 /** The `initialize` request the v2 client sends, which the negotiation sends to the agent for it. */
 export function v2InitializeRequest(clientVersion: string): Acp.InitializeRequest {
   return {
     protocolVersion: Acp.PROTOCOL_VERSION,
-    info: { name: 'vscode-acp-client', version: clientVersion },
+    info: { name: 'vscode-your-turn', version: clientVersion },
     // Without auth.terminal, agents advertise only the auth methods they handle themselves.
     capabilities: { elicitation: { form: {}, url: {} } },
   };
@@ -62,7 +62,7 @@ export class V2Driver implements AcpDriver {
     const translator = new Translator(foreground);
     // The connection must stay open for the agent's lifetime, so use connect()
     // rather than connectWith(), which closes when its callback returns.
-    const app = Acp.client({ name: 'vscode-acp-client' })
+    const app = Acp.client({ name: 'vscode-your-turn' })
       .onRequest(Acp.methods.client.elicitation.create, ({ params, requestId, signal }) => {
         const capabilities = v2InitializeRequest(clientVersion).capabilities?.elicitation;
         if (!capabilities) { throw new Acp.RequestError(-32601, 'Elicitation is not advertised'); }

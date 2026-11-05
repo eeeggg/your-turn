@@ -1,8 +1,14 @@
-import { acpContainerControl, chatUserMessages, promptInput, sessionUsage, sessionUsageDetails } from './workbench';
-import { expect, test } from './window';
+import {
+  yourTurnContainerControl,
+  chatUserMessages,
+  promptInput,
+  sessionUsage,
+  sessionUsageDetails
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 test('usage has no pointer focus box and retains keyboard focus and native activation', async ({ window }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
   const prompt = promptInput(window);
@@ -48,7 +54,7 @@ test('usage has no pointer focus box and retains keyboard focus and native activ
 });
 
 test('dismissing usage restores the prior prompt focus and caret without overriding keyboard navigation', async ({ window }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
   const prompt = promptInput(window);

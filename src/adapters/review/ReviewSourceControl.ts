@@ -20,14 +20,14 @@ export class ReviewSourceControl implements vscode.Disposable {
   private readonly baselines: vscode.Disposable;
   private readonly changed = () => this.show();
   private readonly openCommand: vscode.Disposable;
-  private readonly command = `_acp.openReviewResource.${randomUUID()}`;
+  private readonly command = `_your-turn.openReviewResource.${randomUUID()}`;
   private review: ReturnType<Reviews['shown']>;
   private generation = 0;
 
   constructor(
     private readonly controls: ReviewControls,
     private readonly reviews: Reviews,
-    private readonly control = vscode.scm.createSourceControl('acp-review', 'ACP Review'),
+    private readonly control = vscode.scm.createSourceControl('your-turn-review-buffer', 'Review Buffer'),
   ) {
     this.files = control.createResourceGroup('files', 'Files Under Review');
     this.openCommand = vscode.commands.registerCommand(this.command, async (generation: number, path: string) => {
@@ -69,7 +69,7 @@ export class ReviewSourceControl implements vscode.Disposable {
     const paths = this.controls.reviewedPaths();
     this.files.resourceStates = paths.map((path) => {
       const resourceUri = vscode.Uri.file(path);
-      return { resourceUri, command: { command: this.command, title: 'Open ACP Review', arguments: [this.generation, path] } };
+      return { resourceUri, command: { command: this.command, title: 'Open Review', arguments: [this.generation, path] } };
     });
     for (const path of new Set([...left, ...paths])) {
       this.baselineChanged.fire(vscode.Uri.file(path).with({ scheme: BASELINE_SCHEME }));

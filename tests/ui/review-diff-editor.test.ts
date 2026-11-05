@@ -1,18 +1,37 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  acpContainerControl, editorSelection, editorTab, gitDiffEditor, gitOpenChanges, gitOpenFile, gitWorkingTreeChange, hideSecondarySideBar, modifiedReviewEditor, modifiedReviewLine, navigateDiff, plainFileEditor, plainFileTab,
-  promptInput, quickInput, quickInputRow, reviewChangeStatus, reviewDiffEditor, reviewLens, reviewStatus,
-  reviewTitleAction, sourceControl,
-} from './workbench';
-import { expect, test } from './window';
+  yourTurnContainerControl,
+  editorSelection,
+  editorTab,
+  gitDiffEditor,
+  gitOpenChanges,
+  gitOpenFile,
+  gitWorkingTreeChange,
+  hideSecondarySideBar,
+  modifiedReviewEditor,
+  modifiedReviewLine,
+  navigateDiff,
+  plainFileEditor,
+  plainFileTab,
+  promptInput,
+  quickInput,
+  quickInputRow,
+  reviewChangeStatus,
+  reviewDiffEditor,
+  reviewLens,
+  reviewStatus,
+  reviewTitleAction,
+  sourceControl
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 const original = Array.from({ length: 30 }, (_, index) => `l${index + 1}\n`).join('');
 const actions = ['Previous File Under Review', 'Next File Under Review', 'Undo File', 'Keep File', 'Keep All'];
 test.use({ workspaceFiles: { 'm.ts': original }, gitRepository: true });
 
 async function startReview(window: Parameters<typeof editorTab>[0], workspace: string): Promise<void> {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   const agent = window.getByRole('treeitem', { name: /fake-v1/ });
   await agent.hover();
   await window.getByRole('button', { name: 'Connect to Agent' }).click();
@@ -45,7 +64,7 @@ test('native review resolves agent hunks while retaining prior user edits in a G
   for (const action of actions) {
     await expect(reviewTitleAction(window, action)).toHaveCount(0);
   }
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toHaveCount(0);
+  await expect(reviewTitleAction(window, 'Open Review')).toHaveCount(0);
   await startReview(window, workspace);
   await expect(reviewLens(window, 'Keep Change').first()).toBeVisible();
   await expect(reviewLens(window, 'Undo Change').first()).toBeVisible();
@@ -78,7 +97,7 @@ test('native review resolves agent hunks while retaining prior user edits in a G
   for (const action of actions) {
     await expect(reviewTitleAction(window, action)).toHaveCount(0);
   }
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toHaveCount(0);
+  await expect(reviewTitleAction(window, 'Open Review')).toHaveCount(0);
   await expect(gitOpenChanges(window)).toBeVisible();
   await gitOpenChanges(window).click();
   await expect(gitDiffEditor(window)).toBeVisible();
@@ -86,7 +105,7 @@ test('native review resolves agent hunks while retaining prior user edits in a G
   await expect(gitDiffEditor(window)).toContainText('AGENT changed');
   await expect(reviewTitleAction(window, 'Keep Change')).toHaveCount(0);
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toHaveCount(0);
+  await expect(reviewTitleAction(window, 'Open Review')).toHaveCount(0);
   await window.screenshot({ path: testInfo.outputPath('manual-git-after-review.png') });
 });
 
@@ -160,13 +179,13 @@ test('review navigation stays available during turns without stealing focus from
   await gitOpenFile(window).click();
   await expect(plainFileEditor(window)).toContainText('AGENT changed');
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toBeVisible();
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toBeDisabled();
+  await expect(reviewTitleAction(window, 'Open Review')).toBeVisible();
+  await expect(reviewTitleAction(window, 'Open Review')).toBeDisabled();
   await quickInputRow(window, 'Allow').click();
   await expect(prompt).toBeEnabled();
   await expect(plainFileEditor(window)).toBeVisible();
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toBeEnabled();
-  await reviewTitleAction(window, 'Open ACP Review').click();
+  await expect(reviewTitleAction(window, 'Open Review')).toBeEnabled();
+  await reviewTitleAction(window, 'Open Review').click();
   await expect(reviewDiffEditor(window)).toBeVisible();
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toBeEnabled(); }
 
@@ -205,7 +224,7 @@ test('review navigation stays available during turns without stealing focus from
   await expect(reviewDiffEditor(window)).toHaveCount(0);
   await openFile(window);
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toHaveCount(0);
+  await expect(reviewTitleAction(window, 'Open Review')).toHaveCount(0);
 });
 
 test('Git Open File during unresolved review opens the real file without resolving changes', async ({ window, workspace }, testInfo) => {
@@ -219,7 +238,7 @@ test('Git Open File during unresolved review opens the real file without resolvi
   await expect(plainFileEditor(window)).toBeVisible();
   await expect(plainFileEditor(window)).toContainText('AGENT changed');
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toBeEnabled();
+  await expect(reviewTitleAction(window, 'Open Review')).toBeEnabled();
   await expect(reviewStatus(window)).toContainText('1 of 1');
   expect(await readFile(join(workspace, 'm.ts'), 'utf8')).toBe(
     original.replace('l2\n', 'AGENT changed\n').replace('l15\n', 'l15\nAGENT added\n').replace('l28\n', ''),
@@ -261,15 +280,15 @@ test('explicit review entry reopens the first unresolved file without taking ove
   expect(await readFile(join(workspace, 'b.ts'), 'utf8')).toBe('one\n2\n3\n4\n5\n6\n7\n8\n9\n10\nb after\n');
   await window.screenshot({ path: testInfo.outputPath('normal-editor-during-review.png') });
 
-  await reviewTitleAction(window, 'Open ACP Review').click();
+  await reviewTitleAction(window, 'Open Review').click();
   await expect(modifiedReviewEditor(window)).toContainText('AGENT changed');
   await expect(reviewStatus(window)).toContainText('1 of 3');
-  await expect(reviewTitleAction(window, 'Open ACP Review')).toHaveCount(0);
+  await expect(reviewTitleAction(window, 'Open Review')).toHaveCount(0);
   await modifiedReviewLine(window, 'AGENT changed').click();
   await window.keyboard.press('Control+W');
-  await expect(editorTab(window, 'm.ts — ACP Review')).toHaveCount(0);
+  await expect(editorTab(window, 'm.ts — Review')).toHaveCount(0);
   await expect(plainFileEditor(window)).toContainText('b after');
-  await reviewTitleAction(window, 'Open ACP Review').click();
+  await reviewTitleAction(window, 'Open Review').click();
   await expect(modifiedReviewEditor(window)).toContainText('AGENT changed');
   await reviewTitleAction(window, 'Keep File').click();
   await expect(reviewStatus(window)).toContainText('of 2');
@@ -279,13 +298,13 @@ test('explicit review entry reopens the first unresolved file without taking ove
   await quickInput(window).fill('other.ts');
   await quickInputRow(window, 'other.ts').click();
   await expect(plainFileEditor(window)).toContainText('unrelated');
-  await reviewTitleAction(window, 'Open ACP Review').click();
+  await reviewTitleAction(window, 'Open Review').click();
   await expect(modifiedReviewEditor(window)).toContainText('a after');
   await expect(reviewStatus(window)).toContainText('1 of 2');
   await window.screenshot({ path: testInfo.outputPath('explicit-review-first-unresolved.png') });
 });
 
-test('Git comparisons retain only native controls while ACP review is unresolved', async ({ window, workspace }, testInfo) => {
+test('Git comparisons retain only native controls while the review is unresolved', async ({ window, workspace }, testInfo) => {
   await hideSecondarySideBar(window).click();
   await startReview(window, workspace);
   await modifiedReviewLine(window, 'AGENT changed').click();
@@ -295,12 +314,12 @@ test('Git comparisons retain only native controls while ACP review is unresolved
   await gitWorkingTreeChange(window, 'm.ts').click();
   await expect(gitDiffEditor(window)).toBeVisible();
   await expect(gitDiffEditor(window)).toContainText('AGENT changed');
-  for (const action of [...actions, 'Open ACP Review']) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
+  for (const action of [...actions, 'Open Review']) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
   await expect(reviewStatus(window)).toContainText('1 of 1');
   await window.screenshot({ path: testInfo.outputPath('git-comparison-during-review.png') });
   await gitOpenFile(window).click();
   await expect(plainFileEditor(window)).toContainText('AGENT changed');
-  await reviewTitleAction(window, 'Open ACP Review').click();
+  await reviewTitleAction(window, 'Open Review').click();
   await expect(reviewLens(window, 'Keep Change')).toHaveCount(3);
   await expect(reviewStatus(window)).toContainText('1 of 1');
 });

@@ -1,231 +1,171 @@
-# ACP Client for VS Code
+# Your Turn
 
-A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) that provides a client for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) — connect to any ACP-compatible AI coding agent directly from your editor.
+Work with coding agents and understand their changes, one turn at a time.
 
-![ACP Client Screenshot](resources/screenshot.png)
+Your Turn brings agent sessions and code review together in VS Code. Follow
+your agent's work as it happens, inspect the resulting changes, and decide
+what to keep before your next prompt — without leaving your editor.
 
-## Features
+Answer questions and permission requests as they come up. Queue your next
+prompt while the agent works, edit it before it sends, or steer the current
+turn instead when the agent supports it. Review changes by hunk, file, or
+all at once, and edit the code directly whenever you want to.
 
-- **Multi-Agent Support**: Connect to any ACP agent you configure
-- **Single-Agent Focus**: One agent active at a time — seamlessly switch between agents
-- **Per-Agent Session List**: Each agent in the Agents view is expandable into its previous sessions. Click a session to restore its history in the chat. Backed by `session/list` when the agent supports it, or by a local per-workspace cache otherwise.
-- **Session Config Options**: Dynamic per-session selectors (mode, model, reasoning level, …) advertised by the agent are rendered automatically in the composer toolbar.
-- **Interactive Chat**: Built-in chat panel with Markdown rendering, inline tool call display, and collapsible tool sections
-- **Thinking Display**: See agent reasoning in a collapsible block with streaming animation and elapsed time
-- **Slash Commands**: Autocomplete popup for agent-provided commands with keyboard navigation
-- **Mode & Model Picker**: Switch agent modes and models directly from the chat toolbar (kept for agents that haven't migrated to Session Config Options yet)
-- **Permission Management**: Configurable auto-approve policies for agent actions
-- **Protocol Traffic Export**: Retain recent ACP JSON-RPC messages in memory and export them as JSONL when requested
-- **Agent Registry**: Add an agent from the ACP agent registry, run through `npx` or `uvx` at the version the registry lists
-- **Chat Persistence**: Transcripts are preserved when switching panels
+You choose and configure the agent. Your Turn connects to it through the
+[Agent Client Protocol (ACP)](https://agentclientprotocol.com/) and provides
+the session and review controls in VS Code.
 
-## Quick Start
+## Working with your agent
 
-1. Install: [Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) | [Open in VS Code](https://vscode.dev/redirect?url=vscode%3Aextension%2Fformulahendry.acp-client) | [Open VSX Marketplace](https://open-vsx.org/extension/formulahendry/acp-client)
-2. Open the ACP Client panel from the Activity Bar (ACP icon)
-3. Click **+** to add an agent configuration
-4. Click an agent to connect
-5. Start chatting!
+### Follow the work
 
-## Requirements
+Follow the agent's messages, plans, and tool calls as they happen. Expand
+what needs a closer look, scroll back while new work keeps streaming in,
+and move between sessions without losing your place.
 
-- Node.js 18+ (for spawning agent processes)
-- An ACP-compatible agent installed or available via `npx`
+### Shape the work together
 
-## Adding an Agent
+Answer questions and permission requests without breaking your flow. Queue
+your next prompt while the agent works, edit it before it sends, or steer
+the current turn mid-stream — so your direction lands while it still matters.
 
-The extension comes with no agents configured. Add one with **ACP: Add Agent Configuration** (the **+** in the Agents view), which saves it to your user settings:
+### Review the result
 
-- **From the [ACP agent registry](https://github.com/agentclientprotocol/registry):** pick an agent that runs through `npx` or `uvx`, at the version the registry lists. Agents distributed only as a binary are listed but not added, as installing them is up to you; once installed, **ACP: Detect Agents** adds them. Having `npx` or `uvx` where VS Code finds it is up to you too.
-- **Custom:** enter a name, the command that starts the agent in ACP mode, and its arguments.
+See what actually changed, not just what the agent reported. Keep what's
+right, undo what isn't, or fix it yourself — by change, by file, or all at
+once — in diff editors built into your normal editing.
 
-**ACP: Detect Agents** looks on the `PATH` VS Code sees for the registry's agents distributed as a binary, and adds those you pick under the registry's names. It runs nothing to find them, so the version it shows is the registry's; yours may differ.
+## The Review Buffer
 
-Or edit `acp.agents` in `settings.json` directly; for example, [OpenCode](https://opencode.ai) 2.x installed on your `PATH`:
+Most agent tools hand you a pile of edits and assume you will use Git to sort
+out what happened. Git tracks commits, not turns — it has no notion of "this is
+what the agent just did" versus everything else sitting in your working tree. Once
+you start folding agent changes into the same diff as your own edits, or into
+a history built for commits instead of turns, you lose the one thing you
+actually need: a clean view of what *this turn* changed.
+
+The Review Buffer is a second source control, built for that purpose, running
+alongside Git rather than inside it. VS Code supports more than one source
+control provider at a time — Git is simply the one everyone recognizes. Your
+Turn uses that same extension point to give the session its own Files Under
+Review, each baselined from before the agent's first change to it — independent
+of your commits, staging area, or working tree. You don't need to resolve
+review after every turn; unresolved changes simply accumulate into one diff
+until you do.
+
+That separation is what makes the rest of review possible: Keep or Undo a
+file's net change without Git ever entering the picture, keep working in Git
+exactly as you already do, and never wonder if you missed an opportunity steer
+your agent towards producing better code.
+
+**Review is not a sandbox or an approval gate before writing.** Agents change
+files as they work (this is one of the things we like about them). The Review
+Buffer helps you understand and decide how to respond to these changes.
+
+That response depends on usable change reports from the agent, so it is not
+a complete audit of filesystem activity. Once a file is under review, later
+edits to that file can also affect its displayed diff. Read the diff before
+undoing changes, and use version control to protect work you want to retain.
+
+Today that evidence is the agent's own ACP messages, checked against the file
+as it is now. There's a last mile yet to close: agents can and do change files
+in ways that don't emit easily parsable ACP messages, and closing that gap
+means adding other sources of evidence over time (Git included!). Until then,
+consider this extension to be in beta — though ACP messages alone already
+provide enough visibility that we're using this extension to build itself.
+
+Review decisions are disabled while the shown session's turn is running.
+Review state is held in memory for the window's lifetime; it is not a durable
+backup or a replacement for commits.
+
+## Getting started
+
+You need VS Code 1.140 or newer and an ACP-compatible agent. Your Turn connects
+to your agent; it does not configure the agent for you or provide a model
+subscription or credentials. Follow your agent's documentation for setup,
+authentication, permissions, and other agent-specific settings.
+
+1. Install a locally built VSIX with **Extensions: Install from VSIX...**, or run
+   the extension from source as described in [AGENTS.md](AGENTS.md).
+2. Open a folder on disk. For a multi-root workspace, save the workspace first;
+   agents run in its first folder by default.
+3. Open **Your Turn** in the Activity Bar.
+4. Select **Your Turn: Add Agent Configuration**. Choose an agent from the ACP
+   registry or enter a custom command and arguments.
+5. Select **Your Turn: Connect to Agent**, then send a prompt.
+
+The ACP registry provides suggested launch commands—a starting point, not a
+requirement. You control the command, arguments, and environment variables in
+`your-turn.agents`. Use the registry's suggestion, modify it, or supply your own
+command or wrapper to launch the agent in the environment you choose.
+Your Turn does not sandbox the agent; any isolation must come from your launch
+setup.
+
+Registry configurations use `npx` or `uvx`; the required package runner must be
+available on the PATH seen by the extension host. **Your Turn: Detect Agents**
+looks for registry-listed binary agents already installed on that PATH. It does
+not install them.
+
+You can also configure a command directly. For example, with an ACP-capable
+OpenCode installation on PATH:
 
 ```json
-"acp.agents": {
-  "OpenCode": { "command": "opencode", "args": ["acp"] }
+"your-turn.agents": {
+  "OpenCode": {
+    "command": "opencode",
+    "args": ["acp"]
+  }
 }
 ```
 
-Run through `npx` instead, the same agent is `"command": "npx", "args": ["@opencode/cli", "acp"]`. Each agent's own documentation gives its ACP command. Keeping an agent installed, up to date and signed in is up to you; the extension only starts it.
+Session listing, history replay, model controls, slash commands, and other
+agent-specific features depend on the capabilities the agent advertises.
+Your Turn speaks stable-channel ACP v1 and v2. Protocol compatibility does not
+guarantee that every agent reports enough information for every extension
+feature.
 
-## Extension Settings
+## Settings
 
-### Transcript images
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `your-turn.agents` | `{}` | Named agent commands, arguments, and optional environment variables. |
+| `your-turn.review.presentation` | `diffEditor` | Native review diff editors, or `quickDiff` for inline review. |
+| `your-turn.autoApprovePermissions` | `ask` | Ask about agent permission requests, or automatically allow them with `allowAll`. |
+| `your-turn.includeActiveFile` | `true` | Attach the active editor file as a resource link to prompts. |
+| `your-turn.logTraffic` | `true` | Retain ACP traffic in memory for explicit export. |
+| `your-turn.showToolCallDiffs` | `false` | Show agent-reported diffs in the transcript, separately from the live Review Buffer. |
 
-Agent messages, thoughts, and tool text support inline and reference-style Markdown images.
-PNG, JPEG, GIF, and WebP base64 data URIs render automatically after validation.
-On Linux extension hosts, relative paths, contained absolute paths, and hostless `file:` URLs
-load automatically from the originating session's working directory. Symlink targets must stay
-inside that directory. Other platforms fail closed for local images until a race-resistant reader
-is available. Existing files are eligible, not only files created by the agent.
+Keep permission requests enabled unless you intend to allow the agent's actions
+automatically. Permission handling depends on what the agent asks; it does not
+isolate the agent from your machine.
 
-HTTPS images require **Load image** for each occurrence. The approval shows the destination and
-request origin. The extension host downloads the image, including on Remote-SSH; the browser never
-receives the external URL as an image source. Only public HTTPS destinations are allowed, including
-at most five validated redirects. HTTP, SVG, outside-directory paths, and arbitrary resource
-providers are unsupported. Failures offer an explicit **Retry** where loading can be attempted again.
+## Diagnostics, sensitive information, and telemetry
 
-Each image is limited to 10 MiB, 16,384 pixels per dimension, and 40 million pixels. All displayed
-images share a 50 MiB session payload budget. Successful images remain in memory without automatic
-rereads or downloads. Replay, replacement, and session changes create new image lifetimes.
-Header validation does not guarantee browser decoding or bound animation memory.
+**Your Turn collects no telemetry.** This does not govern telemetry or data
+collection by VS Code, your agent, or services your agent uses.
 
-To tell an agent about these source forms, include explicit instructions such as:
+**Protocol traffic stays in memory unless you export it.** With
+`your-turn.logTraffic` enabled (the default), Your Turn retains recent ACP
+messages in a bounded in-memory buffer. The buffer does not survive a window
+reload or extension shutdown. Disabling the setting stops new capture but does
+not clear messages already retained.
 
-> Use `![description](./path/to/picture.png)` for raster images inside this session's working
-> directory, or a base64 raster data URI. Public HTTPS raster images need my approval before loading.
-> Do not use SVG, HTTP, or paths outside this session's directory. Keep each image under 10 MiB.
+**Your Turn: Export Protocol Traffic** saves the retained messages as JSONL
+to a location you choose. These messages can contain prompts, source code,
+file paths, tool output, credentials, and other sensitive information. Inspect
+exports before sharing them, and do not commit them to a repository.
 
-The extension does not inject these instructions or advertise a non-standard ACP capability.
+**Your Turn: Show Log** opens operational diagnostics about the extension and
+its communication with agents, rather than the full ACP message capture.
+Diagnostics can still contain sensitive information, including file paths,
+error details, launch arguments at Debug level, and agent stderr at Trace
+level. Inspect logs before sharing them.
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `acp.agents` | `{}` | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
-| `acp.autoApprovePermissions` | `ask` | How agent permission requests are handled: `ask` or `allowAll`. |
-| `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
-| `acp.logTraffic` | `true` | Capture ACP protocol traffic in memory for explicit JSONL export. Turning this off stops new captures but keeps traffic already retained until the extension host stops. |
+## License and acknowledgments
 
-## Commands
+Copyright (c) 2026 Eric Graf and Brian Peterson.
+Copyright (c) 2026 QuantStrat.
 
-All commands are accessible via the Command Palette (`Ctrl+Shift+P`):
+Your Turn is distributed under the [Mozilla Public License, v. 2.0](LICENSE).
 
-| Command | Description |
-|---------|-------------|
-| `ACP: Connect to Agent` | Connect to an agent |
-| `ACP: New Session` | Start a new session with the connected agent |
-| `ACP: Send Prompt` | Send a message to the agent |
-| `ACP: Cancel Current Turn` | Cancel the current agent turn |
-| `ACP: Disconnect Agent` | Disconnect from the current agent |
-| `ACP: Restart Agent` | Restart the current agent process |
-| `ACP: Open Chat View` | Focus the chat view |
-| `ACP: Add Agent Configuration` | Add a new agent to settings |
-| `ACP: Detect Agents` | Add agents from the ACP agent registry already installed on your `PATH` |
-| `ACP: Remove Agent` | Remove an agent configuration |
-| `ACP: Set Agent Mode` | Change the agent's operating mode |
-| `ACP: Set Agent Model` | Change the agent's model |
-| `ACP: Refresh Sessions` | Re-fetch the session list for an agent (also on the agent's right-click menu) |
-| `ACP: Show Log` | Open the ACP Client log output channel |
-| `ACP: Export Protocol Traffic` | Save the retained ACP protocol traffic as a JSONL file |
-
-## Development
-
-### Prerequisites
-
-- Node.js 24 (`nvm use` reads `.nvmrc`)
-- VS Code 1.140+
-
-### Setup
-
-```bash
-git clone https://github.com/formulahendry/vscode-acp.git
-cd vscode-acp
-npm install
-```
-
-### Build & Run
-
-```bash
-npm run compile          # Development build: tsc type-checks, esbuild bundles the extension, webview, and integration suite
-```
-
-Press `F5` in VS Code to compile and launch the Extension Development Host. Development bundles carry source maps; `npm run build:production` minifies and leaves out the integration suite.
-
-### Testing
-
-All test and coverage commands first typecheck the repository, run ESLint,
-and run Knip. A failed check stops execution. Required development bundles
-are prepared once per batch; repeated runs stop on the first failure.
-
-| Everyday command | Scope |
-| --- | --- |
-| `npm run check` | Typecheck, ESLint, and Knip; no build or tests |
-| `npm test` | Unfiltered unit, webview, and VS Code integration gate; UI separate |
-| `npm run test:unit` | Unit tests; no bundle build |
-| `npm run test:webview` | Bundled-webview tests |
-| `npm run test:in-process` | Unit and webview tests; no VS Code launch |
-| `npm run test:integration` | Tests inside isolated VS Code instances |
-| `npm run test:ui` | Separate desktop UI suite using Playwright |
-| `npm run coverage` | Unit coverage; HTML in `test-results/unit/coverage/` |
-| `npm run coverage:integration` | Per-job integration coverage in `test-results/integration/coverage/` |
-| `npm run package:vsix` | Production build, then create the distributable VSIX |
-
-Focused layer commands accept explicit source paths and `--repeat N`:
-
-```bash
-npm run test:unit -- tests/unit/core/AgentManager.test.ts --repeat 3
-npm run test:integration -- --jobs 4 --display xvfb
-```
-
-Integration defaults to one worker. On Linux, `auto` display policy prefers
-Xvfb, with an announced serial fallback to an inherited display if Xvfb is
-unavailable. `xvfb` requires Xvfb; `existing` deliberately uses the inherited
-display serially. The UI suite has separate Linux containment and Xvfb
-prerequisites. Cross-platform test execution is not yet verified.
-
-Optional, Git-ignored `.env.test.local` preferences control integration
-(including integration inside `npm test`) and the separate UI suite:
-
-```dotenv
-TEST_JOBS=4
-TEST_DISPLAY=xvfb
-UI_JOBS=2
-```
-
-`TEST_JOBS` and `TEST_DISPLAY` affect integration only. `UI_JOBS` sets the UI
-worker cap through Playwright's file-level scheduler; it must be a positive
-integer. UI defaults to one worker and keeps retries disabled. Integration CLI
-arguments override local preferences. CI ignores the local file.
-
-### Lower-level checks and builds
-
-| Command | Behavior |
-| --- | --- |
-| `npm run typecheck` | TypeScript typechecking only |
-| `npm run lint` | ESLint and Knip only |
-| `npm run compile` | Typecheck, then build development bundles; no lint or tests |
-| `npm run build:production` | Typecheck, then build production bundles; no lint or tests |
-
-`vscode:prepublish` is the packaging hook used by VSCE, not a separate
-developer entry point. It invokes `build:production`.
-
-### Packaging
-
-```bash
-npm run package:vsix     # Build production bundles and create .vsix
-```
-
-## Architecture
-
-The extension follows a modular architecture:
-
-- **Core**: `AgentManager`, `ConnectionManager`, `SessionManager`, `AcpClientImpl`
-- **Handlers**: `PermissionRequests`, `SessionUpdateHandler`
-- **UI**: `SessionTreeProvider`, `ChatWebviewProvider`, `StatusBarManager`
-- **Config**: `AgentConfig`, `RegistryClient`
-- **Utils**: `Logger`
-
-Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio).
-
-## Known Issues
-
-- Agents must be available via the system PATH or `npx`
-- Some agents may require additional authentication setup
-- File attachment feature is not yet functional
-
-## Links
-
-- [ACP Client on Visual Studio Code Marketplace](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client)
-- [Agent Client Protocol](https://agentclientprotocol.com/)
-- [GitHub Repository](https://github.com/formulahendry/vscode-acp)
-
-## Related Projects
-
-- [ACP UI](https://github.com/formulahendry/acp-ui) — A modern, cross-platform desktop client for the Agent Client Protocol (ACP)
-- [WeChat ACP](https://github.com/formulahendry/wechat-acp) — Bridge WeChat chat messages to any ACP-compatible AI agent (Claude, Codex, Copilot, Qwen, Gemini, OpenCode and more)
-
-## License
-
-MIT — see [LICENSE](LICENSE) for details.
+Thank you to Jun Han (formulahendry) for publishing [vscode-acp](https://github.com/formulahendry/vscode-acp) and exposing the seam.

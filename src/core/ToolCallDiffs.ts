@@ -1,7 +1,7 @@
 import { parsePatch, type StructuredPatch, type StructuredPatchHunk } from 'diff';
 import type { FileChange, FileDiff } from '@/core/acp/AcpDriver';
 import { unifiedHunks } from '@/core/diff/UnifiedHunks';
-import type { PatchHunk, ReportedFile } from './ReportedFiles';
+import type { PatchHunk, ReportedFile } from '@/core/ReportedFiles';
 
 /** Lines of unchanged text shown around each change. */
 const CONTEXT_LINES = 3;

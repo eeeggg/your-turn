@@ -3,7 +3,7 @@ import { parsePatch, type StructuredPatch } from 'diff';
 import type { FileChange, FileDiff, SessionUpdate, ToolCallStatus } from '@/core/acp/AcpDriver';
 import { logWarning, messageOf } from '@/core/Log';
 import { changeSides } from '@/core/ReportedFiles';
-import type { FileContent, ReadFile, Review } from './Review';
+import type { FileContent, ReadFile, Review } from '@/core/review/Review';
 
 type Changes = Extract<FileDiff, { kind: 'changes' }>;
 type Hunks = StructuredPatch['hunks'];

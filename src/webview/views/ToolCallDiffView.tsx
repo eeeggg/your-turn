@@ -74,7 +74,7 @@ const FileSection = memo(function FileSection({ file, toolCallId, index }: { fil
  */
 function FileLink({ path, toolCallId, index, hasLines }: { path: string; toolCallId: string; index: number; hasLines: boolean }) {
   const dispatch = useDispatch();
-  const context = { webviewSection: 'toolCallDiffFile', acpToolCallId: toolCallId, acpDiffFile: index, acpDiffFileHasLines: hasLines, preventDefaultContextMenuItems: true };
+  const context = { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: toolCallId, yourTurnDiffFile: index, yourTurnDiffFileHasLines: hasLines, preventDefaultContextMenuItems: true };
   return (
     <button
       type="button"

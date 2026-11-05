@@ -1,4 +1,4 @@
-import type { SessionInfo } from './SessionManager';
+import type { SessionInfo } from '@/core/SessionManager';
 
 export type TabReference = Pick<SessionInfo, 'sessionId' | 'agentName' | 'agentDisplayName' | 'cwd' | 'title'>;
 

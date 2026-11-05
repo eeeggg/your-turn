@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
 import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled } from '@/core/Traffic';
 
-const EXPORT_COMMAND = 'acp.exportTraffic';
+const EXPORT_COMMAND = 'your-turn.exportTraffic';
 
 /** Apply the user's capture setting. Existing records remain when capture is paused. */
 function syncTrafficCaptureSetting(): void {
-  setTrafficCaptureEnabled(vscode.workspace.getConfiguration('acp').get<boolean>('logTraffic', true));
+  setTrafficCaptureEnabled(vscode.workspace.getConfiguration('your-turn').get<boolean>('logTraffic', true));
 }
 
 /** Register explicit protocol-traffic export and its configuration listener. */
@@ -13,7 +13,7 @@ export function registerTrafficAdapter(subscriptions: vscode.Disposable[]): void
   syncTrafficCaptureSetting();
   subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('acp.logTraffic')) {
+      if (event.affectsConfiguration('your-turn.logTraffic')) {
         syncTrafficCaptureSetting();
       }
     }),

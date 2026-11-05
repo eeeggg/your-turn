@@ -1,6 +1,15 @@
 import { assert, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { answer, connect, loadChatPage, plan, shownText, thought, toolCall, type ChatPage } from './chatPage';
+import {
+  answer,
+  connect,
+  loadChatPage,
+  plan,
+  shownText,
+  thought,
+  toolCall,
+  type ChatPage
+} from '@tests/webview/chatPage';
 
 let page: ChatPage;
 

@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { answer, connect, loadChatPage, plan, shownText, thought, type ChatPage } from './chatPage';
+import {
+  answer,
+  connect,
+  loadChatPage,
+  plan,
+  shownText,
+  thought,
+  type ChatPage
+} from '@tests/webview/chatPage';
 
 let page: ChatPage;
 

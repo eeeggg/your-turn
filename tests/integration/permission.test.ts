@@ -7,22 +7,22 @@ suite('PermissionQuickPick Test Suite', () => {
   let originalSetting: string | undefined;
 
   suiteSetup(() => {
-    originalSetting = vscode.workspace.getConfiguration('acp').get<string>('autoApprovePermissions');
+    originalSetting = vscode.workspace.getConfiguration('your-turn').get<string>('autoApprovePermissions');
   });
 
   suiteTeardown(async () => {
-    await vscode.workspace.getConfiguration('acp')
+    await vscode.workspace.getConfiguration('your-turn')
       .update('autoApprovePermissions', originalSetting, vscode.ConfigurationTarget.Global);
   });
 
   test('Asks by default', async () => {
-    await vscode.workspace.getConfiguration('acp')
+    await vscode.workspace.getConfiguration('your-turn')
       .update('autoApprovePermissions', undefined, vscode.ConfigurationTarget.Global);
     assert.strictEqual(permissionQuickPick.autoApprove(), 'ask');
   });
 
   test('Allows everything once the setting is allowAll', async () => {
-    await vscode.workspace.getConfiguration('acp')
+    await vscode.workspace.getConfiguration('your-turn')
       .update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
     assert.strictEqual(permissionQuickPick.autoApprove(), 'allowAll');
   });

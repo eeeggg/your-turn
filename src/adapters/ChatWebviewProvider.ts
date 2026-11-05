@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
 import type { ChatViewEnvironment } from '@/core/ChatViewController';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { renderChatHtml } from './ChatHtml';
+import { renderChatHtml } from '@/adapters/ChatHtml';
 
-/** The chat view's webview in the ACP sidebar; `ChatViewController` decides what it shows. */
+/** The chat view's webview in the Your Turn sidebar; `ChatViewController` decides what it shows. */
 export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatViewEnvironment, vscode.Disposable {
-  public static readonly viewType = 'acp-chat';
+  public static readonly viewType = 'your-turn-chat';
 
   private view: vscode.WebviewView | undefined;
   private title = 'Chat';
@@ -28,7 +28,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   }
 
   async reveal(): Promise<void> {
-    await vscode.commands.executeCommand('acp-chat.focus');
+    await vscode.commands.executeCommand('your-turn-chat.focus');
     await this.ready;
   }
 
@@ -79,7 +79,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   }
 
   showsToolCallDiffs(): boolean {
-    return vscode.workspace.getConfiguration('acp').get<boolean>('showToolCallDiffs', false);
+    return vscode.workspace.getConfiguration('your-turn').get<boolean>('showToolCallDiffs', false);
   }
 
   executeCommand(command: string, ...rest: unknown[]): Thenable<unknown> {

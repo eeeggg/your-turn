@@ -1,5 +1,5 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { connect, loadChatPage, type ChatPage } from './chatPage';
+import { connect, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 

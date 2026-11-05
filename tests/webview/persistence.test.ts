@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { answer, connect, loadChatPage, plan, shownText, texts, thought, toolCall, type ChatPage } from './chatPage';
+import {
+  answer,
+  connect,
+  loadChatPage,
+  plan,
+  shownText,
+  texts,
+  thought,
+  toolCall,
+  type ChatPage
+} from '@tests/webview/chatPage';
 
 function open(savedState?: unknown): ChatPage {
   return loadChatPage(savedState === undefined ? {} : { savedState });

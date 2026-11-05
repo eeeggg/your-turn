@@ -1,33 +1,46 @@
 {
-  "name": "acp-client",
-  "displayName": "ACP Client",
-  "description": "Agent Client Protocol client for VS Code — connect to any ACP-compatible AI coding agent",
-  "version": "0.3.21",
-  "publisher": "formulahendry",
-  "license": "MIT",
+  "name": "your-turn",
+  "displayName": "Your Turn",
+  "description": "Work with coding agents and understand their changes, one turn at a time.",
+  "version": "0.3.22-dev.3",
+  "publisher": "eeeggg",
+  "license": "SEE LICENSE IN LICENSE",
   "icon": "resources/icon.png",
   "bugs": {
-    "url": "https://github.com/formulahendry/vscode-acp/issues",
-    "email": "formulahendry@gmail.com"
+    "url": "https://github.com/eeeggg/your-turn/issues",
+    "email": "eric@6r4f.com"
   },
-  "homepage": "https://github.com/formulahendry/vscode-acp/blob/main/README.md",
+  "homepage": "https://github.com/eeeggg/your-turn",
   "repository": {
     "type": "git",
-    "url": "https://github.com/formulahendry/vscode-acp.git"
+    "url": "https://github.com/eeeggg/your-turn.git"
   },
   "engines": {
     "vscode": "^1.140.0"
   },
   "categories": [
     "AI",
-    "Chat"
+    "Chat",
+    "SCM Providers",
+    "Other"
   ],
   "keywords": [
-    "acp",
-    "agent",
+    "review",
+    "code review",
+    "diff",
+    "diff review",
+    "code changes",
+    "workflow",
+    "agent workflow",
+    "human in the loop",
     "ai",
+    "ai coding",
+    "agent",
     "coding agent",
-    "copilot"
+    "agentic coding",
+    "chat",
+    "acp",
+    "agent client protocol"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -39,549 +52,549 @@
     "dist/webview/chat.css",
     "resources/icon.png",
     "resources/icon.svg",
-    "resources/screenshot.png",
     "README.md",
+    "NOTICE",
     "LICENSE"
   ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "acp-client",
-          "title": "ACP Client",
+          "id": "your-turn",
+          "title": "Your Turn",
           "icon": "resources/icon.svg"
         }
       ]
     },
     "views": {
-      "acp-client": [
+      "your-turn": [
         {
-          "id": "acp-sessions",
+          "id": "your-turn-sessions",
           "name": "Agents",
           "type": "tree",
           "icon": "$(hubot)"
         },
         {
-          "id": "acp-chat",
+          "id": "your-turn-chat",
           "name": "Chat",
           "type": "webview",
           "icon": "$(comment-discussion)",
-          "when": "!acp.workspaceUnavailable"
+          "when": "!your-turn.workspaceUnavailable"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "acp-sessions",
-        "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\n[Detect Agents](command:acp.detectAgents)\nDetect Agents looks on your PATH for agents from the ACP registry.",
-        "when": "!acp.showingOtherWorkspaces && acp.noAgentsConfigured"
+        "view": "your-turn-sessions",
+        "contents": "No agents configured.\n[Add Agent](command:your-turn.addAgent)\n[Detect Agents](command:your-turn.detectAgents)\nDetect Agents looks on your PATH for agents from the ACP registry.",
+        "when": "!your-turn.showingOtherWorkspaces && your-turn.noAgentsConfigured"
       },
       {
-        "view": "acp-sessions",
-        "contents": "ACP Client runs agents in a folder, and this window has none.\n[Open Folder](command:workbench.action.files.openFolder)",
-        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == empty"
+        "view": "your-turn-sessions",
+        "contents": "Your Turn runs agents in a folder, and this window has none.\n[Open Folder](command:workbench.action.files.openFolder)",
+        "when": "!your-turn.showingOtherWorkspaces && your-turn.workspaceUnavailable == empty"
       },
       {
-        "view": "acp-sessions",
-        "contents": "ACP Client needs this workspace saved, so its sessions can be found when it is opened again.\n[Save Workspace As...](command:workbench.action.saveWorkspaceAs)",
-        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == untitled"
+        "view": "your-turn-sessions",
+        "contents": "Your Turn needs this workspace saved, so its sessions can be found when it is opened again.\n[Save Workspace As...](command:workbench.action.saveWorkspaceAs)",
+        "when": "!your-turn.showingOtherWorkspaces && your-turn.workspaceUnavailable == untitled"
       },
       {
-        "view": "acp-sessions",
-        "contents": "ACP Client runs agents in the workspace's first folder, which must be on disk. This one is in a virtual file system.\n[Open Folder](command:workbench.action.files.openFolder)",
-        "when": "!acp.showingOtherWorkspaces && acp.workspaceUnavailable == virtual"
+        "view": "your-turn-sessions",
+        "contents": "Your Turn runs agents in the workspace's first folder, which must be on disk. This one is in a virtual file system.\n[Open Folder](command:workbench.action.files.openFolder)",
+        "when": "!your-turn.showingOtherWorkspaces && your-turn.workspaceUnavailable == virtual"
       },
       {
-        "view": "acp-sessions",
+        "view": "your-turn-sessions",
         "contents": "No sessions in other workspaces yet.\nSessions used in other workspaces appear here, and open in their workspace's window.",
-        "when": "acp.showingOtherWorkspaces"
+        "when": "your-turn.showingOtherWorkspaces"
       }
     ],
     "commands": [
       {
-        "command": "acp.connectAgent",
-        "title": "ACP: Connect to Agent",
+        "command": "your-turn.connectAgent",
+        "title": "Your Turn: Connect to Agent",
         "icon": "$(plug)"
       },
       {
-        "command": "acp.newSession",
-        "title": "ACP: New Session",
+        "command": "your-turn.newSession",
+        "title": "Your Turn: New Session",
         "icon": "$(add)"
       },
       {
-        "command": "acp.sendPrompt",
-        "title": "ACP: Send Prompt"
+        "command": "your-turn.sendPrompt",
+        "title": "Your Turn: Send Prompt"
       },
       {
-        "command": "acp.cancelTurn",
-        "title": "ACP: Cancel Current Turn",
+        "command": "your-turn.cancelTurn",
+        "title": "Your Turn: Cancel Current Turn",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "acp.disconnectAgent",
-        "title": "ACP: Disconnect Agent",
+        "command": "your-turn.disconnectAgent",
+        "title": "Your Turn: Disconnect Agent",
         "icon": "$(debug-disconnect)"
       },
       {
-        "command": "acp.openChat",
-        "title": "ACP: Open Chat View"
+        "command": "your-turn.openChat",
+        "title": "Your Turn: Open Chat View"
       },
       {
-        "command": "acp.addAgent",
-        "title": "ACP: Add Agent Configuration",
+        "command": "your-turn.addAgent",
+        "title": "Your Turn: Add Agent Configuration",
         "icon": "$(add)"
       },
       {
-        "command": "acp.showOtherWorkspaces",
-        "title": "ACP: Show Other Workspaces",
+        "command": "your-turn.showOtherWorkspaces",
+        "title": "Your Turn: Show Other Workspaces",
         "icon": "$(multiple-windows)"
       },
       {
-        "command": "acp.showAgents",
-        "title": "ACP: Show This Workspace's Agents",
+        "command": "your-turn.showAgents",
+        "title": "Your Turn: Show This Workspace's Agents",
         "icon": "$(arrow-left)"
       },
       {
-        "command": "acp.openSessionInWorkspace",
-        "title": "ACP: Open Session in Its Workspace"
+        "command": "your-turn.openSessionInWorkspace",
+        "title": "Your Turn: Open Session in Its Workspace"
       },
       {
-        "command": "acp.detectAgents",
-        "title": "ACP: Detect Agents"
+        "command": "your-turn.detectAgents",
+        "title": "Your Turn: Detect Agents"
       },
       {
-        "command": "acp.removeAgent",
-        "title": "ACP: Remove Agent"
+        "command": "your-turn.removeAgent",
+        "title": "Your Turn: Remove Agent"
       },
       {
-        "command": "acp.showLog",
-        "title": "ACP: Show Log"
+        "command": "your-turn.showLog",
+        "title": "Your Turn: Show Log"
       },
       {
-        "command": "acp.exportTraffic",
-        "title": "ACP: Export Protocol Traffic"
+        "command": "your-turn.exportTraffic",
+        "title": "Your Turn: Export Protocol Traffic"
       },
       {
-        "command": "acp.showPersistedState",
-        "title": "ACP (Developer): Show Persisted State"
+        "command": "your-turn.showPersistedState",
+        "title": "Your Turn (Developer): Show Persisted State"
       },
       {
-        "command": "acp.resetPersistedState",
-        "title": "ACP (Developer): Reset Persisted State"
+        "command": "your-turn.resetPersistedState",
+        "title": "Your Turn (Developer): Reset Persisted State"
       },
       {
-        "command": "acp.setMode",
-        "title": "ACP: Set Agent Mode"
+        "command": "your-turn.setMode",
+        "title": "Your Turn: Set Agent Mode"
       },
       {
-        "command": "acp.setModel",
-        "title": "ACP: Set Agent Model"
+        "command": "your-turn.setModel",
+        "title": "Your Turn: Set Agent Model"
       },
       {
-        "command": "acp.attachFile",
-        "title": "ACP: Attach File to Prompt",
+        "command": "your-turn.attachFile",
+        "title": "Your Turn: Attach File to Prompt",
         "icon": "$(attach)"
       },
       {
-        "command": "acp.refreshSessions",
-        "title": "ACP: Refresh Sessions"
+        "command": "your-turn.refreshSessions",
+        "title": "Your Turn: Refresh Sessions"
       },
       {
-        "command": "acp.openSession",
-        "title": "ACP: Open Session"
+        "command": "your-turn.openSession",
+        "title": "Your Turn: Open Session"
       },
       {
-        "command": "acp.loadMoreSessions",
-        "title": "ACP: Load More Sessions"
+        "command": "your-turn.loadMoreSessions",
+        "title": "Your Turn: Load More Sessions"
       },
       {
-        "command": "acp.copySessionId",
+        "command": "your-turn.copySessionId",
         "title": "Copy Session ID"
       },
       {
-        "command": "acp.removeFromHistory",
+        "command": "your-turn.removeFromHistory",
         "title": "Remove from History"
       },
       {
-        "command": "acp.restartAgent",
-        "title": "ACP: Restart Agent",
+        "command": "your-turn.restartAgent",
+        "title": "Your Turn: Restart Agent",
         "icon": "$(debug-restart)"
       },
       {
-        "command": "acp.openToolCallFile",
+        "command": "your-turn.openToolCallFile",
         "title": "Open File"
       },
       {
-        "command": "acp.openToolCallChanges",
+        "command": "your-turn.openToolCallChanges",
         "title": "Open Changes"
       },
       {
-        "command": "acp.openCommandOutput",
+        "command": "your-turn.openCommandOutput",
         "title": "Open in Terminal"
       },
       {
-        "command": "acp.openReview",
-        "title": "Open ACP Review",
+        "command": "your-turn.openReview",
+        "title": "Open Review",
         "icon": "$(diff)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.turnInProgress"
       },
       {
-        "command": "acp.previousReviewFile",
+        "command": "your-turn.previousReviewFile",
         "title": "Previous File Under Review",
         "icon": "$(arrow-left)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles"
       },
       {
-        "command": "acp.nextReviewFile",
+        "command": "your-turn.nextReviewFile",
         "title": "Next File Under Review",
         "icon": "$(arrow-right)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles"
       },
       {
-        "command": "acp.undoFile",
+        "command": "your-turn.undoFile",
         "title": "Undo File",
         "icon": "$(discard)",
-        "enablement": "acp.reviewShown && resource in acp.reviewedFiles && !acp.turnInProgress"
+        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.turnInProgress"
       },
       {
-        "command": "acp.keepFile",
+        "command": "your-turn.keepFile",
         "title": "Keep File",
         "icon": "$(check)",
-        "enablement": "acp.reviewShown && resource in acp.reviewedFiles && !acp.turnInProgress"
+        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.turnInProgress"
       },
       {
-        "command": "acp.keepAllFiles",
+        "command": "your-turn.keepAllFiles",
         "title": "Keep All",
         "icon": "$(check-all)",
-        "enablement": "acp.reviewShown && acp.reviewHasFiles && !acp.turnInProgress"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.turnInProgress"
       },
       {
-        "command": "acp.undoDiffChange",
+        "command": "your-turn.undoDiffChange",
         "title": "Undo Change",
         "icon": "$(discard)",
-        "enablement": "acp.reviewDiffChange && !acp.turnInProgress"
+        "enablement": "your-turn.reviewDiffChange && !your-turn.turnInProgress"
       },
       {
-        "command": "acp.keepDiffChange",
+        "command": "your-turn.keepDiffChange",
         "title": "Keep Change",
         "icon": "$(check)",
-        "enablement": "acp.reviewDiffChange && !acp.turnInProgress"
+        "enablement": "your-turn.reviewDiffChange && !your-turn.turnInProgress"
       },
       {
-        "command": "acp.undoChange",
+        "command": "your-turn.undoChange",
         "title": "Undo Change",
         "icon": "$(discard)",
-        "enablement": "!acp.turnInProgress"
+        "enablement": "!your-turn.turnInProgress"
       },
       {
-        "command": "acp.keepChange",
+        "command": "your-turn.keepChange",
         "title": "Keep Change",
         "icon": "$(check)",
-        "enablement": "!acp.turnInProgress"
+        "enablement": "!your-turn.turnInProgress"
       }
     ],
     "menus": {
       "commandPalette": [
         {
-          "command": "acp.connectAgent",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.connectAgent",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.newSession",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.newSession",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.sendPrompt",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.sendPrompt",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.cancelTurn",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.cancelTurn",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.disconnectAgent",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.disconnectAgent",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.openChat",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.openChat",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.addAgent",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.addAgent",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.detectAgents",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.detectAgents",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.removeAgent",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.removeAgent",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.showLog",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.showLog",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.exportTraffic",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.exportTraffic",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.showPersistedState",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.showPersistedState",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.resetPersistedState",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.resetPersistedState",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.setMode",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.setMode",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.setModel",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.setModel",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.attachFile",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.attachFile",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.restartAgent",
-          "when": "!acp.workspaceUnavailable"
+          "command": "your-turn.restartAgent",
+          "when": "!your-turn.workspaceUnavailable"
         },
         {
-          "command": "acp.openReview",
-          "when": "!acp.workspaceUnavailable && acp.reviewShown && acp.reviewHasFiles"
+          "command": "your-turn.openReview",
+          "when": "!your-turn.workspaceUnavailable && your-turn.reviewShown && your-turn.reviewHasFiles"
         },
         {
-          "command": "acp.keepDiffChange",
+          "command": "your-turn.keepDiffChange",
           "when": "false"
         },
         {
-          "command": "acp.undoDiffChange",
+          "command": "your-turn.undoDiffChange",
           "when": "false"
         },
         {
-          "command": "acp.refreshSessions",
+          "command": "your-turn.refreshSessions",
           "when": "false"
         },
         {
-          "command": "acp.showOtherWorkspaces",
+          "command": "your-turn.showOtherWorkspaces",
           "when": "false"
         },
         {
-          "command": "acp.showAgents",
+          "command": "your-turn.showAgents",
           "when": "false"
         },
         {
-          "command": "acp.openSessionInWorkspace",
+          "command": "your-turn.openSessionInWorkspace",
           "when": "false"
         },
         {
-          "command": "acp.openSession",
+          "command": "your-turn.openSession",
           "when": "false"
         },
         {
-          "command": "acp.loadMoreSessions",
+          "command": "your-turn.loadMoreSessions",
           "when": "false"
         },
         {
-          "command": "acp.copySessionId",
+          "command": "your-turn.copySessionId",
           "when": "false"
         },
         {
-          "command": "acp.removeFromHistory",
+          "command": "your-turn.removeFromHistory",
           "when": "false"
         },
         {
-          "command": "acp.openToolCallFile",
+          "command": "your-turn.openToolCallFile",
           "when": "false"
         },
         {
-          "command": "acp.openToolCallChanges",
+          "command": "your-turn.openToolCallChanges",
           "when": "false"
         },
         {
-          "command": "acp.openCommandOutput",
+          "command": "your-turn.openCommandOutput",
           "when": "false"
         },
         {
-          "command": "acp.previousReviewFile",
+          "command": "your-turn.previousReviewFile",
           "when": "false"
         },
         {
-          "command": "acp.nextReviewFile",
+          "command": "your-turn.nextReviewFile",
           "when": "false"
         },
         {
-          "command": "acp.undoFile",
+          "command": "your-turn.undoFile",
           "when": "false"
         },
         {
-          "command": "acp.keepFile",
+          "command": "your-turn.keepFile",
           "when": "false"
         },
         {
-          "command": "acp.keepAllFiles",
+          "command": "your-turn.keepAllFiles",
           "when": "false"
         },
         {
-          "command": "acp.undoChange",
+          "command": "your-turn.undoChange",
           "when": "false"
         },
         {
-          "command": "acp.keepChange",
+          "command": "your-turn.keepChange",
           "when": "false"
         }
       ],
       "scm/change/title": [
         {
-          "command": "acp.undoChange",
+          "command": "your-turn.undoChange",
           "when": "originalResourceScheme == review-baseline",
           "group": "navigation@1"
         },
         {
-          "command": "acp.keepChange",
+          "command": "your-turn.keepChange",
           "when": "originalResourceScheme == review-baseline",
           "group": "navigation@2"
         }
       ],
       "editor/title": [
         {
-          "command": "acp.openReview",
-          "when": "!acp.workspaceUnavailable && config.acp.review.presentation == diffEditor && acp.reviewShown && acp.reviewHasFiles && activeEditor == workbench.editors.files.textFileEditor && isFileSystemResource && !textCompareEditorActive",
+          "command": "your-turn.openReview",
+          "when": "!your-turn.workspaceUnavailable && config.your-turn.review.presentation == diffEditor && your-turn.reviewShown && your-turn.reviewHasFiles && activeEditor == workbench.editors.files.textFileEditor && isFileSystemResource && !textCompareEditorActive",
           "group": "navigation@-1"
         },
         {
-          "command": "acp.previousReviewFile",
-          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
+          "command": "your-turn.previousReviewFile",
+          "when": "!your-turn.workspaceUnavailable && (config.your-turn.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^your-turn-review-diff:/ || config.your-turn.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-5"
         },
         {
-          "command": "acp.nextReviewFile",
-          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
+          "command": "your-turn.nextReviewFile",
+          "when": "!your-turn.workspaceUnavailable && (config.your-turn.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^your-turn-review-diff:/ || config.your-turn.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-4"
         },
         {
-          "command": "acp.undoFile",
-          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
+          "command": "your-turn.undoFile",
+          "when": "!your-turn.workspaceUnavailable && (config.your-turn.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^your-turn-review-diff:/ || config.your-turn.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-3"
         },
         {
-          "command": "acp.keepFile",
-          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
+          "command": "your-turn.keepFile",
+          "when": "!your-turn.workspaceUnavailable && (config.your-turn.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^your-turn-review-diff:/ || config.your-turn.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-2"
         },
         {
-          "command": "acp.keepAllFiles",
-          "when": "!acp.workspaceUnavailable && (config.acp.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^acp-review-diff:/ || config.acp.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
+          "command": "your-turn.keepAllFiles",
+          "when": "!your-turn.workspaceUnavailable && (config.your-turn.review.presentation == diffEditor && textCompareEditorActive && diffEditorOriginalUri =~ /^your-turn-review-diff:/ || config.your-turn.review.presentation == quickDiff && activeEditor == workbench.editors.files.textFileEditor)",
           "group": "navigation@-1"
         }
       ],
       "webview/context": [
         {
-          "command": "acp.openToolCallFile",
-          "when": "webviewId == 'acp-chat' && webviewSection == 'toolCallDiffFile'",
+          "command": "your-turn.openToolCallFile",
+          "when": "webviewId == 'your-turn-chat' && webviewSection == 'toolCallDiffFile'",
           "group": "navigation@1"
         },
         {
-          "command": "acp.openToolCallChanges",
-          "when": "webviewId == 'acp-chat' && webviewSection == 'toolCallDiffFile' && acpDiffFileHasLines",
+          "command": "your-turn.openToolCallChanges",
+          "when": "webviewId == 'your-turn-chat' && webviewSection == 'toolCallDiffFile' && yourTurnDiffFileHasLines",
           "group": "navigation@2"
         },
         {
-          "command": "acp.openCommandOutput",
-          "when": "webviewId == 'acp-chat' && webviewSection == 'commandOutput'",
+          "command": "your-turn.openCommandOutput",
+          "when": "webviewId == 'your-turn-chat' && webviewSection == 'commandOutput'",
           "group": "navigation@1"
         }
       ],
       "view/title": [
         {
-          "command": "acp.showOtherWorkspaces",
-          "when": "view == acp-sessions && !acp.showingOtherWorkspaces",
+          "command": "your-turn.showOtherWorkspaces",
+          "when": "view == your-turn-sessions && !your-turn.showingOtherWorkspaces",
           "group": "navigation@0"
         },
         {
-          "command": "acp.showAgents",
-          "when": "view == acp-sessions && acp.showingOtherWorkspaces",
+          "command": "your-turn.showAgents",
+          "when": "view == your-turn-sessions && your-turn.showingOtherWorkspaces",
           "group": "navigation@0"
         },
         {
-          "command": "acp.addAgent",
-          "when": "!acp.workspaceUnavailable && !acp.showingOtherWorkspaces && view == acp-sessions",
+          "command": "your-turn.addAgent",
+          "when": "!your-turn.workspaceUnavailable && !your-turn.showingOtherWorkspaces && view == your-turn-sessions",
           "group": "navigation@1"
         },
         {
-          "command": "acp.newSession",
-          "when": "view == acp-chat",
+          "command": "your-turn.newSession",
+          "when": "view == your-turn-chat",
           "group": "navigation@1"
         },
         {
-          "command": "acp.attachFile",
-          "when": "view == acp-chat",
+          "command": "your-turn.attachFile",
+          "when": "view == your-turn-chat",
           "group": "navigation@2"
         },
         {
-          "command": "acp.cancelTurn",
-          "when": "view == acp-chat && acp.turnInProgress",
+          "command": "your-turn.cancelTurn",
+          "when": "view == your-turn-chat && your-turn.turnInProgress",
           "group": "navigation@3"
         },
         {
-          "command": "acp.disconnectAgent",
-          "when": "view == acp-chat",
+          "command": "your-turn.disconnectAgent",
+          "when": "view == your-turn-chat",
           "group": "navigation@4"
         },
         {
-          "command": "acp.showLog",
-          "when": "view == acp-chat"
+          "command": "your-turn.showLog",
+          "when": "view == your-turn-chat"
         },
         {
-          "command": "acp.exportTraffic",
-          "when": "view == acp-chat"
+          "command": "your-turn.exportTraffic",
+          "when": "view == your-turn-chat"
         },
         {
-          "command": "acp.restartAgent",
-          "when": "view == acp-chat"
+          "command": "your-turn.restartAgent",
+          "when": "view == your-turn-chat"
         }
       ],
-    "view/item/context": [
-      {
-        "command": "acp.newSession",
-        "when": "view == acp-sessions && viewItem =~ /^agent/",
-        "group": "session@0"
-      },
+      "view/item/context": [
         {
-          "command": "acp.connectAgent",
-          "when": "view == acp-sessions && viewItem == agent-without-session",
+          "command": "your-turn.newSession",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/",
+          "group": "session@0"
+        },
+        {
+          "command": "your-turn.connectAgent",
+          "when": "view == your-turn-sessions && viewItem == agent-without-session",
           "group": "inline"
         },
         {
-          "command": "acp.disconnectAgent",
-          "when": "view == acp-sessions && viewItem == agent-with-session",
+          "command": "your-turn.disconnectAgent",
+          "when": "view == your-turn-sessions && viewItem == agent-with-session",
           "group": "inline"
         },
         {
-          "command": "acp.removeAgent",
-          "when": "view == acp-sessions && viewItem =~ /^agent/"
+          "command": "your-turn.removeAgent",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/"
         },
         {
-          "command": "acp.restartAgent",
-          "when": "view == acp-sessions && viewItem == agent-with-session"
+          "command": "your-turn.restartAgent",
+          "when": "view == your-turn-sessions && viewItem == agent-with-session"
         },
         {
-          "command": "acp.refreshSessions",
-          "when": "view == acp-sessions && viewItem =~ /^agent/",
+          "command": "your-turn.refreshSessions",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/",
           "group": "session@1"
         },
         {
-          "command": "acp.copySessionId",
-          "when": "view == acp-sessions && viewItem =~ /^session/",
+          "command": "your-turn.copySessionId",
+          "when": "view == your-turn-sessions && viewItem =~ /^session/",
           "group": "session@1"
         },
         {
-          "command": "acp.removeFromHistory",
-          "when": "view == acp-sessions && viewItem == session-local",
+          "command": "your-turn.removeFromHistory",
+          "when": "view == your-turn-sessions && viewItem == session-local",
           "group": "session@2"
         }
       ]
@@ -590,9 +603,9 @@
       "diffEditor.codeLens": true
     },
     "configuration": {
-      "title": "ACP Client",
+      "title": "Your Turn",
       "properties": {
-        "acp.review.presentation": {
+        "your-turn.review.presentation": {
           "type": "string",
           "enum": [
             "quickDiff",
@@ -601,12 +614,12 @@
           "default": "diffEditor",
           "description": "Review agent changes in a native diff editor with per-change CodeLens and editor title controls, or in the inline quick diff view."
         },
-        "acp.agents": {
+        "your-turn.agents": {
           "type": "object",
           "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
           "default": {}
         },
-        "acp.autoApprovePermissions": {
+        "your-turn.autoApprovePermissions": {
           "type": "string",
           "enum": [
             "ask",
@@ -615,22 +628,17 @@
           "default": "ask",
           "description": "Automatically approve agent permission requests. 'ask' always prompts, 'allowAll' approves everything."
         },
-        "acp.defaultWorkingDirectory": {
-          "type": "string",
-          "default": "",
-          "description": "Default working directory for agent sessions. Leave empty to use the current workspace folder."
-        },
-        "acp.includeActiveFile": {
+        "your-turn.includeActiveFile": {
           "type": "boolean",
           "default": true,
           "description": "Attach the currently active editor file to each prompt as a resource_link content block."
         },
-        "acp.logTraffic": {
+        "your-turn.logTraffic": {
           "type": "boolean",
           "default": true,
           "description": "Capture ACP protocol traffic in memory for explicit JSONL export."
         },
-        "acp.showToolCallDiffs": {
+        "your-turn.showToolCallDiffs": {
           "type": "boolean",
           "default": false,
           "description": "Show the diffs an agent reports in its tool calls in the chat view: what the agent said each tool call changed, when it said it. Applies from the next tool call update."
@@ -675,6 +683,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
+    "@resvg/resvg-js": "^2.6.2",
     "@tailwindcss/cli": "^4.3.3",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",

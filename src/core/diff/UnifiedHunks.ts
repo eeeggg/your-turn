@@ -1,5 +1,5 @@
 import type { StructuredPatchHunk } from 'diff';
-import { lineChanges, splitLines, type DiffOptions, type LineChange } from './LineChanges';
+import { lineChanges, splitLines, type DiffOptions, type LineChange } from '@/core/diff/LineChanges';
 
 /** A change's lines, without where within them the text changed. */
 type LineSpan = Pick<LineChange, 'original' | 'modified'>;

@@ -7,7 +7,7 @@ import {
   type ElicitationSchema,
   type ElicitationProperty,
   type ElicitationScope
-} from './AcpDriver';
+} from '@/core/acp/AcpDriver';
 import type { Elicitations } from '@/core/ClientHandlers';
 
 export async function v1Elicitation(request: V1.CreateElicitationRequest, id: string | number | null, signal: AbortSignal, requests: Elicitations): Promise<V1.CreateElicitationResponse> {

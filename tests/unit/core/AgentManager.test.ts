@@ -2,7 +2,13 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, watch, writeFileSync } f
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import { AgentManager, findOnPath, renamesBetween, type AgentConfigEntry, type AgentProcess } from '@/core/AgentManager';
+import {
+  AgentManager,
+  findOnPath,
+  renamesBetween,
+  type AgentConfigEntry,
+  type AgentProcess
+} from '@/core/AgentManager';
 
 /** Launch a Node script as the agent and record what the launcher reports. */
 function launch(script: string, options: { env?: Record<string, string>; cwd?: string } = {}) {

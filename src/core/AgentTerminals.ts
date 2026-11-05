@@ -1,6 +1,6 @@
 import type { SessionUpdate, TerminalExitStatus } from '@/core/acp/AcpDriver';
-import { Cleaner, forTerminal, type ShownOutput } from './CommandOutput';
-import { logError } from './Log';
+import { Cleaner, forTerminal, type ShownOutput } from '@/core/CommandOutput';
+import { logError } from '@/core/Log';
 
 /** How much of a command's output is kept, the most recent. */
 const KEPT_CHARACTERS = 10 * 1024 * 1024;

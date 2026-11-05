@@ -1,4 +1,11 @@
-import { useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react';
+import {
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type RefObject
+} from 'react';
 import type { SlashCommand } from '@/shared/WebviewMessages';
 import { canPrompt } from '@/webview/state/ActiveSession';
 import { InputToolbar } from '@/webview/views/InputToolbar';

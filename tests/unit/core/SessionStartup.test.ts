@@ -14,7 +14,13 @@ import {
 import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionStartup } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { fakeAgent, InProcessAgents, unusedHandlers, work, type AgentScript } from './InProcessAgents';
+import {
+  fakeAgent,
+  InProcessAgents,
+  unusedHandlers,
+  work,
+  type AgentScript
+} from '@tests/unit/core/InProcessAgents';
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();

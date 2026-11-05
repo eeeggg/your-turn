@@ -1,8 +1,13 @@
 import { assert, describe, expect, it } from 'vitest';
 import type { DiffFile, ToolCallContent } from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
-import { shownContent, statusGlyph, TOOL_CALL_CONTENT_LIMIT, type ContentContext } from '@/webview/state/Transcript';
-import { chatView, promptEnd } from './TranscriptTestSupport';
+import {
+  shownContent,
+  statusGlyph,
+  TOOL_CALL_CONTENT_LIMIT,
+  type ContentContext
+} from '@/webview/state/Transcript';
+import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ kind: 'text', text }));
 /** A file as the extension sends it, added with one line. */

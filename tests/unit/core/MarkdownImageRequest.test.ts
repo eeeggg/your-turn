@@ -26,7 +26,7 @@ describe('production image HTTPS request boundary', () => {
       protocol: 'https:', hostname: '93.184.216.34', family: 4, port: 443, servername: 'images.example',
       path: '/a?secret=token', method: 'GET', agent: false, signal, rejectUnauthorized: true,
       headers: { Host: 'images.example', Accept: 'image/png, image/jpeg, image/gif, image/webp', 'Accept-Encoding': 'gzip, deflate, br',
-        'User-Agent': 'ACP-Client (https://github.com/formulahendry/vscode-acp)' },
+        'User-Agent': 'Your-Turn (https://github.com/eeeggg/your-turn)' },
     });
     expect(dns.lookup).toHaveBeenCalledExactlyOnceWith('images.example', { all: true, verbatim: true });
   });

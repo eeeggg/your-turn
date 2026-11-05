@@ -7,23 +7,23 @@ suite('IncludeActiveFile Setting Test Suite', () => {
   let originalSetting: boolean | undefined;
 
   suiteSetup(async () => {
-    const config = vscode.workspace.getConfiguration('acp');
+    const config = vscode.workspace.getConfiguration('your-turn');
     originalSetting = config.get<boolean>('includeActiveFile');
   });
 
   suiteTeardown(async () => {
-    const config = vscode.workspace.getConfiguration('acp');
+    const config = vscode.workspace.getConfiguration('your-turn');
     await config.update('includeActiveFile', originalSetting, vscode.ConfigurationTarget.Global);
   });
 
-  test('Setting acp.includeActiveFile defaults to true in schema', () => {
-    const config = vscode.workspace.getConfiguration('acp');
+  test('Setting your-turn.includeActiveFile defaults to true in schema', () => {
+    const config = vscode.workspace.getConfiguration('your-turn');
     const inspected = config.inspect<boolean>('includeActiveFile');
     assert.strictEqual(inspected?.defaultValue, true);
   });
 
   test('Links the active document when enabled', async () => {
-    const config = vscode.workspace.getConfiguration('acp');
+    const config = vscode.workspace.getConfiguration('your-turn');
     await config.update('includeActiveFile', true, vscode.ConfigurationTarget.Global);
 
     const doc = await vscode.workspace.openTextDocument({ content: 'test code', language: 'typescript' });

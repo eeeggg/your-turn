@@ -1,14 +1,24 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { acpContainerControl, agentsViewRow, chatStop, chatTranscript, chatUserMessages, chatViewTitle, promptInput, queuedPrompts, sessionTabs } from './workbench';
-import { expect, test } from './window';
+import {
+  yourTurnContainerControl,
+  agentsViewRow,
+  chatStop,
+  chatTranscript,
+  chatUserMessages,
+  chatViewTitle,
+  promptInput,
+  queuedPrompts,
+  sessionTabs
+} from '@tests/ui/workbench';
+import { expect, test } from '@tests/ui/window';
 
 test.use({ agentVersion: 'v2' });
 
 test('Stop returns for autonomous foreground work and cancels the active session', async ({ window, workspace }, testInfo) => {
-  await acpContainerControl(window).click();
+  await yourTurnContainerControl(window).click();
   await agentsViewRow(window, 'fake-v2').hover();
-  await window.getByRole('button', { name: 'ACP: Connect to Agent', exact: true }).click();
+  await window.getByRole('button', { name: 'Your Turn: Connect to Agent', exact: true }).click();
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   const tabs = sessionTabs(window);
