@@ -2,38 +2,86 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
+
+permissions:
+  contents: read
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  unit:
+    name: Unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
         with:
-          node-version: lts/*
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
           cache: npm
-
+      - name: Install containment and display prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap xvfb xauth
       - run: npm ci
+      - name: Run unit suite
+        run: npm run test:unit
 
-      - run: xvfb-run -a npm test
-        if: runner.os == 'Linux'
-
-      - run: npm test
-        if: runner.os != 'Linux'
-
-      - name: Package VSIX
-        run: npx vsce package
-
-      - name: Upload VSIX
-        uses: actions/upload-artifact@v4
+  webview:
+    name: Webview
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
         with:
-          name: vsix-${{ matrix.os }}
-          path: "*.vsix"
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Run webview suite
+        run: npm run test:webview
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install editor and display prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y xvfb xauth libasound2t64 libatk-bridge2.0-0 libgbm1 libgtk-3-0 libnss3
+      - run: npm ci
+      - name: Run integration suite sequentially
+        run: npm run test:integration -- --jobs 1 --display xvfb
+
+  ui:
+    name: Desktop UI
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install containment, editor and display prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y bubblewrap xvfb xauth libasound2t64 libatk-bridge2.0-0 libgbm1 libgtk-3-0 libnss3
+      - run: npm ci
+      - name: Run desktop UI suite
+        run: npm run test:ui

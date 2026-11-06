@@ -28,7 +28,7 @@ describe('production image HTTPS request boundary', () => {
       headers: { Host: 'images.example', Accept: 'image/png, image/jpeg, image/gif, image/webp', 'Accept-Encoding': 'gzip, deflate, br',
         'User-Agent': 'Your-Turn (https://github.com/eeeggg/your-turn)' },
     });
-    expect(dns.lookup).toHaveBeenCalledExactlyOnceWith('images.example', { all: true, verbatim: true });
+    expect(dns.lookup).toHaveBeenCalledExactlyOnceWith('images.example', { all: true, order: 'verbatim' });
   });
 
   it('redacts transport errors rather than exposing a signed source URL', async () => {

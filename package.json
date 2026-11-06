@@ -2,7 +2,7 @@
   "name": "your-turn",
   "displayName": "Your Turn",
   "description": "Work with coding agents and understand their changes, one turn at a time.",
-  "version": "0.3.22-dev.3",
+  "version": "0.3.22",
   "publisher": "eeeggg",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "resources/icon.png",

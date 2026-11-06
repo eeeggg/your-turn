@@ -14,7 +14,7 @@ export interface ImageNetwork {
 const limit = 10 * 1024 * 1024;
 
 const network: ImageNetwork = {
-  lookup: (hostname) => lookup(hostname, { all: true, verbatim: true }),
+  lookup: (hostname) => lookup(hostname, { all: true, order: 'verbatim' }),
   request: (url, address, signal) => new Promise((resolve, reject) => {
     const hostname = url.hostname.replace(/^\[|\]$/g, '');
     // Connect to the approved literal, retaining the original Host and TLS identity. No second DNS lookup.

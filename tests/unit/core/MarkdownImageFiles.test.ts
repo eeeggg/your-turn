@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readMarkdownImage } from '@/core/MarkdownImageFiles';
 
@@ -9,7 +10,7 @@ vi.mock('node:fs/promises', async (original) => ({ ...await original<typeof fs>(
 afterEach(() => vi.restoreAllMocks());
 
 async function fixture() {
-  const directory = await fs.mkdtemp('/tmp/opencode/image-file-race-');
+  const directory = await fs.mkdtemp(join(tmpdir(), 'image-file-race-'));
   onTestFinished(() => fs.rm(directory, { recursive: true, force: true }));
   const root = join(directory, 'session');
   await fs.mkdir(root);
@@ -20,6 +21,11 @@ async function fixture() {
 }
 
 describe('local image descriptor containment', () => {
+  it('creates its fixture directly in the system temporary directory', async () => {
+    const { directory } = await fixture();
+    expect(dirname(directory)).toBe(tmpdir());
+  });
+
   it('rejects a symlink swapped in after resolved-path checks before reading any payload', async () => {
     const { directory, root } = await fixture();
     const original = await vi.importActual<typeof fs>('node:fs/promises');

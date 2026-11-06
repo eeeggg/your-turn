@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
 import type { ImageNetwork } from '@/core/MarkdownImageNetwork';
@@ -331,7 +332,7 @@ describe('ChatViewController', () => {
   });
 
   async function localImages() {
-    const directory = await mkdtemp('/tmp/opencode/transcript-images-');
+    const directory = await mkdtemp(join(tmpdir(), 'transcript-images-'));
     onTestFinished(() => rm(directory, { recursive: true, force: true }));
     const root = join(directory, 'session');
     await mkdir(root);
@@ -343,6 +344,11 @@ describe('ChatViewController', () => {
     const context = await imageContext(state.controller, state.environment);
     return { ...state, root, directory, bytes, context };
   }
+
+  it('creates its local-image fixture directly in the system temporary directory', async () => {
+    const { directory } = await localImages();
+    expect(dirname(directory)).toBe(tmpdir());
+  });
 
   it.each(['relative', 'absolute', 'file URL', 'symlink'] as const)('automatically reads a contained %s raster on the session filesystem', async (syntax) => {
     const { controller, environment, root, context } = await localImages();
