@@ -2,14 +2,8 @@
 
 Work with coding agents and understand their changes, one turn at a time.
 
-Your Turn brings agent sessions and code review together in VS Code. Follow
-your agent's work as it happens, inspect the resulting changes, and decide
-what to keep before your next prompt — without leaving your editor.
-
-Answer questions and permission requests as they come up. Queue your next
-prompt while the agent works, edit it before it sends, or steer the current
-turn instead when the agent supports it. Review changes by hunk, file, or
-all at once, and edit the code directly whenever you want to.
+Your Turn brings agent sessions and code review together in VS Code — without
+leaving your editor.
 
 You choose and configure the agent. Your Turn connects to it through the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) and provides
@@ -27,7 +21,8 @@ and move between sessions without losing your place.
 
 Answer questions and permission requests without breaking your flow. Queue
 your next prompt while the agent works, edit it before it sends, or steer
-the current turn mid-stream — so your direction lands while it still matters.
+the current turn mid-stream when the agent supports it — so your direction
+lands while it still matters.
 
 ### Review the result
 
@@ -39,44 +34,34 @@ once — in diff editors built into your normal editing.
 
 Most agent tools hand you a pile of edits and assume you will use Git to sort
 out what happened. Git tracks commits, not turns — it has no notion of "this is
-what the agent just did" versus everything else sitting in your working tree. Once
+what the agent just did" versus everything else in your working tree. Once
 you start folding agent changes into the same diff as your own edits, or into
 a history built for commits instead of turns, you lose the one thing you
 actually need: a clean view of what *this turn* changed.
 
-The Review Buffer is a second source control, built for that purpose, running
-alongside Git rather than inside it. VS Code supports more than one source
-control provider at a time — Git is simply the one everyone recognizes. Your
-Turn uses that same extension point to give the session its own Files Under
-Review, each baselined from before the agent's first change to it — independent
-of your commits, staging area, or working tree. You don't need to resolve
-review after every turn; unresolved changes simply accumulate into one diff
-until you do.
-
-That separation is what makes the rest of review possible: Keep or Undo a
-file's net change without Git ever entering the picture, keep working in Git
-exactly as you already do, and never wonder if you missed an opportunity steer
-your agent towards producing better code.
+The Review Buffer is a separate source control provider, running alongside
+Git rather than inside it. It gives the session its own Files Under Review,
+each baselined from before the agent's first change to it. Keep or Undo a
+file's net change independently of your commits and staging area, while
+working in Git exactly as you already do. You don't need to resolve review
+after every turn; unresolved changes simply accumulate into one diff until
+you do.
 
 **Review is not a sandbox or an approval gate before writing.** Agents change
 files as they work (this is one of the things we like about them). The Review
 Buffer helps you understand and decide how to respond to these changes.
 
-That response depends on usable change reports from the agent, so it is not
-a complete audit of filesystem activity. Once a file is under review, later
-edits to that file can also affect its displayed diff. Read the diff before
-undoing changes, and use version control to protect work you want to retain.
+Today the evidence comes from the agent's own ACP messages, checked against
+the file as it is now. Agents can change files without reporting usable
+evidence, so the Review Buffer is not a complete audit of filesystem activity.
+Closing that gap means adding other sources of evidence over time (Git
+included!). Until then, consider this extension to be in beta — though ACP
+messages alone already provide enough visibility that we're using this
+extension to build itself.
 
-Today that evidence is the agent's own ACP messages, checked against the file
-as it is now. There's a last mile yet to close: agents can and do change files
-in ways that don't emit easily parsable ACP messages, and closing that gap
-means adding other sources of evidence over time (Git included!). Until then,
-consider this extension to be in beta — though ACP messages alone already
-provide enough visibility that we're using this extension to build itself.
-
-Review decisions are disabled while the shown session's turn is running.
-Review state is held in memory for the window's lifetime; it is not a durable
-backup or a replacement for commits.
+Review decisions are disabled during an agent's running turn but you are able
+to review changes as they happen. Review state is held in memory for the
+window's lifetime; it is not a durable backup or a replacement for commits.
 
 ## Getting started
 
