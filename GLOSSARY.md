@@ -241,7 +241,3 @@ _Avoid_: DOM tests, UI tests
 **Integration suite**:
 Tests of the extension running inside a real VS Code.
 _Avoid_: end-to-end tests, extension tests
-
-**Live gate**:
-The user installing a packaged build into VS Code Insiders and trying it against a real agent before work is accepted.
-_Avoid_: manual QA, smoke test

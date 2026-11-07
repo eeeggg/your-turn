@@ -2,7 +2,7 @@
   "name": "your-turn",
   "displayName": "Your Turn",
   "description": "Work with coding agents and understand their changes, one turn at a time.",
-  "version": "0.3.22",
+  "version": "0.4.0",
   "publisher": "eeeggg",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "resources/icon.png",
@@ -54,6 +54,7 @@
     "resources/icon.png",
     "resources/icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "NOTICE",
     "LICENSE"
   ],
@@ -661,9 +662,14 @@
     "test:webview": "node tools/run-tests.mjs test:webview",
     "test:integration": "node tools/run-tests.mjs test:integration",
     "test:ui": "node tools/run-tests.mjs test:ui",
+    "test:unit:only": "node tools/run-tests.mjs test:unit:only",
+    "test:webview:only": "node tools/run-tests.mjs test:webview:only",
+    "test:integration:only": "node tools/run-tests.mjs test:integration:only",
+    "test:ui:only": "node tools/run-tests.mjs test:ui:only",
     "coverage": "node tools/run-tests.mjs coverage",
     "coverage:integration": "node tools/run-tests.mjs coverage:integration",
-    "package:vsix": "vsce package"
+    "package:vsix": "vsce package",
+    "package:ci": "node tools/package-ci.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^2.1.0",

@@ -8,6 +8,7 @@ import { windowKinds } from './integration-windows.mjs';
 const root = resolve(import.meta.dirname, '..');
 const windowDirectories = new Set(windowKinds.map(({ directory }) => directory));
 const target = process.argv[2] ?? '';
+const testOnly = ['test:unit:only', 'test:webview:only', 'test:integration:only', 'test:ui:only'].includes(target);
 /** @typedef {{ mode: 'full' | 'integration' | 'vitest' | 'ui' | 'check' | 'compile', layers: string[], bundle: boolean, vitestArgs?: string[], coverage?: boolean }} Target */
 /** @type {Record<string, Target>} */
 const targets = {
@@ -131,7 +132,8 @@ async function validateFiles(settings, files) {
 }
 
 const controls = parseArguments(process.argv.slice(3));
-const settings = Object.hasOwn(targets, target) ? targets[target] : undefined;
+const baseTarget = testOnly ? target.slice(0, -5) : target;
+const settings = Object.hasOwn(targets, baseTarget) ? targets[baseTarget] : undefined;
 if (!settings) { throw new Error(`Unknown test target: ${target}`); }
 const repeat = validateControls(settings, controls);
 const { files } = controls;
@@ -247,8 +249,8 @@ async function prepareUiEditor() {
 }
 
 try {
-  let code = await checkTypes();
-  if (code === 0 && settings.mode !== 'compile') { code = await lint(); }
+  let code = testOnly ? 0 : await checkTypes();
+  if (code === 0 && !testOnly && settings.mode !== 'compile') { code = await lint(); }
   if (code === 0 && settings.bundle) { code = await bundle(); }
   if (code === 0 && settings.mode === 'ui') { code = await prepareUiEditor(); }
   if (full) {

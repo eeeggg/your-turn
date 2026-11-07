@@ -2,14 +2,72 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [dev, master]
   pull_request:
-    branches: [master]
+    branches: [dev, master]
+  workflow_dispatch:
+    inputs:
+      package_channel:
+        description: Candidate to build after all tests pass (pre-release requires dev; release requires master)
+        required: true
+        type: choice
+        options:
+          - pre-release
+          - release
 
 permissions:
   contents: read
 
 jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  package:
+    name: VSIX artifact
+    needs: [checks, unit, webview, integration, ui]
+    if: >-
+      (github.event_name == 'push' &&
+        (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master')) ||
+      (github.event_name == 'workflow_dispatch' &&
+        ((github.ref == 'refs/heads/dev' && inputs.package_channel == 'pre-release') ||
+         (github.ref == 'refs/heads/master' && inputs.package_channel == 'release')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Package selected channel
+        env:
+          PACKAGE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.package_channel || (github.ref == 'refs/heads/dev' && 'development' || 'release') }}
+        run: npm run package:ci -- "$PACKAGE_CHANNEL"
+      - name: Upload VSIX and build identity
+        uses: actions/upload-artifact@v7
+        with:
+          name: your-turn-${{ github.event_name == 'workflow_dispatch' && inputs.package_channel || (github.ref == 'refs/heads/dev' && 'development' || 'release') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/packages/
+          if-no-files-found: error
+          retention-days: 14
+
   unit:
     name: Unit
     runs-on: ubuntu-latest
@@ -28,7 +86,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y bubblewrap xvfb xauth
       - run: npm ci
       - name: Run unit suite
-        run: npm run test:unit
+        run: npm run test:unit:only
       - name: Upload unit test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -52,7 +110,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Run webview suite
-        run: npm run test:webview
+        run: npm run test:webview:only
       - name: Upload webview test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -80,7 +138,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y xvfb xauth libasound2t64 libatk-bridge2.0-0 libgbm1 libgtk-3-0 libnss3
       - run: npm ci
       - name: Run integration suite sequentially
-        run: npm run test:integration -- --jobs 1 --display xvfb
+        run: npm run test:integration:only -- --jobs 1 --display xvfb
       - name: Upload integration reports and diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
@@ -108,7 +166,7 @@ jobs:
           sudo apt-get install --no-install-recommends -y bubblewrap xvfb xauth libasound2t64 libatk-bridge2.0-0 libgbm1 libgtk-3-0 libnss3
       - run: npm ci
       - name: Run desktop UI suite
-        run: npm run test:ui
+        run: npm run test:ui:only
       - name: Upload desktop UI reports and diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

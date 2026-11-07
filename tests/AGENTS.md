@@ -13,11 +13,16 @@ Use the supported npm scripts for tests, coverage, typechecking and linting.
   preparation and process ownership inside the shared tooling.
 - If a test or verification workflow operation is missing, extend and verify
   the shared tooling first; ask when facing meaningful trade-offs.
-- Every test and coverage command runs repository typechecking, ESLint and
+- Checked test and coverage commands run repository typechecking, ESLint and
   Knip before bundling or test execution. A failed check stops the command.
   `npm run typecheck` checks types only; `npm run lint` runs ESLint and Knip.
   `npm run check` runs both, without building or testing. `npm run compile`
   typechecks and builds development bundles, without linting or testing.
+- Explicit `test:unit:only`, `test:webview:only`, `test:integration:only`, and
+  `test:ui:only` commands omit typechecking and linting, but retain the same
+  bundle/editor preparation, selection, isolation, and cleanup. CI uses these
+  alongside an independent required `Checks` job. Use checked commands for
+  local verification; `CI` never silently disables checks.
 - Do not create or rely on separate temporary-script verification workflows.
 - Repeated runs stop on the first failure; never retry until green.
 - Always report the exact npm command, scope, repeat count, and results; a
@@ -59,6 +64,11 @@ Use the supported npm scripts for tests, coverage, typechecking and linting.
 - `npm run coverage:integration` — Checked integration coverage; same controls
   as `test:integration`. Per-job reports, not combined:
   `test-results/integration/coverage/run-*/job-*/`.
+- `npm run test:<layer>:only` — Test-only counterpart for unit, webview,
+  integration, or UI. Same layer options; checks must be established separately.
+- Workflow changes also require `go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12`.
+  CI runs this pinned workflow validator in `Checks`; it requires Go and
+  network access on the first run, not an npm dependency or global install.
 
 ### Scope and Execution Controls
 
