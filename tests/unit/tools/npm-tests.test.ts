@@ -88,6 +88,37 @@ it('checks types and lint before selecting unit files without compiling them', a
   ]);
 });
 
+it.each([
+  ['test:unit:only', ['tests/unit/a.test.ts'], ['vitest']],
+  ['test:webview:only', ['tests/webview/a.test.ts'], ['bundle', 'vitest']],
+  ['test:integration:only', ['tests/integration/a.test.ts'], ['bundle', 'integration']],
+  ['test:ui:only', ['tests/ui/a.test.ts'], ['bundle', 'editor', 'playwright']],
+])('%s omits checks but retains suite preparation and selection', async (target, files, commands) => {
+  const { run } = await fixture();
+  const result = await run(target, files, { CI: 'true' });
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.map(({ command }) => command)).toEqual(commands);
+  if (target === 'test:integration:only') {
+    expect(result.calls.at(-1)?.files).toBe('a.test.js');
+  } else {
+    expect(result.calls.at(-1)?.args).toContain(files[0]);
+  }
+});
+
+it('retains checks in the checked unit command when CI is set', async () => {
+  const { run } = await fixture();
+  const result = await run('test:unit', [], { CI: 'true' });
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'vitest']);
+});
+
+it('stops a test-only UI command when bundle preparation fails', async () => {
+  const { run } = await fixture();
+  const result = await run('test:ui:only', [], { FAIL_COMMAND: 'bundle' });
+  expect(result.code).toBe(7);
+  expect(result.calls.map(({ command }) => command)).toEqual(['bundle']);
+});
+
 it('prepares integration bundles once and translates source paths and job count', async () => {
   const { run } = await fixture();
   const result = await run('test:integration', ['tests/integration/b.test.ts', 'tests/integration/empty/c.test.ts', 'tests/integration/a.test.ts', '--repeat', '2', '--jobs', '4'], { ELECTRON_RUN_AS_NODE: '1' });
