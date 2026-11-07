@@ -1,0 +1,6 @@
+{
+  "inputs": ["./package.json"],
+  "output": "./dist/ThirdPartyNotices.txt",
+  "eol": "lf",
+  "exclude": ["dompurify"]
+}

@@ -29,6 +29,14 @@ jobs:
       - run: npm ci
       - name: Run unit suite
         run: npm run test:unit
+      - name: Upload unit test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-results
+          path: test-results/in-process/
+          if-no-files-found: warn
+          retention-days: 14
 
   webview:
     name: Webview
@@ -45,6 +53,14 @@ jobs:
       - run: npm ci
       - name: Run webview suite
         run: npm run test:webview
+      - name: Upload webview test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: webview-results
+          path: test-results/in-process/
+          if-no-files-found: warn
+          retention-days: 14
 
   integration:
     name: Integration
@@ -65,6 +81,14 @@ jobs:
       - run: npm ci
       - name: Run integration suite sequentially
         run: npm run test:integration -- --jobs 1 --display xvfb
+      - name: Upload integration reports and diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: integration-results
+          path: test-results/integration/results/
+          if-no-files-found: warn
+          retention-days: 14
 
   ui:
     name: Desktop UI
@@ -85,3 +109,13 @@ jobs:
       - run: npm ci
       - name: Run desktop UI suite
         run: npm run test:ui
+      - name: Upload desktop UI reports and diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-ui-results
+          path: |
+            test-results/ui/
+            test-results/ui-report/
+          if-no-files-found: warn
+          retention-days: 14

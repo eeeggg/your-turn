@@ -132,6 +132,15 @@ require('node:module').syncBuiltinESMExports();
     const [test] = settings.tests;
     const profile = test.launchArgs[0].slice('--user-data-dir='.length);
     mkdirSync(profile, { recursive: true });
+    const logs = profile + '/logs/session/window1/exthost';
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(logs + '/exthost.log', 'extension host diagnostics');
+    writeFileSync(profile + '/settings.json', 'private profile data');
+    if (test.mocha.reporter === 'json') {
+      const output = test.mocha.reporterOptions.output;
+      mkdirSync(output.slice(0, output.lastIndexOf('/')), { recursive: true });
+      writeFileSync(output, JSON.stringify({ stats: { passes: ${zeroTests ? 0 : 1}, failures: process.env.FAIL_GROUP === process.env.VSCODE_TEST_GROUP ? 1 : 0 }, failures: [], tests: [] }));
+    }
     const workspaceFolder = test.workspaceFolder ?? null;
     const paths = [...test.launchArgs.filter((arg) => !arg.startsWith('--')), ...(workspaceFolder === null ? [] : [workspaceFolder])];
     const opened = paths.map((path) => ({
@@ -313,6 +322,32 @@ it('force-stops descendants that do not finish after SIGTERM', { timeout: 15000 
     expect(existsSync(dirname(job.config))).toBe(false);
     expect(existsSync(dirname(job.profile))).toBe(false);
   }
+});
+
+it.each(['', '2'])('preserves reports and failed-job logs before removing editor profiles (%s)', async (failGroup) => {
+  const { root, closed, events, output } = await launchRunner({ finishAtOnce: true, failGroup });
+  expect((await closed).code, output()).toBe(failGroup ? 1 : 0);
+  const reports = join(root, 'test-results/integration/results');
+  const runs = await readdir(reports);
+  expect(runs).toHaveLength(1);
+  const run = join(reports, runs[0] ?? '');
+  const mapping = JSON.parse(await readFile(join(run, 'jobs.json'), 'utf8')) as { files: string[]; window: string; report: string }[];
+  expect(mapping.map(({ files, window }) => ({ files, window }))).toEqual([
+    { files: ['alpha.test.js', 'beta.test.js'], window: 'folder' },
+    { files: ['empty/gamma.test.js'], window: 'empty' },
+  ]);
+  for (const [index, job] of mapping.entries()) {
+    expect(JSON.parse(await readFile(join(run, job.report), 'utf8'))).toEqual({ stats: { passes: 1, failures: failGroup === String(index + 1) ? 1 : 0 }, failures: [], tests: [] });
+    const directory = join(run, dirname(job.report));
+    expect(await readFile(join(directory, 'output.log'), 'utf8')).toContain('1 passing');
+    if (failGroup === String(index + 1)) {
+      expect(await readFile(join(directory, 'logs/session/window1/exthost/exthost.log'), 'utf8')).toBe('extension host diagnostics');
+    } else {
+      expect(existsSync(join(directory, 'logs'))).toBe(false);
+    }
+    expect(existsSync(join(directory, 'settings.json'))).toBe(false);
+  }
+  for (const event of events) { expect(existsSync(event.profile)).toBe(false); }
 });
 
 it.each(['', '2'])('preserves separate coverage reports and job mapping when failed group is %s', async (failGroup) => {

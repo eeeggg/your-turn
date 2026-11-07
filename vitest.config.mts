@@ -9,6 +9,8 @@ export default defineConfig({
     tsconfigPaths: true,
   },
   test: {
+    reporters: ['default', 'junit'],
+    outputFile: { junit: 'test-results/in-process/results.xml' },
     projects: [
       {
         test: {

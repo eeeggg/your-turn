@@ -8,5 +8,8 @@ export default defineConfig({
   workers: 1,
   timeout: 60_000,
   expect: { timeout: 10_000 },
-  reporter: 'list',
+  reporter: [
+    ['list'],
+    ['html', { outputFolder: 'test-results/ui-report', open: 'never' }],
+  ],
 });

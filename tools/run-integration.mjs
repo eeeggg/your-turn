@@ -1,4 +1,4 @@
-import { readdir, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { readdir, readFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -87,6 +87,7 @@ let configDirectory;
 let executablePath = '';
 /** @type {string | undefined} */
 let coverageDirectory;
+let resultsDirectory = '';
 let stopping = false;
 let interruptedExitCode = 0;
 /** @type {Set<() => void>} */
@@ -155,7 +156,8 @@ function runSetup(command, args, timeout) {
   });
 }
 
-/** @typedef {{ code: number, output: string }} RunResult */
+/** @typedef {{ code: number, output: string, passes?: number }} RunResult */
+/** @typedef {{ stats: { passes: number, failures: number }, failures: { fullTitle: string, err?: { stack?: string, message?: string } }[] }} TestReport */
 
 /** @param {Group} group @param {number} index */
 async function prepareGroup({ kind, files }, index) {
@@ -186,7 +188,7 @@ export default {
     extensionDevelopmentPath: ${JSON.stringify(root)},${workspaceFolder === undefined ? '' : `
     workspaceFolder: ${JSON.stringify(workspaceFolder)},`}
     launchArgs: ${launchArgs},
-    mocha: { timeout: 0 },
+    mocha: { timeout: 0, reporter: 'json', reporterOptions: { output: ${JSON.stringify(join(resultsDirectory, `job-${index + 1}`, 'results.json'))} } },
   }],
 };\n`;
 
@@ -271,8 +273,48 @@ function executeGroup({ kind, files }, index, config) {
 
 /** @param {Group} group @param {number} index */
 async function runGroup(group, index) {
-  const config = await prepareGroup(group, index);
-  return executeGroup(group, index, config);
+  const directory = join(resultsDirectory, `job-${index + 1}`);
+  await mkdir(directory, { recursive: true });
+  let failed = true;
+  try {
+    const config = await prepareGroup(group, index);
+    const result = await executeGroup(group, index, config);
+    failed = result.code !== 0;
+    await writeFile(join(directory, 'output.log'), result.output);
+    if (!stopping) {
+      try {
+        /** @type {unknown} */
+        const parsed = JSON.parse(await readFile(join(directory, 'results.json'), 'utf8'));
+        const report = /** @type {TestReport} */ (parsed);
+        result.passes = report.stats.passes;
+        console.log(`[integration ${index + 1}] ${report.stats.passes} passing, ${report.stats.failures} failing`);
+        for (const failure of report.failures) {
+          console.error(`${failure.fullTitle}\n${failure.err?.stack ?? failure.err?.message ?? ''}`);
+        }
+      } catch (error) {
+        failed = true;
+        result.code = result.code || 1;
+        console.error(`Could not read integration job ${index + 1} report:`, error);
+      }
+    }
+    return result;
+  } finally {
+    if (failed && profiles) {
+      const logs = join(profiles, `profile-${index}`, 'logs');
+      try {
+        const files = await readdir(logs, { recursive: true, withFileTypes: true });
+        for (const file of files) {
+          if (!file.isFile() || !['main.log', 'renderer.log', 'exthost.log', 'Your Turn.log'].includes(file.name)) { continue; }
+          const source = join(file.parentPath, file.name);
+          const destination = join(directory, 'logs', relative(logs, source));
+          await mkdir(dirname(destination), { recursive: true });
+          await writeFile(destination, await readFile(source));
+        }
+      } catch (error) {
+        if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') { console.error('Could not preserve integration logs:', error); }
+      }
+    }
+  }
 }
 
 /** Run every group, at most `jobs` at once, settling in group order. */
@@ -300,6 +342,14 @@ async function runGroups() {
 }
 
 try {
+  const reports = join(root, 'test-results', 'integration', 'results');
+  await mkdir(reports, { recursive: true });
+  resultsDirectory = await mkdtemp(join(reports, 'run-'));
+  await writeFile(join(resultsDirectory, 'jobs.json'), JSON.stringify(groups.map(({ kind, files }, index) => ({
+    files: files.map((file) => relative(testDirectory, file)),
+    window: kind.name,
+    report: `job-${index + 1}/results.json`,
+  })), null, 2));
   await selectDisplay();
   executablePath = await runSetup(process.execPath, ['--input-type=module', '-e',
     `import { prepareVSCode } from ${JSON.stringify(pathToFileURL(join(root, 'tools/vscode-test.mjs')).href)}; process.send(await prepareVSCode(${JSON.stringify(root)})); process.disconnect();`,
@@ -325,7 +375,7 @@ try {
   if (coverageDirectory !== undefined) {
     console.log(`Coverage reports and job mapping: ${coverageDirectory}`);
   }
-  const passed = results.reduce((sum, { output }) => sum + Number(/(\d+) passing/.exec(output)?.[1] ?? 0), 0);
+  const passed = results.reduce((sum, { passes, output }) => sum + (passes ?? Number(/(\d+) passing/.exec(output)?.[1] ?? 0)), 0);
   const failed = results.filter(({ code }) => code !== 0);
   if (interruptedExitCode !== 0) {
     console.error('Integration run interrupted; isolated jobs have closed');

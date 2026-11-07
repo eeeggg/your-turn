@@ -1,0 +1,26 @@
+[
+  {
+    "package": "dompurify",
+    "files": [
+      "node_modules/dompurify/LICENSE",
+      "node_modules/dompurify/LICENSE-MPL"
+    ]
+  },
+  {
+    "package": "tailwindcss",
+    "files": ["node_modules/tailwindcss/LICENSE"]
+  },
+  {
+    "package": "monaco-editor",
+    "files": ["node_modules/monaco-editor/ThirdPartyNotices.txt"],
+    "url": "https://raw.githubusercontent.com/unicode-org/unicodetools/addf0c992050b10a0bfe8647f90fcc8fdbfe71fc/LICENSE"
+  },
+  {
+    "package": "@xterm/headless",
+    "repositoryFiles": ["LICENSE"]
+  },
+  {
+    "package": "nub",
+    "url": "https://unpkg.com/nub@1.0.0/LICENSE"
+  }
+]

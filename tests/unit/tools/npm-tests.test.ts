@@ -26,6 +26,7 @@ async function fixture() {
     eslint: 'node_modules/eslint/bin/eslint.js',
     knip: 'node_modules/knip/bin/knip.js',
     bundle: 'esbuild.mjs',
+    notices: 'tools/notices.mjs',
     vitest: 'node_modules/vitest/vitest.mjs',
     playwright: 'node_modules/@playwright/test/cli.js',
     integration: 'tools/run-integration.mjs',
@@ -224,6 +225,7 @@ it('builds production bundles after typechecking without running tests', async (
   expect(result.code, result.output).toBe(0);
   expect(result.calls.map(({ command, args }) => [command, args])).toEqual([
     ['types', ['-b']], ['bundle', ['--production']],
+    ['notices', []],
   ]);
 });
 
@@ -232,6 +234,13 @@ it('stops the production build when typechecking fails', async () => {
   const result = await run('build:production', [], { FAIL_COMMAND: 'types' });
   expect(result.code).not.toBe(0);
   expect(result.calls.map(({ command }) => command)).toEqual(['types']);
+});
+
+it('fails the production build when notice generation fails', async () => {
+  const { run } = await fixture();
+  const result = await run('build:production', [], { FAIL_COMMAND: 'notices' });
+  expect(result.code, result.output).toBe(7);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'bundle', 'notices']);
 });
 
 it('requests integration coverage on each focused execution', async () => {
@@ -345,7 +354,7 @@ it('runs exactly the requested unit and webview files through real Vitest discov
 import base from './vitest.base.mts';
 export default {
   ...base,
-  test: { ...base.test, reporters: ['default', 'json'], outputFile: { json: ${JSON.stringify(reportPath)} } },
+  test: { ...base.test, reporters: [...base.test.reporters, 'json'], outputFile: { ...base.test.outputFile, json: ${JSON.stringify(reportPath)} } },
 };
 `);
   await writeFile(join(root, 'node_modules/vitest/vitest.mjs'), `import ${JSON.stringify(pathToFileURL(join(project, 'node_modules/vitest/vitest.mjs')).href)};`);
@@ -358,6 +367,9 @@ export default {
   }
   const result = await run('test:in-process', ['tests/unit/a.test.ts', 'tests/webview/a.test.ts'], { FORCE_COLOR: '1' });
   expect(result.code, result.output).toBe(0);
+  const junit = await readFile(join(root, 'test-results/in-process/results.xml'), 'utf8');
+  expect(junit).toContain('tests="2"');
+  expect(junit).toContain('failures="0"');
   const report = JSON.parse(await readFile(reportPath, 'utf8')) as {
     success: boolean;
     numTotalTests: number;
