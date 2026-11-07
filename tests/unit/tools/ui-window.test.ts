@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { existsSync, watch } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, assert, expect, it, onTestFinished, vi } from 'vitest';
+import type { Page } from '@playwright/test';
+import { selectListedSession } from '@tests/ui/workbench';
 
 const boundary = vi.hoisted(() => ({ launch: vi.fn(), download: vi.fn() }));
 vi.mock('@vscode/test-electron', () => ({ downloadAndUnzipVSCode: boundary.download }));
@@ -22,7 +24,53 @@ interface WindowFixture {
   ): Promise<void>;
 }
 
-afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); });
+afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); vi.unstubAllEnvs(); });
+
+it('leaves the agent and awaits hover dismissal before selecting a listed session', async () => {
+  const events: string[] = [];
+  let dismiss: () => void = () => { throw new Error('Hover dismissal has not started'); };
+  let observed: () => void = () => {};
+  const observing = new Promise<void>((resolve) => { observed = resolve; });
+  const hidden = new Promise<void>((resolve) => { dismiss = resolve; });
+  const row = {
+    waitFor: async (options: unknown) => { expect(options).toEqual({ state: 'visible' }); events.push('row visible'); },
+    click: async () => { events.push('click'); observed(); },
+  };
+  const title = { hover: async () => { events.push('leave agent'); } };
+  const pane = { locator: (selector: string) => {
+    expect(selector).toBe('.pane-header > .title');
+    return title;
+  } };
+  const page = {
+    locator: (selector: string) => {
+      if (selector === '.pane') { return { filter: () => pane }; }
+      expect(selector).toBe('.pane-header > .codicon-hubot');
+      return {};
+    },
+    getByRole: (role: string, options?: unknown) => {
+      if (role === 'tooltip') {
+        return { waitFor: async (options: unknown) => {
+          expect(options).toEqual({ state: 'hidden' });
+          events.push('observe hover');
+          observed();
+          await hidden;
+        } };
+      }
+      expect([role, options]).toEqual(['tree', { name: 'Agents', exact: true }]);
+      return { getByRole: (role: string) => {
+        expect(role).toBe('treeitem');
+        return { filter: (options: unknown) => { expect(options).toEqual({ hasText: 'Compaction session' }); return row; } };
+      } };
+    },
+  } as unknown as Page;
+
+  const selection = selectListedSession(page, 'Compaction session');
+  await observing;
+  expect(events).toEqual(['leave agent', 'observe hover']);
+  dismiss();
+  await selection;
+  expect(events).toEqual(['leave agent', 'observe hover', 'row visible', 'click']);
+});
 
 async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: boolean; setupFailure?: boolean; statusFailure?: boolean; launchFailure?: boolean; detachedDescendant?: boolean; hang?: 'diagnostics' | 'trace' | 'close' } = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ui-cleanup-test-'));
@@ -120,14 +168,21 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
       await exited;
     },
   };
-  boundary.download.mockResolvedValue('/unused-vscode');
+  vi.stubEnv('UI_VSCODE_EXECUTABLE', '/unused-vscode');
+  boundary.download.mockRejectedValue(new Error('Editor downloads belong to the batch coordinator'));
   boundary.launch.mockImplementation(async (launch: { args: string[]; executablePath: string; env: Record<string, string> }) => {
     expect(launch.executablePath).toBe(resolve('tests/ui/electron.sh'));
     expect(launch.env['UI_EXECUTABLE']).toBe('/unused-vscode');
+    expect(launch.args).toContain('--log=debug');
     const target = launch.env['UI_STATUS'];
     expect(target).toBeDefined();
     if (target) { await writeFile(target, options.statusFailure ? 'invalid status' : await readFile(status)); }
     paths.push(...launch.args.filter((arg) => arg.startsWith('--user-data-dir=') || arg.startsWith('--extensions-dir=')).map((arg) => arg.slice(arg.indexOf('=') + 1)));
+    if (options.setupFailure) {
+      const logs = join(paths[0] ?? '', 'logs', '20261107', 'window1');
+      await mkdir(logs, { recursive: true });
+      await writeFile(join(logs, 'renderer.log'), 'Renderer debug context');
+    }
     if (options.launchFailure) {
       if (child.pid) { process.kill(-child.pid, 'SIGKILL'); }
       await exited;
@@ -151,8 +206,19 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
       return false;
     }
   };
-  return { run, paths, events, diagnosticError, closeError, setupError, blocked, descendantRunning, closed: () => closed };
+  return { run, paths, events, diagnosticError, closeError, setupError, blocked, descendantRunning, directory, closed: () => closed };
 }
+
+it('rejects an unprepared editor before launching a window', async () => {
+  vi.stubEnv('UI_VSCODE_EXECUTABLE', undefined);
+  const { test } = await import('@tests/ui/window');
+  const window = (test as unknown as WindowFixture).window;
+  await expect(window(
+    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined },
+    async () => { throw new Error('Unprepared fixture reached the test body'); },
+    { testId: 'unprepared', status: 'passed', expectedStatus: 'passed', outputPath: (name) => name },
+  )).rejects.toThrow('UI editor is not prepared; use npm run test:ui');
+});
 
 it('cleans resources after successful close disposes the Electron application handle', async () => {
   const state = await fixture();
@@ -203,6 +269,8 @@ it('cleans a launched process and temporary directories after fixture setup fail
   await expect(state.run(async () => {})).rejects.toBe(state.setupError);
 
   expect(state.closed()).toBe(true);
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as { extensionLogs: Record<string, string> };
+  expect(diagnostics.extensionLogs['20261107/window1/renderer.log']).toBe('Renderer debug context');
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
 

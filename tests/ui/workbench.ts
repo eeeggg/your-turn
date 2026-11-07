@@ -17,6 +17,15 @@ export function agentsViewRow(window: Page, label: string): Locator {
   return window.getByRole('tree', { name: 'Agents', exact: true }).getByRole('treeitem').filter({ hasText: label });
 }
 
+export async function selectListedSession(window: Page, label: string): Promise<void> {
+  // Leaving the row cancels delayed hovers too; Escape alone can precede their appearance.
+  await agentsViewTitle(window).hover();
+  await window.getByRole('tooltip').waitFor({ state: 'hidden' });
+  const session = agentsViewRow(window, label);
+  await session.waitFor({ state: 'visible' });
+  await session.click();
+}
+
 /**
  * VS Code's private pane DOM holds a view's header, with its title and title actions, and its body, with its
  * tree or welcome content. The view's icon in the header identifies the Agents pane under either of its titles.

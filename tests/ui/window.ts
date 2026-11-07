@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
-import { prepareVSCode } from '@tools/vscode-test.mjs';
 import {
   _electron,
   test as base,
@@ -76,7 +75,7 @@ async function vscodeLogs(profile: string): Promise<Record<string, string>> {
         await visit(child);
       } else if (entry.isFile() && entry.name.endsWith('.log')) {
         const name = relative(directory, child);
-        if (/^\d+\/main\.log$|\/exthost\/exthost\.log$|Your Turn\.log$/.test(name)) {
+        if (/^\d+\/main\.log$|\/renderer\.log$|\/exthost\/exthost\.log$|Your Turn\.log$/.test(name)) {
           found.push(child);
         }
       }
@@ -220,6 +219,8 @@ export const test = base.extend<UiFixtures>({
   },
 
   window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, display }, use, testInfo) => {
+    const executablePath = process.env['UI_VSCODE_EXECUTABLE'];
+    if (!executablePath) { throw new Error('UI editor is not prepared; use npm run test:ui'); }
     let application: ElectronApplication | undefined;
     let applicationProcess: ChildProcess | undefined;
     let profile: string | undefined;
@@ -264,7 +265,6 @@ export const test = base.extend<UiFixtures>({
         },
       }, undefined, 2));
 
-      const executablePath = await prepareVSCode(root);
       const contained = process.platform === 'linux';
       application = await _electron.launch({
         executablePath: contained ? join(root, 'tests/ui/electron.sh') : executablePath,
@@ -276,6 +276,7 @@ export const test = base.extend<UiFixtures>({
         cwd: root,
         args: [
         '--disable-updates',
+          '--log=debug',
           '--disable-workspace-trust',
           '--new-window',
           '--skip-release-notes',

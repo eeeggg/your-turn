@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it, onTestFinished } from 'vitest';
 
-interface Invocation { command: string; args: string[]; files?: string; jobs?: string; electron?: string; display?: string }
+interface Invocation { command: string; args: string[]; files?: string; jobs?: string; electron?: string; display?: string; executable?: string }
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'npm-tests-'));
@@ -37,11 +37,25 @@ async function fixture() {
 import('node:fs').then(({ appendFileSync }) => {
 const command = ${JSON.stringify(command)};
 const args = process.argv.slice(2);
-appendFileSync(process.env.TRACE, JSON.stringify({ command, args, files: process.env.TEST_FILES, jobs: process.env.TEST_JOBS, display: process.env.TEST_DISPLAY || undefined, electron: process.env.ELECTRON_RUN_AS_NODE }) + '\\n');
+appendFileSync(process.env.TRACE, JSON.stringify({ command, args, files: process.env.TEST_FILES, jobs: process.env.TEST_JOBS, display: process.env.TEST_DISPLAY || undefined, electron: process.env.ELECTRON_RUN_AS_NODE, executable: process.env.UI_VSCODE_EXECUTABLE }) + '\\n');
 process.exitCode = process.env.FAIL_COMMAND === command ? 7 : 0;
 });
 `);
   }
+  await writeFile(join(root, 'tools/vscode-test.mjs'), `
+import { appendFileSync } from 'node:fs';
+export async function prepareVSCode(root) {
+  appendFileSync(process.env.TRACE, JSON.stringify({ command: 'editor', args: [root], electron: process.env.ELECTRON_RUN_AS_NODE }) + '\\n');
+  if (process.env.FAIL_COMMAND === 'editor') { process.exit(7); }
+  if (process.env.INTERRUPT_EDITOR) {
+    process.on('SIGTERM', () => process.exit(0));
+    setInterval(() => {}, 1000);
+    process.kill(process.ppid, 'SIGTERM');
+    await new Promise(() => {});
+  }
+  return process.env.EMPTY_EDITOR ? '' : root + '/prepared-code';
+}
+`);
   await mkdir(join(root, 'node_modules', '.bin'), { recursive: true });
   await writeFile(join(root, 'node_modules', '.bin', 'tsc'), '#!/usr/bin/env node\nimport("../typescript/bin/tsc");\n', { mode: 0o755 });
   const trace = join(root, 'trace');
@@ -311,8 +325,8 @@ it('applies local UI jobs to each Playwright execution without integration contr
   await writeFile(join(root, '.env.test.local'), 'TEST_JOBS=4\nTEST_DISPLAY=xvfb\nUI_JOBS=2\n');
   const result = await run('test:ui', ['tests/ui/a.test.ts', '--repeat', '2']);
   expect(result.code, result.output).toBe(0);
-  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'playwright', 'playwright']);
-  for (const call of result.calls.slice(4)) {
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor', 'playwright', 'playwright']);
+  for (const call of result.calls.slice(5)) {
     expect(call.args).toEqual(['test', '--config', 'playwright.config.mts', '--workers', '2', 'tests/ui/a.test.ts']);
     expect(call.jobs).toBeUndefined();
     expect(call.display).toBeUndefined();
@@ -340,8 +354,32 @@ it('stops parallel UI repetitions on the first failure', async () => {
   await writeFile(join(root, '.env.test.local'), 'UI_JOBS=2\n');
   const result = await run('test:ui', ['--repeat', '3'], { FAIL_COMMAND: 'playwright' });
   expect(result.code, result.output).toBe(7);
-  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'playwright']);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor', 'playwright']);
   expect(result.calls.at(-1)?.args).toContain('2');
+});
+
+it('prepares the editor once before UI workers and supplies its path to every repetition', async () => {
+  const { root, run } = await fixture();
+  const result = await run('test:ui', ['--repeat', '3'], { ELECTRON_RUN_AS_NODE: '1', UI_VSCODE_EXECUTABLE: '/inherited-editor' });
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor', 'playwright', 'playwright', 'playwright']);
+  expect(result.calls[4]).toEqual({ command: 'editor', args: [root] });
+  expect(result.calls.slice(5).map(({ executable, electron }) => ({ executable, electron }))).toEqual([
+    { executable: join(root, 'prepared-code'), electron: undefined },
+    { executable: join(root, 'prepared-code'), electron: undefined },
+    { executable: join(root, 'prepared-code'), electron: undefined },
+  ]);
+});
+
+it.each([
+  [{ FAIL_COMMAND: 'editor' }, 7],
+  [{ EMPTY_EDITOR: '1' }, 1],
+  [{ INTERRUPT_EDITOR: '1' }, 143],
+] as const)('does not start UI workers after editor preparation fails or is interrupted (%j)', async (env, code) => {
+  const { run } = await fixture();
+  const result = await run('test:ui', ['--repeat', '3'], env);
+  expect(result.code, result.output).toBe(code);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor']);
 });
 
 it('runs exactly the requested unit and webview files through real Vitest discovery', async () => {

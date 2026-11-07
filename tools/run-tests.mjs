@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import { readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
+import { pathToFileURL } from 'node:url';
 import { windowKinds } from './integration-windows.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -156,40 +157,67 @@ if (integration || settings.mode === 'ui' || full) { delete env['ELECTRON_RUN_AS
 delete env['FILES'];
 delete env['REPEAT'];
 delete env['JOBS'];
+delete env['UI_VSCODE_EXECUTABLE'];
 
 /** @type {import('node:child_process').ChildProcess | undefined} */
 let active;
 let activeOwnsJobs = false;
+let activePreparation = false;
+/** @type {ReturnType<typeof setTimeout> | undefined} */
+let shutdownWatchdog;
 let interrupted = 0;
 /** @param {NodeJS.Signals} signal */
-function stop(signal) {
-  interrupted = signal === 'SIGINT' ? 130 : 143;
-  if (active?.pid === undefined) { return; }
+function signalActive(signal) {
+  const child = active;
+  if (child?.pid === undefined) { return; }
   if (activeOwnsJobs || process.platform === 'win32') {
-    active.kill(signal);
+    child.kill(signal);
   } else {
-    try { process.kill(-active.pid, signal); } catch (error) {
+    try { process.kill(-child.pid, signal); } catch (error) {
       if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH') { throw error; }
     }
   }
+}
+function stopPreparation() {
+  signalActive('SIGTERM');
+  shutdownWatchdog ??= setTimeout(() => { signalActive('SIGKILL'); }, 5000);
+}
+/** @param {NodeJS.Signals} signal */
+function stop(signal) {
+  interrupted = signal === 'SIGINT' ? 130 : 143;
+  if (activePreparation) { stopPreparation(); }
+  else { signalActive(signal); }
 }
 const interrupt = () => { stop('SIGINT'); };
 const terminate = () => { stop('SIGTERM'); };
 process.on('SIGINT', interrupt);
 process.on('SIGTERM', terminate);
 
-/** @param {string} command @param {string[]} args @param {boolean} [ownsJobs] @returns {Promise<number>} */
-async function run(command, args, ownsJobs = false) {
+/** @param {string} command @param {string[]} args @param {boolean} [ownsJobs] @param {(message: unknown) => void} [prepared] @returns {Promise<number>} */
+async function run(command, args, ownsJobs = false, prepared) {
   if (interrupted) { return interrupted; }
   activeOwnsJobs = ownsJobs;
-  const child = spawn(command, args, { cwd: root, env, stdio: 'inherit', detached: !ownsJobs && process.platform !== 'win32' });
+  activePreparation = prepared !== undefined;
+  const child = spawn(command, args, { cwd: root, env, stdio: prepared ? ['ignore', 'inherit', 'inherit', 'ipc'] : 'inherit', detached: !ownsJobs && process.platform !== 'win32' });
   active = child;
+  const preparation = { timedOut: false };
+  const watchdog = prepared ? setTimeout(() => {
+    preparation.timedOut = true;
+    console.error('UI editor preparation timed out after 600 seconds');
+    stopPreparation();
+  }, 10 * 60 * 1000) : undefined;
+  if (prepared) { child.on('message', prepared); }
   const code = await new Promise(/** @param {(code: number) => void} resolveCode */ (resolveCode) => {
     child.on('error', (error) => { console.error(error); });
     child.on('close', (exitCode) => { resolveCode(exitCode ?? 1); });
   });
+  clearTimeout(watchdog);
+  clearTimeout(shutdownWatchdog);
+  shutdownWatchdog = undefined;
+  if (prepared && process.platform !== 'win32') { signalActive('SIGKILL'); }
   active = undefined;
-  return interrupted || code;
+  activePreparation = false;
+  return interrupted || (preparation.timedOut ? 1 : code);
 }
 
 /** @param {string} path @param {string[]} [args] @param {boolean} [ownsJobs] */
@@ -203,10 +231,26 @@ const bundle = () => node('esbuild.mjs');
 /** @param {string[]} args */
 const vitest = (args) => node('node_modules/vitest/vitest.mjs', ['run', ...args]);
 
+async function prepareUiEditor() {
+  console.log('Preparing the pinned UI editor before starting Playwright workers');
+  let executablePath = '';
+  const code = await run(process.execPath, ['--input-type=module', '-e',
+    `import { prepareVSCode } from ${JSON.stringify(pathToFileURL(join(root, 'tools/vscode-test.mjs')).href)}; process.send(await prepareVSCode(${JSON.stringify(root)})); process.disconnect();`,
+  ], false, (message) => { if (typeof message === 'string') { executablePath = message; } });
+  if (code !== 0) { return code; }
+  if (!executablePath) {
+    console.error('UI editor preparation did not return an executable path');
+    return 1;
+  }
+  env['UI_VSCODE_EXECUTABLE'] = executablePath;
+  return 0;
+}
+
 try {
   let code = await checkTypes();
   if (code === 0 && settings.mode !== 'compile') { code = await lint(); }
   if (code === 0 && settings.bundle) { code = await bundle(); }
+  if (code === 0 && settings.mode === 'ui') { code = await prepareUiEditor(); }
   if (full) {
     if (code === 0) { code = await vitest([]); }
     if (code === 0) { code = await run(process.execPath, [join(root, 'tools', 'run-integration.mjs')], true); }

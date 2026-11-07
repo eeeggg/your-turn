@@ -3,19 +3,35 @@ import {
   agentsViewRow,
   chatViewTitle,
   promptInput,
+  selectListedSession,
   sessionTabs
 } from '@tests/ui/workbench';
 import { expect, test } from '@tests/ui/window';
 
 test.use({ listsSessions: true, compaction: true });
 
+for (const hoverState of ['visible', 'unawaited'] as const) {
+  test(`a listed session opens after leaving an agent with ${hoverState === 'visible' ? 'a visible' : 'an unawaited'} hover`, async ({ window }) => {
+    await yourTurnContainerControl(window).click();
+    const agent = agentsViewRow(window, 'fake-v1');
+    await agent.click();
+    await expect(agentsViewRow(window, 'Compaction session')).toBeVisible();
+    await agent.hover();
+    if (hoverState === 'visible') {
+      await expect(window.getByRole('tooltip')).toBeVisible();
+    }
+    await selectListedSession(window, 'Compaction session');
+    await expect(promptInput(window)).toBeEnabled();
+    await expect(sessionTabs(window).getByRole('tab', { name: 'Compaction session', exact: true })).toHaveAttribute('aria-selected', 'true');
+  });
+}
+
 test('session tabs wrap into rows with keyboard and close controls reachable in a narrow chat view', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
   await agentsViewRow(window, 'fake-v1').click();
-  await window.keyboard.press('Escape');
-  await agentsViewRow(window, 'Compaction session').click();
+  await selectListedSession(window, 'Compaction session');
   await expect(promptInput(window)).toBeEnabled();
-  await agentsViewRow(window, 'Another session with a deliberately long title for tab overflow').click();
+  await selectListedSession(window, 'Another session with a deliberately long title for tab overflow');
   const strip = sessionTabs(window);
   const tabs = strip.getByRole('tab');
   await expect(tabs).toHaveCount(2);

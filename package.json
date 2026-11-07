@@ -719,7 +719,8 @@
   "knip": {
     "entry": [
       ".vscode-test.mjs",
-      "tools/run-integration.mjs"
+      "tools/run-integration.mjs",
+      "tools/vscode-test.mjs"
     ],
     "ignoreBinaries": [
       "mkfifo",
@@ -728,5 +729,10 @@
     "ignoreDependencies": [
       "generate-license-file"
     ]
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "@vscode/vsce-sign@2.1.0": true,
+    "@parcel/watcher@2.5.1": true
   }
 }

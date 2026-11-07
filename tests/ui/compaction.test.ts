@@ -4,6 +4,7 @@ import {
   chatCompactions,
   chatTranscript,
   promptInput,
+  selectListedSession,
   quickInputRow
 } from '@tests/ui/workbench';
 import { expect, test } from '@tests/ui/window';
@@ -13,7 +14,7 @@ test.use({ listsSessions: true, compaction: true });
 test('loaded and live compactions retain their transcript position and user-controlled summary expansion', async ({ window }, testInfo) => {
   await yourTurnContainerControl(window).click();
   await agentsViewRow(window, 'fake-v1').click();
-  await agentsViewRow(window, 'Compaction session').click();
+  await selectListedSession(window, 'Compaction session');
   const compactions = chatCompactions(window);
   const historical = compactions.nth(0);
   await expect(historical.locator('summary')).toHaveText('Compaction completed');
