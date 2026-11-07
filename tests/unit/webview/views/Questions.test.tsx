@@ -7,6 +7,7 @@ import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { Questions } from '@/webview/views/Questions';
 import { InputArea } from '@/webview/views/InputArea';
+import { Chevron } from '@/webview/views/elements/Chevron';
 
 type Question = Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number];
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
@@ -49,6 +50,19 @@ function setup(initial: RootState = initialState) {
 }
 
 describe('question surface', () => {
+  it.each(['up', 'down', 'left', 'right'] as const)('renders the %s chevron without rotation and preserves shared styling', (direction) => {
+    const { container } = render(<Chevron direction={direction} size={12} className="mt-0.5" />);
+    const icon = container.querySelector('svg');
+    expect(icon?.classList.contains(`lucide-chevron-${direction}`)).toBe(true);
+    expect(icon?.getAttribute('class')).not.toMatch(/rotate-/);
+    expect(icon?.classList.contains('flex-none')).toBe(true);
+    expect(icon?.classList.contains('mt-0.5')).toBe(true);
+    expect(icon?.getAttribute('width')).toBe('12');
+    expect(icon?.getAttribute('height')).toBe('12');
+    expect(icon?.getAttribute('stroke-width')).toBe('2.25');
+    expect(icon?.getAttribute('aria-hidden')).toBe('true');
+  });
+
   it('keeps disclosure and navigation icons decorative at their existing sizes', () => {
     const view = setup();
     view.connect();

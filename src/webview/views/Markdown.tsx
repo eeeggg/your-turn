@@ -1,4 +1,6 @@
 import { useEffect, useState, type ComponentProps } from 'react';
+import Copy from 'lucide-react/icons/copy';
+import Check from 'lucide-react/icons/check';
 import {
   defaultComponents,
   defaultRemarkPlugins,
@@ -135,16 +137,11 @@ function CopyLinkButton({ href }: { href: string }) {
       className="ml-0.5 inline-flex cursor-pointer align-middle text-muted-foreground hover:text-foreground"
       onClick={() => void navigator.clipboard.writeText(href).then(() => setCopied(true))}
     >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        {copied ? (
-          <path d="M20 6 9 17l-5-5" />
-        ) : (
-          <>
-            <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-            <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" />
-          </>
-        )}
-      </svg>
+      {copied ? (
+        <Check size={12} aria-hidden="true" />
+      ) : (
+        <Copy size={12} aria-hidden="true" />
+      )}
     </button>
   );
 }

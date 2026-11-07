@@ -9,6 +9,9 @@ import {
   type ReactNode,
   type RefObject
 } from 'react';
+import ArrowDown from 'lucide-react/icons/arrow-down';
+import Check from 'lucide-react/icons/check';
+import Copy from 'lucide-react/icons/copy';
 import { useStickToBottom } from 'use-stick-to-bottom';
 import type { QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
 import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
@@ -89,10 +92,7 @@ function JumpToEnd({ onClick }: { onClick: () => void }) {
       id="jumpToEnd"
       onClick={onClick}
     >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <path d="M12 5v14" />
-        <path d="m19 12-7 7-7-7" />
-      </svg>
+      <ArrowDown size={16} aria-hidden="true" />
     </button>
   );
 }
@@ -400,27 +400,9 @@ function CopyMessageButton({
           }
         }}
       >
-        <svg
-          width="14"
-          height="14"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-          className={`transition-transform duration-150 motion-reduce:transition-none ${copied ? 'scale-100' : 'scale-90'}`}
-        >
-          {copied ? (
-            <path d="M20 6 9 17l-5-5" />
-          ) : (
-            <>
-              <rect width="14" height="14" x="8" y="8" rx="2" ry="2" />
-              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 0.9 2 2" />
-            </>
-          )}
-        </svg>
+        <span className={`inline-flex transition-transform duration-150 motion-reduce:transition-none ${copied ? 'scale-100' : 'scale-90'}`}>
+          {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+        </span>
       </button>
       {author === 'agent' && <div
         ref={menuRef}

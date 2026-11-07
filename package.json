@@ -671,6 +671,7 @@
     "diff": "^9.0.0",
     "execa": "^10.2.0",
     "image-size": "^2.0.4",
+    "lucide-react": "^1.70.0",
     "monaco-editor": "^0.57.0",
     "react": "^19.3.1",
     "react-diff-view": "^3.3.3",

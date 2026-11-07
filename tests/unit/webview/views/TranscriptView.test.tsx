@@ -429,8 +429,15 @@ describe('transcript entries', () => {
 
     const copyButton = message.querySelector<HTMLButtonElement>('[aria-label="Copy message"]');
     assert.exists(copyButton);
+    const feedback = copyButton.firstElementChild;
+    assert.exists(feedback);
+    expect(feedback.classList.contains('transition-transform')).toBe(true);
+    expect(feedback.classList.contains('scale-90')).toBe(true);
+    expect(feedback.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
     await act(async () => fireEvent.click(copyButton));
     expect(writeText).toHaveBeenCalledWith('user message');
+    expect(copyButton.firstElementChild).toBe(feedback);
+    expect(feedback.classList.contains('scale-100')).toBe(true);
   });
 
   it('keeps agent copy options while using an unboxed icon button', () => {

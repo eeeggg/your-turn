@@ -1,9 +1,20 @@
-const rotation = { up: '', down: 'rotate-180', left: '-rotate-90', right: 'rotate-90' };
+import ChevronUp from 'lucide-react/icons/chevron-up';
+import ChevronDown from 'lucide-react/icons/chevron-down';
+import ChevronLeft from 'lucide-react/icons/chevron-left';
+import ChevronRight from 'lucide-react/icons/chevron-right';
+
+const icons = { up: ChevronUp, down: ChevronDown, left: ChevronLeft, right: ChevronRight };
 
 export function Chevron({ direction, size = 14, className = '' }: {
   direction: 'up' | 'down' | 'left' | 'right'; size?: number; className?: string;
 }) {
-  return <svg aria-hidden="true" width={size} height={size} viewBox="0 0 16 16" fill="none" className={`flex-none ${rotation[direction]} ${className}`}>
-    <path d="m4 10 4-4 4 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-  </svg>;
+  const Icon = icons[direction];
+  return (
+    <Icon
+      size={size}
+      strokeWidth={2.25}
+      aria-hidden="true"
+      className={`flex-none ${className}`}
+    />
+  );
 }

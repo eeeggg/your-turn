@@ -12,6 +12,7 @@ test.use({ listsSessions: true, compaction: true });
 test('session tabs wrap into rows with keyboard and close controls reachable in a narrow chat view', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
   await agentsViewRow(window, 'fake-v1').click();
+  await window.keyboard.press('Escape');
   await agentsViewRow(window, 'Compaction session').click();
   await expect(promptInput(window)).toBeEnabled();
   await agentsViewRow(window, 'Another session with a deliberately long title for tab overflow').click();
