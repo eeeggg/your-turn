@@ -6,6 +6,7 @@ test-results/
 *.tsbuildinfo
 *.vsix
 *.map
+*.jsonl
 .vscode-test/
 __pycache__/
 .DS_Store

@@ -61,6 +61,9 @@
 
 ## Environment and Release Safety
 
+- Follow [RELEASING.md](RELEASING.md) for branch, version, development-build,
+  release-candidate, and publication policy. Do not couple version changes to
+  dependency installation or infer publication authorization from a merge.
 - Use isolated automated editor instances through the supported test tooling.
   Follow [tests/AGENTS.md](tests/AGENTS.md) for isolation and cleanup requirements.
 - Packaging, version changes, installation, commits, tags, publishing, and pushing
