@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import { isValid, parseISO } from 'date-fns';
 import {
   _electron,
   test as base,
@@ -16,6 +17,7 @@ import { yourTurnContainerControl } from '@tests/ui/workbench';
 const root = resolve(__dirname, '../..');
 const windowSize = { width: 1400, height: 900 };
 const teardownWatchdogMs = 5000;
+const processOutputLimit = 20_000;
 
 async function duringTeardown<T>(signal: AbortSignal, action: () => Promise<T>): Promise<T> {
   signal.throwIfAborted();
@@ -44,6 +46,9 @@ interface Diagnostics {
   display: string | undefined;
   events: string[];
   extensionLogs: Record<string, string>;
+  timeline: { event: string; at: string; elapsedMs: number; phase: 'setup' | 'test' | 'cleanup'; code?: number | null; signal?: string | null }[];
+  stdout: { text: string; truncated: boolean };
+  stderr: { text: string; truncated: boolean };
   renderer?: {
     inner: { width: number; height: number };
     outer: { width: number; height: number };
@@ -75,7 +80,9 @@ async function vscodeLogs(profile: string): Promise<Record<string, string>> {
         await visit(child);
       } else if (entry.isFile() && entry.name.endsWith('.log')) {
         const name = relative(directory, child);
-        if (/^\d+\/main\.log$|\/renderer\.log$|\/exthost\/exthost\.log$|Your Turn\.log$/.test(name)) {
+        const parts = name.split(/[\\/]/);
+        const mainLog = parts.length === 2 && parts[1] === 'main.log' && isValid(parseISO(parts[0] ?? ''));
+        if (mainLog || /\/renderer\.log$|\/exthost\/exthost\.log$|Your Turn\.log$/.test(name)) {
           found.push(child);
         }
       }
@@ -110,6 +117,14 @@ async function captureFailure(
   diagnostics: Diagnostics,
   signal: AbortSignal,
 ): Promise<void> {
+  if (profile) {
+    try {
+      diagnostics.extensionLogs = await duringTeardown(signal, () => vscodeLogs(profile));
+    } catch (error) {
+      signal.throwIfAborted();
+      diagnostics.events.push(`Could not capture VS Code logs: ${errorText(error)}`);
+    }
+  }
   if (window && !window.isClosed()) {
     for (const [name, capture] of [
       ['screenshot', () => window.screenshot({ path: testInfo.outputPath('failure.png') })],
@@ -147,14 +162,6 @@ async function captureFailure(
     } catch (error) {
       signal.throwIfAborted();
       diagnostics.events.push(`Could not capture Electron window bounds: ${errorText(error)}`);
-    }
-  }
-  if (profile) {
-    try {
-      diagnostics.extensionLogs = await duringTeardown(signal, () => vscodeLogs(profile));
-    } catch (error) {
-      signal.throwIfAborted();
-      diagnostics.events.push(`Could not capture VS Code logs: ${errorText(error)}`);
     }
   }
 }
@@ -229,10 +236,24 @@ export const test = base.extend<UiFixtures>({
     let traceStarted = false;
     let originalFailure: unknown;
     let processClosed: Promise<void> | undefined;
+    let phase: 'setup' | 'test' | 'cleanup' = 'setup';
+    const started = performance.now();
     const diagnostics: Diagnostics = {
       display,
       events: [],
       extensionLogs: {},
+      timeline: [],
+      stdout: { text: '', truncated: false },
+      stderr: { text: '', truncated: false },
+    };
+    const record = (event: string, details: { code?: number | null; signal?: string | null } = {}) => {
+      diagnostics.timeline.push({ event, at: new Date().toISOString(), elapsedMs: performance.now() - started, phase, ...details });
+    };
+    const output = (stream: 'stdout' | 'stderr', chunk: Buffer | string) => {
+      const tail = diagnostics[stream];
+      const text = tail.text + chunk.toString();
+      tail.truncated ||= text.length > processOutputLimit;
+      tail.text = text.slice(-processOutputLimit);
     };
 
     try {
@@ -266,6 +287,7 @@ export const test = base.extend<UiFixtures>({
       }, undefined, 2));
 
       const contained = process.platform === 'linux';
+      record('launch started');
       application = await _electron.launch({
         executablePath: contained ? join(root, 'tests/ui/electron.sh') : executablePath,
         env: {
@@ -275,20 +297,29 @@ export const test = base.extend<UiFixtures>({
         },
         cwd: root,
         args: [
-        '--disable-updates',
+          '--disable-updates',
+          '--force-disable-user-env',
           '--log=debug',
           '--disable-workspace-trust',
           '--new-window',
           '--skip-release-notes',
           '--skip-welcome',
           `--user-data-dir=${profile}`,
+          `--shared-data-dir=${join(profile, 'shared-data')}`,
           `--extensions-dir=${extensions}`,
           `--extensionDevelopmentPath=${root}`,
           workspace,
         ],
       });
+      record('launch completed');
       const child = application.process();
       applicationProcess = child;
+      child.stdout?.on('data', (chunk: Buffer | string) => output('stdout', chunk));
+      child.stderr?.on('data', (chunk: Buffer | string) => output('stderr', chunk));
+      child.once('exit', (code, signal) => record('process exited', { code, signal }));
+      if (child.exitCode !== null || child.signalCode !== null) {
+        record('process exited', { code: child.exitCode, signal: child.signalCode });
+      }
       processClosed = new Promise<void>((resolveClosed) => {
         child.once('close', resolveClosed);
         if ((child.exitCode !== null || child.signalCode !== null) && child.stdout?.closed !== false && child.stderr?.closed !== false) {
@@ -296,6 +327,7 @@ export const test = base.extend<UiFixtures>({
         }
       });
       application.on('console', (message) => recordConsole('electron', message, diagnostics));
+      application.on('close', () => record('application closed'));
       try {
         await application.context().tracing.start({ screenshots: true, snapshots: true, sources: true });
         traceStarted = true;
@@ -304,19 +336,27 @@ export const test = base.extend<UiFixtures>({
       }
 
       window = await application.firstWindow();
+      record('first window obtained');
       window.on('console', (message) => recordConsole('renderer', message, diagnostics));
       window.on('pageerror', (error) => diagnostics.events.push(`[renderer:error] ${errorText(error)}`));
+      window.on('crash', () => record('renderer crashed'));
+      window.on('close', () => record('window closed'));
       await application.evaluate((electron, size) => {
         const { BrowserWindow } = electron as unknown as ElectronMain;
         BrowserWindow.getAllWindows()[0]?.setBounds({ x: 0, y: 0, ...size });
       }, windowSize);
 
       await yourTurnContainerControl(window).waitFor({ state: 'visible' });
+      record('workbench ready');
+      phase = 'test';
+      record('test body started');
       await use(window);
     } catch (error) {
       originalFailure = error;
       throw error;
     } finally {
+      phase = 'cleanup';
+      record('cleanup started');
       const failed = originalFailure !== undefined || testInfo.status !== testInfo.expectedStatus;
       let cleanupFailure: unknown;
       let forcedShutdown: Promise<void> | undefined;
@@ -408,12 +448,11 @@ export const test = base.extend<UiFixtures>({
           }
         }
       }
-      if (failed || cleanupFailure !== undefined) {
-        try {
-          await writeFile(testInfo.outputPath('diagnostics.json'), JSON.stringify(diagnostics, undefined, 2));
-        } catch (error) {
-          cleanupFailure ??= error;
-        }
+      record('cleanup completed');
+      try {
+        await writeFile(testInfo.outputPath('diagnostics.json'), JSON.stringify(diagnostics, undefined, 2));
+      } catch (error) {
+        cleanupFailure ??= error;
       }
       if (cleanupFailure !== undefined && originalFailure === undefined) {
         throw cleanupFailure instanceof Error ? cleanupFailure : new Error(errorText(cleanupFailure));

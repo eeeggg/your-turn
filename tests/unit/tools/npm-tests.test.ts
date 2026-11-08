@@ -44,8 +44,8 @@ process.exitCode = process.env.FAIL_COMMAND === command ? 7 : 0;
   }
   await writeFile(join(root, 'tools/vscode-test.mjs'), `
 import { appendFileSync } from 'node:fs';
-export async function prepareVSCode(root) {
-  appendFileSync(process.env.TRACE, JSON.stringify({ command: 'editor', args: [root], electron: process.env.ELECTRON_RUN_AS_NODE }) + '\\n');
+export async function prepareVSCode(root, options) {
+  appendFileSync(process.env.TRACE, JSON.stringify({ command: 'editor', args: [root, options], electron: process.env.ELECTRON_RUN_AS_NODE }) + '\\n');
   if (process.env.FAIL_COMMAND === 'editor') { process.exit(7); }
   if (process.env.INTERRUPT_EDITOR) {
     process.on('SIGTERM', () => process.exit(0));
@@ -394,7 +394,7 @@ it('prepares the editor once before UI workers and supplies its path to every re
   const result = await run('test:ui', ['--repeat', '3'], { ELECTRON_RUN_AS_NODE: '1', UI_VSCODE_EXECUTABLE: '/inherited-editor' });
   expect(result.code, result.output).toBe(0);
   expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor', 'playwright', 'playwright', 'playwright']);
-  expect(result.calls[4]).toEqual({ command: 'editor', args: [root] });
+  expect(result.calls[4]).toEqual({ command: 'editor', args: [root, { recordIdentity: true }] });
   expect(result.calls.slice(5).map(({ executable, electron }) => ({ executable, electron }))).toEqual([
     { executable: join(root, 'prepared-code'), electron: undefined },
     { executable: join(root, 'prepared-code'), electron: undefined },

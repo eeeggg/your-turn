@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
 import { existsSync, watch } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -22,6 +23,12 @@ interface WindowFixture {
     use: () => Promise<void>,
     info: { testId: string; status: string; expectedStatus: string; outputPath(name: string): string },
   ): Promise<void>;
+}
+
+interface RecordedDiagnostics {
+  timeline: { event: string; at: string; elapsedMs: number; phase: string; code?: number | null; signal?: string | null }[];
+  stdout: { text: string; truncated: boolean };
+  stderr: { text: string; truncated: boolean };
 }
 
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); vi.unstubAllEnvs(); });
@@ -121,6 +128,7 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
   expect(descendantPid).toMatch(/^\d+$/);
   expect((await readFile(`/proc/${descendantPid}/status`, 'utf8')).split('\n').find((line) => line.startsWith('NSpid:'))?.trim().split(/\s+/).at(-1)).toBe(innerPid);
   const paths: string[] = [];
+  const launchArguments: string[] = [];
   const events: string[] = [];
   let reportBlocked: () => void = () => {};
   const blocked = new Promise<void>((resolve) => { reportBlocked = resolve; });
@@ -131,8 +139,7 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
   const diagnosticError = new Error('diagnostic failure');
   const closeError = new Error('graceful close failed');
   const setupError = new Error('first window failed');
-  const page = {
-    on: () => {},
+  const page = Object.assign(new EventEmitter(), {
     isClosed: () => {
       events.push('diagnostics');
       if (options.diagnosticFailure) { throw diagnosticError; }
@@ -144,9 +151,8 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
     locator: () => ({ evaluate: async () => '<body></body>' }),
     evaluate: async () => ({}),
     getByRole: () => ({ waitFor: async () => {} }),
-  };
-  const application = {
-    on: () => {},
+  });
+  const application = Object.assign(new EventEmitter(), {
     process: () => {
       if (closed) { throw new Error('Electron application handle is disposed.'); }
       return child;
@@ -167,24 +173,37 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
       events.push('close');
       if (options.hang === 'close') { await waitForShutdown(); }
       if (options.closeFailure) { throw closeError; }
+      page.emit('close');
+      application.emit('close');
       await writeFile(stop, '');
       await exited;
     },
-  };
+  });
   vi.stubEnv('UI_VSCODE_EXECUTABLE', '/unused-vscode');
   boundary.download.mockRejectedValue(new Error('Editor downloads belong to the batch coordinator'));
   boundary.launch.mockImplementation(async (launch: { args: string[]; executablePath: string; env: Record<string, string> }) => {
     expect(launch.executablePath).toBe(resolve('tests/ui/electron.sh'));
     expect(launch.env['UI_EXECUTABLE']).toBe('/unused-vscode');
     expect(launch.args).toContain('--log=debug');
+    launchArguments.push(...launch.args);
     const target = launch.env['UI_STATUS'];
     expect(target).toBeDefined();
     if (target) { await writeFile(target, options.statusFailure ? 'invalid status' : await readFile(status)); }
     paths.push(...launch.args.filter((arg) => arg.startsWith('--user-data-dir=') || arg.startsWith('--extensions-dir=')).map((arg) => arg.slice(arg.indexOf('=') + 1)));
-    if (options.setupFailure) {
-      const logs = join(paths[0] ?? '', 'logs', '20261107', 'window1');
-      await mkdir(logs, { recursive: true });
-      await writeFile(join(logs, 'renderer.log'), 'Renderer debug context');
+    for (const [name, text] of Object.entries({
+      '20261108T015857/main.log': 'Main debug context',
+      '2026-11-08T01:58:57/main.log': 'Extended ISO context',
+      '20260230T015857/main.log': 'Invalid calendar date',
+      'not-a-date/main.log': 'Unrelated main log',
+      '20261108T015857/nested/main.log': 'Nested main log',
+      '20261108T015857/window1/renderer.log': 'Renderer debug context',
+      '20261108T015857/window1/exthost/exthost.log': 'Extension host context',
+      '20261108T015857/window1/output/Your Turn.log': 'Extension context',
+      '20261108T015857/unrelated.log': 'Unrelated log',
+    })) {
+      const path = join(paths[0] ?? '', 'logs', name);
+      await mkdir(join(path, '..'), { recursive: true });
+      await writeFile(path, text);
     }
     if (options.launchFailure) {
       if (child.pid) { process.kill(-child.pid, 'SIGKILL'); }
@@ -209,7 +228,7 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
       return false;
     }
   };
-  return { run, paths, events, diagnosticError, closeError, setupError, blocked, descendantRunning, directory, closed: () => closed };
+  return { run, paths, launchArguments, events, page, application, child, diagnosticError, closeError, setupError, blocked, descendantRunning, directory, closed: () => closed };
 }
 
 it('rejects an unprepared editor before launching a window', async () => {
@@ -234,6 +253,100 @@ it('cleans resources after successful close disposes the Electron application ha
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
 
+it('records startup and normal shutdown timing for a passing test', async () => {
+  const state = await fixture();
+  const before = Date.now();
+  await state.run(async () => {});
+  const after = Date.now();
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.timeline.map(({ event, phase }) => [event, phase])).toEqual([
+    ['launch started', 'setup'],
+    ['launch completed', 'setup'],
+    ['first window obtained', 'setup'],
+    ['workbench ready', 'setup'],
+    ['test body started', 'test'],
+    ['cleanup started', 'cleanup'],
+    ['window closed', 'cleanup'],
+    ['application closed', 'cleanup'],
+    ['process exited', 'cleanup'],
+    ['cleanup completed', 'cleanup'],
+  ]);
+  let previous = 0;
+  for (const entry of diagnostics.timeline) {
+    expect(Date.parse(entry.at)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(entry.at)).toBeLessThanOrEqual(after);
+    expect(entry.elapsedMs).toBeGreaterThanOrEqual(previous);
+    previous = entry.elapsedMs;
+  }
+  expect(diagnostics.timeline.find(({ event }) => event === 'process exited')).toMatchObject({ code: 0, signal: null });
+});
+
+it('distinguishes premature renderer failure from cleanup closure', async () => {
+  const state = await fixture();
+  const failure = new Error('renderer stopped responding');
+  await expect(state.run(async () => {
+    state.page.emit('crash');
+    state.page.emit('close');
+    state.application.emit('close');
+    throw failure;
+  })).rejects.toBe(failure);
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.timeline.filter(({ phase }) => phase === 'test').map(({ event }) => event)).toEqual([
+    'test body started', 'renderer crashed', 'window closed', 'application closed',
+  ]);
+  expect(diagnostics.timeline.filter(({ phase }) => phase === 'cleanup').map(({ event }) => event)).toContain('cleanup completed');
+});
+
+it('records a test-time process exit before cleanup closes its streams', async () => {
+  const state = await fixture();
+  await state.run(async () => {
+    state.child.emit('exit', 77, null);
+  });
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.timeline.filter(({ event }) => event === 'process exited')).toEqual([
+    expect.objectContaining({ phase: 'test', code: 77, signal: null }),
+  ]);
+  expect(state.closed()).toBe(true);
+});
+
+it('preserves separate bounded process-output tails through shutdown', async () => {
+  const state = await fixture();
+  await state.run(async () => {
+    state.child.stdout?.emit('data', 'discard stdout' + 'a'.repeat(12_500));
+    state.child.stdout?.emit('data', 'a'.repeat(12_500));
+    state.child.stderr?.emit('data', 'discard stderr' + 'b'.repeat(25_000));
+    state.application.once('close', () => {
+      state.child.stdout?.emit('data', Buffer.from('stdout shutdown'));
+      state.child.stderr?.emit('data', 'stderr shutdown');
+    });
+  });
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.stdout).toEqual({ text: 'a'.repeat(20_000 - 'stdout shutdown'.length) + 'stdout shutdown', truncated: true });
+  expect(diagnostics.stderr).toEqual({ text: 'b'.repeat(20_000 - 'stderr shutdown'.length) + 'stderr shutdown', truncated: true });
+});
+
+it('does not report readiness or test execution after first-window setup fails', async () => {
+  const state = await fixture({ setupFailure: true });
+  await expect(state.run(async () => { throw new Error('Unexpected test body'); })).rejects.toBe(state.setupError);
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.timeline.filter(({ phase }) => phase === 'setup').map(({ event }) => event)).toEqual(['launch started', 'launch completed']);
+  expect(diagnostics.timeline.some(({ phase }) => phase === 'test')).toBe(false);
+});
+
+it('disables shell probing and owns the application shared-data directory', async () => {
+  const state = await fixture();
+
+  await state.run(async () => {
+    expect(state.launchArguments).toContain('--force-disable-user-env');
+    expect(state.launchArguments).toContain(`--shared-data-dir=${join(state.paths[0] ?? '', 'shared-data')}`);
+    await mkdir(join(state.paths[0] ?? '', 'shared-data'), { recursive: true });
+    await writeFile(join(state.paths[0] ?? '', 'shared-data', 'owned'), 'test storage');
+  });
+
+  expect(state.closed()).toBe(true);
+  for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
+});
+
 it('preserves the test failure and cleans resources when diagnostics throw', async () => {
   const state = await fixture({ diagnosticFailure: true });
   const failure = new Error('test failed');
@@ -242,6 +355,8 @@ it('preserves the test failure and cleans resources when diagnostics throw', asy
 
   expect(state.events).toContain('close');
   expect(state.closed()).toBe(true);
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as { extensionLogs: Record<string, string> };
+  expect(diagnostics.extensionLogs['20261108T015857/main.log']).toBe('Main debug context');
   expect(state.paths).toHaveLength(2);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
@@ -273,7 +388,13 @@ it('cleans a launched process and temporary directories after fixture setup fail
 
   expect(state.closed()).toBe(true);
   const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as { extensionLogs: Record<string, string> };
-  expect(diagnostics.extensionLogs['20261107/window1/renderer.log']).toBe('Renderer debug context');
+  expect(diagnostics.extensionLogs).toEqual({
+    '20261108T015857/main.log': 'Main debug context',
+    '2026-11-08T01:58:57/main.log': 'Extended ISO context',
+    '20261108T015857/window1/renderer.log': 'Renderer debug context',
+    '20261108T015857/window1/exthost/exthost.log': 'Extension host context',
+    '20261108T015857/window1/output/Your Turn.log': 'Extension context',
+  });
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
 
@@ -363,6 +484,7 @@ it.each(['diagnostics', 'trace', 'close'] as const)('the teardown watchdog relea
   const failure = new Error('test failure before teardown');
   const result = expect(state.run(async () => { throw failure; })).rejects.toBe(failure);
   await state.blocked;
+  state.child.stdout?.emit('data', 'output while teardown is blocked');
 
   expect(state.closed()).toBe(false);
   for (const path of state.paths) { expect(existsSync(path)).toBe(true); }
@@ -370,6 +492,12 @@ it.each(['diagnostics', 'trace', 'close'] as const)('the teardown watchdog relea
   await result;
 
   expect(state.closed()).toBe(true);
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as { extensionLogs: Record<string, string> };
+  expect(diagnostics.extensionLogs['20261108T015857/main.log']).toBe('Main debug context');
+  const lifecycle = diagnostics as typeof diagnostics & RecordedDiagnostics;
+  expect(lifecycle.stdout).toEqual({ text: 'output while teardown is blocked', truncated: false });
+  expect(lifecycle.stderr).toEqual({ text: '', truncated: false });
+  expect(lifecycle.timeline.find(({ event }) => event === 'process exited')).toMatchObject({ phase: 'cleanup', code: 137, signal: null });
   expect(await state.descendantRunning()).toBe(false);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
 });
