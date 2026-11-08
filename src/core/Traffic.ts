@@ -66,7 +66,7 @@ export class TrafficBuffer {
 }
 
 const trafficBuffer = new TrafficBuffer();
-let captureEnabled = true;
+let captureEnabled = false;
 
 /** Enable or pause new captures without clearing records already retained. */
 export function setTrafficCaptureEnabled(enabled: boolean): void {

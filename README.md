@@ -118,13 +118,31 @@ feature.
 | `your-turn.agents` | `{}` | Named agent commands, arguments, and optional environment variables. |
 | `your-turn.review.presentation` | `diffEditor` | Native review diff editors, or `quickDiff` for inline review. |
 | `your-turn.autoApprovePermissions` | `ask` | Ask about agent permission requests, or automatically allow them with `allowAll`. |
-| `your-turn.includeActiveFile` | `true` | Attach the active editor file as a resource link to prompts. |
-| `your-turn.logTraffic` | `true` | Retain ACP traffic in memory for explicit export. |
+| `your-turn.includeActiveFile` | `false` | Opt in to attaching the active editor file as a resource link to prompts. |
+| `your-turn.activeFileExcludes` | `[]` | Glob patterns excluding files from automatic active-file attachment when enabled. |
+| `your-turn.logTraffic` | `false` | Opt in to retaining ACP traffic in memory for explicit export. |
 | `your-turn.showToolCallDiffs` | `false` | Show agent-reported diffs in the transcript, separately from the live Review Buffer. |
 
 Keep permission requests enabled unless you intend to allow the agent's actions
 automatically. Permission handling depends on what the agent asks; it does not
 isolate the agent from your machine.
+
+**Active-file exclusions** use an editable list in Settings, immediately after
+**Include Active File**. Patterns match at any directory depth, like VS Code
+Search: an initial `**/` is assumed. Add one pattern per item, for example:
+
+| Pattern | Excludes |
+| --- | --- |
+| `.env` | Files named `.env` at any depth. |
+| `.env.*` | Files such as `.env.local` and `.env.production` at any depth. |
+| `*.pem` | Any `.pem` file at any depth. |
+| `secrets/**` | Files inside any directory named `secrets`. |
+
+Configure `your-turn.activeFileExcludes` in user settings for a general list,
+or in workspace settings to replace it for that workspace. The list stays
+visible and saved when `your-turn.includeActiveFile` is off, and applies again
+when it is enabled. These exclusions affect only automatic attachment, not
+explicit attachments or the agent's independent file access.
 
 ## Diagnostics, sensitive information, and telemetry
 
@@ -132,7 +150,7 @@ isolate the agent from your machine.
 collection by VS Code, your agent, or services your agent uses.
 
 **Protocol traffic stays in memory unless you export it.** With
-`your-turn.logTraffic` enabled (the default), Your Turn retains recent ACP
+`your-turn.logTraffic` enabled (disabled by default), Your Turn retains recent ACP
 messages in a bounded in-memory buffer. The buffer does not survive a window
 reload or extension shutdown. Disabling the setting stops new capture but does
 not clear messages already retained.

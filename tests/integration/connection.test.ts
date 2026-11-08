@@ -6,7 +6,7 @@ import type { AcpDriver } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, type AgentProcess } from '@/core/AgentManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { clearTraffic, getTrafficJsonl, type TrafficDirection } from '@/core/Traffic';
+import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled, type TrafficDirection } from '@/core/Traffic';
 import { setLogSink } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
@@ -40,6 +40,7 @@ for (const version of [1, 2]) {
 
     suiteSetup(async () => {
       clearTraffic();
+      setTrafficCaptureEnabled(true);
       const config = vscode.workspace.getConfiguration('your-turn');
       originalAutoApprove = config.get<string>('autoApprovePermissions');
       await config.update('autoApprovePermissions', 'allowAll', vscode.ConfigurationTarget.Global);
@@ -97,6 +98,7 @@ for (const version of [1, 2]) {
         updates?.dispose();
         setLogSink(undefined);
         clearTraffic();
+        setTrafficCaptureEnabled(false);
         const config = vscode.workspace.getConfiguration('your-turn');
         await config.update('autoApprovePermissions', originalAutoApprove, vscode.ConfigurationTarget.Global);
       }

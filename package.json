@@ -632,12 +632,20 @@
         },
         "your-turn.includeActiveFile": {
           "type": "boolean",
-          "default": true,
+          "default": false,
+          "order": 1,
           "description": "Attach the currently active editor file to each prompt as a resource_link content block."
+        },
+        "your-turn.activeFileExcludes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "default": [],
+          "order": 2,
+          "markdownDescription": "Exclude matching files from automatic active-file attachment. Only applies when `#your-turn.includeActiveFile#` is enabled; turning it off retains this list.\n\nPatterns match at any directory depth, like VS Code Search (an initial `**/` is assumed). Examples: `.env` (that filename), `.env.*` (such as `.env.local`), `*.pem` (PEM files), `secrets/**` (files inside directories named secrets). Add one pattern per item."
         },
         "your-turn.logTraffic": {
           "type": "boolean",
-          "default": true,
+          "default": false,
           "description": "Capture ACP protocol traffic in memory for explicit JSONL export."
         },
         "your-turn.showToolCallDiffs": {
