@@ -1,0 +1,118 @@
+name: Publish Marketplace
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Approved GitHub Release tag (vX.Y.Z)
+        required: true
+        type: string
+      asset:
+        description: Exact approved VSIX asset filename
+        required: true
+        type: string
+      commit:
+        description: Approved full source commit SHA
+        required: true
+        type: string
+      sha256:
+        description: Approved VSIX SHA-256
+        required: true
+        type: string
+      channel:
+        description: Channel selected when the candidate was packaged
+        required: true
+        type: choice
+        options: [release, pre-release]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplace-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'eeeggg/your-turn' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: marketplace
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag }}
+      RELEASE_ASSET: ${{ inputs.asset }}
+      RELEASE_COMMIT: ${{ inputs.commit }}
+      RELEASE_SHA256: ${{ inputs.sha256 }}
+      RELEASE_CHANNEL: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Download named release candidate and corresponding source metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_ASSET" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*\.vsix$ ]]
+          [[ "$RELEASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RELEASE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          mkdir candidate
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > candidate/release.json
+          gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" > candidate/source.json
+          gh api "repos/$GITHUB_REPOSITORY/contents/package.json?ref=$RELEASE_COMMIT" --jq .content | base64 --decode > candidate/source-package.json
+          gh api "repos/$GITHUB_REPOSITORY/contents/package-lock.json?ref=$RELEASE_COMMIT" --jq .content | base64 --decode > candidate/source-lock.json
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$RELEASE_ASSET" --dir candidate
+      - name: Verify approved bytes, source, version, identity, and channel
+        working-directory: candidate
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, re, zipfile
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          tag, asset, commit, checksum, channel = [os.environ['RELEASE_' + name] for name in ('TAG', 'ASSET', 'COMMIT', 'SHA256', 'CHANNEL')]
+          require(os.environ['GITHUB_REPOSITORY'] == 'eeeggg/your-turn' and os.environ['GITHUB_REF'] == 'refs/heads/master', 'Publication requires this repository and master')
+          require(re.fullmatch(r'v\d+\.\d+\.\d+', tag) and re.fullmatch(r'[a-zA-Z0-9][a-zA-Z0-9._-]*\.vsix', asset), 'Invalid tag or asset')
+          require(re.fullmatch(r'[0-9a-f]{40}', commit) and re.fullmatch(r'[0-9a-f]{64}', checksum), 'Invalid source or checksum')
+          require(channel in ('release', 'pre-release'), 'Invalid channel')
+          version = tag[1:]
+          pre_release = channel == 'pre-release'
+          require(int(version.split('.')[1]) % 2 == int(pre_release), 'Version parity disagrees with channel')
+          release = json.loads(Path('release.json').read_text())
+          require(not release['draft'] and release['prerelease'] == pre_release and release['tag_name'] == tag, 'GitHub Release disagrees with requested channel or tag')
+          require(len([entry for entry in release['assets'] if entry['name'] == asset and entry['state'] == 'uploaded']) == 1, 'Release must contain exactly one matching uploaded asset')
+          require(json.loads(Path('source.json').read_text())['sha'] == commit, 'Tag does not identify approved source')
+          package = Path(asset)
+          require(hashlib.sha256(package.read_bytes()).hexdigest() == checksum, 'VSIX checksum mismatch')
+          with zipfile.ZipFile(package) as archive:
+              require(archive.testzip() is None, 'Invalid VSIX archive')
+              manifest = json.loads(archive.read('extension/package.json'))
+              require((manifest['publisher'], manifest['name'], manifest['version']) == ('eeeggg', 'your-turn', version), 'VSIX identity or version mismatch')
+              require(manifest == json.loads(Path('source-package.json').read_text()), 'VSIX manifest differs from approved source')
+              lock = json.loads(Path('source-lock.json').read_text())
+              require(lock['version'] == version and lock['packages']['']['version'] == version, 'Source lockfile version mismatch')
+              properties = ET.fromstring(archive.read('extension.vsixmanifest')).iter()
+              packaged_pre_release = any(element.attrib.get('Id') == 'Microsoft.VisualStudio.Code.PreRelease' and element.attrib.get('Value', '').lower() == 'true' for element in properties)
+              require(packaged_pre_release == pre_release, 'Packaged channel mismatch')
+              require(re.search(r'^## .*' + re.escape(version) + r'\b.*\d{4}-\d{2}-\d{2}', archive.read('extension/changelog.md').decode(), re.MULTILINE), 'Missing dated changelog entry')
+          print(f'Verified eeeggg.your-turn {version}: {commit}, {checksum}, {channel}')
+          PY
+      - run: npm ci
+      - name: Publish verified VSIX using Marketplace Trusted Publishing
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$RELEASE_SHA256" "candidate/$RELEASE_ASSET" | sha256sum --check --strict
+          npm exec --no -- vsce publish --oidc --packagePath "candidate/$RELEASE_ASSET"
