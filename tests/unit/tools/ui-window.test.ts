@@ -56,6 +56,9 @@ it('leaves the agent and awaits hover dismissal before selecting a listed sessio
           await hidden;
         } };
       }
+      if (role === 'main') {
+        return { hover: async () => { events.push('leave agent'); } };
+      }
       expect([role, options]).toEqual(['tree', { name: 'Agents', exact: true }]);
       return { getByRole: (role: string) => {
         expect(role).toBe('treeitem');

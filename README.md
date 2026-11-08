@@ -1,5 +1,7 @@
 # Your Turn
 
+[![CI](https://github.com/eeeggg/your-turn/actions/workflows/ci.yml/badge.svg)](https://github.com/eeeggg/your-turn/actions/workflows/ci.yml)
+
 Work with coding agents and understand their changes, one turn at a time.
 
 Your Turn brings agent sessions and code review together in VS Code — without

@@ -4,20 +4,15 @@ This document defines the project's branch, versioning, and release policy.
 
 ## Branches and contributions
 
-- `dev` integrates accepted contributions. Contribution branches open pull
-  requests against `dev`.
-- `master` receives release preparations through pull requests from `dev`.
-- Both branches require pull requests and the `Checks`, `Unit`, `Webview`, `Integration`,
+- `master` integrates accepted contributions and receives release preparations.
+  Contribution branches open pull requests against `master`.
+- `master` requires pull requests and the `Checks`, `Unit`, `Webview`, `Integration`,
   and `Desktop UI` checks. Force pushes and branch deletion are blocked,
   including for maintainers.
 - Either maintainer can merge contributions. Maintainers do not require each
   other's approval for their own pull requests; no approving review count is
   required. Outside contributors do not have merge access.
 - Workflow runs from outside collaborators require maintainer approval.
-
-Use a regular merge commit for `dev` to `master` promotions, not a squash or
-rebase merge, to preserve shared ancestry. Merge release-only changes and
-hotfixes from `master` back into `dev` through a pull request.
 
 ## Versions
 
@@ -59,8 +54,7 @@ those installations remain eligible for later pre-releases. Allocate versions
 with this ordering in mind, including regular-line hotfixes while a higher
 pre-release line is active.
 
-After a release, advance `dev` to the next intended version through a small
-pull request. A later decision to change that target is another reviewed change.
+After a release, continue development on `master` for the next intended version.
 
 ## Development builds
 
@@ -69,7 +63,7 @@ CI runs `Checks` independently and in parallel with the four test suites.
 The suites use explicit test-only npm commands while retaining their own build,
 editor preparation, and cleanup. Packaging requires all five jobs to succeed.
 
-Successful pushes to `dev` produce development VSIX artifacts after all four
+Successful pushes to `master` produce development VSIX artifacts after all four
 test suites and `Checks` pass. They are optional test builds, not published
 releases, and expire according to Actions artifact retention. Installation is
 never automatic.
@@ -78,10 +72,10 @@ Development packaging assigns a unique version only in CI's disposable
 checkout, updating both manifests through npm. The version format is
 `<target>-dev.<run>.<attempt>`. Each artifact must
 identify its full source commit and CI run, including the attempt, so it can be
-traced back to the code tested. Do not commit CI-generated versions back to `dev`.
+traced back to the code tested. Do not commit CI-generated versions back to `master`.
 
 Development builds are distributed only as Actions artifacts. They are not
-Marketplace pre-releases. Selected `dev` commits can become Marketplace
+Marketplace pre-releases. Selected `master` commits can become Marketplace
 pre-release candidates through explicit version/channel preparation and the
 same candidate verification and authorized publication process below.
 
@@ -89,15 +83,15 @@ same candidate verification and authorized publication process below.
 
 1. Settle the release scope, version, and user-facing entry in
    [CHANGELOG.md](CHANGELOG.md), including the release date before publication.
-2. Open a release pull request from `dev` into `master`. All five required CI checks
+2. Open a release pull request into `master`. All five required CI checks
    must pass. Either maintainer can accept the release preparation.
-3. After merging, CI packages the exact `master` commit as a release candidate,
-   using the plain release version. Its artifact identifies the source commit
+3. After merging, manually trigger the CI workflow dispatch on `master` to package
+   the exact commit as a release candidate. Its artifact identifies the source commit
    and CI run. A successful build does not publish anything.
    For a Marketplace pre-release, prepare an odd-minor numeric version through
-   a pull request into `dev`, then explicitly build a pre-release candidate
-   from that accepted commit without promoting it to `master`. The automatic
-   development artifact is not a substitute for this channel-specific package.
+   a pull request into `master`, then explicitly build a pre-release candidate
+   from that accepted commit. The automatic development artifact is not a substitute
+   for this channel-specific package.
 4. Verify the candidate's embedded version, changelog, license, notices, and
    recipient-accessible corresponding source. Complete applicable manual
    real-agent, Remote-SSH installation, and qualitative checks described in
