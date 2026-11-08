@@ -2,13 +2,13 @@ name: CI
 
 on:
   push:
-    branches: [dev, master]
+    branches: [master]
   pull_request:
-    branches: [dev, master]
+    branches: [master]
   workflow_dispatch:
     inputs:
       package_channel:
-        description: Candidate to build after all tests pass (pre-release requires dev; release requires master)
+        description: Candidate to build after all tests pass
         required: true
         type: choice
         options:
@@ -40,11 +40,8 @@ jobs:
     name: VSIX artifact
     needs: [checks, unit, webview, integration, ui]
     if: >-
-      (github.event_name == 'push' &&
-        (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/master')) ||
-      (github.event_name == 'workflow_dispatch' &&
-        ((github.ref == 'refs/heads/dev' && inputs.package_channel == 'pre-release') ||
-         (github.ref == 'refs/heads/master' && inputs.package_channel == 'release')))
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -58,12 +55,12 @@ jobs:
       - run: npm ci
       - name: Package selected channel
         env:
-          PACKAGE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.package_channel || (github.ref == 'refs/heads/dev' && 'development' || 'release') }}
+          PACKAGE_CHANNEL: ${{ github.event_name == 'workflow_dispatch' && inputs.package_channel || 'development' }}
         run: npm run package:ci -- "$PACKAGE_CHANNEL"
       - name: Upload VSIX and build identity
         uses: actions/upload-artifact@v7
         with:
-          name: your-turn-${{ github.event_name == 'workflow_dispatch' && inputs.package_channel || (github.ref == 'refs/heads/dev' && 'development' || 'release') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: your-turn-${{ github.event_name == 'workflow_dispatch' && inputs.package_channel || 'development' }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: test-results/packages/
           if-no-files-found: error
           retention-days: 14

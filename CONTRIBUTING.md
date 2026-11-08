@@ -38,7 +38,7 @@ Hosted CI currently verifies Linux. Reports from macOS and Windows are welcome.
 
 ## Pull requests and review
 
-Open contribution pull requests against `dev`. Explain the problem, the change, and how
+Open contribution pull requests against `master`. Explain the problem, the change, and how
 you verified it. Include exact commands, test scope, and any failures or checks
 you could not run.
 

@@ -18,7 +18,7 @@ const runAttempt = env['GITHUB_RUN_ATTEMPT'] ?? '';
 if (!/^[a-f0-9]{40}$/.test(commit) || ![runId, runNumber, runAttempt].every((value) => /^[1-9]\d*$/.test(value))) {
   throw new Error('Invalid source commit or CI run identity');
 }
-const expectedRef = channel === 'release' ? 'refs/heads/master' : 'refs/heads/dev';
+const expectedRef = 'refs/heads/master';
 if (env['GITHUB_REF'] !== expectedRef || !['push', 'workflow_dispatch'].includes(env['GITHUB_EVENT_NAME'] ?? '')) {
   throw new Error('Packaging requires a push or explicit dispatch on the channel branch');
 }

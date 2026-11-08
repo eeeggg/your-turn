@@ -33,7 +33,7 @@ writeFileSync(args[args.indexOf('--out') + 1], 'fixture VSIX');
   const commit = git('rev-parse', 'HEAD');
   const env = {
     ...process.env, CI: 'true', GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'push',
-    GITHUB_REF: 'refs/heads/dev', GITHUB_SHA: commit,
+    GITHUB_REF: 'refs/heads/master', GITHUB_SHA: commit,
     GITHUB_RUN_ID: '900', GITHUB_RUN_NUMBER: '100', GITHUB_RUN_ATTEMPT: '2',
     GITHUB_REPOSITORY: 'eeeggg/your-turn',
   };
@@ -71,7 +71,7 @@ it('assigns a development version through npm and records package identity and c
 
 it.each([
   ['release', '0.4.0', 'master', false],
-  ['pre-release', '0.5.0', 'dev', true],
+  ['pre-release', '0.5.0', 'master', true],
 ] as const)('packages a %s candidate without changing its numeric version', async (channel, version, branch, preRelease) => {
   const { root, run } = await fixture(version);
   const before = await readFile(join(root, 'package-lock.json'), 'utf8');
