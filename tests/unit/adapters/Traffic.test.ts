@@ -3,7 +3,7 @@ import { clearTraffic, captureTraffic, getTrafficJsonl, setTrafficCaptureEnabled
 
 const host = vi.hoisted(() => {
   let configurationChanged: ((event: { affectsConfiguration(section: string): boolean }) => void) | undefined;
-  const configuration = { logTraffic: true };
+  const configuration: { logTraffic: boolean | undefined } = { logTraffic: true };
   let affectedConfiguration = 'your-turn.logTraffic';
   const showSaveDialog = vi.fn<() => Promise<{ fsPath: string } | undefined>>();
   const writeFile = vi.fn(async (_uri: { fsPath: string }, _bytes: Uint8Array) => {});
@@ -15,7 +15,7 @@ const host = vi.hoisted(() => {
     writeFile,
     commands,
     workspaceFolders,
-    getConfiguration: vi.fn((section: string) => ({ get: (_key: string) => section === 'your-turn' ? configuration.logTraffic : true })),
+    getConfiguration: vi.fn((section: string) => ({ get: (_key: string, fallback?: boolean) => section === 'your-turn' ? configuration.logTraffic ?? fallback : fallback })),
     onDidChangeConfiguration: vi.fn((listener: typeof configurationChanged) => {
       configurationChanged = listener;
       return { dispose: () => { configurationChanged = undefined; } };
@@ -73,6 +73,26 @@ describe('ACP Traffic adapter', () => {
     captureTraffic('send', { id: 2 });
 
     expect(getTrafficJsonl()).toContain('"id":2');
+  });
+
+  it('does not capture traffic when no setting is available', () => {
+    host.configuration.logTraffic = undefined;
+    registerTrafficAdapter(subscriptions);
+
+    captureTraffic('send', { id: 1 });
+
+    expect(getTrafficJsonl()).toBe('');
+  });
+
+  it('disables capture and clears retained messages when disposed', () => {
+    registerTrafficAdapter(subscriptions);
+    captureTraffic('send', { id: 1 });
+    expect(getTrafficJsonl()).toContain('"id":1');
+
+    for (const subscription of subscriptions.splice(0)) { subscription.dispose(); }
+    captureTraffic('send', { id: 2 });
+
+    expect(getTrafficJsonl()).toBe('');
   });
 
   it('ignores configuration changes unrelated to traffic capture', () => {

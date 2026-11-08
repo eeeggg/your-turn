@@ -5,7 +5,7 @@ const EXPORT_COMMAND = 'your-turn.exportTraffic';
 
 /** Apply the user's capture setting. Existing records remain when capture is paused. */
 function syncTrafficCaptureSetting(): void {
-  setTrafficCaptureEnabled(vscode.workspace.getConfiguration('your-turn').get<boolean>('logTraffic', true));
+  setTrafficCaptureEnabled(vscode.workspace.getConfiguration('your-turn').get<boolean>('logTraffic', false));
 }
 
 /** Register explicit protocol-traffic export and its configuration listener. */
@@ -18,7 +18,7 @@ export function registerTrafficAdapter(subscriptions: vscode.Disposable[]): void
       }
     }),
     vscode.commands.registerCommand(EXPORT_COMMAND, exportTraffic),
-    { dispose: () => { setTrafficCaptureEnabled(true); clearTraffic(); } },
+    { dispose: () => { setTrafficCaptureEnabled(false); clearTraffic(); } },
   );
 }
 

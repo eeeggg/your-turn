@@ -79,11 +79,17 @@ export interface WorkspaceEnvironment extends SessionEnvironment {
 /** The document in the active editor, as a resource link for a prompt, unless the user turned that off. */
 export function activeFileLink(): ReturnType<SessionEnvironment['activeFileLink']> {
   const cfg = vscode.workspace.getConfiguration('your-turn');
-  if (!cfg.get<boolean>('includeActiveFile', true)) {
+  if (!cfg.get<boolean>('includeActiveFile', false)) {
     return undefined;
   }
   const editor = vscode.window.activeTextEditor ?? vscode.window.visibleTextEditors[0];
   if (!editor || editor.document.uri.scheme === 'output') {
+    return undefined;
+  }
+  const excludes = cfg.get<string[]>('activeFileExcludes', []);
+  if (excludes.some((pattern) => pattern.length > 0 && vscode.languages.match({
+    pattern: pattern.startsWith('**/') ? pattern : `**/${pattern}`,
+  }, editor.document) > 0)) {
     return undefined;
   }
   return {

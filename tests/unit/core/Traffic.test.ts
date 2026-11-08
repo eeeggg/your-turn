@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   captureTraffic,
   clearTraffic,
@@ -13,6 +13,15 @@ afterEach(() => {
 });
 
 describe('ACP Traffic buffer', () => {
+  it('does not capture messages before capture is explicitly enabled', async () => {
+    vi.resetModules();
+    const traffic = await import('@/core/Traffic');
+
+    traffic.captureTraffic('send', { id: 1 });
+
+    expect(traffic.getTrafficJsonl()).toBe('');
+  });
+
   it('captures each protocol message as a compact timestamped JSONL record', () => {
     const buffer = new TrafficBuffer(1_000, () => '2026-10-28T12:00:00.000Z');
 
