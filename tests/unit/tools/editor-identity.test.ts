@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, expect, it, onTestFinished, vi } from 'vitest';
 
@@ -11,7 +12,7 @@ const { prepareVSCode } = await import(resolve(import.meta.dirname, '../../../to
 afterEach(() => { vi.restoreAllMocks(); boundary.download.mockReset(); });
 
 async function editor(executable: string, app: string, product: object = { commit: '0123456789abcdef0123456789abcdef01234567' }) {
-  const root = await mkdtemp('/tmp/opencode/editor-identity-');
+  const root = await mkdtemp(join(tmpdir(), 'editor-identity-'));
   onTestFinished(async () => { await rm(root, { recursive: true, force: true }); });
   const installation = join(root, '.vscode-test', 'extracted-editor');
   const executablePath = join(installation, executable);
