@@ -172,5 +172,6 @@ jobs:
           path: |
             test-results/ui/
             test-results/ui-report/
+            test-results/ui-editor.json
           if-no-files-found: warn
           retention-days: 14

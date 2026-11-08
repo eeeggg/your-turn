@@ -237,7 +237,7 @@ async function prepareUiEditor() {
   console.log('Preparing the pinned UI editor before starting Playwright workers');
   let executablePath = '';
   const code = await run(process.execPath, ['--input-type=module', '-e',
-    `import { prepareVSCode } from ${JSON.stringify(pathToFileURL(join(root, 'tools/vscode-test.mjs')).href)}; process.send(await prepareVSCode(${JSON.stringify(root)})); process.disconnect();`,
+    `import { prepareVSCode } from ${JSON.stringify(pathToFileURL(join(root, 'tools/vscode-test.mjs')).href)}; process.send(await prepareVSCode(${JSON.stringify(root)}, { recordIdentity: true })); process.disconnect();`,
   ], false, (message) => { if (typeof message === 'string') { executablePath = message; } });
   if (code !== 0) { return code; }
   if (!executablePath) {
