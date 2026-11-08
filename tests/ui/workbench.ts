@@ -18,8 +18,8 @@ export function agentsViewRow(window: Page, label: string): Locator {
 }
 
 export async function selectListedSession(window: Page, label: string): Promise<void> {
-  // Leaving the row cancels delayed hovers too; Escape alone can precede their appearance.
-  await agentsViewTitle(window).hover();
+  // Moving off the row to a tooltip-free target cancels its hover without triggering the title's own.
+  await window.getByRole('main').hover();
   await window.getByRole('tooltip').waitFor({ state: 'hidden' });
   const session = agentsViewRow(window, label);
   await session.waitFor({ state: 'visible' });
