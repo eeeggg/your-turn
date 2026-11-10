@@ -11,5 +11,5 @@
       "@tools/*": ["../../tools/*"]
     }
   },
-  "include": ["./**/*.ts"]
+  "include": ["./**/*.ts", "../../src/core/diff/*.d.ts"]
 }

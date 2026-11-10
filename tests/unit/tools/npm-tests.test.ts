@@ -119,6 +119,13 @@ it('stops a test-only UI command when bundle preparation fails', async () => {
   expect(result.calls.map(({ command }) => command)).toEqual(['bundle']);
 });
 
+it.each(['test:ui', 'test:ui:only'])('%s requests desktop-only instrumentation during preparation', async (target) => {
+  const { run } = await fixture();
+  const result = await run(target, ['tests/ui/a.test.ts']);
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.find(({ command }) => command === 'bundle')?.args).toEqual(['--ui']);
+});
+
 it('prepares integration bundles once and translates source paths and job count', async () => {
   const { run } = await fixture();
   const result = await run('test:integration', ['tests/integration/b.test.ts', 'tests/integration/empty/c.test.ts', 'tests/integration/a.test.ts', '--repeat', '2', '--jobs', '4'], { ELECTRON_RUN_AS_NODE: '1' });

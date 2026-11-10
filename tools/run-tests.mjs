@@ -229,7 +229,7 @@ const lint = async () => {
   const code = await node('node_modules/eslint/bin/eslint.js', ['.', '--max-warnings', '0']);
   return code || await node('node_modules/knip/bin/knip.js');
 };
-const bundle = () => node('esbuild.mjs');
+const bundle = () => node('esbuild.mjs', settings.mode === 'ui' ? ['--ui'] : []);
 /** @param {string[]} args */
 const vitest = (args) => node('node_modules/vitest/vitest.mjs', ['run', ...args]);
 

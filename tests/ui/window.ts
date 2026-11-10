@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
+import { listenControl } from '@tests/ui/instrumentation/ControlChannel';
 import { isValid, parseISO } from 'date-fns';
 import {
   _electron,
@@ -15,6 +16,7 @@ import {
 import { yourTurnContainerControl } from '@tests/ui/workbench';
 
 const root = resolve(__dirname, '../..');
+const extensionPath = join(root, 'test-results/ui-extension');
 const windowSize = { width: 1400, height: 900 };
 const teardownWatchdogMs = 5000;
 const processOutputLimit = 20_000;
@@ -37,6 +39,12 @@ interface UiFixtures {
   compaction: boolean;
   preSessionQuestion: boolean;
   authenticationQuestion: boolean;
+  controlledTreeRefresh: boolean;
+  controlledReviewPresentation: boolean;
+  controlledNativeDiff: boolean;
+  nativeDiffControl: UiFixtures['reviewPresentationControl'];
+  reviewPresentationControl: { port: number; request(command: string, response: string): Promise<void>; close(): Promise<void> } | undefined;
+  treeRefresh: { port: number; hold(): Promise<void>; release(): Promise<void>; close(): Promise<void> } | undefined;
   workspace: string;
   window: Page;
   display: string | undefined;
@@ -175,6 +183,28 @@ export const test = base.extend<UiFixtures>({
   compaction: [false, { option: true }],
   preSessionQuestion: [false, { option: true }],
   authenticationQuestion: [false, { option: true }],
+  controlledTreeRefresh: [false, { option: true }],
+  controlledReviewPresentation: [false, { option: true }],
+  controlledNativeDiff: [false, { option: true }],
+  nativeDiffControl: async ({ controlledNativeDiff }, use) => {
+    if (!controlledNativeDiff) { await use(undefined); return; }
+    const control = await listenControl();
+    try { await use(control); } finally { await control.close(); }
+  },
+  reviewPresentationControl: async ({ controlledReviewPresentation }, use) => {
+    if (!controlledReviewPresentation) { await use(undefined); return; }
+    const control = await listenControl();
+    try { await use(control); } finally { await control.close(); }
+  },
+  treeRefresh: async ({ controlledTreeRefresh }, use) => {
+    if (!controlledTreeRefresh) { await use(undefined); return; }
+    const control = await listenControl();
+    try {
+      await use({ port: control.port, hold: () => control.request('hold', 'pending'), release: () => control.request('release', 'settled'), close: () => control.close() });
+    } finally {
+      await control.close();
+    }
+  },
   display: async ({}, use) => {
     if (process.platform !== 'linux') { await use(process.env['DISPLAY']); return; }
     const server = spawn('Xvfb', ['-displayfd', '1', '-screen', '0', '1600x1000x24', '-nolisten', 'tcp'], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -225,9 +255,23 @@ export const test = base.extend<UiFixtures>({
     }
   },
 
-  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, display }, use, testInfo) => {
+  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, display, treeRefresh, reviewPresentationControl, nativeDiffControl }, use, testInfo) => {
+    const closeControls = async () => { await Promise.all([treeRefresh?.close(), reviewPresentationControl?.close(), nativeDiffControl?.close()]); };
     const executablePath = process.env['UI_VSCODE_EXECUTABLE'];
-    if (!executablePath) { throw new Error('UI editor is not prepared; use npm run test:ui'); }
+    if (!executablePath) {
+      await closeControls();
+      throw new Error('UI editor is not prepared; use npm run test:ui');
+    }
+    try {
+      const manifest = JSON.parse(await readFile(join(extensionPath, 'package.json'), 'utf8')) as Record<string, unknown>;
+      if (manifest['name'] !== 'your-turn' || manifest['publisher'] !== 'eeeggg'
+        || manifest['main'] !== './dist/extension.js' || manifest['yourTurnDesktopTest'] !== true) {
+        throw new Error('Invalid desktop artifact identity');
+      }
+    } catch (cause) {
+      await closeControls();
+      throw new Error('Desktop extension artifact is not prepared; use npm run test:ui', { cause });
+    }
     let application: ElectronApplication | undefined;
     let applicationProcess: ChildProcess | undefined;
     let profile: string | undefined;
@@ -273,7 +317,7 @@ export const test = base.extend<UiFixtures>({
         'your-turn.agents': {
           [`fake-${agentVersion}`]: {
             command: process.execPath,
-            args: [join(root, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion}.js`)],
+            args: [join(extensionPath, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion}.js`)],
             env: {
               ACP_TEST_SESSION_ID: `ui-${testInfo.testId}`,
               ELECTRON_RUN_AS_NODE: '1',
@@ -292,6 +336,9 @@ export const test = base.extend<UiFixtures>({
         executablePath: contained ? join(root, 'tests/ui/electron.sh') : executablePath,
         env: {
           ...process.env,
+          UI_TREE_REFRESH_PORT: treeRefresh ? String(treeRefresh.port) : '',
+          UI_REVIEW_PRESENTATION_PORT: reviewPresentationControl ? String(reviewPresentationControl.port) : '',
+          UI_NATIVE_DIFF_PORT: nativeDiffControl ? String(nativeDiffControl.port) : '',
           ...(display ? { DISPLAY: display } : {}),
           ...(contained ? { UI_EXECUTABLE: executablePath, UI_STATUS: join(profile, 'namespace.jsonl') } : {}),
         },
@@ -307,7 +354,7 @@ export const test = base.extend<UiFixtures>({
           `--user-data-dir=${profile}`,
           `--shared-data-dir=${join(profile, 'shared-data')}`,
           `--extensions-dir=${extensions}`,
-          `--extensionDevelopmentPath=${root}`,
+          `--extensionDevelopmentPath=${extensionPath}`,
           workspace,
         ],
       });
@@ -362,6 +409,7 @@ export const test = base.extend<UiFixtures>({
       let forcedShutdown: Promise<void> | undefined;
       const teardown = new AbortController();
       const forceShutdown = () => {
+        void closeControls();
         const child = applicationProcess;
         if (forcedShutdown || !child) { return; }
         forcedShutdown = (async () => {
@@ -421,6 +469,7 @@ export const test = base.extend<UiFixtures>({
         }
       } finally {
         try {
+          await closeControls();
           if (application) {
             const running = application;
             try {

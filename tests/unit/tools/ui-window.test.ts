@@ -8,8 +8,16 @@ import { join, resolve } from 'node:path';
 import { afterEach, assert, expect, it, onTestFinished, vi } from 'vitest';
 import type { Page } from '@playwright/test';
 import { selectListedSession } from '@tests/ui/workbench';
+import { listenControl } from '@tests/ui/instrumentation/ControlChannel';
 
-const boundary = vi.hoisted(() => ({ launch: vi.fn(), download: vi.fn() }));
+const boundary = vi.hoisted(() => ({ launch: vi.fn(), download: vi.fn(), manifest: vi.fn() }));
+vi.mock('node:fs/promises', async (original) => {
+  const fs = await original<typeof import('node:fs/promises')>();
+  return { ...fs, readFile: (...args: Parameters<typeof fs.readFile>) => {
+    if (args[0] === resolve('test-results/ui-extension/package.json')) { return boundary.manifest() as Promise<string>; }
+    return fs.readFile(...args);
+  } };
+});
 vi.mock('@vscode/test-electron', () => ({ downloadAndUnzipVSCode: boundary.download }));
 vi.mock('@playwright/test', () => ({
   _electron: { launch: boundary.launch },
@@ -19,7 +27,7 @@ vi.mock('@playwright/test', () => ({
 
 interface WindowFixture {
   window(
-    input: { workspace: string; reviewPresentation: undefined; gitRepository: boolean; display: undefined },
+    input: { workspace: string; reviewPresentation: undefined; gitRepository: boolean; display: undefined; treeRefresh?: { port: number; close(): Promise<void> } },
     use: () => Promise<void>,
     info: { testId: string; status: string; expectedStatus: string; outputPath(name: string): string },
   ): Promise<void>;
@@ -83,6 +91,7 @@ it('leaves the agent and awaits hover dismissal before selecting a listed sessio
 });
 
 async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: boolean; setupFailure?: boolean; statusFailure?: boolean; launchFailure?: boolean; detachedDescendant?: boolean; hang?: 'diagnostics' | 'trace' | 'close' } = {}) {
+  boundary.manifest.mockResolvedValue(JSON.stringify({ name: 'your-turn', publisher: 'eeeggg', main: './dist/extension.js', yourTurnDesktopTest: true }));
   const directory = await mkdtemp(join(tmpdir(), 'ui-cleanup-test-'));
   onTestFinished(async () => { await rm(directory, { recursive: true, force: true }); });
   const status = join(directory, 'namespace.jsonl');
@@ -214,8 +223,8 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
   });
   const { test } = await import('@tests/ui/window');
   const window = (test as unknown as WindowFixture).window;
-  const run = (use: () => Promise<void>) => window(
-    { workspace: directory, reviewPresentation: undefined, gitRepository: false, display: undefined },
+  const run = (use: () => Promise<void>, treeRefresh?: { port: number; close(): Promise<void> }) => window(
+    { workspace: directory, reviewPresentation: undefined, gitRepository: false, display: undefined, ...(treeRefresh ? { treeRefresh } : {}) },
     use,
     { testId: 'owned-cleanup', status: 'passed', expectedStatus: 'passed', outputPath: (name) => join(directory, name) },
   );
@@ -250,7 +259,43 @@ it('cleans resources after successful close disposes the Electron application ha
   expect(state.closed()).toBe(true);
   expect(await state.descendantRunning()).toBe(false);
   expect(state.paths).toHaveLength(2);
+  expect(state.launchArguments).toContain(`--extensionDevelopmentPath=${resolve('test-results/ui-extension')}`);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
+});
+
+it.each([false, true])('window owner closes scheduling endpoints before application close (setup failure: %s)', async (setupFailure) => {
+  const state = await fixture({ setupFailure });
+  const control = await listenControl();
+  onTestFinished(() => control.close());
+  const pending = expect(control.request('hold', 'pending')).rejects.toThrow(/closed/);
+  const original = state.application.close;
+  state.application.close = async () => {
+    await expect(control.request('late', 'unused')).rejects.toThrow(/closed/);
+    await original();
+  };
+  const run = state.run(async () => {}, control);
+  if (setupFailure) { await expect(run).rejects.toBe(state.setupError); }
+  else { await run; }
+  await pending;
+  expect(state.closed()).toBe(true);
+});
+
+it.each([
+  undefined,
+  { name: 'your-turn', publisher: 'eeeggg', main: './dist/extension.js' },
+  { name: 'your-turn', publisher: 'eeeggg', main: './ordinary.js', yourTurnDesktopTest: true },
+  { name: 'other-extension', publisher: 'eeeggg', main: './dist/extension.js', yourTurnDesktopTest: true },
+])('rejects a missing or wrong desktop artifact before launching (%j)', async (manifest) => {
+  vi.stubEnv('UI_VSCODE_EXECUTABLE', '/unused-vscode');
+  if (manifest) { boundary.manifest.mockResolvedValue(JSON.stringify(manifest)); }
+  else { boundary.manifest.mockRejectedValue(new Error('missing manifest')); }
+  const { test } = await import('@tests/ui/window');
+  await expect((test as unknown as WindowFixture).window(
+    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined },
+    async () => { throw new Error('Invalid artifact reached the test body'); },
+    { testId: 'artifact', status: 'passed', expectedStatus: 'passed', outputPath: (name) => name },
+  )).rejects.toThrow('Desktop extension artifact is not prepared; use npm run test:ui');
+  expect(boundary.launch).not.toHaveBeenCalled();
 });
 
 it('records startup and normal shutdown timing for a passing test', async () => {

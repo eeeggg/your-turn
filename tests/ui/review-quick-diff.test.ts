@@ -2,7 +2,12 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   yourTurnContainerControl,
+  agentsViewRow,
+  connectAgentAction,
   editorTab,
+  editorSelection,
+  plainFileEditor,
+  plainFileInput,
   promptInput,
   quickInput,
   quickInputRow,
@@ -12,6 +17,42 @@ import {
 import { expect, test } from '@tests/ui/window';
 
 test.use({ reviewPresentation: 'quickDiff' });
+
+test.describe('superseded presentation', () => {
+  test.use({ controlledReviewPresentation: true });
+  test('an older quick-diff continuation does not move the cursor after leaving and returning to its tab', async ({ window, workspace, reviewPresentationControl }, testInfo) => {
+    if (!reviewPresentationControl) { throw new Error('Presentation control is not enabled'); }
+    await Promise.all(['a.ts', 'b.ts'].map((name) => writeFile(join(workspace, name), 'one\n2\n3\n4\n5\n6\n7\n8\n9\n10\nbefore\n')));
+    await openFile(window, 'a.ts');
+    await openFile(window, 'b.ts');
+    await connectFakeAgent(window);
+    await expect(promptInput(window)).toBeEnabled();
+    await promptInput(window).fill(`review-open ${workspace}`);
+    await promptInput(window).press('Enter');
+    await expect(reviewQuickDiff(window, 'a.ts')).toBeVisible();
+    await editorTab(window, 'b.ts').click();
+    await expect(reviewQuickDiff(window, 'b.ts')).toBeVisible();
+    await reviewPresentationControl.request('arm', 'armed');
+    await editorTab(window, 'a.ts').click();
+    await reviewPresentationControl.request('pending', 'pending');
+    try {
+      await editorTab(window, 'b.ts').click();
+      await expect(reviewQuickDiff(window, 'b.ts')).toBeVisible();
+      await editorTab(window, 'a.ts').click();
+      await expect(reviewQuickDiff(window, 'a.ts')).toBeVisible();
+      await plainFileInput(window).press('Control+Home');
+      await expect(editorSelection(window)).toHaveText('Ln 1, Col 1');
+    } finally {
+      await reviewPresentationControl.request('release', 'settled');
+    }
+    await expect(editorTab(window, 'a.ts')).toHaveClass(/active/);
+    await expect(reviewQuickDiff(window, 'a.ts')).toBeVisible();
+    await expect(editorSelection(window)).toHaveText('Ln 1, Col 1');
+    await window.screenshot({ path: testInfo.outputPath('review-quick-diff-superseded.png') });
+    await window.keyboard.type('typed-in-a');
+    await expect(plainFileEditor(window)).toContainText('typed-in-a');
+  });
+});
 
 async function openFile(window: Parameters<typeof editorTab>[0], name: string): Promise<void> {
   await window.keyboard.press('Control+P');
@@ -23,9 +64,9 @@ async function openFile(window: Parameters<typeof editorTab>[0], name: string): 
 
 async function connectFakeAgent(window: Parameters<typeof editorTab>[0]): Promise<void> {
   await yourTurnContainerControl(window).click();
-  const agent = window.getByRole('treeitem', { name: /fake-v1/ });
+  const agent = agentsViewRow(window, 'fake-v1');
   await agent.hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await connectAgentAction(window).click();
 }
 
 test("a completed turn preserves the already-open reviewed file's quick diff", async ({ window, workspace }, testInfo) => {

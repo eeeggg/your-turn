@@ -733,6 +733,8 @@
   "knip": {
     "entry": [
       ".vscode-test.mjs",
+      "src/extension.ts",
+      "tests/ui/instrumentation/*.ts",
       "tools/run-integration.mjs",
       "tools/vscode-test.mjs"
     ],
