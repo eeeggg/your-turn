@@ -2,7 +2,14 @@ import * as assert from 'assert';
 import { suite, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import { SessionTreeProvider } from '@/adapters/SessionTreeProvider';
+import { createWorkspaceEnvironment } from '@/adapters/WorkspaceEnvironment';
+import { ConnectionManager } from '@/core/acp/ConnectionManager';
+import { AgentManager } from '@/core/AgentManager';
 import { SessionReferences, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
+import { WorkspaceState } from '@/core/PersistedState';
+import { SessionList, type AgentSessions } from '@/core/SessionList';
+import { SessionManager } from '@/core/SessionManager';
+import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { cleanup } from '@tests/integration/cleanup';
 
 function memoryStore(): KeyValueStore {
@@ -44,6 +51,51 @@ suite('The Agents view', () => {
   }
 
   const shown = (item: vscode.TreeItem) => ({ label: item.label, description: item.description, collapsible: item.collapsibleState, command: item.command });
+
+  test('session-history updates preserve agent targets while child loading is pending', async () => {
+    const references = new SessionReferences(memoryStore());
+    const workspace = new WorkspaceState(memoryStore());
+    const environment = createWorkspaceEnvironment(workspace);
+    const updates = new SessionUpdateHandler();
+    const manager = new SessionManager(
+      new AgentManager(),
+      new ConnectionManager(updates, '0.0.0-test', () => { throw new Error('No agent should start for a history update'); }),
+      environment,
+      { chooseAuthMethod: async () => undefined },
+    );
+    owned.push(() => manager.dispose(), () => updates.dispose());
+    let resolveChildren!: (sessions: AgentSessions) => void;
+    const children = new Promise<AgentSessions>((resolve) => { resolveChildren = resolve; });
+    class PendingSessionList extends SessionList {
+      override sessionsOf(): Promise<AgentSessions> { return children; }
+    }
+    const list = new PendingSessionList(manager, references, () => ['Claude', 'Codex'], () => '/home/me/work', () => ({ uri: THIS_WORKSPACE, host: LOCAL }));
+    const provider = new SessionTreeProvider(list, references, () => THIS_WORKSPACE);
+    owned.push(() => provider.dispose(), () => list.dispose());
+    const roots = await provider.getChildren();
+    const selected = roots[0];
+    assert.ok(selected && 'agentName' in selected);
+    const pending = provider.getChildren(selected);
+    owned.push(async () => {
+      resolveChildren({ kind: 'unsupported' });
+      await pending;
+    });
+    const changes: unknown[] = [];
+    const subscription = provider.onDidChangeTreeData((element) => { changes.push(element); });
+    owned.push(() => subscription.dispose());
+
+    await references.used(address(THIS_WORKSPACE, 'Claude', 'context-menu-history'));
+
+    assert.ok(changes.length > 0, 'history changes refresh the visible sessions');
+    assert.ok(changes.every((element) => element !== undefined && element !== null), 'session-history changes must not invalidate the entire tree');
+    const refreshed = await provider.getChildren();
+    assert.strictEqual(refreshed[0], roots[0], 'the selected agent retains its command-argument identity');
+    assert.strictEqual(refreshed[1], roots[1], 'an unrelated agent retains its command-argument identity');
+    assert.strictEqual(selected.agentName, 'Claude', 'the pending refresh preserves the explicit command target');
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-without-session');
+    resolveChildren({ kind: 'unsupported' });
+    assert.deepStrictEqual((await pending).map((item) => provider.getTreeItem(item).contextValue), ['session-info-unsupported']);
+  });
 
   test("lists other workspaces, the configurations their sessions were used through, and those sessions", async () => {
     const { provider, references } = agentsView();

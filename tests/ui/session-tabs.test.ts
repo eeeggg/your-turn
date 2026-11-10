@@ -3,6 +3,7 @@ import {
   agentsViewRow,
   chatViewTitle,
   promptInput,
+  quickInput,
   selectListedSession,
   sessionTabs
 } from '@tests/ui/workbench';
@@ -10,12 +11,43 @@ import { expect, test } from '@tests/ui/window';
 
 test.use({ listsSessions: true, compaction: true });
 
+test.describe('context-menu refresh boundary', () => {
+  test.use({ controlledTreeRefresh: true });
+
+  test('New Session retains its menu target while the Agents tree refresh is pending', async ({ window, treeRefresh }) => {
+    if (!treeRefresh) { throw new Error('Controlled tree refresh is not enabled'); }
+    await yourTurnContainerControl(window).click();
+    const agent = agentsViewRow(window, 'fake-v1');
+    await agent.click();
+    await expect(agentsViewRow(window, 'Compaction session')).toBeVisible();
+    await expect(promptInput(window)).toBeDisabled();
+    await agent.click({ button: 'right' });
+    const newSession = window.getByRole('menuitem', { name: 'Your Turn: New Session', exact: true });
+    await newSession.focus();
+    await newSession.press('Home');
+    await expect(newSession).toBeFocused();
+    await treeRefresh.hold();
+    try {
+      await newSession.press('Enter');
+      await expect(newSession).toBeHidden();
+      await expect(promptInput(window)).toBeEnabled();
+      await expect(quickInput(window)).toBeHidden();
+      await expect(sessionTabs(window).getByRole('tab')).toHaveCount(1);
+      await expect(chatViewTitle(window)).toHaveText('Chat FakeAgent');
+    } finally {
+      await treeRefresh.release();
+    }
+    await expect(agentsViewRow(window, 'Compaction session')).toBeVisible();
+  });
+});
+
 for (const hoverState of ['visible', 'unawaited'] as const) {
   test(`a listed session opens after leaving an agent with ${hoverState === 'visible' ? 'a visible' : 'an unawaited'} hover`, async ({ window }) => {
     await yourTurnContainerControl(window).click();
     const agent = agentsViewRow(window, 'fake-v1');
     await agent.click();
     await expect(agentsViewRow(window, 'Compaction session')).toBeVisible();
+    await yourTurnContainerControl(window).hover();
     await agent.hover();
     if (hoverState === 'visible') {
       await expect(window.getByRole('tooltip')).toBeVisible();

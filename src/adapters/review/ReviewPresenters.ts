@@ -68,10 +68,12 @@ async function quickDiffStarts(editor: vscode.TextEditor, most: number, current:
 
 type Execute = (command: string, ...args: unknown[]) => Thenable<unknown>;
 type Pause = (ms: number, signal: AbortSignal) => Promise<void>;
+type ShowTextDocument = (uri: vscode.Uri, options: vscode.TextDocumentShowOptions) => Thenable<vscode.TextEditor>;
 
 export function createReviewEditors(
   execute: Execute = (command, ...args) => vscode.commands.executeCommand(command, ...args),
   pause: Pause = (ms, signal) => delay(ms, undefined, { signal }),
+  showTextDocument: ShowTextDocument = (uri, options) => vscode.window.showTextDocument(uri, options),
 ): ReviewEditors & { dispose(): Promise<void> } {
   let shows = 0;
   let latestShow = Promise.resolve();
@@ -101,7 +103,7 @@ export function createReviewEditors(
     const current = () => !disposed && own === shows && activePath() === path;
     const shown = (async () => {
       try {
-        const editor = await vscode.window.showTextDocument(vscode.Uri.file(path), { preview: false, preserveFocus: false });
+        const editor = await showTextDocument(vscode.Uri.file(path), { preview: false, preserveFocus: false });
         if (!current()) { return; }
         if (viewShown(path)) { await execute('closeQuickDiff'); }
         if (!current()) { return; }

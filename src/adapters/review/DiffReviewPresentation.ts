@@ -48,12 +48,12 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
   private disposed = false;
   private disposal: Promise<void> | undefined;
   private readonly reviewListener = () => this.changed();
-  private readonly editors = createReviewEditors();
 
   constructor(
     private readonly reviews: Reviews,
     private readonly openDiff: OpenDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args),
     private readonly closeTabs: (tabs: readonly vscode.Tab[]) => Thenable<boolean> = (tabs) => vscode.window.tabGroups.close(tabs, true),
+    private readonly editors: ReturnType<typeof createReviewEditors> = createReviewEditors(),
   ) {
     this.review = reviews.shown();
     this.position.name = 'Current Change';

@@ -13,11 +13,16 @@ import type { AgentSessions, SessionList, SessionRow } from '@/core/SessionList'
 class AgentTreeItem extends vscode.TreeItem {
   constructor(
     public readonly agentName: string,
-    public readonly hasSession: boolean,
+    hasSession: boolean,
     collapsibleState: vscode.TreeItemCollapsibleState,
   ) {
     super(agentName, collapsibleState);
+    this.id = `agent:${agentName}`;
+    this.update(hasSession, collapsibleState);
+  }
 
+  update(hasSession: boolean, collapsibleState: vscode.TreeItemCollapsibleState): void {
+    this.collapsibleState = collapsibleState;
     if (hasSession) {
       this.contextValue = 'agent-with-session';
       this.iconPath = new vscode.ThemeIcon(
@@ -30,11 +35,12 @@ class AgentTreeItem extends vscode.TreeItem {
       this.contextValue = 'agent-without-session';
       this.iconPath = new vscode.ThemeIcon('circle-outline');
       this.description = '';
+      delete this.command;
     }
 
     this.tooltip = hasSession
-      ? `${agentName} — in session\nClick to open the chat view`
-      : `${agentName} — no session\nUse the plug icon to connect`;
+      ? `${this.agentName} — in session\nClick to open the chat view`
+      : `${this.agentName} — no session\nUse the plug icon to connect`;
   }
 }
 
@@ -168,10 +174,11 @@ export type AgentsViewMode = 'agents' | 'otherWorkspaces';
  * the session references other than this window's. A window where the extension is unavailable has no agents.
  */
 export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
-  private readonly changes = new vscode.EventEmitter<void>();
+  private readonly changes = new vscode.EventEmitter<TreeNode[] | undefined>();
   readonly onDidChangeTreeData = this.changes.event;
-  private readonly redraw = () => this.changes.fire();
-  private readonly agentsChanged = () => { if (this.mode === 'agents') { this.redraw(); } };
+  private readonly redraw = () => this.changes.fire(undefined);
+  private readonly agentRoots = new Map<string, AgentTreeItem>();
+  private readonly agentsChanged = () => { if (this.mode === 'agents') { this.refreshAgents(); } };
   private readonly referencesChanged = () => { if (this.mode === 'otherWorkspaces') { this.redraw(); } };
   private mode: AgentsViewMode = 'agents';
 
@@ -190,7 +197,11 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   refresh(): void {
-    this.redraw();
+    if (this.mode === 'agents') {
+      this.refreshAgents();
+    } else {
+      this.redraw();
+    }
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -220,11 +231,34 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
   }
 
   private agents(): AgentTreeItem[] {
-    return (this.sessionList?.agents() ?? []).map((agent) => new AgentTreeItem(
-      agent.name,
-      agent.hasSession,
-      agent.expandable ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None,
-    ));
+    const agents = this.sessionList?.agents() ?? [];
+    const names = new Set(agents.map((agent) => agent.name));
+    for (const name of this.agentRoots.keys()) {
+      if (!names.has(name)) { this.agentRoots.delete(name); }
+    }
+    return agents.map((agent) => {
+      const collapsible = agent.expandable ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
+      let root = this.agentRoots.get(agent.name);
+      if (root) {
+        root.update(agent.hasSession, collapsible);
+      } else {
+        root = new AgentTreeItem(agent.name, agent.hasSession, collapsible);
+        this.agentRoots.set(agent.name, root);
+      }
+      return root;
+    });
+  }
+
+  private refreshAgents(): void {
+    const previous = [...this.agentRoots.keys()];
+    const roots = this.agents();
+    const sameRoots = roots.length === previous.length && roots.every((root, index) => root.agentName === previous[index]);
+    // Refreshing a root's children keeps its context-menu argument registered in VS Code.
+    if (sameRoots) {
+      if (roots.length > 0) { this.changes.fire(roots); }
+    } else {
+      this.redraw();
+    }
   }
 
   /** Read from the references each time, as other windows change them and no event says so. */

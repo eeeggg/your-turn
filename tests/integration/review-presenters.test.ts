@@ -9,6 +9,8 @@ import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
 import { ReviewPresenters, createReviewEditors, type ReviewDisplay } from '@/adapters/review/ReviewPresenters';
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
+import { createReviewEditors as controlledReviewEditors } from '@tests/ui/instrumentation/ReviewPresenters';
+import { listenControl } from '@tests/ui/instrumentation/ControlChannel';
 
 /** A completed tool call that changed `file` from `old` to `now`, the empty text with nothing there for a deletion. */
 const edited = (toolCallId: string, file: string, old: string, now: string): SessionUpdate => ({
@@ -183,6 +185,42 @@ suite('Review presenters', () => {
       await showing;
     }
   });
+
+  for (const operation of ['showChange', 'showChangeOf'] as const) {
+    test(`controlled ${operation} holds a completed real editor opening and drains disposal without moving its cursor`, async () => {
+      const endpoint = await listenControl();
+      const priorPort = process.env['UI_REVIEW_PRESENTATION_PORT'];
+      process.env['UI_REVIEW_PRESENTATION_PORT'] = String(endpoint.port);
+      const editors = controlledReviewEditors();
+      let showing: Promise<void> | undefined;
+      let disposal: Promise<void> | undefined;
+      try {
+        await open(b);
+        await endpoint.request('arm', 'armed');
+        showing = operation === 'showChange' ? editors.showChange(a) : editors.showChangeOf(a, controls.changes(a), 0);
+        let finished = false;
+        const completion = showing.then(() => { finished = true; });
+        await endpoint.request('pending', 'pending');
+        assert.strictEqual(activeFile(), a);
+        assert.strictEqual(finished, false);
+        const editor = vscode.window.activeTextEditor;
+        assert.ok(editor);
+        editor.selection = new vscode.Selection(0, 1, 0, 1);
+        disposal = editors.dispose();
+        const finishedAtDisposal = disposal.then(() => finished);
+        await completion;
+        await disposal;
+        assert.strictEqual(await finishedAtDisposal, true);
+        assert.strictEqual(editor.selection.active.line, 0);
+        assert.strictEqual(editor.selection.active.character, 1);
+      } finally {
+        await endpoint.close();
+        await Promise.allSettled([showing, disposal ?? editors.dispose()]);
+        if (priorPort === undefined) { delete process.env['UI_REVIEW_PRESENTATION_PORT']; }
+        else { process.env['UI_REVIEW_PRESENTATION_PORT'] = priorPort; }
+      }
+    });
+  }
 
   for (const operation of ['open', 'showChange', 'showChangeOf'] as const) {
     test(`quick-diff disposal drains an accepted ${operation} command without starting another`, async () => {

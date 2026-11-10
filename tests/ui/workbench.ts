@@ -17,6 +17,18 @@ export function agentsViewRow(window: Page, label: string): Locator {
   return window.getByRole('tree', { name: 'Agents', exact: true }).getByRole('treeitem').filter({ hasText: label });
 }
 
+export function connectAgentAction(window: Page): Locator {
+  return window.getByRole('button', { name: 'Your Turn: Connect to Agent', exact: true });
+}
+
+export function disconnectAgentAction(window: Page): Locator {
+  return agentsViewRow(window, 'fake-v1').getByRole('button', { name: 'Your Turn: Disconnect Agent', exact: true });
+}
+
+export function reviewTabs(window: Page): Locator {
+  return window.locator('.tabs-container .tab').filter({ hasText: '— Review' });
+}
+
 export async function selectListedSession(window: Page, label: string): Promise<void> {
   // Moving off the row to a tooltip-free target cancels its hover without triggering the title's own.
   await window.getByRole('main').hover();
@@ -241,10 +253,13 @@ export function removedReviewLines(window: Page): Locator {
   return reviewDiffEditor(window).locator('.original-in-monaco-diff-editor .line-delete');
 }
 
-/** A plain file editor excludes VS Code's native diff editor containers. */
+/** The plain editor is the instance's direct child; an inline quick-diff widget contains its own nested diff editors. */
 export function plainFileEditor(window: Page): Locator {
-  return window.locator('.editor-instance').filter({ hasNot: window.locator('.monaco-diff-editor') })
-    .locator('.monaco-editor[data-uri^="file:"]');
+  return window.locator('.editor-instance > .monaco-editor[data-uri^="file:"]');
+}
+
+export function plainFileInput(window: Page): Locator {
+  return plainFileEditor(window).getByRole('textbox');
 }
 
 /** A native Git comparison must retain Git's original URI, distinct from the review baseline. */

@@ -42,6 +42,51 @@
 - When a failure is not understood, gather a screenshot, trace, DOM state,
   focus state or logs before changing the test or product.
 
+## Controlled extension-host scheduling
+
+- Prefer visible DOM/focus/layout readiness and lower-layer tests when they can
+  establish the behavior. Use controlled scheduling for a specific dangerous
+  overlap that ordinary desktop actions cannot guarantee; repeated passes alone
+  do not prove that overlap occurred.
+- Desktop preparation builds `test-results/ui-extension/` with its own manifest,
+  resources and bundles. `window.ts` validates and launches that artifact. Ordinary
+  `dist/` remains separate. Use supported npm preparation, not a stale artifact or
+  the user's editor. Do not overlap builds.
+- `src/extension.ts` and `tests/ui/instrumentation/extension.ts` share activation
+  through explicit factories. Add narrow operation dependencies/decorators, not
+  importer-sensitive build substitutions, global VS Code patches, mutable
+  extension-test exports, or test branches in production. Production defaults
+  must retain the real operations; socket/gate implementations belong in tests.
+- Reuse `ControlChannel.ts` for the isolated local connection and
+  `SchedulingControl.ts` for validated scheduling state, immediate rejection
+  observation, cancellation and accepted-work settlement. Test bodies should use
+  named fixture operations, not open sockets. The serial channel permits one
+  outstanding command; cancellation closes the endpoint out of band.
+- Choose the ordering deliberately: `hold()` starts the real operation and
+  withholds its result; `before()` delays the actual call. They are not
+  interchangeable. Preserve the original arguments, result and failure.
+  Quick-diff's `pending` additionally awaits actual editor-opening completion.
+- Acknowledge actual entry before performing the competing UI action. Release
+  and await the relevant accepted work/adapter cleanup, then assert rendered
+  behavior. Entry, operation completion, cleanup settlement and DOM readiness
+  are distinct. Never use acknowledgment alone as the success assertion.
+- The window owner closes every control before application shutdown, including
+  setup, pending-acknowledgment and timeout failures; dependent-fixture teardown
+  alone is too late. Test abort before/after entry, rejected operations while
+  held, repeated cycles, invalid transitions and listener cleanup. Do not hide
+  failures or rely on the forced-shutdown watchdog as normal gate cleanup.
+- Concrete contracts: `session-tabs.test.ts` retains the real context-menu tree
+  target during refresh; `review-quick-diff.test.ts` rejects an older A→B→A
+  continuation without cursor/focus corruption; `review-disconnect.test.ts`
+  closes a pending native diff after real Disconnect while preserving unsaved
+  work and unrelated keyboard focus. Corresponding decorators are under
+  `tests/ui/instrumentation/`.
+- For each new scheduling scenario, identify a plausible compiling product
+  mutation, confirm the user-visible assertion fails, restore it, and establish
+  a repeated baseline before adding another. Keep ordinary-path desktop
+  coverage and lower-layer contracts. Do not instrument unrelated adapters just
+  to accumulate examples; choose meaningful uncovered risks.
+
 ## Verification
 
 - npm scripts are the supported developer entry point. Do not invoke Playwright, Electron,
