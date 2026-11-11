@@ -155,6 +155,7 @@ interface UsedThrough {
 
 /** The events a {@link SessionManager} emits, with the arguments each passes its listeners. */
 export interface SessionManagerEvents {
+  'connection-changed': [agentName: string];
   'session-added': [sessionId: string, agentName: string];
   /** The session was created, loaded or resumed successfully. */
   'session-opened': [sessionId: string, agentName: string, how: SessionOpening];
@@ -393,7 +394,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
     let driver: AcpDriver;
     try {
-      driver = await this.connectionManager.connect(agentName, agentProcess, agentProcess.id);
+      driver = await this.connectionManager.connect(agentName, agentProcess, agentProcess.id, () => {
+        if (this.agents.get(agentName)?.process === agentProcess) {
+          this.emit('connection-changed', agentName);
+        }
+      });
       if (this.disposed) {
         throw new Error('Session manager is disposed.');
       }
@@ -416,6 +421,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     const agent: RunningAgent = { name: agentName, process: agentProcess, driver, exited };
     this.agents.set(agentName, agent);
     this.capabilities.set(agentName, driver.agent.capabilities);
+    this.emit('connection-changed', agentName);
     return agent;
   }
 
@@ -424,6 +430,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     this.clearUnregisteredActivity(agent.process.id);
     if (this.agents.get(agent.name) === agent) {
       this.agents.delete(agent.name);
+      this.emit('connection-changed', agent.name);
     }
     agent.process.kill();
   }
@@ -439,6 +446,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     }
     if (unexpected) {
       this.agents.delete(agentName);
+      this.emit('connection-changed', agentName);
     }
 
     // Only the session running on this process goes; a newer one for the same agent stays.
@@ -1127,6 +1135,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   hasSession(agentName: string): boolean {
     return this.agentSessions.has(agentName);
+  }
+
+  /** An initialized ACP connection, independently of whether it owns a session. */
+  isConnected(agentName: string): boolean {
+    const agent = this.agents.get(agentName);
+    return agent !== undefined && !agent.driver.closed;
   }
 
   /** Whether the agent's process is running, which asking it anything would otherwise start. */

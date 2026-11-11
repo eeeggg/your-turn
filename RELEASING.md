@@ -68,16 +68,38 @@ test suites and `Checks` pass. They are optional test builds, not published
 releases, and expire according to Actions artifact retention. Installation is
 never automatic.
 
-Development packaging assigns a unique version only in CI's disposable
+CI development packaging assigns a unique version only in CI's disposable
 checkout, updating both manifests through npm. The version format is
 `<target>-dev.<run>.<attempt>`. Each artifact must
 identify its full source commit and CI run, including the attempt, so it can be
 traced back to the code tested. Do not commit CI-generated versions back to `master`.
 
-Development builds are distributed only as Actions artifacts. They are not
+CI development builds are distributed only as Actions artifacts. They are not
 Marketplace pre-releases. Selected `master` commits can become Marketplace
 pre-release candidates through explicit version/channel preparation and the
 same candidate verification and authorized publication process below.
+
+### Local development packages
+
+For an explicitly requested working-tree snapshot, use `npm run package:dev`
+without arguments. Both manifests must agree on the intended numeric release
+target; change that target deliberately through npm, separately from packaging.
+The command includes tracked and non-ignored untracked files, including local
+modifications and excluding deleted files. Source symlinks are rejected.
+
+Packaging uses an isolated staging directory and the installed dependencies;
+it does not install dependencies or modify working manifests or build bundles.
+Only staging receives `<target>-dev.local.<timestamp>.<random-id>` through npm.
+The VSIX and `build.json` appear under `test-results/packages/local/<build-id>/`.
+The record identifies the base commit, dirty status, source-input fingerprint,
+and artifact SHA-256; a dirty snapshot is not identified by its commit alone.
+Staging and incomplete output are removed on failure. Do not overlap builds.
+
+Local packages are for evaluation, not release candidates or Marketplace
+pre-releases; they do not use the Marketplace pre-release flag. Packaging does
+not run or certify the test suites: report verification actually completed.
+Installation and publication remain separately authorized operations. The CI
+packaging restrictions and release-candidate/publication process are unchanged.
 
 ## Release candidates
 

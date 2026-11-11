@@ -207,9 +207,7 @@ export type ExtensionToWebviewMessage =
   /** The active session's title, null when it has none. */
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }
-  | { type: 'loadSessionEnd'; ok: boolean }
-  /** The webview has no handler for this yet, so the attachment is dropped. */
-  | { type: 'file-attached'; path: string; name: string };
+  | { type: 'loadSessionEnd'; ok: boolean };
 
 export type WebviewToExtensionMessage =
   | { type: 'markdownImageContext'; sessionId: string }

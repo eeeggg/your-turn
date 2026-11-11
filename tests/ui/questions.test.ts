@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   chatWebview,
+  chooseAgentAction,
   yourTurnContainerControl,
   chatTranscript,
   explorerControl,
@@ -25,8 +26,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
 
     test('shows the full destination on hover and returns decline or dismissal without opening a browser', async ({ window }, testInfo) => {
       await yourTurnContainerControl(window).click();
-      await window.getByRole('treeitem', { name: new RegExp(`fake-${agentVersion}`) }).hover();
-      await window.getByRole('button', { name: 'Connect to Agent' }).click();
+      await chooseAgentAction(window, `fake-${agentVersion}`, 'Connect to Agent');
       const prompt = promptInput(window);
       await expect(prompt).toBeEnabled();
       await prompt.fill('url-elicitation');
@@ -55,8 +55,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
 
     test('answers a form during authentication and retries session creation without a response record', async ({ window }, testInfo) => {
       await yourTurnContainerControl(window).click();
-      await window.getByRole('treeitem', { name: new RegExp(`fake-${agentVersion}`) }).hover();
-      await window.getByRole('button', { name: 'Connect to Agent' }).click();
+      await chooseAgentAction(window, `fake-${agentVersion}`, 'Connect to Agent');
       await quickInputRow(window, 'Authenticate').click();
       const prompt = promptInput(window);
       const surface = questionSurface(window);
@@ -76,9 +75,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
 
     test('cleans up a cancelled authentication form and permits a fresh connection', async ({ window }) => {
       await yourTurnContainerControl(window).click();
-      const agent = window.getByRole('treeitem', { name: new RegExp(`fake-${agentVersion}`) });
-      await agent.hover();
-      await window.getByRole('button', { name: 'Connect to Agent' }).click();
+      await chooseAgentAction(window, `fake-${agentVersion}`, 'Connect to Agent');
       await quickInputRow(window, 'Authenticate').click();
       const surface = questionSurface(window);
       await expect(surface.getByRole('heading', { name: 'Authentication preference', exact: true })).toBeVisible();
@@ -88,8 +85,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
       await expect(questionNotification(window)).toBeHidden();
       await expect(promptInput(window)).toBeDisabled();
       await expect(questionRecords(window)).toHaveCount(0);
-      await agent.hover();
-      await window.getByRole('button', { name: 'Connect to Agent' }).click();
+      await chooseAgentAction(window, `fake-${agentVersion}`, 'Connect to Agent');
       await quickInputRow(window, 'Authenticate').click();
       await expect(surface.getByRole('heading', { name: 'Authentication preference', exact: true })).toBeVisible();
       await expect(surface.getByLabel('Enabled *', { exact: true })).toHaveValue('');
@@ -110,8 +106,7 @@ test.describe('v2 pre-session questions', () => {
 
   test('answers a request-scoped setup form before session creation completes without creating a session record', async ({ window }, testInfo) => {
     await yourTurnContainerControl(window).click();
-    await window.getByRole('treeitem', { name: /fake-v2/ }).hover();
-    await window.getByRole('button', { name: 'Connect to Agent' }).click();
+    await chooseAgentAction(window, 'fake-v2', 'Connect to Agent');
     const prompt = promptInput(window);
     await expect(questionNotification(window)).toBeVisible();
     await expect(prompt).toBeDisabled();
@@ -136,8 +131,7 @@ test.describe('v2 concurrent questions', () => {
 
   test('withdrawing a form rejects a stale submission without changing another draft or its replacement', async ({ window, workspace }, testInfo) => {
     await yourTurnContainerControl(window).click();
-    await window.getByRole('treeitem', { name: /fake-v2/ }).hover();
-    await window.getByRole('button', { name: 'Connect to Agent' }).click();
+    await chooseAgentAction(window, 'fake-v2', 'Connect to Agent');
     const prompt = promptInput(window);
     await expect(prompt).toBeEnabled();
     await prompt.evaluate((input) => {
@@ -198,8 +192,7 @@ test.describe('v2 concurrent questions', () => {
 
   test('answering concurrent forms does not release a queued prompt before agent idle', async ({ window, workspace }, testInfo) => {
     await yourTurnContainerControl(window).click();
-    await window.getByRole('treeitem', { name: /fake-v2/ }).hover();
-    await window.getByRole('button', { name: 'Connect to Agent' }).click();
+    await chooseAgentAction(window, 'fake-v2', 'Connect to Agent');
     const prompt = promptInput(window);
     await expect(prompt).toBeEnabled();
     await prompt.fill(`questions-concurrent ${workspace}`);
@@ -237,8 +230,7 @@ test.describe('v2 concurrent questions', () => {
 
 test('a question preserves prompt composition and local Escape restores its selection', async ({ window }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill('unfinished prompt');
@@ -285,8 +277,7 @@ test('a question preserves prompt composition and local Escape restores its sele
 
 test('long questions scroll internally and appending a request preserves the active field and scroll position', async ({ window }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.focus();
@@ -340,8 +331,7 @@ test('long questions scroll internally and appending a request preserves the act
 
 test('questions and session usage share one expansion space without losing question drafts', async ({ window }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill('usage');
@@ -378,8 +368,7 @@ test('questions and session usage share one expansion space without losing quest
 
 test('a hidden agent question stays pending until native Open and submits typed answers with a collapsed record', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`question-hidden ${workspace}`);

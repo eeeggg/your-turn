@@ -238,7 +238,6 @@ describe('what the store is told', () => {
 
     view.send(
       { type: 'promptEnd' },
-      { type: 'file-attached', path: '/work/a.ts', name: 'a.ts' },
       { type: 'pickersClosed' },
     );
 

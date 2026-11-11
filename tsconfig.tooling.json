@@ -17,6 +17,7 @@
     "tools/icons.mjs",
     "tools/notices.mjs",
     "tools/package-ci.mjs",
+    "tools/package-dev.mjs",
     "tools/run-integration.mjs",
     "tools/run-tests.mjs",
     "tools/vscode-test.mjs"

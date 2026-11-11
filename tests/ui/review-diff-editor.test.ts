@@ -2,6 +2,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   yourTurnContainerControl,
+  chooseAgentAction,
   editorSelection,
   editorTab,
   gitDiffEditor,
@@ -32,9 +33,7 @@ test.use({ workspaceFiles: { 'm.ts': original }, gitRepository: true });
 
 async function startReview(window: Parameters<typeof editorTab>[0], workspace: string): Promise<void> {
   await yourTurnContainerControl(window).click();
-  const agent = window.getByRole('treeitem', { name: /fake-v1/ });
-  await agent.hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review-diff ${workspace}`);

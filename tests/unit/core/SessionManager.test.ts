@@ -113,10 +113,11 @@ function setup(scripts: Record<string, AgentScript>) {
     activeFileLink: () => fileLink,
   };
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
-  const manager = new SessionManager(agents, new ConnectionManager(updates, '0.0.0-test', () => ({
+  const connections = new ConnectionManager(updates, '0.0.0-test', () => ({
     ...unusedHandlers,
     permissions: { ...unusedHandlers.permissions, cancelSession: () => {} },
-  })), environment, authPrompt);
+  }));
+  const manager = new SessionManager(agents, connections, environment, authPrompt);
   onTestFinished(async () => { await manager.dispose(); });
   const references = new SessionReferences(memoryStore(), () => Date.now());
   const workspace = new WorkspaceState(memoryStore());
@@ -157,6 +158,7 @@ function setup(scripts: Record<string, AgentScript>) {
 
   return {
     agents,
+    connections,
     manager,
     posted,
     chatView,
@@ -474,6 +476,59 @@ describe('SessionManager', () => {
       expect(await manager.ensureConnected('fake')).toEqual({ list: false, load: true, resume: false, additionalDirectories: false });
     });
 
+    it.each(['output-then-exit', 'exit-then-output'] as const)('reports a sessionless connection ending in %s order', async (order) => {
+      const { manager, agents } = setup({ fake: () => fakeAgent() });
+      const states: boolean[] = [];
+      manager.on('connection-changed', () => states.push(manager.isConnected('fake')));
+      await manager.ensureConnected('fake');
+      expect(states).toEqual([true]);
+      const launched = agents.launched[0];
+      if (!launched) { throw new Error('Agent did not launch'); }
+      await launched.crash(1, order);
+      expect(states.at(-1)).toBe(false);
+      expect(manager.hasSession('fake')).toBe(false);
+    });
+
+    it('does not report a connection until initialization completes', async () => {
+      let finish!: () => void;
+      let entered!: () => void;
+      const initialized = new Promise<void>((resolve) => { finish = resolve; });
+      const initializing = new Promise<void>((resolve) => { entered = resolve; });
+      const { manager } = setup({ fake: () => agent().onRequest(methods.agent.initialize, async () => {
+        entered();
+        await initialized;
+        return { protocolVersion: 1 };
+      }) });
+      const connecting = manager.ensureConnected('fake');
+      try {
+        await initializing;
+        expect(manager.isConnected('fake')).toBe(false);
+      } finally { finish(); }
+      await connecting;
+      expect(manager.isConnected('fake')).toBe(true);
+    });
+
+    it('ignores an old connection closure delivered after its replacement is ready', async () => {
+      const { manager, agents, connections } = setup({ fake: () => fakeAgent() });
+      const connect = connections.connect.bind(connections);
+      const pending: (() => void)[] = [];
+      const spy = vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, onClosed) =>
+        connect(name, streams, id, () => { if (onClosed) { pending.push(onClosed); } }));
+      onTestFinished(() => spy.mockRestore());
+      await manager.ensureConnected('fake');
+      const old = agents.launched[0];
+      if (!old) { throw new Error('Agent did not launch'); }
+      await manager.disconnectAgent('fake');
+      await old.exitReported;
+      expect(pending).toHaveLength(1);
+      await manager.ensureConnected('fake');
+      const changes: string[] = [];
+      manager.on('connection-changed', (name) => changes.push(name));
+      pending.shift()?.();
+      expect(changes).toEqual([]);
+      expect(manager.isConnected('fake')).toBe(true);
+    });
+
     it('disconnects an agent launched only to list its sessions', async () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent().script });
       await manager.ensureConnected('fake');
@@ -525,9 +580,13 @@ describe('SessionManager', () => {
         throw RequestError.internalError(undefined, 'boom');
       });
       const { agents, manager } = setup({ fake: failing });
+      const states: boolean[] = [];
+      manager.on('connection-changed', () => states.push(manager.isConnected('fake')));
 
       await expect(manager.connectToAgent('fake')).rejects.toThrow('boom');
       expect(agents.launched[0]?.killed).toBe(true);
+      expect(manager.isConnected('fake')).toBe(false);
+      expect(states).toEqual([]);
     });
 
     it('stops the agent when the session cannot be created', async () => {

@@ -86,18 +86,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
     return vscode.commands.executeCommand(command, ...rest);
   }
 
-  /** Attach a file to the next prompt and reveal the chat view. */
-  attachFile(uri: vscode.Uri): void {
-    if (this.view) {
-      this.post({
-        type: 'file-attached',
-        path: uri.fsPath,
-        name: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,
-      });
-      this.view.show(true);
-    }
-  }
-
   dispose(): void {
     this.received.dispose();
     this.posted.dispose();

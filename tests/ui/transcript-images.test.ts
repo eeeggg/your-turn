@@ -1,6 +1,6 @@
 import {
   yourTurnContainerControl,
-  agentsViewRow,
+  chooseAgentAction,
   chatTranscript,
   promptInput
 } from '@tests/ui/workbench';
@@ -16,8 +16,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
         if (request.url().includes('example.invalid') || request.url().includes('not-read')) { requests.push(request.url()); }
       });
       await yourTurnContainerControl(window).click();
-      await agentsViewRow(window, `fake-${agentVersion}`).hover();
-      await window.getByRole('button', { name: 'Connect to Agent' }).click();
+      await chooseAgentAction(window, `fake-${agentVersion}`, 'Connect to Agent');
       const prompt = promptInput(window);
       await expect(prompt).toBeEnabled();
       await prompt.fill('images');

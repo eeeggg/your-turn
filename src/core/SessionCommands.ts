@@ -8,7 +8,7 @@ import {
   type SessionStartup,
   type StartupOutcome
 } from '@/core/SessionStartup';
-import { ProgressLocation, type Commands, type Window } from '@/core/VsCodeApi';
+import { ProgressLocation, QuickPickItemKind, type Commands, type QuickPickItem, type Window } from '@/core/VsCodeApi';
 
 /** What commands need from the chat view. */
 export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompts' | 'clearTranscript' | 'sessionTabs' | 'notifyTabsChanged'>;
@@ -138,6 +138,24 @@ export class SessionCommands {
     }
   }
 
+  /** Offer management actions for the row's agent, retaining its target while the picker is open. */
+  async agentActions(agentName?: string): Promise<void> {
+    if (!agentName) { return; }
+    const connected = this.sessions.isConnected(agentName);
+    const items: (QuickPickItem & { command?: string })[] = [
+      { label: 'New Session', command: 'your-turn.newSession' },
+      { label: 'Refresh Sessions', command: 'your-turn.refreshSessions' },
+      { label: '', kind: QuickPickItemKind.Separator },
+      connected
+        ? { label: 'Disconnect Agent', command: 'your-turn.disconnectAgent' }
+        : { label: 'Connect to Agent', command: 'your-turn.connectAgent' },
+      ...(connected ? [{ label: 'Restart Agent', command: 'your-turn.restartAgent' }] : []),
+      { label: 'Remove Agent', command: 'your-turn.removeAgent' },
+    ];
+    const choice = await this.window.showQuickPick(items, { title: `Agent Actions: ${agentName}` });
+    if (choice?.command) { await this.commands.executeCommand(choice.command, agentName); }
+  }
+
   /** Make a session with an agent the active session, asking which agent when none is given. */
   connect(agentName?: string): Promise<void> {
     return this.serial(() => this.connectAgent(agentName));
@@ -214,7 +232,7 @@ export class SessionCommands {
     void this.window.showInformationMessage(`Disconnected from ${name}.`);
   }
 
-  /** Stop an agent, by default the active session's, and connect it again with a new session. */
+  /** Restart an agent, preserving whether it had an open session. */
   restart(agentName?: string): Promise<void> {
     return this.serial(() => this.restartAgent(agentName));
   }
@@ -225,11 +243,17 @@ export class SessionCommands {
     const name = agentName ?? activeSession?.agentName;
     if (!name) { return; }
     const label = activeSession?.agentName === name ? activeSession.agentDisplayName : name;
+    const hadSession = this.sessions.hasSession(name);
+    const sessionlessConnection = this.sessions.isConnected(name) && !hadSession;
 
     try {
       await this.withProgress(`Restarting ${label}...`, async () => {
         await this.sessions.disconnectAgent(name);
-        await this.sessions.connectToAgent(name);
+        if (sessionlessConnection) {
+          await this.sessions.ensureConnected(name);
+        } else {
+          await this.sessions.connectToAgent(name);
+        }
       });
       void this.window.showInformationMessage(`Restarted ${name}`);
     } catch (e) {

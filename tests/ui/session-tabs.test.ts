@@ -41,22 +41,53 @@ test.describe('context-menu refresh boundary', () => {
   });
 });
 
-for (const hoverState of ['visible', 'unawaited'] as const) {
-  test(`a listed session opens after leaving an agent with ${hoverState === 'visible' ? 'a visible' : 'an unawaited'} hover`, async ({ window }) => {
-    await yourTurnContainerControl(window).click();
-    const agent = agentsViewRow(window, 'fake-v1');
-    await agent.click();
-    await expect(agentsViewRow(window, 'Compaction session')).toBeVisible();
-    await yourTurnContainerControl(window).hover();
-    await agent.hover();
-    if (hoverState === 'visible') {
-      await expect(window.getByRole('tooltip')).toBeVisible();
-    }
-    await selectListedSession(window, 'Compaction session');
-    await expect(promptInput(window)).toBeEnabled();
-    await expect(sessionTabs(window).getByRole('tab', { name: 'Compaction session', exact: true })).toHaveAttribute('aria-selected', 'true');
-  });
-}
+test('clicking listed sessions opens the intended tabs and returning selects the existing tab', async ({ window }) => {
+  await yourTurnContainerControl(window).click();
+  await agentsViewRow(window, 'fake-v1').click();
+  await selectListedSession(window, 'Compaction session');
+  await expect(promptInput(window)).toBeEnabled();
+  const tabs = sessionTabs(window).getByRole('tab');
+  const first = sessionTabs(window).getByRole('tab', { name: 'Compaction session', exact: true });
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await selectListedSession(window, 'Another session with a deliberately long title for tab overflow');
+  await expect(sessionTabs(window).getByRole('tab', { name: 'Another session with a deliberately long title for tab overflow', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(first).toHaveAttribute('aria-selected', 'false');
+  await expect(promptInput(window)).toBeEnabled();
+  await expect(tabs).toHaveCount(2);
+  await selectListedSession(window, 'Compaction session');
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs).toHaveCount(2);
+  await expect(promptInput(window)).toBeEnabled();
+});
+
+test('arrow navigation requires keyboard activation before switching the selected session', async ({ window }) => {
+  await yourTurnContainerControl(window).click();
+  await agentsViewRow(window, 'fake-v1').click();
+  await selectListedSession(window, 'Compaction session');
+  await selectListedSession(window, 'Another session with a deliberately long title for tab overflow');
+  const strip = sessionTabs(window);
+  const first = strip.getByRole('tab', { name: 'Compaction session', exact: true });
+  const second = strip.getByRole('tab', { name: 'Another session with a deliberately long title for tab overflow', exact: true });
+  await expect(second).toHaveAttribute('aria-selected', 'true');
+  await expect(promptInput(window)).toBeEnabled();
+  await second.focus();
+  await second.press('ArrowLeft');
+  await expect(first).toBeFocused();
+  await expect(second).toHaveAttribute('aria-selected', 'true');
+  await first.press('Space');
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await expect(second).toHaveAttribute('aria-selected', 'false');
+  await expect(promptInput(window)).toBeEnabled();
+  await first.focus();
+  await first.press('ArrowRight');
+  await expect(second).toBeFocused();
+  await expect(first).toHaveAttribute('aria-selected', 'true');
+  await second.press('Enter');
+  await expect(second).toHaveAttribute('aria-selected', 'true');
+  await expect(first).toHaveAttribute('aria-selected', 'false');
+  await expect(strip.getByRole('tab')).toHaveCount(2);
+  await expect(promptInput(window)).toBeEnabled();
+});
 
 test('session tabs wrap into rows with keyboard and close controls reachable in a narrow chat view', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();

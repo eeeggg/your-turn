@@ -142,7 +142,7 @@ Configure `your-turn.activeFileExcludes` in user settings for a general list,
 or in workspace settings to replace it for that workspace. The list stays
 visible and saved when `your-turn.includeActiveFile` is off, and applies again
 when it is enabled. These exclusions affect only automatic attachment, not
-explicit attachments or the agent's independent file access.
+the agent's independent file access.
 
 ## Diagnostics, sensitive information, and telemetry
 

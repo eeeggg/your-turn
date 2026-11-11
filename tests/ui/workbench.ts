@@ -17,12 +17,14 @@ export function agentsViewRow(window: Page, label: string): Locator {
   return window.getByRole('tree', { name: 'Agents', exact: true }).getByRole('treeitem').filter({ hasText: label });
 }
 
-export function connectAgentAction(window: Page): Locator {
-  return window.getByRole('button', { name: 'Your Turn: Connect to Agent', exact: true });
+export function agentMoreActions(window: Page, agentName: string): Locator {
+  return agentsViewRow(window, agentName).getByRole('button', { name: 'Your Turn: More Actions', exact: true });
 }
 
-export function disconnectAgentAction(window: Page): Locator {
-  return agentsViewRow(window, 'fake-v1').getByRole('button', { name: 'Your Turn: Disconnect Agent', exact: true });
+export async function chooseAgentAction(window: Page, agentName: string, action: string): Promise<void> {
+  await agentsViewRow(window, agentName).hover();
+  await agentMoreActions(window, agentName).click();
+  await quickInputRow(window, action).click();
 }
 
 export function reviewTabs(window: Page): Locator {
@@ -30,9 +32,6 @@ export function reviewTabs(window: Page): Locator {
 }
 
 export async function selectListedSession(window: Page, label: string): Promise<void> {
-  // Moving off the row to a tooltip-free target cancels its hover without triggering the title's own.
-  await window.getByRole('main').hover();
-  await window.getByRole('tooltip').waitFor({ state: 'hidden' });
   const session = agentsViewRow(window, label);
   await session.waitFor({ state: 'visible' });
   await session.click();

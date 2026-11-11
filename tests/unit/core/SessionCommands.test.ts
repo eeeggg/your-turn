@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
@@ -150,6 +150,60 @@ const asked = (question: string, detail: string, action: string, keepAll?: { lab
 });
 
 describe('SessionCommands', () => {
+  it('offers agent actions for the row connection and retains that target when dispatching', async () => {
+    const { commands, manager, user } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    onTestFinished(() => manager.dispose());
+    user.answer('Connect to Agent');
+    await commands.agentActions('two');
+    expect(user.take()).toEqual([
+      { call: 'showQuickPick', items: [
+        { label: 'New Session', command: 'your-turn.newSession' },
+        { label: 'Refresh Sessions', command: 'your-turn.refreshSessions' },
+        { label: '', kind: -1 },
+        { label: 'Connect to Agent', command: 'your-turn.connectAgent' },
+        { label: 'Remove Agent', command: 'your-turn.removeAgent' },
+      ], options: { title: 'Agent Actions: two' } },
+      { call: 'executeCommand', command: 'your-turn.connectAgent', rest: ['two'] },
+    ]);
+    await manager.connectToAgent('one');
+    user.answer('Restart Agent');
+    await commands.agentActions('one');
+    expect(user.take()).toEqual([
+      { call: 'showQuickPick', items: [
+        { label: 'New Session', command: 'your-turn.newSession' },
+        { label: 'Refresh Sessions', command: 'your-turn.refreshSessions' },
+        { label: '', kind: -1 },
+        { label: 'Disconnect Agent', command: 'your-turn.disconnectAgent' },
+        { label: 'Restart Agent', command: 'your-turn.restartAgent' },
+        { label: 'Remove Agent', command: 'your-turn.removeAgent' },
+      ], options: { title: 'Agent Actions: one' } },
+      { call: 'executeCommand', command: 'your-turn.restartAgent', rest: ['one'] },
+    ]);
+    user.answer(undefined);
+    await commands.agentActions('two');
+    expect(user.take().map(({ call }) => call)).toEqual(['showQuickPick']);
+    await commands.agentActions();
+    expect(user.take()).toEqual([]);
+  });
+
+  it('restarts a sessionless connection without creating a session or replacing another agent session', async () => {
+    const { commands, manager, agents, tabs } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    onTestFinished(() => manager.dispose());
+    await commands.connect('one');
+    await manager.ensureConnected('two');
+    const before = tabs.snapshot();
+    await commands.restart('two');
+    expect(manager.isConnected('two')).toBe(true);
+    expect(manager.hasSession('two')).toBe(false);
+    expect(manager.getActiveSessionId()).toBe('one-1');
+    expect(tabs.snapshot()).toEqual(before);
+    expect(agents.launched.map(({ name, killed }) => ({ name, killed }))).toEqual([
+      { name: 'one', killed: false },
+      { name: 'two', killed: true },
+      { name: 'two', killed: false },
+    ]);
+  });
+
   it('does not create a targeted session when stopping foreground work is declined', async () => {
     const { commands, manager, tabs, user, transcript, agents } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
     await commands.connect('one');

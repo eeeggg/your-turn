@@ -136,6 +136,18 @@ describe('SessionList', () => {
   });
 
   describe('agents', () => {
+    it('announces a sessionless connection independently of session presence and announces its disconnect', async () => {
+      const { manager, list } = setup({ fake: () => fakeAgent() });
+      const snapshots: unknown[] = [];
+      list.on('changed', () => snapshots.push(list.agents()));
+      expect(list.agents()).toMatchObject([{ name: 'fake', connected: false, hasSession: false }]);
+      await manager.ensureConnected('fake');
+      expect(snapshots).toContainEqual([{ name: 'fake', connected: true, hasSession: false, expandable: false }]);
+      snapshots.length = 0;
+      await manager.disconnectAgent('fake');
+      expect(snapshots).toContainEqual([{ name: 'fake', connected: false, hasSession: false, expandable: false }]);
+    });
+
     it('lists each configured agent with whether it is in session', async () => {
       const { manager, list } = setup({
         one: () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })),
@@ -144,18 +156,18 @@ describe('SessionList', () => {
       await manager.connectToAgent('one');
 
       expect(list.agents()).toEqual([
-        { name: 'one', hasSession: true, expandable: true },
-        { name: 'two', hasSession: false, expandable: true },
+        { name: 'one', hasSession: true, connected: true, expandable: true },
+        { name: 'two', hasSession: false, connected: false, expandable: true },
       ]);
     });
 
     it('cannot expand an agent known to keep no past sessions, unless session history has some', async () => {
       const { manager, references, list } = setup({ plain: () => fakeAgent() });
       await manager.ensureConnected('plain');
-      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, expandable: false }]);
+      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: false }]);
 
       await references.used(address('plain', 'old'));
-      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, expandable: true }]);
+      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: true }]);
     });
   });
 

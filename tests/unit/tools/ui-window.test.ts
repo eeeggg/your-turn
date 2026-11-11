@@ -41,39 +41,21 @@ interface RecordedDiagnostics {
 
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
-it('leaves the agent and awaits hover dismissal before selecting a listed session', async () => {
+it('waits for the requested session row before clicking without a tooltip prerequisite', async () => {
   const events: string[] = [];
-  let dismiss: () => void = () => { throw new Error('Hover dismissal has not started'); };
-  let observed: () => void = () => {};
-  const observing = new Promise<void>((resolve) => { observed = resolve; });
-  const hidden = new Promise<void>((resolve) => { dismiss = resolve; });
+  let show: () => void = () => { throw new Error('Visibility wait has not started'); };
+  const visible = new Promise<void>((resolve) => { show = resolve; });
   const row = {
-    waitFor: async (options: unknown) => { expect(options).toEqual({ state: 'visible' }); events.push('row visible'); },
-    click: async () => { events.push('click'); observed(); },
-  };
-  const title = { hover: async () => { events.push('leave agent'); } };
-  const pane = { locator: (selector: string) => {
-    expect(selector).toBe('.pane-header > .title');
-    return title;
-  } };
-  const page = {
-    locator: (selector: string) => {
-      if (selector === '.pane') { return { filter: () => pane }; }
-      expect(selector).toBe('.pane-header > .codicon-hubot');
-      return {};
+    waitFor: async (options: unknown) => {
+      expect(options).toEqual({ state: 'visible' });
+      events.push('await visibility');
+      await visible;
+      events.push('row visible');
     },
+    click: async (...args: unknown[]) => { expect(args).toEqual([]); events.push('click'); },
+  };
+  const page = {
     getByRole: (role: string, options?: unknown) => {
-      if (role === 'tooltip') {
-        return { waitFor: async (options: unknown) => {
-          expect(options).toEqual({ state: 'hidden' });
-          events.push('observe hover');
-          observed();
-          await hidden;
-        } };
-      }
-      if (role === 'main') {
-        return { hover: async () => { events.push('leave agent'); } };
-      }
       expect([role, options]).toEqual(['tree', { name: 'Agents', exact: true }]);
       return { getByRole: (role: string) => {
         expect(role).toBe('treeitem');
@@ -83,11 +65,10 @@ it('leaves the agent and awaits hover dismissal before selecting a listed sessio
   } as unknown as Page;
 
   const selection = selectListedSession(page, 'Compaction session');
-  await observing;
-  expect(events).toEqual(['leave agent', 'observe hover']);
-  dismiss();
+  expect(events).toEqual(['await visibility']);
+  show();
   await selection;
-  expect(events).toEqual(['leave agent', 'observe hover', 'row visible', 'click']);
+  expect(events).toEqual(['await visibility', 'row visible', 'click']);
 });
 
 async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: boolean; setupFailure?: boolean; statusFailure?: boolean; launchFailure?: boolean; detachedDescendant?: boolean; hang?: 'diagnostics' | 'trace' | 'close' } = {}) {

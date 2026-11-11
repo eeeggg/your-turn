@@ -67,6 +67,9 @@ suite('The Agents view', () => {
     let resolveChildren!: (sessions: AgentSessions) => void;
     const children = new Promise<AgentSessions>((resolve) => { resolveChildren = resolve; });
     class PendingSessionList extends SessionList {
+      hasSession = false;
+      connected = false;
+      override agents() { return super.agents().map((agent) => ({ ...agent, hasSession: this.hasSession, connected: this.connected })); }
       override sessionsOf(): Promise<AgentSessions> { return children; }
     }
     const list = new PendingSessionList(manager, references, () => ['Claude', 'Codex'], () => '/home/me/work', () => ({ uri: THIS_WORKSPACE, host: LOCAL }));
@@ -92,9 +95,23 @@ suite('The Agents view', () => {
     assert.strictEqual(refreshed[0], roots[0], 'the selected agent retains its command-argument identity');
     assert.strictEqual(refreshed[1], roots[1], 'an unrelated agent retains its command-argument identity');
     assert.strictEqual(selected.agentName, 'Claude', 'the pending refresh preserves the explicit command target');
-    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-without-session');
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-disconnected-without-session');
+    list.connected = true;
+    provider.refresh();
+    assert.strictEqual((await provider.getChildren())[0], selected);
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-connected-without-session');
+    assert.strictEqual((provider.getTreeItem(selected).iconPath as vscode.ThemeIcon).id, 'circle-outline');
     resolveChildren({ kind: 'unsupported' });
     assert.deepStrictEqual((await pending).map((item) => provider.getTreeItem(item).contextValue), ['session-info-unsupported']);
+    list.hasSession = true;
+    provider.refresh();
+    assert.strictEqual((await provider.getChildren())[0], selected);
+    assert.strictEqual(provider.getTreeItem(selected).description, undefined, 'agent names have no vague session-presence description');
+    assert.strictEqual((provider.getTreeItem(selected).iconPath as vscode.ThemeIcon).id, 'circle-filled', 'removing the description preserves the existing indicator');
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-connected-with-session');
+    list.connected = false;
+    provider.refresh();
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-disconnected-with-session');
   });
 
   test("lists other workspaces, the configurations their sessions were used through, and those sessions", async () => {

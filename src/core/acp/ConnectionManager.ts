@@ -25,7 +25,7 @@ export class ConnectionManager {
   ) {}
 
   /** Connect to an agent over its streams and initialize the connection. */
-  async connect(agentName: string, streams: AgentStreams, agentId: string = randomUUID()): Promise<AcpDriver> {
+  async connect(agentName: string, streams: AgentStreams, agentId: string = randomUUID(), onClosed?: () => void): Promise<AcpDriver> {
     logDebug('Connecting to agent', { agentName });
 
     const stream = ndJsonStream(streams.input, streams.output);
@@ -44,7 +44,10 @@ export class ConnectionManager {
       closed = true;
       updates.dispose();
       try { elicitations.close(); }
-      finally { outgoing.close(); handlers.close?.(); }
+      finally {
+        try { outgoing.close(); handlers.close?.(); }
+        finally { onClosed?.(); }
+      }
     };
     const owned = { ...handlers, elicitations, close };
     try {

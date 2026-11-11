@@ -12,6 +12,7 @@ import {
 export interface AgentEntry {
   readonly name: string;
   readonly hasSession: boolean;
+  readonly connected: boolean;
   /** False only when the agent is known to keep no past sessions and session history has none. */
   readonly expandable: boolean;
 }
@@ -72,7 +73,7 @@ interface SinceListed {
 const NO_MORE: MoreSessions = { kind: 'none' };
 /** The label of a session without a title, as titles are never derived from what was said in it. */
 export const UNTITLED = 'Untitled';
-const SESSION_EVENTS = ['session-added', 'active-session-changed'] as const;
+const SESSION_EVENTS = ['session-added', 'active-session-changed', 'connection-changed'] as const;
 /** Where a row's session came from, as its tooltip says. */
 const SOURCES = {
   agent: 'Listed by agent',
@@ -156,6 +157,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       return {
         name,
         hasSession: this.sessions.hasSession(name),
+        connected: this.sessions.isConnected(name),
         expandable: !keepsNone || this.historyOf(name).length > 0,
       };
     });

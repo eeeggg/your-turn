@@ -14,33 +14,31 @@ class AgentTreeItem extends vscode.TreeItem {
   constructor(
     public readonly agentName: string,
     hasSession: boolean,
+    connected: boolean,
     collapsibleState: vscode.TreeItemCollapsibleState,
   ) {
     super(agentName, collapsibleState);
     this.id = `agent:${agentName}`;
-    this.update(hasSession, collapsibleState);
+    this.update(hasSession, connected, collapsibleState);
   }
 
-  update(hasSession: boolean, collapsibleState: vscode.TreeItemCollapsibleState): void {
+  update(hasSession: boolean, connected: boolean, collapsibleState: vscode.TreeItemCollapsibleState): void {
     this.collapsibleState = collapsibleState;
+    this.contextValue = `agent-${connected ? 'connected' : 'disconnected'}-${hasSession ? 'with' : 'without'}-session`;
     if (hasSession) {
-      this.contextValue = 'agent-with-session';
       this.iconPath = new vscode.ThemeIcon(
         'circle-filled',
         new vscode.ThemeColor('testing.iconPassed'),
       );
-      this.description = 'in session';
       this.command = { command: 'your-turn.openChat', title: 'Open Chat View' };
     } else {
-      this.contextValue = 'agent-without-session';
       this.iconPath = new vscode.ThemeIcon('circle-outline');
-      this.description = '';
       delete this.command;
     }
 
     this.tooltip = hasSession
       ? `${this.agentName} — in session\nClick to open the chat view`
-      : `${this.agentName} — no session\nUse the plug icon to connect`;
+      : `${this.agentName} — no session\nUse the plus icon to start a new session`;
   }
 }
 
@@ -240,9 +238,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       const collapsible = agent.expandable ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
       let root = this.agentRoots.get(agent.name);
       if (root) {
-        root.update(agent.hasSession, collapsible);
+        root.update(agent.hasSession, agent.connected, collapsible);
       } else {
-        root = new AgentTreeItem(agent.name, agent.hasSession, collapsible);
+        root = new AgentTreeItem(agent.name, agent.hasSession, agent.connected, collapsible);
         this.agentRoots.set(agent.name, root);
       }
       return root;

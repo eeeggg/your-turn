@@ -2,7 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   yourTurnContainerControl,
-  agentsViewRow,
+  chooseAgentAction,
   chatStop,
   chatTranscript,
   chatUserMessages,
@@ -17,8 +17,7 @@ test.use({ agentVersion: 'v2' });
 
 test('Stop returns for autonomous foreground work and cancels the active session', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await agentsViewRow(window, 'fake-v2').hover();
-  await window.getByRole('button', { name: 'Your Turn: Connect to Agent', exact: true }).click();
+  await chooseAgentAction(window, 'fake-v2', 'Connect to Agent');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   const tabs = sessionTabs(window);

@@ -345,6 +345,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     statusBarManager,
     vscode.commands.registerCommand('your-turn.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.newSession', (arg?: unknown) => sessionCommands.newSession(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.agentActions', (arg?: unknown) => sessionCommands.agentActions(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.restartAgent', (arg?: unknown) => sessionCommands.restart(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.cancelTurn', () => sessionCommands.cancelTurn()),
@@ -423,16 +424,6 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
       const change = quickDiffChangeOf(args);
       return change && reviewControls.undoChange(change.path, change.change);
     })),
-    vscode.commands.registerCommand('your-turn.attachFile', async () => {
-      const [uri] = await vscode.window.showOpenDialog({
-        canSelectMany: false,
-        openLabel: 'Attach',
-        title: 'Attach File to Prompt',
-      }) ?? [];
-      if (uri) {
-        chatWebviewProvider.attachFile(uri);
-      }
-    }),
     {
       dispose: () => {
         void stop().catch((error: unknown) => logError('Failed to shut down Your Turn', error));

@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  agentsViewRow, connectAgentAction, disconnectAgentAction, editorTab,
+  agentMoreActions, agentsViewRow, chooseAgentAction, editorTab,
   modifiedReviewEditor, plainFileEditor, plainFileInput, plainFileTab, promptInput,
   quickInput, quickInputRow, reviewDiffEditor, reviewLens, reviewStatus, reviewTabs,
   reviewTitleAction, yourTurnContainerControl,
@@ -19,9 +19,7 @@ test('disconnect retires a pending native review without losing unsaved editing 
   await quickInputRow(window, 'other.ts').click();
   await expect(plainFileTab(window, 'other.ts')).toHaveClass(/active/);
   await yourTurnContainerControl(window).click();
-  const agent = agentsViewRow(window, 'fake-v1');
-  await agent.hover();
-  await connectAgentAction(window).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   await expect(promptInput(window)).toBeEnabled();
   await promptInput(window).fill(`review-diff ${workspace}`);
   await promptInput(window).press('Enter');
@@ -39,11 +37,12 @@ test('disconnect retires a pending native review without losing unsaved editing 
   await reviewTitleAction(window, 'Open Review').click();
   await nativeDiffControl.request('pending', 'pending');
   try {
-    await agent.hover();
-    await disconnectAgentAction(window).click();
+    await chooseAgentAction(window, 'fake-v1', 'Disconnect Agent');
     await expect(promptInput(window)).toBeDisabled();
-    await agent.hover();
-    await expect(connectAgentAction(window)).toBeVisible();
+    await agentsViewRow(window, 'fake-v1').hover();
+    await agentMoreActions(window, 'fake-v1').click();
+    await expect(quickInputRow(window, 'Connect to Agent')).toBeVisible();
+    await window.keyboard.press('Escape');
     await plainFileTab(window, 'other.ts').click();
     await expect(plainFileEditor(window)).toContainText('unrelated');
   } finally {
@@ -63,8 +62,7 @@ test('disconnect retires a pending native review without losing unsaved editing 
   expect(await readFile(join(workspace, 'm.ts'), 'utf8')).toBe(agentText);
   await window.screenshot({ path: testInfo.outputPath('review-disconnect-unsaved.png') });
 
-  await agent.hover();
-  await connectAgentAction(window).click();
+  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
   await expect(promptInput(window)).toBeEnabled();
   await expect(reviewStatus(window)).toContainText('1 of 1');
   await reviewTitleAction(window, 'Open Review').click();
