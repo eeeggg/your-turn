@@ -543,6 +543,16 @@ describe('ChatViewController', () => {
     expect(removed).toEqual([initial]);
   });
 
+  it('keeps the running indicator attached to a live tab after its configuration is renamed', () => {
+    const { controller, environment } = setup();
+    controller.notifySessionOpened('s1');
+    controller.sessionTabs.agentsChanged({ fake: { command: 'agent' } }, { renamed: { command: 'agent' } });
+    environment.take();
+    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+    const snapshot = environment.take().find((message) => message.type === 'sessionTabs');
+    expect(snapshot).toMatchObject({ tabs: [{ running: true }] });
+  });
+
   it('keeps the next submission active when autonomous idle releases the queue synchronously', async () => {
     const { controller, sessions, environment } = setup();
     controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });

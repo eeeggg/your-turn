@@ -208,7 +208,7 @@ export class ChatViewController {
   private pendingText: { message: TextMessage; timer: ReturnType<typeof setTimeout> } | null = null;
   private readonly commandOutput: CommandOutputFeed;
   private readonly diffs = new ToolCallDiffs();
-  private readonly tabs = new SessionTabs();
+  private readonly tabs: SessionTabs;
   get sessionTabs(): SessionTabs { return this.tabs; }
   notifyTabsChanged(): void { this.sendTabs(true); }
   private navigation: Pick<SessionCommands, 'selectTab' | 'closeTab'> | undefined;
@@ -227,7 +227,9 @@ export class ChatViewController {
     private readonly terminals: AgentTerminals,
     private readonly workspace?: Pick<SessionEnvironment, 'workspaceRoots'>,
     private readonly imageNetwork?: ImageNetwork,
+    tabs = new SessionTabs(),
   ) {
+    this.tabs = tabs;
     this.commandOutput = new CommandOutputFeed(terminals, {
       toolCallContent: (sessionId, toolCallId, content) => {
         if (!this.disposed && sessionId === this.sessions.getActiveSessionId()) {
@@ -657,7 +659,7 @@ export class ChatViewController {
       tabs: snapshot.tabs.map((tab) => ({
         tabId: tab.tabId, title: tab.title ?? null, agentName: tab.agentDisplayName,
         cwd: tab.cwd, additionalDirectories: [...additionalDirectories],
-        running: this.sessions.getSession(tab.sessionId)?.agentName === tab.agentName && this.isRunning(tab.sessionId),
+        running: this.tabs.matches(tab.tabId, this.sessions.getSession(tab.sessionId)) && this.isRunning(tab.sessionId),
       })),
     });
   }

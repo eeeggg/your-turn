@@ -71,7 +71,7 @@ function memoryStore(): KeyValueStore {
 /** A remote window's workspace file saved on the client, so its URI and host differ. */
 const WORKSPACE = { uri: 'file:///Users/me/work.code-workspace', host: 'vscode-remote://ssh-remote+devenv' };
 
-function setup(scripts: Record<string, AgentScript>) {
+function setup(scripts: Record<string, AgentScript>, persistedTabs = false) {
   const agents = new InProcessAgents(scripts);
   const environment: SessionEnvironment = {
     workspaceRoots: () => work,
@@ -90,7 +90,7 @@ function setup(scripts: Record<string, AgentScript>) {
   const references = new SessionReferences(globalState);
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
-  const tabs = new SessionTabs();
+  const tabs = new SessionTabs(persistedTabs ? { workspace, references, environment } : undefined);
   manager.on('session-opened', (sessionId) => {
     const session = manager.getSession(sessionId);
     if (session) { tabs.open(session); }
@@ -107,11 +107,11 @@ function setup(scripts: Record<string, AgentScript>) {
     },
   };
   const user = new ScriptedUser();
-  const startup = new SessionStartup(manager, workspace, environment, new StartupRequests(globalState));
+  const startup = new SessionStartup(manager, workspace, environment, new StartupRequests(globalState), persistedTabs ? tabs : undefined);
   const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts), startup);
   /** Another window asks the window opening the address's workspace to load its session. */
   const request = (address: SessionAddress) => new StartupRequests(globalState).request(address);
-  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands, request, tabs };
+  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands, request, tabs, environment };
 }
 
 /** Where session `sessionId` of agent configuration `configuredName` lives in the test workspace. */
@@ -150,6 +150,174 @@ const asked = (question: string, detail: string, action: string, keepAll?: { lab
 });
 
 describe('SessionCommands', () => {
+  it('selects the renamed tab of a live session without loading or reconnecting', async () => {
+    const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs, agents, environment, user } = setup({ one: one.script, renamed: one.script }, true);
+    onTestFinished(() => manager.dispose());
+    const before = { one: { command: 'one' } };
+    const after = { renamed: { command: 'one' } };
+    environment.agentConfigs = () => before;
+    await commands.connect('one');
+    const tabId = tabs.snapshot().selectedTabId;
+    if (!tabId) { throw new Error('missing active tab'); }
+    environment.agentConfigs = () => after;
+    manager.agentsChanged(before, after);
+    tabs.agentsChanged(before, after);
+    user.take();
+
+    await commands.selectTab(tabId);
+
+    expect(manager.getActiveAgentName()).toBe('one');
+    expect(tabs.snapshot()).toMatchObject({ selectedTabId: tabId, tabs: [{ tabId, agentName: 'renamed' }] });
+    expect(tabs.snapshot().tabs).toHaveLength(1);
+    expect(agents.launched).toHaveLength(1);
+    expect(one.requests).toEqual([]);
+    expect(user.take()).toEqual([focusChatView]);
+  });
+
+  it('confirms closing a renamed live tab and disconnects its actual running agent only after acceptance', async () => {
+    const { commands, manager, tabs, transcript, environment, user } = setup({ one: sessionAgent('one').script }, true);
+    onTestFinished(() => manager.dispose());
+    const before = { one: { command: 'one' } };
+    const after = { renamed: { command: 'one' } };
+    await commands.connect('one');
+    environment.agentConfigs = () => after;
+    manager.agentsChanged(before, after);
+    tabs.agentsChanged(before, after);
+    const snapshot = tabs.snapshot();
+    if (!snapshot.selectedTabId) { throw new Error('missing active tab'); }
+    transcript.hasRunningTurn = true;
+    user.take();
+    user.answer(undefined);
+
+    await commands.closeTab(snapshot.selectedTabId);
+
+    expect(tabs.snapshot()).toEqual(snapshot);
+    expect(manager.isConnected('one')).toBe(true);
+    expect(user.take()).toEqual([asked('Close this session tab?', 'This stops the turn in progress.', 'Close Tab')]);
+    user.answer('Close Tab');
+    await commands.closeTab(snapshot.selectedTabId);
+    expect(manager.getActiveSessionId()).toBeNull();
+    expect(manager.isConnected('one')).toBe(false);
+    expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
+  });
+
+  it('returns to an already active renamed MRU tab without replaying it', async () => {
+    const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs, agents, environment } = setup({ one: one.script, renamed: one.script }, true);
+    onTestFinished(() => manager.dispose());
+    const before = { one: { command: 'one' } };
+    const after = { renamed: { command: 'one' } };
+    environment.agentConfigs = () => before;
+    await commands.connect('one');
+    const tabId = tabs.snapshot().selectedTabId;
+    environment.agentConfigs = () => after;
+    manager.agentsChanged(before, after);
+    tabs.agentsChanged(before, after);
+    const dormant = tabs.open({ agentName: 'removed', agentDisplayName: 'Removed', sessionId: 'dormant', cwd: work.cwd });
+
+    await commands.closeTab(dormant);
+
+    expect(manager.getActiveAgentName()).toBe('one');
+    expect(tabs.snapshot().selectedTabId).toBe(tabId);
+    expect(agents.launched).toHaveLength(1);
+    expect(one.requests).toEqual([]);
+  });
+
+  it('asks before a dormant-tab close opens an MRU session that would stop active work', async () => {
+    const { commands, manager, tabs, transcript, agents, user } = setup({ one: sessionAgent('one').script, two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script }, true);
+    onTestFinished(() => manager.dispose());
+    await commands.connect('one');
+    tabs.open({ agentName: 'two', agentDisplayName: 'Two', sessionId: 'older', cwd: work.cwd });
+    const dormant = tabs.open({ agentName: 'removed', agentDisplayName: 'Removed', sessionId: 'dormant', cwd: work.cwd });
+    transcript.hasRunningTurn = true;
+    user.take();
+    user.answer(undefined);
+
+    await commands.closeTab(dormant);
+
+    expect(manager.getActiveAgentName()).toBe('one');
+    expect(agents.launched).toHaveLength(1);
+    expect(tabs.snapshot().selectedTabId).toBeNull();
+    expect(tabs.snapshot().tabs.map((tab) => tab.agentName)).toEqual(['one', 'two']);
+    expect(user.take()).toEqual([asked('Open a different session?', 'This stops the turn in progress.', 'Open Session')]);
+  });
+
+  it.each([
+    { host: 'vscode-remote://ssh-remote+other', uri: WORKSPACE.uri },
+    { host: WORKSPACE.host, uri: 'file:///Users/me/other.code-workspace' },
+  ])('rejects a saved tab when the known target changed to $host $uri', async (target) => {
+    const { commands, manager, tabs, agents, environment, user } = setup({ one: sessionAgent('one', { agentCapabilities: { loadSession: true } }).script }, true);
+    onTestFinished(() => manager.dispose());
+    const tabId = tabs.open({ agentName: 'one', agentDisplayName: 'One', sessionId: 'old', cwd: work.cwd });
+    environment.workspaceTarget = () => target;
+    user.answer(undefined);
+
+    await commands.selectTab(tabId);
+
+    expect(agents.launched).toEqual([]);
+    expect(tabs.snapshot().selectedTabId).toBe(tabId);
+    expect(user.take()).toEqual([focusChatView, failedToOpen(`The session belongs to ${WORKSPACE.uri} on ${WORKSPACE.host}, but this workspace is ${target.uri} on ${target.host}.`)]);
+  });
+
+  it('rejects a restored tab whose cwd changed before launching its agent', async () => {
+    const { commands, manager, tabs, agents, user } = setup({ one: sessionAgent('one', { agentCapabilities: { loadSession: true } }).script }, true);
+    onTestFinished(() => manager.dispose());
+    const tabId = tabs.open({ agentName: 'one', agentDisplayName: 'One', sessionId: 'restored', cwd: '/previous' });
+    user.answer(undefined);
+
+    await commands.selectTab(tabId);
+
+    expect(agents.launched).toEqual([]);
+    expect(tabs.snapshot().selectedTabId).toBe(tabId);
+    expect(user.take()).toEqual([focusChatView, failedToOpen("The session was used in /previous, but this workspace's agents run in /work.", ['Choose Session'])]);
+  });
+
+  it('rebinds a restored tab after recovering through another configuration', async () => {
+    const { commands, manager, tabs, references, user } = setup({ one: refusingAgent().script, two: refusingAgent(0).script }, true);
+    onTestFinished(() => manager.dispose());
+    await references.setTitle(addressOf('one', 'old'), 'Kept title');
+    const tabId = tabs.open({ agentName: 'one', agentDisplayName: 'One', sessionId: 'old', cwd: work.cwd });
+    user.answer('Choose Agent', 'two');
+
+    await commands.restoreLastSession();
+
+    expect(manager.getActiveSession()).toMatchObject({ agentName: 'two', sessionId: 'old', title: 'Kept title' });
+    expect(tabs.snapshot()).toMatchObject({ selectedTabId: tabId, tabs: [{ tabId, agentName: 'two', sessionId: 'old' }] });
+    expect(tabs.snapshot().tabs).toHaveLength(1);
+  });
+
+  it('closes a selected dormant tab without disconnecting an unrelated active session', async () => {
+    const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs, agents } = setup({ one: one.script }, true);
+    onTestFinished(() => manager.dispose());
+    await commands.connect('one');
+    const activeTab = tabs.snapshot().tabs[0];
+    if (!activeTab) { throw new Error('missing active tab'); }
+    const dormant = tabs.open({ agentName: 'removed', agentDisplayName: 'Removed', sessionId: 'dormant', cwd: work.cwd });
+
+    await commands.closeTab(dormant);
+
+    expect(manager.getActiveSessionId()).toBe('one-1');
+    expect(manager.isConnected('one')).toBe(true);
+    expect(tabs.snapshot().selectedTabId).toBe(activeTab.tabId);
+    expect(agents.launched).toHaveLength(1);
+    expect(one.requests).toEqual([]);
+  });
+
+  it('loads a selected dormant tab with its cached reference while the remote target is unavailable', async () => {
+    const { commands, manager, tabs, references, environment } = setup({ one: refusingAgent(0).script }, true);
+    onTestFinished(() => manager.dispose());
+    await references.setTitle(addressOf('one', 'old'), 'Kept title');
+    const tabId = tabs.open({ agentName: 'one', agentDisplayName: 'One', sessionId: 'old', cwd: work.cwd });
+    environment.workspaceTarget = () => undefined;
+
+    await commands.selectTab(tabId);
+
+    expect(manager.getActiveSession()).toMatchObject({ agentName: 'one', sessionId: 'old', title: 'Kept title' });
+    expect(tabs.snapshot().selectedTabId).toBe(tabId);
+  });
+
   it('offers agent actions for the row connection and retains that target when dispatching', async () => {
     const { commands, manager, user } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
     onTestFinished(() => manager.dispose());
@@ -158,7 +326,6 @@ describe('SessionCommands', () => {
     expect(user.take()).toEqual([
       { call: 'showQuickPick', items: [
         { label: 'New Session', command: 'your-turn.newSession' },
-        { label: 'Refresh Sessions', command: 'your-turn.refreshSessions' },
         { label: '', kind: -1 },
         { label: 'Connect to Agent', command: 'your-turn.connectAgent' },
         { label: 'Remove Agent', command: 'your-turn.removeAgent' },
@@ -171,7 +338,6 @@ describe('SessionCommands', () => {
     expect(user.take()).toEqual([
       { call: 'showQuickPick', items: [
         { label: 'New Session', command: 'your-turn.newSession' },
-        { label: 'Refresh Sessions', command: 'your-turn.refreshSessions' },
         { label: '', kind: -1 },
         { label: 'Disconnect Agent', command: 'your-turn.disconnectAgent' },
         { label: 'Restart Agent', command: 'your-turn.restartAgent' },

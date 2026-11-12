@@ -60,7 +60,7 @@ function loadingAgent(init: Partial<InitializeResponse> = { agentCapabilities: {
   return { script, requests, state };
 }
 
-function setup(scripts: Record<string, AgentScript>) {
+function setup(scripts: Record<string, AgentScript>, selection?: { selectedAddress(): SessionAddress | undefined }) {
   const agents = new InProcessAgents(scripts);
   const updates = new SessionUpdateHandler();
   let roots: SessionRoots = work;
@@ -85,7 +85,7 @@ function setup(scripts: Record<string, AgentScript>) {
     manager,
     references,
     workspace,
-    startup: new SessionStartup(manager, workspace, environment, new StartupRequests(globalState)),
+    startup: new SessionStartup(manager, workspace, environment, new StartupRequests(globalState), selection),
     /** Another window asks the window opening the address's workspace to load its session. */
     request: (address: SessionAddress) => new StartupRequests(globalState).request(address),
     /** What another window opening the workspace would be given. */
@@ -110,6 +110,50 @@ async function seeded(scripts: Record<string, AgentScript>, address: SessionAddr
 }
 
 describe('SessionStartup', () => {
+  it.each([
+    { ...last, host: 'vscode-remote://ssh-remote+elsewhere' },
+    { ...last, workspaceUri: 'file:///elsewhere' },
+  ])('does not launch a restored selection outside the target learned before startup: $host $workspaceUri', async (selected) => {
+    const { agents, startup, withoutWorkspaceTarget, withWorkspaceTarget } = setup({ fake: loadingAgent().script }, { selectedAddress: () => selected });
+    withoutWorkspaceTarget();
+    expect(await startup.requested()).toBeUndefined();
+    withWorkspaceTarget();
+
+    expect(await startup.attempt()).toEqual({
+      kind: 'failed', address: selected, configuredName: 'fake',
+      failure: { kind: 'failed', message: `The session belongs to ${selected.workspaceUri} on ${selected.host}, but this workspace is ${TARGET.uri} on ${TARGET.host}.` },
+    });
+    expect(agents.launched).toEqual([]);
+  });
+
+  it('loads the restored selection ahead of the legacy last active session', async () => {
+    const fake = loadingAgent();
+    const { startup, workspace } = setup({ fake: fake.script }, { selectedAddress: () => ({ ...last, sessionId: 'selected' }) });
+    await workspace.setLastActiveSession(last);
+
+    expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 'selected' } });
+    expect(fake.requests).toEqual(['session/load selected']);
+  });
+
+  it('does not fall back to the legacy session when the restored layout has no selection', async () => {
+    const fake = loadingAgent();
+    const { agents, startup, workspace } = setup({ fake: fake.script }, { selectedAddress: () => undefined });
+    await workspace.setLastActiveSession(last);
+
+    expect(await startup.attempt()).toEqual({ kind: 'nothing' });
+    expect(agents.launched).toEqual([]);
+  });
+
+  it('keeps a failed restored selection without trying the legacy session', async () => {
+    const fake = loadingAgent();
+    const selected = { ...last, sessionId: 'gone' };
+    const { startup, workspace } = setup({ fake: fake.script }, { selectedAddress: () => selected });
+    await workspace.setLastActiveSession(last);
+
+    expect(await startup.attempt()).toMatchObject({ kind: 'failed', address: selected, failure: { kind: 'unknownSession' } });
+    expect(fake.requests).toEqual(['session/load gone']);
+  });
+
   it('loads nothing in a workspace with no last active session', async () => {
     const { agents, startup } = setup({ fake: loadingAgent().script });
 
@@ -169,6 +213,28 @@ describe('SessionStartup', () => {
 
   describe('a session another window asked for', () => {
     const asked: SessionAddress = { ...last, sessionId: 's2' };
+
+    it('loads the requested session ahead of the restored selection', async () => {
+      const fake = loadingAgent();
+      const { startup, request } = setup({ fake: fake.script }, { selectedAddress: () => last });
+      await request(asked);
+
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's2' } });
+      expect(fake.requests).toEqual(['session/load s2']);
+    });
+
+    it('takes the initial request once its remote target becomes known before startup', async () => {
+      const fake = loadingAgent();
+      const { startup, request, withoutWorkspaceTarget, withWorkspaceTarget } = setup({ fake: fake.script }, { selectedAddress: () => last });
+      await request(asked);
+      withoutWorkspaceTarget();
+      expect(await startup.requested()).toBeUndefined();
+      withWorkspaceTarget();
+
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's2' } });
+      expect(fake.requests).toEqual(['session/load s2']);
+      expect(await startup.requestedSince()).toBeUndefined();
+    });
 
     it('loads it ahead of the last active session, taking the request so no window loads it again', async () => {
       const fake = loadingAgent();

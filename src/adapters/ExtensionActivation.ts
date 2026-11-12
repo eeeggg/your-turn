@@ -9,6 +9,7 @@ import { SessionStartup } from '@/core/SessionStartup';
 import { SessionManager } from '@/core/SessionManager';
 import { SessionReferences, StartupRequests, WorkspaceState } from '@/core/PersistedState';
 import { SessionList, type AgentSessions } from '@/core/SessionList';
+import { SessionTabs } from '@/core/SessionTabs';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
 import type { Change } from '@/core/review/Hunks';
@@ -139,8 +140,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   );
   sessionManager.setPersistedState(sessionReferences, workspaceState);
 
+  const sessionTabs = new SessionTabs({ workspace: workspaceState, references: sessionReferences, environment: workspaceEnvironment });
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const sessionList = new SessionList(sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget());
+  const sessionList = new SessionList(
+    sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget(), Date.now, sessionTabs,
+  );
   const sessionsChanged = new vscode.EventEmitter<void>();
   context.subscriptions.push(sessionsChanged);
   sessionList.on('changed', () => sessionsChanged.fire());
@@ -188,6 +192,8 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
       const previous = agentConfigs;
       agentConfigs = getAgentConfigs();
       sessionManager.agentsChanged(previous, agentConfigs);
+      sessionTabs.agentsChanged(previous, agentConfigs);
+      chatViewController.notifyTabsChanged();
       markNoAgentsConfigured();
       sessionTreeProvider.refresh();
     }
@@ -196,7 +202,9 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, (webview) => workspaceEnvironment.useWebview(webview));
   const reportedFileEditor = new ReportedFileEditor();
   const agentTerminals = new AgentTerminals(pseudoterminalDisplays);
-  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals, workspaceEnvironment);
+  const chatViewController = new ChatViewController(
+    sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals, workspaceEnvironment, undefined, sessionTabs,
+  );
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
   });
@@ -223,8 +231,9 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     const presenters = reviewPresenters.dispose();
     const diffs = reviewDiffs.dispose();
     const review = reviews.dispose();
+    const tabState = sessionTabs.dispose();
     const sessions = sessionManager.dispose();
-    disposal = Promise.allSettled([output, terminals, takeovers, presenters, diffs, review, sessions, turnEndShown]).then((results) => {
+    disposal = Promise.allSettled([output, terminals, takeovers, presenters, diffs, review, tabState, sessions, turnEndShown]).then((results) => {
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down Your Turn');
@@ -296,7 +305,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     }
   });
 
-  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment, startupRequests);
+  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment, startupRequests, sessionTabs);
   const sessionCommands = new SessionCommands(
     sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames, sessionStartup,
   );
@@ -345,7 +354,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     statusBarManager,
     vscode.commands.registerCommand('your-turn.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.newSession', (arg?: unknown) => sessionCommands.newSession(agentNameOf(arg))),
-    vscode.commands.registerCommand('your-turn.agentActions', (arg?: unknown) => sessionCommands.agentActions(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.agentActions', (arg?: unknown) => {
+      const agentName = agentNameOf(arg);
+      const canRefresh = sessionList.agents().some((agent) => agent.name === agentName && agent.canRefreshSessions);
+      return sessionCommands.agentActions(agentName, canRefresh);
+    }),
     vscode.commands.registerCommand('your-turn.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.restartAgent', (arg?: unknown) => sessionCommands.restart(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.cancelTurn', () => sessionCommands.cancelTurn()),
@@ -451,6 +464,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     reviewPresentationSettled: async () => { await reviewPresenters.settled(); await reviewDiffs.settled(); },
     persistedStateSettled: async () => {
       await sessionManager.recordsSettled();
+      await sessionTabs.settled();
       await sessionReferences.settled();
       await workspaceState.settled();
     },

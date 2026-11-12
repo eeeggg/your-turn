@@ -568,7 +568,7 @@
         },
         {
           "command": "your-turn.refreshSessions",
-          "when": "view == your-turn-sessions && viewItem =~ /^agent/",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/ && viewItem =~ /-refreshable$/",
           "group": "1_session@1"
         },
         {

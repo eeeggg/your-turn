@@ -279,7 +279,7 @@ suite('Persisted state', () => {
       { workspaceTarget: vscode.workspace.workspaceFolders?.[0]?.uri.toString(), host: 'file://' },
       {
         'example.extra': { entries: [] },
-        'your-turn.workspace': { schemaVersion: 2, lastActiveSession: address('shown') },
+        'your-turn.workspace': { schemaVersion: 3, lastActiveSession: address('shown') },
       },
     ]);
     const global = first['globalState'] as Record<string, { schemaVersion?: unknown }>;
@@ -288,7 +288,7 @@ suite('Persisted state', () => {
 
     await new WorkspaceState(storage.workspaceState).setLastActiveSession(address('shown again'));
     const again = await shown() as Record<string, Record<string, unknown>>;
-    assert.deepStrictEqual(again['workspaceState']?.['your-turn.workspace'], { schemaVersion: 2, lastActiveSession: address('shown again') });
+    assert.deepStrictEqual(again['workspaceState']?.['your-turn.workspace'], { schemaVersion: 3, lastActiveSession: address('shown again') });
     assert.strictEqual(vscode.window.tabGroups.all.flatMap((group) => group.tabs)
       .filter((tab) => tab.input instanceof vscode.TabInputText && tab.input.uri.scheme === DOCUMENT_SCHEME).length, 1);
   });

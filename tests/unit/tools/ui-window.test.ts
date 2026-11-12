@@ -34,6 +34,7 @@ interface WindowFixture {
 }
 
 interface RecordedDiagnostics {
+  extensionLogs: Record<string, string>;
   timeline: { event: string; at: string; elapsedMs: number; phase: string; code?: number | null; signal?: string | null }[];
   stdout: { text: string; truncated: boolean };
   stderr: { text: string; truncated: boolean };
@@ -285,6 +286,7 @@ it('records startup and normal shutdown timing for a passing test', async () => 
   await state.run(async () => {});
   const after = Date.now();
   const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.extensionLogs).toEqual({});
   expect(diagnostics.timeline.map(({ event, phase }) => [event, phase])).toEqual([
     ['launch started', 'setup'],
     ['launch completed', 'setup'],
@@ -392,6 +394,28 @@ it('awaits the complete process group before removing files after graceful close
 
   await expect(state.run(async () => {})).rejects.toBe(state.closeError);
 
+  expect(state.closed()).toBe(true);
+  expect(await state.descendantRunning()).toBe(false);
+  for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
+});
+
+it.each(['rejects', 'hangs'] as const)('retains final main-process logs when only graceful close %s', async (ending) => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const state = await fixture(ending === 'hangs' ? { hang: 'close' } : { closeFailure: true });
+  const close = state.application.close;
+  state.application.close = async () => {
+    await writeFile(join(state.paths[0] ?? '', 'logs', '20261108T015857/main.log'), 'Final main-process shutdown context');
+    await close();
+  };
+  const result = expect(state.run(async () => {})).rejects.toThrow(ending === 'hangs' ? 'UI teardown watchdog expired' : state.closeError);
+  if (ending === 'hangs') {
+    await state.blocked;
+    await vi.advanceTimersByTimeAsync(5000);
+  }
+  await result;
+
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.extensionLogs['20261108T015857/main.log']).toBe('Final main-process shutdown context');
   expect(state.closed()).toBe(true);
   expect(await state.descendantRunning()).toBe(false);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }

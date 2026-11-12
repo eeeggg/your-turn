@@ -484,6 +484,13 @@ export const test = base.extend<UiFixtures>({
           }
         } finally {
           clearTimeout(watchdog);
+          if (cleanupFailure !== undefined && profile) {
+            try {
+              Object.assign(diagnostics.extensionLogs, await vscodeLogs(profile));
+            } catch (error) {
+              diagnostics.events.push(`Could not capture shutdown logs: ${errorText(error)}`);
+            }
+          }
           const removed = await Promise.allSettled([
             profile ? rm(profile, { recursive: true, force: true }) : undefined,
             extensions ? rm(extensions, { recursive: true, force: true }) : undefined,

@@ -11,6 +11,7 @@ import {
 } from '@/core/PersistedState';
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionManager, type AuthPrompt } from '@/core/SessionManager';
+import { SessionTabs } from '@/core/SessionTabs';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import {
   fakeAgent,
@@ -37,7 +38,7 @@ const WORKSPACE: WorkspaceTarget = { uri: 'file:///Users/me/work.code-workspace'
 const address = (configuredName: string, sessionId: string): SessionAddress =>
   ({ configuredName, sessionId, cwd: '/work', host: WORKSPACE.host, workspaceUri: WORKSPACE.uri });
 
-function setup(scripts: Record<string, AgentScript>) {
+function setup(scripts: Record<string, AgentScript>, tabs?: Pick<SessionTabs, 'has' | 'on' | 'off'>) {
   const agents = new InProcessAgents(scripts);
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
   let target: WorkspaceTarget | undefined = WORKSPACE;
@@ -56,7 +57,7 @@ function setup(scripts: Record<string, AgentScript>) {
   onTestFinished(async () => { await manager.dispose(); });
   const references = new SessionReferences(memoryStore(), () => Date.now());
   manager.setPersistedState(references, new WorkspaceState(memoryStore()));
-  const list = new SessionList(manager, references, () => Object.keys(scripts), () => '/work', () => target, () => NOW);
+  const list = new SessionList(manager, references, () => Object.keys(scripts), () => '/work', () => target, () => NOW, tabs);
   onTestFinished(() => { list.dispose(); });
   return {
     agents,
@@ -136,16 +137,33 @@ describe('SessionList', () => {
   });
 
   describe('agents', () => {
+    it('offers explicit refresh only after a list is fetched, retaining it across disconnect but not invalidation', async () => {
+      const fake = listingAgent({ '': { sessions: [session('past')] } });
+      const { agents, manager, list } = setup({ fake: fake.script });
+      expect(list.agents()).toMatchObject([{ canRefreshSessions: false }]);
+      expect(agents.launched).toHaveLength(0);
+
+      await manager.ensureConnected('fake');
+      expect(list.agents()).toMatchObject([{ connected: true, canRefreshSessions: false }]);
+      await listed(list, 'fake');
+      expect(list.agents()).toMatchObject([{ canRefreshSessions: true }]);
+      await manager.disconnectAgent('fake');
+      expect(list.agents()).toMatchObject([{ connected: false, canRefreshSessions: true }]);
+      list.invalidate('fake');
+      expect(list.agents()).toMatchObject([{ connected: false, canRefreshSessions: false }]);
+      expect(agents.launched).toHaveLength(1);
+    });
+
     it('announces a sessionless connection independently of session presence and announces its disconnect', async () => {
       const { manager, list } = setup({ fake: () => fakeAgent() });
       const snapshots: unknown[] = [];
       list.on('changed', () => snapshots.push(list.agents()));
       expect(list.agents()).toMatchObject([{ name: 'fake', connected: false, hasSession: false }]);
       await manager.ensureConnected('fake');
-      expect(snapshots).toContainEqual([{ name: 'fake', connected: true, hasSession: false, expandable: false }]);
+      expect(snapshots).toContainEqual([{ name: 'fake', connected: true, hasSession: false, expandable: false, canRefreshSessions: false }]);
       snapshots.length = 0;
       await manager.disconnectAgent('fake');
-      expect(snapshots).toContainEqual([{ name: 'fake', connected: false, hasSession: false, expandable: false }]);
+      expect(snapshots).toContainEqual([{ name: 'fake', connected: false, hasSession: false, expandable: false, canRefreshSessions: false }]);
     });
 
     it('lists each configured agent with whether it is in session', async () => {
@@ -156,22 +174,74 @@ describe('SessionList', () => {
       await manager.connectToAgent('one');
 
       expect(list.agents()).toEqual([
-        { name: 'one', hasSession: true, connected: true, expandable: true },
-        { name: 'two', hasSession: false, connected: false, expandable: true },
+        { name: 'one', hasSession: true, connected: true, expandable: true, canRefreshSessions: false },
+        { name: 'two', hasSession: false, connected: false, expandable: true, canRefreshSessions: false },
       ]);
     });
 
     it('cannot expand an agent known to keep no past sessions, unless session history has some', async () => {
       const { manager, references, list } = setup({ plain: () => fakeAgent() });
       await manager.ensureConnected('plain');
-      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: false }]);
+      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: false, canRefreshSessions: false }]);
 
       await references.used(address('plain', 'old'));
-      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: true }]);
+      expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: true, canRefreshSessions: false }]);
     });
   });
 
   describe('sessions an agent lists', () => {
+    it('does not treat the active session as an open tab when tab membership is unavailable', async () => {
+      const fake = listingAgent({ '': { sessions: [session('active')] } },
+        (app) => app.onRequest(methods.agent.session.load, () => ({})));
+      const { manager, list } = setup({ fake: fake.script });
+      await listed(list, 'fake');
+      await manager.loadSession('fake', 'active');
+
+      expect(await list.sessionsOf('fake')).toMatchObject({
+        kind: 'listed',
+        rows: [{ sessionId: 'active', hasOpenTab: false }],
+      });
+    });
+
+    it('marks every open tab by configuration and session without following selection', async () => {
+      const tabs = new SessionTabs();
+      const fake = listingAgent({ '': { sessions: [session('first'), session('second'), session('shared')] } });
+      const { list } = setup({ fake: fake.script, other: fake.script }, tabs);
+      await listed(list, 'fake');
+      await listed(list, 'other');
+      let changes = 0;
+      list.on('changed', () => { changes++; });
+      const first = tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: 'first', cwd: '/work' });
+      const second = tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: 'second', cwd: '/work' });
+      tabs.open({ agentName: 'other', agentDisplayName: 'Other', sessionId: 'shared', cwd: '/work' });
+
+      expect(changes).toBeGreaterThan(0);
+      const expected = [
+        { sessionId: 'first', hasOpenTab: true },
+        { sessionId: 'second', hasOpenTab: true },
+        { sessionId: 'shared', hasOpenTab: false },
+      ];
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: expected });
+      expect(await list.sessionsOf('other')).toMatchObject({ rows: [
+        { sessionId: 'first', hasOpenTab: false },
+        { sessionId: 'second', hasOpenTab: false },
+        { sessionId: 'shared', hasOpenTab: true },
+      ] });
+
+      tabs.select(first);
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: expected });
+      tabs.select(second);
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: expected });
+      changes = 0;
+      tabs.close(first);
+      expect(changes).toBeGreaterThan(0);
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [
+        { sessionId: 'first', hasOpenTab: false },
+        { sessionId: 'second', hasOpenTab: true },
+        { sessionId: 'shared', hasOpenTab: false },
+      ] });
+    });
+
     it('starts the agent to learn its capabilities, without creating a session', async () => {
       const fake = listingAgent({ '': { sessions: [] } });
       const { agents, manager, list } = setup({ fake: fake.script });
@@ -182,7 +252,7 @@ describe('SessionList', () => {
       expect(manager.hasSession('fake')).toBe(false);
     });
 
-    it('shows them as loading, then lists them with labels, ages and the active session marked', async () => {
+    it('shows them as loading, then lists them with labels, ages and tab membership', async () => {
       const fake = listingAgent({
         '': {
           sessions: [
@@ -206,14 +276,14 @@ describe('SessionList', () => {
             sessionId: 'titled',
             label: 'Fix the build',
             age: '3 hours ago',
-            isActive: true,
+            hasOpenTab: false,
             tooltip: 'Agent: fake\nSession: titled\ncwd: /work\nLast active: 2026-10-18T09:00:00Z\nListed by agent',
           },
           {
             sessionId: '0123456789abcdefghij',
             label: 'Untitled',
             age: '7 days ago',
-            isActive: false,
+            hasOpenTab: false,
             tooltip: 'Agent: fake\nSession: 0123456789abcdefghij\ncwd: /work\nLast active: 2026-10-11T12:00:00Z\nListed by agent',
           },
         ],
@@ -267,7 +337,7 @@ describe('SessionList', () => {
         expect(ids(sessions)).toEqual(['created', 'old']);
         expect(sessions.kind === 'listed' && sessions.rows[0]).toMatchObject({
           label: 'Untitled',
-          isActive: true,
+          hasOpenTab: false,
           tooltip: expect.stringMatching(/^Agent: fake\nSession: created\ncwd: \/work\nLast active: .+\nOpen in this window, not yet listed by agent$/) as unknown,
         });
         expect(fake.requests).toEqual([undefined]);
@@ -761,6 +831,20 @@ describe('SessionList', () => {
   });
 
   describe('sessions from session history', () => {
+    it('marks tab membership by configuration and session for local history too', async () => {
+      const tabs = new SessionTabs();
+      const { references, list } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } }) }, tabs);
+      await references.used(address('fake', 'open'));
+      await references.used(address('fake', 'shared'));
+      tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: 'open', cwd: '/work' });
+      tabs.open({ agentName: 'other', agentDisplayName: 'Other', sessionId: 'shared', cwd: '/work' });
+
+      const shown = await list.sessionsOf('fake');
+      expect(shown.kind).toBe('listed');
+      expect(shown.kind === 'listed' && shown.rows.find((row) => row.sessionId === 'open')).toMatchObject({ hasOpenTab: true });
+      expect(shown.kind === 'listed' && shown.rows.find((row) => row.sessionId === 'shared')).toMatchObject({ hasOpenTab: false });
+    });
+
     it("lists the references of this host and the workspace's cwd for an agent that loads but cannot list, most recent first", async () => {
       const { references, list } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } }) });
       vi.useFakeTimers({ now: Date.parse('2026-10-18T11:00:00Z'), toFake: ['Date'] });
@@ -834,14 +918,17 @@ describe('SessionList', () => {
   });
 
   it('stops listening to sessions and session history when disposed', () => {
-    const { manager, references, list } = setup({});
+    const tabs = new SessionTabs();
+    const { manager, references, list } = setup({}, tabs);
     const events = ['session-added', 'session-opened', 'session-removed', 'active-session-changed', 'session-info-changed', 'turn-ended'];
     expect(events.map((event) => manager.listenerCount(event))).toEqual([1, 1, 1, 1, 1, 1]);
     expect(references.listenerCount('changed')).toBe(1);
+    expect(tabs.listenerCount('changed')).toBe(1);
 
     list.dispose();
 
     expect(events.map((event) => manager.listenerCount(event))).toEqual([0, 0, 0, 0, 0, 0]);
     expect(references.listenerCount('changed')).toBe(0);
+    expect(tabs.listenerCount('changed')).toBe(0);
   });
 });

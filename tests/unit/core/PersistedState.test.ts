@@ -772,7 +772,7 @@ describe('WorkspaceState', () => {
     await new WorkspaceState(workspaceState).setLastActiveSession({ ...address('a'), extra: 'dropped' } as SessionAddress);
 
     expect(new WorkspaceState(workspaceState).lastActiveSession()).toEqual(address('a'));
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 2, lastActiveSession: address('a') });
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address('a') });
   });
 
   it.each([
@@ -795,7 +795,7 @@ describe('WorkspaceState', () => {
     await new WorkspaceState(workspaceState).setWorkspaceTarget({ ...onClient, extra: 'dropped' } as typeof onClient);
 
     expect(new WorkspaceState(workspaceState).workspaceTarget()).toEqual(onClient);
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 2, workspaceTarget: onClient });
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, workspaceTarget: onClient });
   });
 
   it('keeps the workspace target when the last active session changes, and the session when the target does', async () => {
@@ -806,7 +806,7 @@ describe('WorkspaceState', () => {
     await state.setLastActiveSession(address('a'));
     await state.setWorkspaceTarget(onClient);
 
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 2, lastActiveSession: address('a'), workspaceTarget: onClient });
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address('a'), workspaceTarget: onClient });
   });
 
   it.each([
@@ -829,20 +829,190 @@ describe('WorkspaceState', () => {
 
     await new WorkspaceState(workspaceState).setLastActiveSession(address('b'));
 
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 2, lastActiveSession: address('b'), workspaceTarget: onDevenv });
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address('b'), workspaceTarget: onDevenv });
   });
 
   it('reads a later version as empty and never overwrites it', async () => {
-    const later = { schemaVersion: 3, lastActiveSession: address('a'), workspaceTarget: onDevenv };
+    const later = { schemaVersion: 4, lastActiveSession: address('a'), workspaceTarget: onDevenv, tabLayout: { tabs: [address('a')], selected: address('a'), mru: [address('a')] } };
     const workspaceState = memoryStore({ [WORKSPACE_KEY]: later });
     const state = new WorkspaceState(workspaceState);
 
     await state.setLastActiveSession(address('b'));
     await state.setWorkspaceTarget(onClient);
+    await state.setTabLayout({ tabs: [address('b')], selected: address('b'), mru: [address('b')] });
+    await state.rebind('OpenCode', 'oc');
 
     expect(state.lastActiveSession()).toBeUndefined();
     expect(state.workspaceTarget()).toBeUndefined();
+    expect(state.tabLayout()).toBeUndefined();
     expect(workspaceState.values.get(WORKSPACE_KEY)).toBe(later);
+  });
+
+  describe('tab layout', () => {
+    it('saves ordered address-only tabs, selection and MRU independently of session references', async () => {
+      const workspaceState = memoryStore();
+      const a = { ...reference('a'), tabId: 'opaque', transcript: ['private'], activity: 'running' };
+      await new WorkspaceState(workspaceState).setTabLayout({ tabs: [a, address('b')], selected: a, mru: [address('b'), a] });
+
+      expect(new WorkspaceState(workspaceState).tabLayout()).toEqual({
+        tabs: [address('a'), address('b')], selected: address('a'), mru: [address('b'), address('a')],
+      });
+      expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({
+        schemaVersion: 3, tabLayout: { tabs: [address('a'), address('b')], selected: address('a'), mru: [address('b'), address('a')] },
+      });
+      expect(workspaceState.values.has(REFERENCES_KEY)).toBe(false);
+    });
+
+    it('distinguishes an absent layout from explicitly closing every tab', async () => {
+      const workspaceState = memoryStore();
+      const state = new WorkspaceState(workspaceState);
+      await state.setLastActiveSession(address('legacy'));
+      expect(state.tabLayout()).toBeUndefined();
+
+      await state.setTabLayout({ tabs: [], selected: null, mru: [] });
+
+      expect(new WorkspaceState(workspaceState).tabLayout()).toEqual({ tabs: [], selected: null, mru: [] });
+      expect(state.lastActiveSession()).toEqual(address('legacy'));
+    });
+
+    it('migrates version two fields on a layout write and preserves layout on other writes', async () => {
+      const workspaceState = memoryStore({ [WORKSPACE_KEY]: {
+        schemaVersion: 2, lastActiveSession: address('legacy'), workspaceTarget: onDevenv,
+      } });
+      const state = new WorkspaceState(workspaceState);
+      expect(state.lastActiveSession()).toEqual(address('legacy'));
+      expect(state.workspaceTarget()).toEqual(onDevenv);
+      expect(state.tabLayout()).toBeUndefined();
+      const layout = { tabs: [address('a')], selected: address('a'), mru: [address('a')] };
+
+      await state.setTabLayout(layout);
+      expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({
+        schemaVersion: 3, lastActiveSession: address('legacy'), workspaceTarget: onDevenv, tabLayout: layout,
+      });
+      await state.setLastActiveSession(address('b'));
+      await state.setWorkspaceTarget(onClient);
+
+      expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({
+        schemaVersion: 3, lastActiveSession: address('b'), workspaceTarget: onClient, tabLayout: layout,
+      });
+    });
+
+    it.each([0, 1, 2])('does not read a tab layout from schema %s', (schemaVersion) => {
+      const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: {
+        schemaVersion, tabLayout: { tabs: [address('a')], selected: address('a'), mru: [address('a')] },
+      } }));
+
+      expect(state.tabLayout()).toBeUndefined();
+    });
+
+    it('normalizes malformed tabs, selected addresses and MRU while keeping distinct workspace identities', () => {
+      const otherHost = address('a', { host: 'local' });
+      const otherWorkspace = address('a', { workspaceUri: CLIENT_WORKSPACE });
+      const otherConfiguration = address('a', { configuredName: 'Codex' });
+      const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: { schemaVersion: 3, tabLayout: {
+        tabs: [address('a'), { ...address('a'), cwd: '/duplicate' }, null, { ...address('bad'), host: 5 }, address('b'), otherHost, otherWorkspace, otherConfiguration],
+        selected: { ...address('b'), cwd: '/stale' },
+        mru: [address('foreign'), otherWorkspace, otherWorkspace, { ...address('a'), cwd: '/stale' }, false],
+      } } }));
+
+      expect(state.tabLayout()).toEqual({
+        tabs: [address('a'), address('b'), otherHost, otherWorkspace, otherConfiguration],
+        selected: address('b'), mru: [otherWorkspace, address('a'), address('b'), otherHost, otherConfiguration],
+      });
+    });
+
+    it.each([null, 5, [], {}, { tabs: false }, { tabs: [], selected: address('foreign'), mru: [address('foreign')] }].map((raw) => [raw]))(
+      'treats a malformed present layout as empty without choosing a foreign session: %j', (tabLayout) => {
+        const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: {
+          schemaVersion: 3, lastActiveSession: address('legacy'), tabLayout,
+        } }));
+
+        expect(state.tabLayout()).toEqual({ tabs: [], selected: null, mru: [] });
+      },
+    );
+
+    it('clears a selection outside the tabs and completes a malformed MRU from tab order', () => {
+      const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: { schemaVersion: 3, tabLayout: {
+        tabs: [address('a'), address('b')], selected: address('foreign'), mru: 'invalid',
+      } } }));
+
+      expect(state.tabLayout()).toEqual({ tabs: [address('a'), address('b')], selected: null, mru: [address('a'), address('b')] });
+    });
+
+    it('clones addresses and arrays when saving and reading a layout', async () => {
+      const workspaceState = memoryStore();
+      const state = new WorkspaceState(workspaceState);
+      const a = { ...address('a') };
+      const layout = { tabs: [a], selected: a, mru: [a] };
+      await state.setTabLayout(layout);
+      a.sessionId = 'changed';
+      layout.tabs.length = 0;
+      layout.mru.length = 0;
+      const read = state.tabLayout();
+      expect(read).toEqual({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+      if (read) {
+        (read.tabs as SessionAddress[]).length = 0;
+        (read.selected as { sessionId: string }).sessionId = 'changed-again';
+        (read.mru as SessionAddress[]).length = 0;
+      }
+
+      expect(state.tabLayout()).toEqual({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+    });
+
+    it('rebinds layout addresses and its legacy pointer, deduplicating name collisions', async () => {
+      const workspaceState = memoryStore();
+      const state = new WorkspaceState(workspaceState);
+      const renamed = address('a', { configuredName: 'oc' });
+      await state.setLastActiveSession(address('a'));
+      await state.setWorkspaceTarget(onDevenv);
+      await state.setTabLayout({
+        tabs: [address('a'), address('b', { configuredName: 'Claude' }), renamed],
+        selected: address('a'), mru: [renamed, address('a'), address('b', { configuredName: 'Claude' })],
+      });
+
+      await state.rebind('OpenCode', 'oc');
+
+      expect(new WorkspaceState(workspaceState).tabLayout()).toEqual({
+        tabs: [renamed, address('b', { configuredName: 'Claude' })], selected: renamed,
+        mru: [renamed, address('b', { configuredName: 'Claude' })],
+      });
+      expect(state.lastActiveSession()).toEqual(renamed);
+      expect(state.workspaceTarget()).toEqual(onDevenv);
+    });
+
+    it('rebinds a layout without a legacy pointer and avoids writing unrelated renames', async () => {
+      const workspaceState = memoryStore();
+      const state = new WorkspaceState(workspaceState);
+      await state.setTabLayout({ tabs: [address('a')], selected: null, mru: [address('a')] });
+      const stored = workspaceState.values.get(WORKSPACE_KEY);
+      await state.rebind('Claude', 'cc');
+      expect(workspaceState.values.get(WORKSPACE_KEY)).toBe(stored);
+
+      await state.rebind('OpenCode', 'oc');
+
+      expect(state.tabLayout()).toEqual({
+        tabs: [address('a', { configuredName: 'oc' })], selected: null, mru: [address('a', { configuredName: 'oc' })],
+      });
+    });
+
+    it('tracks layout writes until disposal finishes and ignores later layout writes', async () => {
+      const workspaceState = heldStore();
+      const state = new WorkspaceState(workspaceState);
+      const order: string[] = [];
+      const writing = state.setTabLayout({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+      const settled = state.settled().then(() => order.push('settled'));
+      const disposed = state.dispose().then(() => order.push('disposed'));
+      await state.setTabLayout({ tabs: [], selected: null, mru: [] });
+      expect(order).toEqual([]);
+      workspaceState.finish[0]?.();
+      await writing;
+      await settled;
+      await disposed;
+
+      expect(order).toEqual(['settled', 'disposed']);
+      expect(workspaceState.finish).toHaveLength(1);
+      expect(state.tabLayout()).toEqual({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+    });
   });
 
   it('rebinds the last active session to the new name of its configuration, and no other', async () => {

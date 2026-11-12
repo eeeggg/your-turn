@@ -2,6 +2,7 @@ import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { ChatViewController } from '@/core/ChatViewController';
 import { logError, messageOf } from '@/core/Log';
 import type { SessionManager } from '@/core/SessionManager';
+import type { SessionAddress } from '@/core/PersistedState';
 import {
   openingFailure,
   type OpeningFailure,
@@ -44,7 +45,7 @@ export class SessionCommands {
   selectTab(tabId: string): Promise<void> {
     return this.serial(async () => {
       const tab = this.chatView.sessionTabs.snapshot().tabs.find((tab) => tab.tabId === tabId);
-      if (tab) { await this.openSession(tab.agentName, tab.sessionId); }
+      if (tab) { await this.openSession(tab.agentName, tab.sessionId, this.chatView.sessionTabs.address(tabId)); }
     });
   }
 
@@ -59,13 +60,22 @@ export class SessionCommands {
         return;
       }
       const closing = { question: 'Close this session tab?', action: 'Close Tab', keepAllAction: 'Keep All and Close', stopsAgent: true };
-      if (!await this.confirmLeaving(closing)) { return; }
+      const ownsActive = this.chatView.sessionTabs.matches(tabId, this.sessions.getActiveSession());
+      if (ownsActive && !await this.confirmLeaving(closing)) { return; }
       await this.startup.forgo();
       const activeAgent = this.sessions.getActiveAgentName();
-      if (activeAgent) { await this.sessions.disconnectAgent(activeAgent); }
+      if (ownsActive && activeAgent) { await this.sessions.disconnectAgent(activeAgent); }
       const next = this.chatView.sessionTabs.close(tabId);
       this.chatView.notifyTabsChanged();
-      if (next) { await this.openThrough(next.agentName, next.sessionId); }
+      if (next) {
+        if (this.chatView.sessionTabs.matches(next.tabId, this.sessions.getActiveSession())) {
+          this.selectActiveTab();
+        } else if (!ownsActive) {
+          await this.openSession(next.agentName, next.sessionId, this.chatView.sessionTabs.address(next.tabId));
+        } else {
+          await this.openThrough(next.agentName, next.sessionId, this.chatView.sessionTabs.address(next.tabId));
+        }
+      }
     });
   }
   constructor(
@@ -102,8 +112,11 @@ export class SessionCommands {
     if (outcome.kind !== 'failed') { return; }
     const { address, configuredName, failure } = outcome;
     logError('Failed to open session', failure.message, { sessionId: address.sessionId, configuredName, kind: failure.kind });
-    const loadThrough = async (name: string) =>
-      this.settleStartup(await this.withProgress('Loading session…', () => this.startup.loadThrough(address, name)));
+    const loadThrough = async (name: string) => {
+      const retried = await this.withProgress('Loading session…', () => this.startup.loadThrough(address, name));
+      if (retried.kind === 'loaded') { this.rebindTab(address.configuredName, name, address.sessionId); }
+      await this.settleStartup(retried);
+    };
     await this.offerWaysOn(failure, address.configuredName, address.sessionId, {
       retry: () => loadThrough(configuredName),
       chooseAgent: loadThrough,
@@ -139,12 +152,12 @@ export class SessionCommands {
   }
 
   /** Offer management actions for the row's agent, retaining its target while the picker is open. */
-  async agentActions(agentName?: string): Promise<void> {
+  async agentActions(agentName?: string, canRefreshSessions = false): Promise<void> {
     if (!agentName) { return; }
     const connected = this.sessions.isConnected(agentName);
     const items: (QuickPickItem & { command?: string })[] = [
       { label: 'New Session', command: 'your-turn.newSession' },
-      { label: 'Refresh Sessions', command: 'your-turn.refreshSessions' },
+      ...(canRefreshSessions ? [{ label: 'Refresh Sessions', command: 'your-turn.refreshSessions' }] : []),
       { label: '', kind: QuickPickItemKind.Separator },
       connected
         ? { label: 'Disconnect Agent', command: 'your-turn.disconnectAgent' }
@@ -306,14 +319,16 @@ export class SessionCommands {
     return this.serial(() => this.openSession(agentName, sessionId));
   }
 
-  private async openSession(agentName: string | undefined, sessionId: string | undefined): Promise<void> {
+  private async openSession(agentName: string | undefined, sessionId: string | undefined, address?: SessionAddress): Promise<void> {
     if (!agentName || !sessionId) {
       void this.window.showErrorMessage('Open Session: missing agentName/sessionId.');
       return;
     }
     await this.startup.forgo();
 
-    if (this.sessions.getActiveSessionId() === sessionId && this.sessions.getActiveAgentName() === agentName) {
+    const tab = this.chatView.sessionTabs.snapshot().tabs.find((tab) => tab.agentName === agentName && tab.sessionId === sessionId);
+    const active = this.sessions.getActiveSession();
+    if (tab ? this.chatView.sessionTabs.matches(tab.tabId, active) : active?.sessionId === sessionId && active.agentName === agentName) {
       this.selectActiveTab();
       await this.focusChatView();
       return;
@@ -329,26 +344,36 @@ export class SessionCommands {
     if (!await this.confirmLeaving(opening)) { return; }
 
     await this.focusChatView();
-    await this.openThrough(agentName, sessionId);
+    await this.openThrough(agentName, sessionId, address);
   }
 
   /**
    * Open a session through `agentName`, loading it when the agent can, otherwise resuming it; `usedThrough` is the
    * configuration it was last used through, where its reference moves from once it opens, when not `agentName`.
    */
-  private async openThrough(agentName: string, sessionId: string, usedThrough?: string): Promise<void> {
-    const referencedAs = usedThrough ?? agentName;
-    const from = usedThrough === undefined ? undefined : { configuredName: usedThrough };
+  private async openThrough(agentName: string, sessionId: string, usedThrough?: string | SessionAddress): Promise<void> {
+    const referencedAs = typeof usedThrough === 'string' ? usedThrough : usedThrough?.configuredName ?? agentName;
+    const from = typeof usedThrough === 'string' ? { configuredName: usedThrough } : usedThrough;
     let failure: OpeningFailure;
     try {
+      const invalid = typeof usedThrough === 'object' ? this.startup.validate(usedThrough, agentName) : undefined;
+      if (invalid) {
+        await this.offerWaysOn(invalid, referencedAs, sessionId, {
+          retry: () => this.openThrough(agentName, sessionId, usedThrough),
+          chooseAgent: (configuredName) => this.openThrough(configuredName, sessionId, usedThrough),
+        });
+        return;
+      }
       // Load replays the transcript, so it is preferred over resume.
       const capabilities = await this.sessions.ensureConnected(agentName);
       if (capabilities.load) {
         await this.withProgress('Loading session…', () => this.sessions.loadSession(agentName, sessionId, from));
+        this.rebindTab(referencedAs, agentName, sessionId);
         return;
       }
       if (capabilities.resume) {
         await this.sessions.resumeSession(agentName, sessionId, from);
+        this.rebindTab(referencedAs, agentName, sessionId);
         void this.window.showInformationMessage('Resumed session (history not replayed).');
         return;
       }
@@ -359,8 +384,14 @@ export class SessionCommands {
     }
     await this.offerWaysOn(failure, referencedAs, sessionId, {
       retry: () => this.openThrough(agentName, sessionId, usedThrough),
-      chooseAgent: (configuredName) => this.openThrough(configuredName, sessionId, referencedAs),
+      chooseAgent: (configuredName) => this.openThrough(configuredName, sessionId, usedThrough ?? referencedAs),
     });
+  }
+
+  private rebindTab(from: string, to: string, sessionId: string): void {
+    if (from === to) { return; }
+    this.chatView.sessionTabs.rebind(from, to, sessionId);
+    this.chatView.notifyTabsChanged();
   }
 
   /**

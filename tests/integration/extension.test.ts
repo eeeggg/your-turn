@@ -16,7 +16,7 @@ suite('Extension Test Suite', () => {
 			{ command: 'your-turn.newSession', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: 'inline@0' },
 			{ command: 'your-turn.agentActions', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: 'inline@1' },
 			{ command: 'your-turn.newSession', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: '1_session@0' },
-			{ command: 'your-turn.refreshSessions', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: '1_session@1' },
+			{ command: 'your-turn.refreshSessions', when: 'view == your-turn-sessions && viewItem =~ /^agent/ && viewItem =~ /-refreshable$/', group: '1_session@1' },
 			{ command: 'your-turn.connectAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent-disconnected-/', group: '2_agent@0' },
 			{ command: 'your-turn.disconnectAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent-connected-/', group: '2_agent@0' },
 			{ command: 'your-turn.restartAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent-connected-/', group: '2_agent@1' },

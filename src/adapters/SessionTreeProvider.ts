@@ -16,29 +16,31 @@ class AgentTreeItem extends vscode.TreeItem {
     hasSession: boolean,
     connected: boolean,
     collapsibleState: vscode.TreeItemCollapsibleState,
+    canRefreshSessions: boolean,
   ) {
     super(agentName, collapsibleState);
     this.id = `agent:${agentName}`;
-    this.update(hasSession, connected, collapsibleState);
+    this.update(hasSession, connected, collapsibleState, canRefreshSessions);
   }
 
-  update(hasSession: boolean, connected: boolean, collapsibleState: vscode.TreeItemCollapsibleState): void {
+  update(hasSession: boolean, connected: boolean, collapsibleState: vscode.TreeItemCollapsibleState, canRefreshSessions: boolean): void {
     this.collapsibleState = collapsibleState;
-    this.contextValue = `agent-${connected ? 'connected' : 'disconnected'}-${hasSession ? 'with' : 'without'}-session`;
-    if (hasSession) {
+    this.contextValue = `agent-${connected ? 'connected' : 'disconnected'}-${hasSession ? 'with' : 'without'}-session${canRefreshSessions ? '-refreshable' : ''}`;
+    if (connected) {
       this.iconPath = new vscode.ThemeIcon(
         'circle-filled',
         new vscode.ThemeColor('testing.iconPassed'),
       );
-      this.command = { command: 'your-turn.openChat', title: 'Open Chat View' };
     } else {
       this.iconPath = new vscode.ThemeIcon('circle-outline');
+    }
+    if (hasSession) {
+      this.command = { command: 'your-turn.openChat', title: 'Open Chat View' };
+    } else {
       delete this.command;
     }
 
-    this.tooltip = hasSession
-      ? `${this.agentName} — in session\nClick to open the chat view`
-      : `${this.agentName} — no session\nUse the plus icon to start a new session`;
+    this.tooltip = `${this.agentName} — ${connected ? 'connected' : 'disconnected'}`;
   }
 }
 
@@ -61,14 +63,10 @@ class SessionTreeItem extends vscode.TreeItem {
       this.description = row.age;
     }
     this.tooltip = row.tooltip;
-    if (row.isActive) {
-      this.iconPath = new vscode.ThemeIcon(
-        'circle-filled',
-        new vscode.ThemeColor('testing.iconPassed'),
-      );
-    } else {
-      this.iconPath = new vscode.ThemeIcon('comment-discussion');
-    }
+    this.iconPath = new vscode.ThemeIcon(
+      'comment-discussion',
+      row.hasOpenTab ? undefined : new vscode.ThemeColor('list.deemphasizedForeground'),
+    );
     this.command = {
       command: 'your-turn.openSession',
       title: 'Open Session',
@@ -238,9 +236,9 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<TreeNode> {
       const collapsible = agent.expandable ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None;
       let root = this.agentRoots.get(agent.name);
       if (root) {
-        root.update(agent.hasSession, agent.connected, collapsible);
+        root.update(agent.hasSession, agent.connected, collapsible, agent.canRefreshSessions);
       } else {
-        root = new AgentTreeItem(agent.name, agent.hasSession, agent.connected, collapsible);
+        root = new AgentTreeItem(agent.name, agent.hasSession, agent.connected, collapsible, agent.canRefreshSessions);
         this.agentRoots.set(agent.name, root);
       }
       return root;

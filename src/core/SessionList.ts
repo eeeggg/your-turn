@@ -8,11 +8,13 @@ import {
   type SessionManager,
   type SessionOpening
 } from '@/core/SessionManager';
+import type { SessionTabs } from '@/core/SessionTabs';
 
 export interface AgentEntry {
   readonly name: string;
   readonly hasSession: boolean;
   readonly connected: boolean;
+  readonly canRefreshSessions: boolean;
   /** False only when the agent is known to keep no past sessions and session history has none. */
   readonly expandable: boolean;
 }
@@ -22,7 +24,7 @@ export interface SessionRow {
   readonly label: string;
   readonly age?: string;
   readonly tooltip: string;
-  readonly isActive: boolean;
+  readonly hasOpenTab: boolean;
 }
 
 type MoreSessions =
@@ -138,6 +140,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     private readonly workspaceCwd: () => string | undefined,
     private readonly workspaceTarget: () => WorkspaceTarget | undefined,
     private readonly now: () => number = Date.now,
+    private readonly tabs?: Pick<SessionTabs, 'has' | 'on' | 'off'>,
   ) {
     super();
     for (const event of SESSION_EVENTS) {
@@ -148,6 +151,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     sessions.on('session-opened', this.opened);
     sessions.on('session-removed', this.removed);
     references.on('changed', this.announce);
+    tabs?.on('changed', this.announce);
   }
 
   agents(): AgentEntry[] {
@@ -158,6 +162,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
         name,
         hasSession: this.sessions.hasSession(name),
         connected: this.sessions.isConnected(name),
+        canRefreshSessions: this.listings.get(name)?.kind === 'listed',
         expandable: !keepsNone || this.historyOf(name).length > 0,
       };
     });
@@ -177,13 +182,12 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       return this.listedByAgent(agentName);
     }
     if (caps.load || caps.resume) {
-      const activeId = this.sessions.getActiveSessionId();
       const rows = this.historyOf(agentName).map((reference) => this.row(agentName, {
         sessionId: reference.sessionId,
         label: reference.title?.trim() || UNTITLED,
         cwd: reference.cwd,
         lastActiveAt: reference.lastActiveAt,
-      }, 'history', activeId));
+      }, 'history'));
       return { kind: 'listed', source: 'history', rows, more: NO_MORE };
     }
     return { kind: 'unsupported' };
@@ -275,6 +279,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     this.sessions.off('session-opened', this.opened);
     this.sessions.off('session-removed', this.removed);
     this.references.off('changed', this.announce);
+    this.tabs?.off('changed', this.announce);
     this.removeAllListeners();
   }
 
@@ -283,7 +288,6 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     if (listing.kind !== 'listed') {
       return listing;
     }
-    const activeId = this.sessions.getActiveSessionId();
     const known = this.sinceListed.get(agentName);
     const row = (session: ListedSession, source: 'agent' | 'open') => {
       const learned = known?.get(session.sessionId);
@@ -297,7 +301,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
         label: info.title?.trim() || UNTITLED,
         cwd: info.cwd,
         lastActiveAt: info.updatedAt ?? undefined,
-      }, source, activeId);
+      }, source);
     };
     // An agent may not list a session never prompted, and lists one only once it is asked again.
     const open = this.sessions.openSessionOf(agentName);
@@ -403,7 +407,6 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     agentName: string,
     session: { sessionId: string; label: string; cwd: string; lastActiveAt: string | undefined },
     source: 'agent' | 'open' | 'history',
-    activeId: string | null,
   ): SessionRow {
     const lines = [`Agent: ${agentName}`, `Session: ${session.sessionId}`, `cwd: ${session.cwd}`];
     if (session.lastActiveAt) {
@@ -416,7 +419,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       label: session.label,
       ...(age ? { age } : {}),
       tooltip: lines.join('\n'),
-      isActive: session.sessionId === activeId,
+      hasOpenTab: this.tabs?.has(agentName, session.sessionId) ?? false,
     };
   }
 }

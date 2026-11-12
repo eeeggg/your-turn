@@ -1,9 +1,13 @@
 import {
   yourTurnContainerControl,
+  agentMoreActions,
   agentsViewRow,
+  chatTranscript,
   chatViewTitle,
+  chooseAgentAction,
   promptInput,
   quickInput,
+  quickInputRow,
   selectListedSession,
   sessionTabs
 } from '@tests/ui/workbench';
@@ -58,6 +62,100 @@ test('clicking listed sessions opens the intended tabs and returning selects the
   await expect(first).toHaveAttribute('aria-selected', 'true');
   await expect(tabs).toHaveCount(2);
   await expect(promptInput(window)).toBeEnabled();
+});
+
+test('Refresh Sessions is offered in both menus only after the agent session list is fetched', async ({ window }, testInfo) => {
+  await yourTurnContainerControl(window).click();
+  const agent = agentsViewRow(window, 'fake-v1');
+  await agent.hover();
+  await agentMoreActions(window, 'fake-v1').click();
+  await expect(quickInputRow(window, 'New Session')).toBeVisible();
+  await expect(quickInputRow(window, 'Refresh Sessions')).toHaveCount(0);
+  await quickInput(window).press('Escape');
+  await expect(quickInput(window)).toBeHidden();
+
+  await agent.click({ button: 'right' });
+  await expect(window.getByRole('menuitem', { name: 'Your Turn: New Session', exact: true })).toBeVisible();
+  const refresh = window.getByRole('menuitem', { name: 'Your Turn: Refresh Sessions', exact: true });
+  await expect(refresh).toHaveCount(0);
+  await window.keyboard.press('Escape');
+  await agent.click();
+  await expect(agentsViewRow(window, 'Compaction session')).toBeVisible();
+  await agent.click();
+  await expect(agentsViewRow(window, 'Compaction session')).toBeHidden();
+
+  await chooseAgentAction(window, 'fake-v1', 'Disconnect Agent');
+  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — disconnected/);
+  await agent.click({ button: 'right' });
+  await expect(refresh).toBeVisible();
+  await refresh.focus();
+  await refresh.press('Home');
+  await refresh.press('ArrowDown');
+  await expect(refresh).toBeFocused();
+  await refresh.press('Enter');
+  await expect(refresh).toBeHidden();
+  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — connected/);
+
+  await chooseAgentAction(window, 'fake-v1', 'Disconnect Agent');
+  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — disconnected/);
+  await agent.hover();
+  await agentMoreActions(window, 'fake-v1').click();
+  await expect(quickInputRow(window, 'Refresh Sessions')).toBeVisible();
+  await window.screenshot({ path: testInfo.outputPath('agent-refresh-menu.png') });
+  await quickInputRow(window, 'Refresh Sessions').click();
+  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — connected/);
+  await expect(promptInput(window)).toBeDisabled();
+});
+
+test('window reload restores tab order and selection and preserves an explicitly empty strip', async ({ window }, testInfo) => {
+  const first = 'Compaction session';
+  const second = 'Another session with a deliberately long title for tab overflow';
+  const strip = sessionTabs(window);
+  const tabs = strip.getByRole('tab');
+  const reload = async () => {
+    await window.keyboard.press('F1');
+    await quickInput(window).fill('>Developer: Reload Window');
+    const command = quickInputRow(window, 'Developer: Reload Window');
+    await expect(command).toBeVisible();
+    await Promise.all([
+      window.waitForEvent('framenavigated', (frame) => frame === window.mainFrame()),
+      command.click(),
+    ]);
+    await expect(yourTurnContainerControl(window)).toBeVisible();
+    await expect(promptInput(window)).toBeVisible();
+  };
+
+  await yourTurnContainerControl(window).click();
+  await agentsViewRow(window, 'fake-v1').click();
+  await selectListedSession(window, first);
+  await expect(promptInput(window)).toBeEnabled();
+  await selectListedSession(window, second);
+  await expect(promptInput(window)).toBeEnabled();
+  await tabs.nth(0).click();
+  await expect(tabs).toHaveText([first, second]);
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await expect(promptInput(window)).toBeEnabled();
+
+  await reload();
+
+  await expect(tabs).toHaveText([first, second]);
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'false');
+  await expect(chatTranscript(window)).toContainText('Historical answer');
+  await expect(promptInput(window)).toBeEnabled();
+  await window.screenshot({ path: testInfo.outputPath('session-tabs-restored.png') });
+  await strip.getByRole('button', { name: `Close ${second}`, exact: true }).click();
+  await expect(tabs).toHaveText([first]);
+  await strip.getByRole('button', { name: `Close ${first}`, exact: true }).click();
+  await expect(strip).toBeHidden();
+  await expect(promptInput(window)).toBeDisabled();
+
+  await reload();
+
+  await expect(tabs).toHaveCount(0);
+  await expect(strip).toBeHidden();
+  await expect(chatViewTitle(window)).toHaveText('Chat');
+  await expect(promptInput(window)).toBeDisabled();
 });
 
 test('arrow navigation requires keyboard activation before switching the selected session', async ({ window }) => {
@@ -138,7 +236,7 @@ test('session tabs wrap into rows with keyboard and close controls reachable in 
   await expect(chatViewTitle(window)).toHaveText('Chat');
   await expect(promptInput(window)).toBeDisabled();
   const agent = agentsViewRow(window, 'fake-v1');
-  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — no session/);
+  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — disconnected/);
   await agent.click({ button: 'right' });
   const newSession = window.getByRole('menuitem', { name: 'Your Turn: New Session', exact: true });
   // Home selects the first action in VS Code's menu model, not just its DOM focus.
