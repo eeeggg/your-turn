@@ -8,6 +8,7 @@ import { StoreContext } from '@/webview/views/StoreContext';
 import { Questions } from '@/webview/views/Questions';
 import { InputArea } from '@/webview/views/InputArea';
 import { Chevron } from '@/webview/views/elements/Chevron';
+const SESSION_ID = '27d8dff1-4e7c-47a1-8e60-61c1410901b8';
 
 type Question = Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number];
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
@@ -45,7 +46,7 @@ function setup(initial: RootState = initialState) {
   const send = (action: Action) => act(() => store.dispatch(action));
   const arrive = (questions = [question]) => send({ type: 'questions', questions });
   const prompt = screen.getByRole<HTMLTextAreaElement>('textbox');
-  const connect = () => send({ type: 'state', activeSessionId: 's1', session: { sessionId: 's1', agentName: 'Agent', cwd: '/work', pickers: [], commands: [] } });
+  const connect = () => send({ type: 'state', activeSessionId: SESSION_ID, session: { sessionId: SESSION_ID, agentName: 'Agent', cwd: '/work', pickers: [], commands: [] } });
   return { send, arrive, prompt, connect, take: () => posted.splice(0) };
 }
 

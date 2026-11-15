@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
 import type { InitializeResponse } from '@agentclientprotocol/sdk';
@@ -31,13 +32,19 @@ function memoryStore(): KeyValueStore {
 }
 
 const TARGET: WorkspaceTarget = { uri: 'file:///work', host: 'file://' };
+const LAST_SESSION = '267bc732-9831-4c95-b9f3-af8b8c38c730';
+const REQUESTED_SESSION = '1c93d73b-77ec-43db-8d81-ac6a02a68e54';
+const SELECTED_SESSION = 'f3806f31-ef45-47b1-a4cb-d6fed3d1f746';
 
 /** The workspace's last active session, used through configuration `fake`. */
-const last: SessionAddress = { configuredName: 'fake', sessionId: 's1', cwd: work.cwd, host: TARGET.host, workspaceUri: TARGET.uri };
+const last: SessionAddress = { configuredName: 'fake', sessionId: LAST_SESSION, cwd: work.cwd, host: TARGET.host, workspaceUri: TARGET.uri };
 
 /**
  * An agent that loads any session but `gone`, which it does not know, and records the requests it receives. While
  * `inUse` is set, it refuses each load as another client has the session open.
+ * shortcut: loads are scripted, not checked against stored sessions. For Slice 1 authority tests and Slice 2
+ * routing tests that need this check, seed known sessions and validate request IDs; retain them across process
+ * replacement. Keep deliberate equal-ID cases explicit: generated IDs do not cover cross-agent collisions.
  */
 function loadingAgent(init: Partial<InitializeResponse> = { agentCapabilities: { loadSession: true } }) {
   const requests: string[] = [];
@@ -45,7 +52,7 @@ function loadingAgent(init: Partial<InitializeResponse> = { agentCapabilities: {
   const script: AgentScript = () => fakeAgent(init)
     .onRequest(methods.agent.session.new, () => {
       requests.push('session/new');
-      return { sessionId: 'new' };
+      return { sessionId: randomUUID() };
     })
     .onRequest(methods.agent.session.load, ({ params }) => {
       requests.push(`session/load ${params.sessionId}`);
@@ -97,7 +104,7 @@ function setup(scripts: Record<string, AgentScript>, selection?: { selectedAddre
     /** As in a remote window once it learns its workspace URI. */
     withWorkspaceTarget() { target = TARGET; },
     /** The reference to session `sessionId` through configuration `configuredName`. */
-    reference: (configuredName: string, sessionId = 's1') => references.get({ host: TARGET.host, configuredName, sessionId }),
+    reference: (configuredName: string, sessionId = LAST_SESSION) => references.get({ host: TARGET.host, configuredName, sessionId }),
   };
 }
 
@@ -110,6 +117,43 @@ async function seeded(scripts: Record<string, AgentScript>, address: SessionAddr
 }
 
 describe('SessionStartup', () => {
+  it('keeps creations from separate agent fixtures distinct', async () => {
+    const fake = loadingAgent();
+    const other = loadingAgent();
+    const { manager } = setup({ fake: fake.script, other: other.script });
+
+    await manager.connectToAgent('fake');
+    const first = manager.getActiveSessionId();
+    expect(first).not.toBeNull();
+    await manager.disconnectAgent('fake');
+    await manager.connectToAgent('other');
+    const second = manager.getActiveSessionId();
+
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+    expect(manager.getActiveSession()).toMatchObject({ agentName: 'other', sessionId: second });
+    expect(fake.requests).toEqual(['session/new']);
+    expect(other.requests).toEqual(['session/new']);
+  });
+
+  it('keeps new sessions distinct across connection replacement and loads the requested prior session', async () => {
+    const fake = loadingAgent();
+    const { manager, startup, workspace } = setup({ fake: fake.script });
+    await manager.connectToAgent('fake');
+    const first = manager.getActiveSessionId();
+    expect(first).not.toBeNull();
+    await manager.disconnectAgent('fake');
+    await manager.connectToAgent('fake');
+    const second = manager.getActiveSessionId();
+    expect(second).not.toBeNull();
+    expect(second).not.toBe(first);
+
+    expect(await startup.loadThrough(last, 'fake')).toMatchObject({ kind: 'loaded', session: { sessionId: last.sessionId } });
+    expect(manager.getActiveSessionId()).toBe(last.sessionId);
+    expect(workspace.lastActiveSession()).toEqual(last);
+    expect(fake.requests).toEqual(['session/new', 'session/new', `session/load ${last.sessionId}`]);
+  });
+
   it.each([
     { ...last, host: 'vscode-remote://ssh-remote+elsewhere' },
     { ...last, workspaceUri: 'file:///elsewhere' },
@@ -128,11 +172,11 @@ describe('SessionStartup', () => {
 
   it('loads the restored selection ahead of the legacy last active session', async () => {
     const fake = loadingAgent();
-    const { startup, workspace } = setup({ fake: fake.script }, { selectedAddress: () => ({ ...last, sessionId: 'selected' }) });
+    const { startup, workspace } = setup({ fake: fake.script }, { selectedAddress: () => ({ ...last, sessionId: SELECTED_SESSION }) });
     await workspace.setLastActiveSession(last);
 
-    expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 'selected' } });
-    expect(fake.requests).toEqual(['session/load selected']);
+    expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: SELECTED_SESSION } });
+    expect(fake.requests).toEqual([`session/load ${SELECTED_SESSION}`]);
   });
 
   it('does not fall back to the legacy session when the restored layout has no selection', async () => {
@@ -167,10 +211,10 @@ describe('SessionStartup', () => {
 
     const outcome = await startup.attempt();
 
-    expect(outcome).toEqual({ kind: 'loaded', session: manager.getSession('s1') });
-    expect(manager.getActiveSessionId()).toBe('s1');
+    expect(outcome).toEqual({ kind: 'loaded', session: manager.getSession(LAST_SESSION) });
+    expect(manager.getActiveSessionId()).toBe(LAST_SESSION);
     expect(await startup.attempt()).toBe(outcome);
-    expect(fake.requests).toEqual(['session/load s1']);
+    expect(fake.requests).toEqual([`session/load ${LAST_SESSION}`]);
   });
 
   it('loads nothing when a session is already open', async () => {
@@ -208,19 +252,19 @@ describe('SessionStartup', () => {
     withoutWorkspaceTarget();
 
     expect(await startup.attempt()).toMatchObject({ kind: 'loaded' });
-    expect(fake.requests).toEqual(['session/load s1']);
+    expect(fake.requests).toEqual([`session/load ${LAST_SESSION}`]);
   });
 
   describe('a session another window asked for', () => {
-    const asked: SessionAddress = { ...last, sessionId: 's2' };
+    const asked: SessionAddress = { ...last, sessionId: REQUESTED_SESSION };
 
     it('loads the requested session ahead of the restored selection', async () => {
       const fake = loadingAgent();
       const { startup, request } = setup({ fake: fake.script }, { selectedAddress: () => last });
       await request(asked);
 
-      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's2' } });
-      expect(fake.requests).toEqual(['session/load s2']);
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: REQUESTED_SESSION } });
+      expect(fake.requests).toEqual([`session/load ${REQUESTED_SESSION}`]);
     });
 
     it('takes the initial request once its remote target becomes known before startup', async () => {
@@ -231,8 +275,8 @@ describe('SessionStartup', () => {
       expect(await startup.requested()).toBeUndefined();
       withWorkspaceTarget();
 
-      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's2' } });
-      expect(fake.requests).toEqual(['session/load s2']);
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: REQUESTED_SESSION } });
+      expect(fake.requests).toEqual([`session/load ${REQUESTED_SESSION}`]);
       expect(await startup.requestedSince()).toBeUndefined();
     });
 
@@ -241,9 +285,9 @@ describe('SessionStartup', () => {
       const { manager, startup, request, taken } = await seeded({ fake: fake.script });
       await request(asked);
 
-      expect(await startup.attempt()).toEqual({ kind: 'loaded', session: manager.getSession('s2') });
+      expect(await startup.attempt()).toEqual({ kind: 'loaded', session: manager.getSession(REQUESTED_SESSION) });
 
-      expect(fake.requests).toEqual(['session/load s2']);
+      expect(fake.requests).toEqual([`session/load ${REQUESTED_SESSION}`]);
       expect(await taken()).toBeUndefined();
     });
 
@@ -252,8 +296,8 @@ describe('SessionStartup', () => {
       const { startup, request } = setup({ fake: fake.script });
       await request(asked);
 
-      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's2' } });
-      expect(fake.requests).toEqual(['session/load s2']);
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: REQUESTED_SESSION } });
+      expect(fake.requests).toEqual([`session/load ${REQUESTED_SESSION}`]);
     });
 
     it('gives it once per activation, as it opened', async () => {
@@ -272,7 +316,7 @@ describe('SessionStartup', () => {
       await request(elsewhere);
 
       expect(await startup.requested()).toBeUndefined();
-      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's1' } });
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: LAST_SESSION } });
       expect(await taken('file:///elsewhere')).toEqual(elsewhere);
     });
 
@@ -295,7 +339,7 @@ describe('SessionStartup', () => {
       await request(asked);
       withoutWorkspaceTarget();
 
-      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: 's1' } });
+      expect(await startup.attempt()).toMatchObject({ kind: 'loaded', session: { sessionId: LAST_SESSION } });
       withWorkspaceTarget();
       expect(await startup.requestedSince()).toEqual(asked);
     });
@@ -351,7 +395,7 @@ describe('SessionStartup', () => {
         name: 'its agent refuses the load',
         inUse: true,
         failure: { kind: 'failed', message: expect.stringContaining('in use by another client') as unknown },
-        requests: ['session/load s1'],
+        requests: [`session/load ${LAST_SESSION}`],
       },
     ];
 
@@ -387,8 +431,8 @@ describe('SessionStartup', () => {
     await startup.attempt();
     fake.state.inUse = false;
 
-    expect(await startup.loadThrough(last, 'fake')).toMatchObject({ kind: 'loaded', session: { sessionId: 's1' } });
-    expect(fake.requests).toEqual(['session/load s1', 'session/load s1']);
+    expect(await startup.loadThrough(last, 'fake')).toMatchObject({ kind: 'loaded', session: { sessionId: LAST_SESSION } });
+    expect(fake.requests).toEqual([`session/load ${LAST_SESSION}`, `session/load ${LAST_SESSION}`]);
   });
 
   it('loads through another configuration, moving the reference and the last active session there', async () => {
@@ -397,7 +441,7 @@ describe('SessionStartup', () => {
     const { startup, workspace, reference } = await seeded({ fake: fake.script }, removed);
     await startup.attempt();
 
-    expect(await startup.loadThrough(removed, 'fake')).toMatchObject({ kind: 'loaded', session: { sessionId: 's1', agentName: 'fake' } });
+    expect(await startup.loadThrough(removed, 'fake')).toMatchObject({ kind: 'loaded', session: { sessionId: LAST_SESSION, agentName: 'fake' } });
 
     expect(reference('removed')).toBeUndefined();
     expect(reference('fake')).toMatchObject({ title: 'Kept title' });

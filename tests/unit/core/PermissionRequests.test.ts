@@ -12,13 +12,15 @@ const allowAlways: PermissionOption = { id: 'always', name: 'Always allow', kind
 const requestOnce: PermissionOption = { id: 'reject', name: 'Reject once', kind: 'reject_once' };
 const rejectAlways: PermissionOption = { id: 'reject-always', name: 'Always reject', kind: 'reject_always' };
 const sandboxed: PermissionOption = { id: 'sandbox', name: 'Run in the sandbox', kind: 'other' };
+const SESSION_ID = '2d35490f-b717-45df-81f1-185b12570c2c';
+const OTHER_SESSION_ID = '408944d2-0e14-4724-924b-08e0216e6398';
 
 function request(
   title: string | null,
   options: PermissionOption[] = [requestOnce, allowOnce],
   about: Partial<Pick<PermissionRequest, 'subject' | 'description'>> = {},
 ): PermissionRequest {
-  return { sessionId: 's1', title, description: null, subject: null, options, ...about };
+  return { sessionId: SESSION_ID, title, description: null, subject: null, options, ...about };
 }
 
 const selected = (optionId: string) => ({ kind: 'selected', optionId });
@@ -153,11 +155,11 @@ describe('PermissionRequests', () => {
     const firstShown = nextChoice();
     const active = ask(request('active'));
     const queued = ask(request('queued'));
-    const otherSession = ask({ ...request('other session'), sessionId: 's2' });
+    const otherSession = ask({ ...request('other session'), sessionId: OTHER_SESSION_ID });
 
     await firstShown;
     const otherShown = nextChoice();
-    requests.cancelSession('s1');
+    requests.cancelSession(SESSION_ID);
 
     expect(await Promise.all([active, queued])).toEqual([cancelled, cancelled]);
     const otherChoice = await otherShown;

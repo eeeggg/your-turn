@@ -87,7 +87,7 @@ for (const version of [1, 2]) {
       const request = (requested: SessionAddress) => new StartupRequests(globalState).request(requested);
       /** What another window opening the workspace would be given. */
       const taken = () => new StartupRequests(globalState).take(address.workspaceUri);
-      return { address, references, workspace, texts, startup: restarted(), restarted, request, taken };
+      return { manager, address, references, workspace, texts, startup: restarted(), restarted, request, taken };
     }
 
     function loaded(outcome: StartupOutcome) {
@@ -104,6 +104,22 @@ for (const version of [1, 2]) {
     }
 
     const stringType = version === 1 ? undefined : 'id';
+
+    test('creates distinct sessions across process relaunches and reopens the requested prior session', async () => {
+      const { manager, address, startup } = await starting('0cf9748d-8cb9-4f45-82b5-fd82ea081d5f');
+      const first = await manager.connectToAgent(agentName);
+      await manager.disconnectAgent(agentName);
+      const second = await manager.connectToAgent(agentName);
+      assert.notStrictEqual(second.sessionId, first.sessionId);
+      await manager.disconnectAgent(agentName);
+      const other = await manager.connectToAgent(otherName);
+      assert.notStrictEqual(other.sessionId, first.sessionId);
+      assert.notStrictEqual(other.sessionId, second.sessionId);
+
+      const reopened = loaded(await startup.loadThrough(address, agentName));
+      assert.strictEqual(reopened.sessionId, address.sessionId);
+      assert.deepStrictEqual(currents(reopened.configOptions), { model: 'model-b', effort: 'high', fast: true });
+    });
 
     test('replays it and sets its saved options again, high effort only once model B offers it', async () => {
       const sessionId = `startup-v${version}`;

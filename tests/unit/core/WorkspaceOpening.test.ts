@@ -5,7 +5,7 @@ import { ScriptedUser } from '@tests/unit/core/ScriptedUser';
 
 const address: SessionAddress = {
   configuredName: 'Claude',
-  sessionId: 's1',
+  sessionId: '056579d8-8e06-4f3d-af52-6ea79cb07992',
   cwd: '/home/me/api',
   host: 'vscode-remote://ssh-remote+devenv',
   workspaceUri: 'vscode-remote://ssh-remote%2Bdevenv/home/me/api',

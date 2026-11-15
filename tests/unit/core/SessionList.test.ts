@@ -22,6 +22,17 @@ import {
 } from '@tests/unit/core/InProcessAgents';
 
 const NOW = Date.parse('2026-10-18T12:00:00Z');
+const FIRST_SESSION_ID = '1fb9c146-a377-49a5-9938-1cae28af3176';
+const SECOND_SESSION_ID = '527fc1b9-65f9-4d96-b5e4-f5a549e2efa4';
+const THIRD_SESSION_ID = '86d45067-4ba6-46ba-903a-79bb38072730';
+const FOURTH_SESSION_ID = 'bdba2ac7-c842-4d83-9e43-202ef43a8ed5';
+const FIFTH_SESSION_ID = 'dd4c2236-e8c4-4d93-9fb2-54ba92834cfe';
+const CREATED_SESSION_ID = '9bd85ec6-f61b-48f0-bc56-18f52a752530';
+const HISTORICAL_SESSION_ID = '09037665-ae5d-446e-a6bd-86bce25de809';
+const TITLED_SESSION_ID = '5830a3b3-062f-4c78-aa68-56ee698679ad';
+const UNTITLED_SESSION_ID = 'ad267cd6-ebfa-4a24-b402-8ecc914ce5c1';
+const STALE_SESSION_ID = '34722c4d-12c8-464c-9781-fd2a3c086c92';
+const FRESH_SESSION_ID = '39872218-00ef-4637-90dd-6b2b9893c709';
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -138,7 +149,7 @@ describe('SessionList', () => {
 
   describe('agents', () => {
     it('offers explicit refresh only after a list is fetched, retaining it across disconnect but not invalidation', async () => {
-      const fake = listingAgent({ '': { sessions: [session('past')] } });
+      const fake = listingAgent({ '': { sessions: [session(HISTORICAL_SESSION_ID)] } });
       const { agents, manager, list } = setup({ fake: fake.script });
       expect(list.agents()).toMatchObject([{ canRefreshSessions: false }]);
       expect(agents.launched).toHaveLength(0);
@@ -168,7 +179,7 @@ describe('SessionList', () => {
 
     it('lists each configured agent with whether it is in session', async () => {
       const { manager, list } = setup({
-        one: () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })),
+        one: () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: CREATED_SESSION_ID })),
         two: () => fakeAgent(),
       });
       await manager.connectToAgent('one');
@@ -184,47 +195,47 @@ describe('SessionList', () => {
       await manager.ensureConnected('plain');
       expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: false, canRefreshSessions: false }]);
 
-      await references.used(address('plain', 'old'));
+      await references.used(address('plain', HISTORICAL_SESSION_ID));
       expect(list.agents()).toEqual([{ name: 'plain', hasSession: false, connected: true, expandable: true, canRefreshSessions: false }]);
     });
   });
 
   describe('sessions an agent lists', () => {
     it('does not treat the active session as an open tab when tab membership is unavailable', async () => {
-      const fake = listingAgent({ '': { sessions: [session('active')] } },
+      const fake = listingAgent({ '': { sessions: [session(FIRST_SESSION_ID)] } },
         (app) => app.onRequest(methods.agent.session.load, () => ({})));
       const { manager, list } = setup({ fake: fake.script });
       await listed(list, 'fake');
-      await manager.loadSession('fake', 'active');
+      await manager.loadSession('fake', FIRST_SESSION_ID);
 
       expect(await list.sessionsOf('fake')).toMatchObject({
         kind: 'listed',
-        rows: [{ sessionId: 'active', hasOpenTab: false }],
+        rows: [{ sessionId: FIRST_SESSION_ID, hasOpenTab: false }],
       });
     });
 
     it('marks every open tab by configuration and session without following selection', async () => {
       const tabs = new SessionTabs();
-      const fake = listingAgent({ '': { sessions: [session('first'), session('second'), session('shared')] } });
+      const fake = listingAgent({ '': { sessions: [session(FIRST_SESSION_ID), session(SECOND_SESSION_ID), session('shared')] } });
       const { list } = setup({ fake: fake.script, other: fake.script }, tabs);
       await listed(list, 'fake');
       await listed(list, 'other');
       let changes = 0;
       list.on('changed', () => { changes++; });
-      const first = tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: 'first', cwd: '/work' });
-      const second = tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: 'second', cwd: '/work' });
+      const first = tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: FIRST_SESSION_ID, cwd: '/work' });
+      const second = tabs.open({ agentName: 'fake', agentDisplayName: 'Fake', sessionId: SECOND_SESSION_ID, cwd: '/work' });
       tabs.open({ agentName: 'other', agentDisplayName: 'Other', sessionId: 'shared', cwd: '/work' });
 
       expect(changes).toBeGreaterThan(0);
       const expected = [
-        { sessionId: 'first', hasOpenTab: true },
-        { sessionId: 'second', hasOpenTab: true },
+        { sessionId: FIRST_SESSION_ID, hasOpenTab: true },
+        { sessionId: SECOND_SESSION_ID, hasOpenTab: true },
         { sessionId: 'shared', hasOpenTab: false },
       ];
       expect(await list.sessionsOf('fake')).toMatchObject({ rows: expected });
       expect(await list.sessionsOf('other')).toMatchObject({ rows: [
-        { sessionId: 'first', hasOpenTab: false },
-        { sessionId: 'second', hasOpenTab: false },
+        { sessionId: FIRST_SESSION_ID, hasOpenTab: false },
+        { sessionId: SECOND_SESSION_ID, hasOpenTab: false },
         { sessionId: 'shared', hasOpenTab: true },
       ] });
 
@@ -236,8 +247,8 @@ describe('SessionList', () => {
       tabs.close(first);
       expect(changes).toBeGreaterThan(0);
       expect(await list.sessionsOf('fake')).toMatchObject({ rows: [
-        { sessionId: 'first', hasOpenTab: false },
-        { sessionId: 'second', hasOpenTab: true },
+        { sessionId: FIRST_SESSION_ID, hasOpenTab: false },
+        { sessionId: SECOND_SESSION_ID, hasOpenTab: true },
         { sessionId: 'shared', hasOpenTab: false },
       ] });
     });
@@ -256,7 +267,7 @@ describe('SessionList', () => {
       const fake = listingAgent({
         '': {
           sessions: [
-            session('titled', { title: '  Fix the build  ', updatedAt: '2026-10-18T09:00:00Z' }),
+            session(TITLED_SESSION_ID, { title: '  Fix the build  ', updatedAt: '2026-10-18T09:00:00Z' }),
             session('0123456789abcdefghij', { updatedAt: '2026-10-11T12:00:00Z' }),
           ],
         },
@@ -265,7 +276,7 @@ describe('SessionList', () => {
 
       expect(await list.sessionsOf('fake')).toEqual({ kind: 'loading' });
       await listed(list, 'fake');
-      await manager.loadSession('fake', 'titled');
+      await manager.loadSession('fake', TITLED_SESSION_ID);
 
       expect(await list.sessionsOf('fake')).toEqual({
         kind: 'listed',
@@ -273,11 +284,11 @@ describe('SessionList', () => {
         more: { kind: 'none' },
         rows: [
           {
-            sessionId: 'titled',
+            sessionId: TITLED_SESSION_ID,
             label: 'Fix the build',
             age: '3 hours ago',
             hasOpenTab: false,
-            tooltip: 'Agent: fake\nSession: titled\ncwd: /work\nLast active: 2026-10-18T09:00:00Z\nListed by agent',
+            tooltip: `Agent: fake\nSession: ${TITLED_SESSION_ID}\ncwd: /work\nLast active: 2026-10-18T09:00:00Z\nListed by agent`,
           },
           {
             sessionId: '0123456789abcdefghij',
@@ -294,11 +305,11 @@ describe('SessionList', () => {
       const fake = listingAgent({
         '': {
           sessions: [
-            session('nearly-an-hour', { updatedAt: '2026-10-18T11:00:01Z' }),
-            session('a-minute', { updatedAt: '2026-10-18T11:59:00Z' }),
-            session('nearly-a-minute', { updatedAt: '2026-10-18T11:59:01Z' }),
-            session('ahead', { updatedAt: '2026-10-18T12:00:05Z' }),
-            session('undated'),
+            session(FIRST_SESSION_ID, { updatedAt: '2026-10-18T11:00:01Z' }),
+            session(SECOND_SESSION_ID, { updatedAt: '2026-10-18T11:59:00Z' }),
+            session(THIRD_SESSION_ID, { updatedAt: '2026-10-18T11:59:01Z' }),
+            session(FOURTH_SESSION_ID, { updatedAt: '2026-10-18T12:00:05Z' }),
+            session(FIFTH_SESSION_ID),
           ],
         },
       });
@@ -310,7 +321,7 @@ describe('SessionList', () => {
     });
 
     it('lists them once, until invalidated', async () => {
-      const fake = listingAgent({ '': { sessions: [session('a')] } });
+      const fake = listingAgent({ '': { sessions: [session(FIRST_SESSION_ID)] } });
       const { list } = setup({ fake: fake.script });
 
       await listed(list, 'fake');
@@ -323,22 +334,22 @@ describe('SessionList', () => {
 
     describe('a session open here that the agent has not listed', () => {
       const creating = (sessions: SessionInfo[]) =>
-        listingAgent({ '': { sessions } }, (app) => app.onRequest(methods.agent.session.new, () => ({ sessionId: 'created' })));
+        listingAgent({ '': { sessions } }, (app) => app.onRequest(methods.agent.session.new, () => ({ sessionId: CREATED_SESSION_ID })));
       const ids = (sessions: AgentSessions) => (sessions.kind === 'listed' ? sessions.rows.map((row) => row.sessionId) : sessions);
 
       it('is shown first as soon as it is created, without asking the agent again', async () => {
-        const fake = creating([session('old', { title: 'Old' })]);
+        const fake = creating([session(HISTORICAL_SESSION_ID, { title: 'Old' })]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
 
         await manager.connectToAgent('fake');
 
         const sessions = await list.sessionsOf('fake');
-        expect(ids(sessions)).toEqual(['created', 'old']);
+        expect(ids(sessions)).toEqual([CREATED_SESSION_ID, HISTORICAL_SESSION_ID]);
         expect(sessions.kind === 'listed' && sessions.rows[0]).toMatchObject({
           label: 'Untitled',
           hasOpenTab: false,
-          tooltip: expect.stringMatching(/^Agent: fake\nSession: created\ncwd: \/work\nLast active: .+\nOpen in this window, not yet listed by agent$/) as unknown,
+          tooltip: expect.stringMatching(new RegExp(`^Agent: fake\nSession: ${CREATED_SESSION_ID}\ncwd: /work\nLast active: .+\nOpen in this window, not yet listed by agent$`)) as unknown,
         });
         expect(fake.requests).toEqual([undefined]);
       });
@@ -349,48 +360,48 @@ describe('SessionList', () => {
         await listed(list, 'fake');
         await manager.connectToAgent('fake');
 
-        manager.applySessionInfoUpdate('created', { title: 'Named' });
+        manager.applySessionInfoUpdate(CREATED_SESSION_ID, { title: 'Named' });
 
         const sessions = await list.sessionsOf('fake');
         expect(sessions.kind === 'listed' && sessions.rows.map((row) => row.label)).toEqual(['Named']);
       });
 
       it('stays while it is open when a later listing omits it, and goes once it is not', async () => {
-        const fake = creating([session('old')]);
+        const fake = creating([session(HISTORICAL_SESSION_ID)]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
         await manager.connectToAgent('fake');
 
         list.invalidate('fake');
-        expect(ids(await listed(list, 'fake'))).toEqual(['created', 'old']);
+        expect(ids(await listed(list, 'fake'))).toEqual([CREATED_SESSION_ID, HISTORICAL_SESSION_ID]);
 
         await manager.disconnectAgent('fake');
-        expect(ids(await listed(list, 'fake'))).toEqual(['old']);
+        expect(ids(await listed(list, 'fake'))).toEqual([HISTORICAL_SESSION_ID]);
       });
 
       it('keeps the title it was opened with when a later listing omits it', async () => {
         let listings = 0;
-        const fake = listingAgent({ '': () => ({ sessions: listings++ ? [] : [session('a', { title: 'Listed' })] }) },
+        const fake = listingAgent({ '': () => ({ sessions: listings++ ? [] : [session(FIRST_SESSION_ID, { title: 'Listed' })] }) },
           (app) => app.onRequest(methods.agent.session.load, () => ({})));
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.loadSession('fake', 'a');
+        await manager.loadSession('fake', FIRST_SESSION_ID);
 
         list.invalidate('fake');
 
         const sessions = await listed(list, 'fake');
         expect(sessions.kind === 'listed' && sessions.rows.map(({ sessionId, label }) => ({ sessionId, label }))).toEqual([
-          { sessionId: 'a', label: 'Listed' },
+          { sessionId: FIRST_SESSION_ID, label: 'Listed' },
         ]);
       });
 
       it('is shown once, where the agent lists it, once it does', async () => {
-        const fake = creating([session('created', { title: 'Listed' }), session('old')]);
+        const fake = creating([session(CREATED_SESSION_ID, { title: 'Listed' }), session(HISTORICAL_SESSION_ID)]);
         const { manager, list } = setup({ fake: fake.script });
         await manager.connectToAgent('fake');
 
         const sessions = await listed(list, 'fake');
-        expect(ids(sessions)).toEqual(['created', 'old']);
+        expect(ids(sessions)).toEqual([CREATED_SESSION_ID, HISTORICAL_SESSION_ID]);
         expect(sessions.kind === 'listed' && sessions.rows[0]?.tooltip).toMatch(/Listed by agent$/);
       });
     });
@@ -403,7 +414,7 @@ describe('SessionList', () => {
         return listingAgent(
           { '': () => firsts[Math.min(asked++, firsts.length - 1)] ?? { sessions: [] }, ...later },
           (app) => app
-            .onRequest(methods.agent.session.new, () => ({ sessionId: 'created' }))
+            .onRequest(methods.agent.session.new, () => ({ sessionId: CREATED_SESSION_ID }))
             .onRequest(methods.agent.session.load, () => ({}))
             .onRequest(methods.agent.session.resume, () => ({})),
           resumable,
@@ -413,7 +424,9 @@ describe('SessionList', () => {
         const sessions = await list.sessionsOf('fake');
         return sessions.kind === 'listed' ? { rows: sessions.rows.map((row) => row.label), more: sessions.more.kind } : sessions;
       };
-      const page = (...ids: string[]) => ids.map((id) => session(id, { title: id }));
+      const page = (...labels: ('a' | 'b' | 'c' | 'd' | 'e' | 'created')[]) => labels.map((title) => session({
+        a: FIRST_SESSION_ID, b: SECOND_SESSION_ID, c: THIRD_SESSION_ID, d: FOURTH_SESSION_ID, e: FIFTH_SESSION_ID, created: CREATED_SESSION_ID,
+      }[title], { title }));
 
       it('asks the agent for its first page again, showing the rows it has meanwhile', async () => {
         const fake = changing([{ sessions: page('a') }, { sessions: page('b', 'a') }]);
@@ -591,17 +604,17 @@ describe('SessionList', () => {
 
       it('takes what is reported after a refresh was asked for over its result, and its result over what was reported before', async () => {
         const fake = changing([
-          { sessions: [session('a', { title: 'Listed', updatedAt: '2026-10-18T09:00:00Z' })] },
-          { sessions: [session('a', { title: 'Relisted', updatedAt: '2026-10-18T10:00:00Z' })] },
+          { sessions: [session(FIRST_SESSION_ID, { title: 'Listed', updatedAt: '2026-10-18T09:00:00Z' })] },
+          { sessions: [session(FIRST_SESSION_ID, { title: 'Relisted', updatedAt: '2026-10-18T10:00:00Z' })] },
         ]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.loadSession('fake', 'a');
+        await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
-        manager.applySessionInfoUpdate('a', { title: 'Reported before' });
+        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'Reported before' });
 
         const refreshing = list.refresh('fake');
-        manager.recordTurnEnded('a');
+        manager.recordTurnEnded(FIRST_SESSION_ID);
         await refreshing;
         await list.settled();
 
@@ -609,7 +622,7 @@ describe('SessionList', () => {
         expect(sessions.kind === 'listed' && sessions.rows.map(({ label, age }) => ({ label, age }))).toEqual([{ label: 'Relisted', age: 'now' }]);
 
         const again = list.refresh('fake');
-        manager.applySessionInfoUpdate('a', { title: 'Reported meanwhile' });
+        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'Reported meanwhile' });
         await again;
         expect(await shownNow(list)).toEqual({ rows: ['Reported meanwhile'], more: 'none' });
       });
@@ -622,12 +635,12 @@ describe('SessionList', () => {
         await list.settled();
         expect(fake.requests).toEqual([undefined]);
 
-        manager.recordTurnEnded('created');
+        manager.recordTurnEnded(CREATED_SESSION_ID);
         await list.settled();
         expect(fake.requests).toEqual([undefined, undefined]);
         expect(await shownNow(list)).toEqual({ rows: ['created'], more: 'none' });
 
-        manager.recordTurnEnded('created');
+        manager.recordTurnEnded(CREATED_SESSION_ID);
         await list.settled();
         expect(fake.requests).toEqual([undefined, undefined]);
       });
@@ -637,11 +650,11 @@ describe('SessionList', () => {
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
 
-        await manager.loadSession('fake', 'a');
+        await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
         expect(fake.requests).toEqual([undefined, undefined]);
 
-        await manager.resumeSession('fake', 'b');
+        await manager.resumeSession('fake', SECOND_SESSION_ID);
         await list.settled();
         expect(fake.requests).toEqual([undefined, undefined, undefined]);
       });
@@ -656,33 +669,33 @@ describe('SessionList', () => {
       };
 
       it('takes the title and time of last activity a session info update reports, and a cleared title', async () => {
-        const fake = loadable([session('a', { title: 'Old', updatedAt: '2026-10-18T09:00:00Z' }), session('b', { title: 'Other' })]);
+        const fake = loadable([session(FIRST_SESSION_ID, { title: 'Old', updatedAt: '2026-10-18T09:00:00Z' }), session(SECOND_SESSION_ID, { title: 'Other' })]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.loadSession('fake', 'a');
+        await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
 
-        manager.applySessionInfoUpdate('a', { title: 'New' });
+        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'New' });
         expect(await shown(list)).toEqual([{ label: 'New', age: '3 hours ago' }, { label: 'Other', age: undefined }]);
 
-        manager.applySessionInfoUpdate('a', { updatedAt: '2026-10-18T11:00:00Z' });
+        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { updatedAt: '2026-10-18T11:00:00Z' });
         expect(await shown(list)).toEqual([{ label: 'New', age: '1 hour ago' }, { label: 'Other', age: undefined }]);
 
-        manager.applySessionInfoUpdate('a', { title: null });
+        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: null });
         expect(await shown(list)).toEqual([{ label: 'Untitled', age: '1 hour ago' }, { label: 'Other', age: undefined }]);
         expect(fake.requests).toEqual([undefined, undefined]);
       });
 
       it('takes the end of a turn as the session\'s last activity', async () => {
-        const fake = loadable([session('a', { title: 'A', updatedAt: '2026-10-18T09:00:00Z' })]);
+        const fake = loadable([session(FIRST_SESSION_ID, { title: 'A', updatedAt: '2026-10-18T09:00:00Z' })]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.loadSession('fake', 'a');
+        await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
         const changes = vi.fn();
         list.on('changed', changes);
 
-        manager.recordTurnEnded('a');
+        manager.recordTurnEnded(FIRST_SESSION_ID);
 
         expect(changes).toHaveBeenCalled();
         const sessions = await listed(list, 'fake');
@@ -693,13 +706,13 @@ describe('SessionList', () => {
       });
 
       it('forgets it when invalidated, showing the agent\'s list again', async () => {
-        const fake = loadable([session('a', { title: 'Listed', updatedAt: '2026-10-18T09:00:00Z' })]);
+        const fake = loadable([session(FIRST_SESSION_ID, { title: 'Listed', updatedAt: '2026-10-18T09:00:00Z' })]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.loadSession('fake', 'a');
+        await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
-        manager.applySessionInfoUpdate('a', { title: 'Reported' });
-        manager.recordTurnEnded('a');
+        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'Reported' });
+        manager.recordTurnEnded(FIRST_SESSION_ID);
 
         list.invalidate('fake');
 
@@ -710,8 +723,8 @@ describe('SessionList', () => {
 
     it('appends the next page on load more', async () => {
       const fake = listingAgent({
-        '': { sessions: [session('a')], nextCursor: 'p2' },
-        p2: { sessions: [session('b')] },
+        '': { sessions: [session(FIRST_SESSION_ID)], nextCursor: 'p2' },
+        p2: { sessions: [session(SECOND_SESSION_ID)] },
       });
       const { list } = setup({ fake: fake.script });
 
@@ -719,22 +732,22 @@ describe('SessionList', () => {
       expect(first).toMatchObject({ more: { kind: 'available' } });
 
       const loading = list.loadMore('fake');
-      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: 'a' }], more: { kind: 'loading' } });
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: FIRST_SESSION_ID }], more: { kind: 'loading' } });
       await loading;
 
-      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: 'a' }, { sessionId: 'b' }], more: { kind: 'none' } });
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: FIRST_SESSION_ID }, { sessionId: SECOND_SESSION_ID }], more: { kind: 'none' } });
       expect(fake.requests).toEqual([undefined, 'p2']);
     });
 
     it('keeps the listed sessions and reports a failed load more, which can be retried', async () => {
       let failing = true;
       const fake = listingAgent({
-        '': { sessions: [session('a')], nextCursor: 'p2' },
+        '': { sessions: [session(FIRST_SESSION_ID)], nextCursor: 'p2' },
         p2: () => {
           if (failing) {
             throw RequestError.internalError(undefined, 'page expired');
           }
-          return { sessions: [session('b')] };
+          return { sessions: [session(SECOND_SESSION_ID)] };
         },
       });
       const { list } = setup({ fake: fake.script });
@@ -742,12 +755,12 @@ describe('SessionList', () => {
 
       await list.loadMore('fake');
       const failed = await list.sessionsOf('fake');
-      expect(failed).toMatchObject({ rows: [{ sessionId: 'a' }], more: { kind: 'failed' } });
+      expect(failed).toMatchObject({ rows: [{ sessionId: FIRST_SESSION_ID }], more: { kind: 'failed' } });
       expect(failed.kind === 'listed' && failed.more.kind === 'failed' && failed.more.message).toContain('Internal error');
 
       failing = false;
       await list.loadMore('fake');
-      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: 'a' }, { sessionId: 'b' }], more: { kind: 'none' } });
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: FIRST_SESSION_ID }, { sessionId: SECOND_SESSION_ID }], more: { kind: 'none' } });
     });
 
     it('reports a failed list without asking again until invalidated', async () => {
@@ -799,10 +812,10 @@ describe('SessionList', () => {
 
       const changes = vi.fn();
       list.on('changed', changes);
-      replies[0]?.({ sessions: [session('stale')] });
-      replies[1]?.({ sessions: [session('fresh')] });
-      expect(await listed(list, 'fake')).toMatchObject({ rows: [{ sessionId: 'fresh' }] });
-      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: 'fresh' }] });
+      replies[0]?.({ sessions: [session(STALE_SESSION_ID)] });
+      replies[1]?.({ sessions: [session(FRESH_SESSION_ID)] });
+      expect(await listed(list, 'fake')).toMatchObject({ rows: [{ sessionId: FRESH_SESSION_ID }] });
+      expect(await list.sessionsOf('fake')).toMatchObject({ rows: [{ sessionId: FRESH_SESSION_ID }] });
       expect(changes).toHaveBeenCalledOnce();
     });
 
@@ -849,9 +862,9 @@ describe('SessionList', () => {
       const { references, list } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } }) });
       vi.useFakeTimers({ now: Date.parse('2026-10-18T11:00:00Z'), toFake: ['Date'] });
       try {
-        await references.used(address('fake', 'untitled'));
+        await references.used(address('fake', UNTITLED_SESSION_ID));
         vi.setSystemTime(Date.parse('2026-10-18T11:59:30Z'));
-        await references.setTitle(address('fake', 'titled'), 'A title');
+        await references.setTitle(address('fake', TITLED_SESSION_ID), 'A title');
         await references.used({ ...address('fake', 'other-cwd'), cwd: '/elsewhere' });
         await references.used({ ...address('fake', 'other-host'), host: 'file://' });
         await references.used(address('other-agent', 'theirs'));
@@ -863,17 +876,17 @@ describe('SessionList', () => {
 
       expect(sessions).toMatchObject({ kind: 'listed', source: 'history', more: { kind: 'none' } });
       expect(sessions.kind === 'listed' && sessions.rows.map(({ sessionId, label, age }) => ({ sessionId, label, age }))).toEqual([
-        { sessionId: 'titled', label: 'A title', age: 'now' },
-        { sessionId: 'untitled', label: 'Untitled', age: '1 hour ago' },
+        { sessionId: TITLED_SESSION_ID, label: 'A title', age: 'now' },
+        { sessionId: UNTITLED_SESSION_ID, label: 'Untitled', age: '1 hour ago' },
       ]);
       expect(sessions.kind === 'listed' && sessions.rows[0]?.tooltip).toBe(
-        'Agent: fake\nSession: titled\ncwd: /work\nLast active: 2026-10-18T11:59:30.000Z\nStored locally — agent does not list sessions',
+        `Agent: fake\nSession: ${TITLED_SESSION_ID}\ncwd: /work\nLast active: 2026-10-18T11:59:30.000Z\nStored locally — agent does not list sessions`,
       );
     });
 
     it('lists none in a window with no workspace target', async () => {
       const { references, list, withoutWorkspaceTarget } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } }) });
-      await references.used(address('fake', 'old'));
+      await references.used(address('fake', HISTORICAL_SESSION_ID));
       withoutWorkspaceTarget();
 
       expect(await list.sessionsOf('fake')).toEqual({ kind: 'listed', source: 'history', rows: [], more: { kind: 'none' } });
@@ -904,7 +917,7 @@ describe('SessionList', () => {
 
   it('announces a change when a session or session history changes', async () => {
     const { manager, references, list } = setup({
-      fake: () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })),
+      fake: () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: CREATED_SESSION_ID })),
     });
     const changes = vi.fn();
     list.on('changed', changes);
@@ -913,7 +926,7 @@ describe('SessionList', () => {
     const afterConnect = changes.mock.calls.length;
     expect(afterConnect).toBeGreaterThan(0);
 
-    await references.setTitle(address('fake', 's1'), 'Renamed');
+    await references.setTitle(address('fake', CREATED_SESSION_ID), 'Renamed');
     expect(changes.mock.calls.length).toBeGreaterThan(afterConnect);
   });
 

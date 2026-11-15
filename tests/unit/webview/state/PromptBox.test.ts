@@ -12,6 +12,8 @@ import { createStore } from '@/webview/state/Store';
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
 const reset: SlashCommand = { name: 'Reset', description: 'Start over', takesInput: false, hint: null };
+const SESSION_ID = 'c0fcb239-e29f-4a01-99f6-c29d450663ee';
+const OTHER_SESSION_ID = '35d04fce-f7dd-4a42-8d1d-c509c0506b0f';
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
@@ -31,8 +33,8 @@ function chatView() {
     connect: (session: Partial<SessionSnapshot> = {}) =>
       store.dispatch({
         type: 'state',
-        activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review, reset], ...session },
+        activeSessionId: session.sessionId ?? SESSION_ID,
+        session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review, reset], ...session },
       }),
     /** Each prompt sent and its turn ended, so it is in the session's history. */
     sent: (...texts: string[]) =>
@@ -125,7 +127,7 @@ describe('the slash command popup', () => {
     view.send({ type: 'loadSessionStart' });
     expect(view.matches()).toEqual([]);
 
-    view.connect({ sessionId: 's2', commands: [] });
+    view.connect({ sessionId: OTHER_SESSION_ID, commands: [] });
     expect(view.matches()).toEqual([]);
   });
 
@@ -321,7 +323,7 @@ describe('the prompt history', () => {
 
   it('stops browsing in another session or none, and once the transcript is cleared, keeping the text', () => {
     const leavings: Action[] = [
-      { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } },
+      { type: 'state', activeSessionId: OTHER_SESSION_ID, session: { sessionId: OTHER_SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } },
       { type: 'state', activeSessionId: null, session: null },
       { type: 'clearTranscript' },
     ];

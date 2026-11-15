@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import type { ElicitationRequest, ElicitationChange } from '@/core/acp/AcpDriver';
 
-const form: ElicitationRequest = { mode: 'form', rpcId: 1, scope: { sessionId: 's1', toolCallId: null }, message: 'Question', requestedSchema: {} };
+const SESSION_ID = '8d04a54b-9ff1-49bb-9089-60ab8e8d7115';
+const form: ElicitationRequest = { mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID, toolCallId: null }, message: 'Question', requestedSchema: {} };
 const url: ElicitationRequest = { mode: 'url', rpcId: 2, scope: { requestId: 'auth-1' }, message: 'Authorize', elicitationId: 'external', url: 'https://example.org' };
 
 describe('connection-owned elicitation requests', () => {
@@ -41,7 +42,7 @@ describe('connection-owned elicitation requests', () => {
     const first = requests.create(form);
     const second = requests.create({ ...form, rpcId: 'second' });
     const [a, b] = requests.snapshot();
-    expect(a).toMatchObject({ rpcId: 1, scope: { sessionId: 's1', toolCallId: null }, message: 'Question', mode: 'form' });
+    expect(a).toMatchObject({ rpcId: 1, scope: { sessionId: SESSION_ID, toolCallId: null }, message: 'Question', mode: 'form' });
     expect(a?.interactionId).not.toBe(b?.interactionId);
     const response = action === 'accept' ? { action, content: {} } : { action };
     expect(requests.respond(a?.interactionId ?? '', response)).toEqual({ kind: 'settled' });

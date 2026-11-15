@@ -6,6 +6,8 @@ import type { ClientHandlers } from '@/core/ClientHandlers';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { connectedDriver, fakeAgent, InProcessAgents } from '@tests/unit/core/InProcessAgents';
 
+const SESSION_ID = '8b22e365-3d6d-4aa5-ad43-162c3f3b6299';
+
 function handlers() {
   return {
     permissions: {
@@ -22,7 +24,7 @@ async function connectWith(work: (client: AgentContext) => Promise<void>) {
     await work(client);
     return { stopReason: 'end_turn' };
   }), set);
-  const prompt = () => driver.prompt('s1', [{ kind: 'text', text: 'go' }]);
+  const prompt = () => driver.prompt(SESSION_ID, [{ kind: 'text', text: 'go' }]);
   return { handlers: set, updates, prompt };
 }
 
@@ -30,8 +32,8 @@ describe('ConnectionManager', () => {
   it('answers file and terminal requests as unknown methods', async () => {
     const answers: unknown[] = [];
     const { prompt } = await connectWith(async (client) => {
-      answers.push(await client.request(methods.client.fs.readTextFile, { sessionId: 's1', path: '/work/a.ts' }).catch((e: unknown) => e));
-      answers.push(await client.request(methods.client.terminal.create, { sessionId: 's1', command: 'ls' }).catch((e: unknown) => e));
+      answers.push(await client.request(methods.client.fs.readTextFile, { sessionId: SESSION_ID, path: '/work/a.ts' }).catch((e: unknown) => e));
+      answers.push(await client.request(methods.client.terminal.create, { sessionId: SESSION_ID, command: 'ls' }).catch((e: unknown) => e));
     });
 
     await prompt();
@@ -46,7 +48,7 @@ describe('ConnectionManager', () => {
     const answers: unknown[] = [];
     const { handlers: set, prompt } = await connectWith(async (client) => {
       answers.push(await client.request(methods.client.session.requestPermission, {
-        sessionId: 's1',
+        sessionId: SESSION_ID,
         toolCall: { toolCallId: 'c1' },
         options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
       }));
@@ -61,14 +63,14 @@ describe('ConnectionManager', () => {
   it('passes session updates to the session update handler', async () => {
     const { updates, prompt } = await connectWith(async (client) => {
       await client.notify(methods.client.session.update, {
-        sessionId: 's1',
+        sessionId: SESSION_ID,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'hello' } },
       });
     });
 
     await prompt();
 
-    expect(updates).toEqual([['s1', { kind: 'agentText', messageId: null, text: 'hello' }]]);
+    expect(updates).toEqual([[SESSION_ID, { kind: 'agentText', messageId: null, text: 'hello' }]]);
   });
 
   it('gives each connection its own handlers', async () => {

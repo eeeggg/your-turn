@@ -166,7 +166,8 @@ describe('without a session', () => {
     page = loadChatPage();
     connect(page, { pickers: [modePicker] });
 
-    connect(page, { sessionId: 's2', agentName: 'Other Agent' });
+    const otherSessionId = 'db9f8298-486e-4bd3-80fa-e6a892ca4371';
+    connect(page, { sessionId: otherSessionId, agentName: 'Other Agent' }, 'tab-other');
 
     expect(pickers()).toEqual([]);
   });

@@ -12,6 +12,16 @@ import {
 const REFERENCES_KEY = 'your-turn.sessionReferences';
 const WORKSPACE_KEY = 'your-turn.workspace';
 const STARTUP_REQUESTS_KEY = 'your-turn.startupRequests';
+const FIRST_SESSION_ID = '144370c4-e3d2-47dd-8b6e-2d2c501dbb23';
+const SECOND_SESSION_ID = '2c966b62-f8e8-43b6-a305-995c5fa98307';
+const THIRD_SESSION_ID = '874c4c35-2787-425f-8720-aefc877437c3';
+const FOURTH_SESSION_ID = 'ace39982-8b3e-4f26-af3d-9ee8344503ec';
+const FIFTH_SESSION_ID = 'dc90c7ca-cf05-4539-bf1e-fd8f65193ed0';
+const LEGACY_SESSION_ID = '5b9ebdc0-b9aa-4432-8cce-cc49c310b9d3';
+const LISTED_SESSION_ID = '19416fe3-35f4-4eb6-8e91-941df41bff1a';
+const UNTITLED_SESSION_ID = 'dda55eb7-9164-4ad3-840b-78802f964078';
+const OPEN_SESSION_ID = '8c74fb50-b1d0-4575-ac42-a2bdc1edb72b';
+const UNREFERENCED_SESSION_ID = '56e6ca41-006d-47d4-a6a1-6649d678246e';
 
 const LOCAL = 'file:///home/me/work';
 const DEVENV = 'vscode-remote://ssh-remote%2Bdevenv/home/me/work';
@@ -117,17 +127,17 @@ describe('SessionReferences', () => {
     it('reads back what was saved before', async () => {
       const globalState = memoryStore();
       const before = new SessionReferences(globalState, ticking());
-      await before.used(address('a'));
-      await before.used(address('b'));
-      await before.setTitle(address('b'), 'Fix the build');
-      await before.saveSelections(address('a'), { options: { model: 'big' } });
+      await before.used(address(FIRST_SESSION_ID));
+      await before.used(address(SECOND_SESSION_ID));
+      await before.setTitle(address(SECOND_SESSION_ID), 'Fix the build');
+      await before.saveSelections(address(FIRST_SESSION_ID), { options: { model: 'big' } });
 
       const after = new SessionReferences(globalState);
 
       expect(after.list(devenv, 'OpenCode', '/home/me/work')).toEqual(before.list(devenv, 'OpenCode', '/home/me/work'));
       expect(after.list(devenv, 'OpenCode', '/home/me/work')).toMatchObject([
-        { sessionId: 'b', title: 'Fix the build' },
-        { sessionId: 'a', selections: { options: { model: 'big' } } },
+        { sessionId: SECOND_SESSION_ID, title: 'Fix the build' },
+        { sessionId: FIRST_SESSION_ID, selections: { options: { model: 'big' } } },
       ]);
     });
 
@@ -136,12 +146,12 @@ describe('SessionReferences', () => {
       const one = new SessionReferences(globalState, ticking());
       const other = new SessionReferences(globalState, ticking());
 
-      await one.used(address('a'));
-      await other.used(address('b'));
-      await one.setTitle(address('a'), 'From one');
+      await one.used(address(FIRST_SESSION_ID));
+      await other.used(address(SECOND_SESSION_ID));
+      await one.setTitle(address(FIRST_SESSION_ID), 'From one');
 
-      expect(ids(new SessionReferences(globalState).list(devenv, 'OpenCode', '/home/me/work')).sort()).toEqual(['a', 'b']);
-      expect(other.get({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' })?.title).toBe('From one');
+      expect(ids(new SessionReferences(globalState).list(devenv, 'OpenCode', '/home/me/work')).sort()).toEqual([FIRST_SESSION_ID, SECOND_SESSION_ID]);
+      expect(other.get({ host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID })?.title).toBe('From one');
     });
   });
 
@@ -149,21 +159,21 @@ describe('SessionReferences', () => {
     it.each([
       ['nothing', undefined],
       ['a value that is not an object', 'references'],
-      ['an object without a version', { references: [reference('a')] }],
-      ['an earlier version', { schemaVersion: 0, references: [reference('a')] }],
-      ['the first version, which had no revisions', { schemaVersion: 1, references: [reference('a')] }],
-      ['the second version, which derived hosts', { schemaVersion: 2, epoch: 0, references: [{ ...reference('a'), revision: 1 }], removed: [] }],
+      ['an object without a version', { references: [reference(FIRST_SESSION_ID)] }],
+      ['an earlier version', { schemaVersion: 0, references: [reference(FIRST_SESSION_ID)] }],
+      ['the first version, which had no revisions', { schemaVersion: 1, references: [reference(FIRST_SESSION_ID)] }],
+      ['the second version, which derived hosts', { schemaVersion: 2, epoch: 0, references: [{ ...reference(FIRST_SESSION_ID), revision: 1 }], removed: [] }],
     ])('starts empty from %s, and replaces it on the first change', async (_, saved) => {
       const globalState = memoryStore(saved === undefined ? {} : { [REFERENCES_KEY]: saved });
       const references = new SessionReferences(globalState, ticking());
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([]);
-      await references.used(address('b'));
+      await references.used(address(SECOND_SESSION_ID));
 
       expect(globalState.values.get(REFERENCES_KEY)).toMatchObject({
         schemaVersion: 3,
         epoch: 0,
-        references: [{ ...address('b'), revision: 1 }],
+        references: [{ ...address(SECOND_SESSION_ID), revision: 1 }],
         removed: [],
       });
     });
@@ -173,10 +183,10 @@ describe('SessionReferences', () => {
       const globalState = memoryStore({ [REFERENCES_KEY]: later });
       const references = new SessionReferences(globalState, ticking());
 
-      await references.used(address('a'));
-      await references.setTitle(address('a'), 'Title');
-      await references.saveSelections(address('a'), { modeId: 'plan', options: {} });
-      await references.remove({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' });
+      await references.used(address(FIRST_SESSION_ID));
+      await references.setTitle(address(FIRST_SESSION_ID), 'Title');
+      await references.saveSelections(address(FIRST_SESSION_ID), { modeId: 'plan', options: {} });
+      await references.remove({ host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID });
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([]);
       expect(globalState.values.get(REFERENCES_KEY)).toBe(later);
@@ -229,22 +239,22 @@ describe('SessionReferences', () => {
         [REFERENCES_KEY]: {
           schemaVersion: 3,
           epoch: 0,
-          references: [{ ...reference('removed'), revision: 1 }, { ...reference('kept'), revision: 3 }],
+          references: [{ ...reference(FIRST_SESSION_ID), revision: 1 }, { ...reference(SECOND_SESSION_ID), revision: 3 }],
           removed: [
-            { host: devenv, configuredName: 'OpenCode', sessionId: 'removed', revision: 2, removedAt: '2026-10-29T09:00:00.000Z' },
-            { host: devenv, configuredName: 'OpenCode', sessionId: 'kept', revision: 2, removedAt: '2026-10-29T09:00:00.000Z' },
+            { host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID, revision: 2, removedAt: '2026-10-29T09:00:00.000Z' },
+            { host: devenv, configuredName: 'OpenCode', sessionId: SECOND_SESSION_ID, revision: 2, removedAt: '2026-10-29T09:00:00.000Z' },
           ],
         },
       });
 
-      expect(listed(new SessionReferences(globalState))).toEqual(['kept']);
+      expect(listed(new SessionReferences(globalState))).toEqual([SECOND_SESSION_ID]);
     });
 
     it('keeps only the fields of a reference, whatever else the caller passes', async () => {
       const globalState = memoryStore();
       const references = new SessionReferences(globalState, ticking());
 
-      await references.used({ ...address('a'), transcript: 'not ours to keep' } as SessionAddress);
+      await references.used({ ...address(FIRST_SESSION_ID), transcript: 'not ours to keep' } as SessionAddress);
 
       const [saved] = (globalState.values.get(REFERENCES_KEY) as { references: object[] }).references;
       expect(Object.keys(saved ?? {}).sort())
@@ -268,110 +278,110 @@ describe('SessionReferences', () => {
     it('treats a folder and a saved workspace on one host as the same reference, keeping the workspace last used', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
 
-      await references.used(address('s'));
-      await references.used(address('s', { workspaceUri: DEVENV_WORKSPACE }));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(FIRST_SESSION_ID, { workspaceUri: DEVENV_WORKSPACE }));
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([
-        expect.objectContaining({ sessionId: 's', workspaceUri: DEVENV_WORKSPACE }),
+        expect.objectContaining({ sessionId: FIRST_SESSION_ID, workspaceUri: DEVENV_WORKSPACE }),
       ]);
     });
 
     it('keeps a reference on the host it was recorded with, whatever machine its workspace URI is on', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
 
-      await references.used(address('s'));
-      await references.used(address('s', { workspaceUri: CLIENT_WORKSPACE, host: devenv }));
-      await references.used(address('t', { workspaceUri: CLIENT_WORKSPACE, host: devenv }));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(FIRST_SESSION_ID, { workspaceUri: CLIENT_WORKSPACE, host: devenv }));
+      await references.used(address(SECOND_SESSION_ID, { workspaceUri: CLIENT_WORKSPACE, host: devenv }));
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([
-        expect.objectContaining({ sessionId: 't', host: devenv, workspaceUri: CLIENT_WORKSPACE }),
-        expect.objectContaining({ sessionId: 's', host: devenv, workspaceUri: CLIENT_WORKSPACE }),
+        expect.objectContaining({ sessionId: SECOND_SESSION_ID, host: devenv, workspaceUri: CLIENT_WORKSPACE }),
+        expect.objectContaining({ sessionId: FIRST_SESSION_ID, host: devenv, workspaceUri: CLIENT_WORKSPACE }),
       ]);
       expect(references.list('file://', 'OpenCode', '/home/me/work')).toEqual([]);
-      await references.remove(idOf('t'));
-      expect(listed(references)).toEqual(['s']);
+      await references.remove(idOf(SECOND_SESSION_ID));
+      expect(listed(references)).toEqual([FIRST_SESSION_ID]);
     });
 
     it('lists only the host, configuration and exact cwd asked for, the most recently active first', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('older'));
-      await references.used(address('local', { workspaceUri: LOCAL }));
-      await references.used(address('other-agent', { configuredName: 'Codex' }));
-      await references.used(address('other-cwd', { cwd: '/home/me/work/sub' }));
-      await references.used(address('newer'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }));
+      await references.used(address(THIRD_SESSION_ID, { configuredName: 'Codex' }));
+      await references.used(address(FOURTH_SESSION_ID, { cwd: '/home/me/work/sub' }));
+      await references.used(address(FIFTH_SESSION_ID));
 
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['newer', 'older']);
-      expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual(['local']);
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual([FIFTH_SESSION_ID, FIRST_SESSION_ID]);
+      expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual([SECOND_SESSION_ID]);
     });
 
     it('lists every reference on every host, the most recently active first', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('older'));
-      await references.used(address('local', { workspaceUri: LOCAL }));
-      await references.used(address('other-agent', { configuredName: 'Codex' }));
-      await references.used(address('other-cwd', { cwd: '/home/me/work/sub' }));
-      await references.remove(idOf('older'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }));
+      await references.used(address(THIRD_SESSION_ID, { configuredName: 'Codex' }));
+      await references.used(address(FOURTH_SESSION_ID, { cwd: '/home/me/work/sub' }));
+      await references.remove(idOf(FIRST_SESSION_ID));
 
-      expect(ids(references.all())).toEqual(['other-cwd', 'other-agent', 'local']);
+      expect(ids(references.all())).toEqual([FOURTH_SESSION_ID, THIRD_SESSION_ID, SECOND_SESSION_ID]);
     });
   });
 
   describe('changes', () => {
     it('marks a session active when used, and not when only its title or selections change', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('a'));
-      await references.used(address('b'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(SECOND_SESSION_ID));
 
-      await references.setTitle(address('a'), 'Renamed');
-      await references.saveSelections(address('a'), { modeId: 'plan', options: {} });
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['b', 'a']);
+      await references.setTitle(address(FIRST_SESSION_ID), 'Renamed');
+      await references.saveSelections(address(FIRST_SESSION_ID), { modeId: 'plan', options: {} });
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual([SECOND_SESSION_ID, FIRST_SESSION_ID]);
 
-      await references.used(address('a'));
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['a', 'b']);
+      await references.used(address(FIRST_SESSION_ID));
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual([FIRST_SESSION_ID, SECOND_SESSION_ID]);
     });
 
     it('creates a missing reference on any change to the session', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
 
-      await references.setTitle(address('titled'), 'Titled');
-      await references.saveSelections(address('selected'), { options: { brave: true } });
+      await references.setTitle(address(FIRST_SESSION_ID), 'Titled');
+      await references.saveSelections(address(SECOND_SESSION_ID), { options: { brave: true } });
 
       expect(references.list(devenv, 'OpenCode', '/home/me/work')).toEqual([
-        expect.objectContaining({ sessionId: 'selected', selections: { options: { brave: true } } }),
-        expect.objectContaining({ sessionId: 'titled', title: 'Titled' }),
+        expect.objectContaining({ sessionId: SECOND_SESSION_ID, selections: { options: { brave: true } } }),
+        expect.objectContaining({ sessionId: FIRST_SESSION_ID, title: 'Titled' }),
       ]);
     });
 
     it('clears the cached title when the agent reports none', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.setTitle(address('a'), 'Old title');
+      await references.setTitle(address(FIRST_SESSION_ID), 'Old title');
 
-      await references.setTitle(address('a'), null);
+      await references.setTitle(address(FIRST_SESSION_ID), null);
 
-      expect(references.get({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' })).not.toHaveProperty('title');
+      expect(references.get({ host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID })).not.toHaveProperty('title');
     });
 
     it('replaces the saved selections as a whole', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
 
-      await references.saveSelections(address('a'), { modeId: 'plan', options: { model: 'big', effort: 'high' } });
-      await references.saveSelections(address('a'), { options: { model: 'small' } });
+      await references.saveSelections(address(FIRST_SESSION_ID), { modeId: 'plan', options: { model: 'big', effort: 'high' } });
+      await references.saveSelections(address(FIRST_SESSION_ID), { options: { model: 'small' } });
 
-      expect(references.get({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' })?.selections)
+      expect(references.get({ host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID })?.selections)
         .toEqual({ options: { model: 'small' } });
     });
 
     it('keeps at most its capacity, dropping the least recently active', async () => {
       const references = new SessionReferences(memoryStore(), ticking(), 3);
-      for (const id of ['a', 'b', 'c']) {
+      for (const id of [FIRST_SESSION_ID, SECOND_SESSION_ID, THIRD_SESSION_ID]) {
         await references.used(address(id));
       }
-      await references.used(address('a'));
+      await references.used(address(FIRST_SESSION_ID));
 
-      await references.used(address('d', { workspaceUri: LOCAL }));
+      await references.used(address(FOURTH_SESSION_ID, { workspaceUri: LOCAL }));
 
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['a', 'c']);
-      expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual(['d']);
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual([FIRST_SESSION_ID, THIRD_SESSION_ID]);
+      expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual([FOURTH_SESSION_ID]);
     });
 
     it('holds 500 by default', async () => {
@@ -386,14 +396,14 @@ describe('SessionReferences', () => {
 
     it('removes only the reference asked for', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('a'));
-      await references.used(address('a', { workspaceUri: LOCAL }));
-      await references.used(address('b'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(FIRST_SESSION_ID, { workspaceUri: LOCAL }));
+      await references.used(address(SECOND_SESSION_ID));
 
-      await references.remove({ host: devenv, configuredName: 'OpenCode', sessionId: 'a' });
+      await references.remove({ host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID });
 
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['b']);
-      expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual(['a']);
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual([SECOND_SESSION_ID]);
+      expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual([FIRST_SESSION_ID]);
     });
 
     it('announces each change it writes', async () => {
@@ -401,7 +411,7 @@ describe('SessionReferences', () => {
       let announced = 0;
       references.on('changed', () => { announced++; });
 
-      await references.used(address('a'));
+      await references.used(address(FIRST_SESSION_ID));
       await references.remove({ host: devenv, configuredName: 'OpenCode', sessionId: 'unknown' });
 
       expect(announced).toBe(1);
@@ -412,7 +422,7 @@ describe('SessionReferences', () => {
       setLogSink({ error: (message: string) => { errors.push(message); } } as unknown as LogSink);
       const failing: KeyValueStore = { get: () => undefined, update: () => Promise.reject(new Error('disk full')) };
 
-      await new SessionReferences(failing, ticking()).used(address('a'));
+      await new SessionReferences(failing, ticking()).used(address(FIRST_SESSION_ID));
 
       expect(errors).toEqual(['Failed to save session references']);
     });
@@ -422,17 +432,17 @@ describe('SessionReferences', () => {
     it("moves one configuration's references on one host to its new name, with all they hold", async () => {
       const references = new SessionReferences(memoryStore(), ticking());
       const under = (configuredName: string, host = devenv) => ids(references.list(host, configuredName, '/home/me/work'));
-      await references.used(address('a'));
-      await references.setTitle(address('a'), 'Kept title');
-      await references.saveSelections(address('a'), { options: { model: 'big' } });
-      await references.used(address('b', { workspaceUri: LOCAL }));
-      await references.used(address('c', { configuredName: 'Claude' }));
-      const before = references.get(idOf('a'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.setTitle(address(FIRST_SESSION_ID), 'Kept title');
+      await references.saveSelections(address(FIRST_SESSION_ID), { options: { model: 'big' } });
+      await references.used(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }));
+      await references.used(address(THIRD_SESSION_ID, { configuredName: 'Claude' }));
+      const before = references.get(idOf(FIRST_SESSION_ID));
 
       await references.rebind(devenv, 'OpenCode', 'oc');
 
-      expect([under('oc'), under('OpenCode'), under('OpenCode', 'local'), under('Claude')]).toEqual([['a'], [], ['b'], ['c']]);
-      expect(references.get({ ...idOf('a'), configuredName: 'oc' })).toEqual({ ...before, configuredName: 'oc' });
+      expect([under('oc'), under('OpenCode'), under('OpenCode', 'local'), under('Claude')]).toEqual([[FIRST_SESSION_ID], [], [SECOND_SESSION_ID], [THIRD_SESSION_ID]]);
+      expect(references.get({ ...idOf(FIRST_SESSION_ID), configuredName: 'oc' })).toEqual({ ...before, configuredName: 'oc' });
     });
 
     it('merges with a reference already under the new name, keeping the more recently active', async () => {
@@ -453,20 +463,20 @@ describe('SessionReferences', () => {
 
     it("moves only the one session named, with all it holds, leaving the configuration's others", async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('a'));
-      await references.setTitle(address('b'), 'Kept title');
-      await references.saveSelections(address('b'), { options: { model: 'big' } });
-      const before = references.get(idOf('b'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.setTitle(address(SECOND_SESSION_ID), 'Kept title');
+      await references.saveSelections(address(SECOND_SESSION_ID), { options: { model: 'big' } });
+      const before = references.get(idOf(SECOND_SESSION_ID));
 
-      await references.rebind(devenv, 'OpenCode', 'oc', 'b');
+      await references.rebind(devenv, 'OpenCode', 'oc', SECOND_SESSION_ID);
 
-      expect([ids(references.list(devenv, 'OpenCode', '/home/me/work')), ids(references.list(devenv, 'oc', '/home/me/work'))]).toEqual([['a'], ['b']]);
-      expect(references.get({ ...idOf('b'), configuredName: 'oc' })).toEqual({ ...before, configuredName: 'oc' });
+      expect([ids(references.list(devenv, 'OpenCode', '/home/me/work')), ids(references.list(devenv, 'oc', '/home/me/work'))]).toEqual([[FIRST_SESSION_ID], [SECOND_SESSION_ID]]);
+      expect(references.get({ ...idOf(SECOND_SESSION_ID), configuredName: 'oc' })).toEqual({ ...before, configuredName: 'oc' });
     });
 
     it('changes nothing when applied again', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('a'));
+      await references.used(address(FIRST_SESSION_ID));
       await references.rebind(devenv, 'OpenCode', 'oc');
       let announced = 0;
       references.on('changed', () => { announced++; });
@@ -480,12 +490,12 @@ describe('SessionReferences', () => {
   describe('observing a listing', () => {
     async function seeded() {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.setTitle(address('listed'), 'Old title');
-      await references.setTitle(address('untitled-now'), 'Had a title');
+      await references.setTitle(address(LISTED_SESSION_ID), 'Old title');
+      await references.setTitle(address(UNTITLED_SESSION_ID), 'Had a title');
       await references.used(address('gone'));
-      await references.used(address('open'));
-      await references.used(address('other-cwd', { cwd: '/home/me/work/sub' }));
-      await references.used(address('other-agent', { configuredName: 'Codex' }));
+      await references.used(address(OPEN_SESSION_ID));
+      await references.used(address(FOURTH_SESSION_ID, { cwd: '/home/me/work/sub' }));
+      await references.used(address(THIRD_SESSION_ID, { configuredName: 'Codex' }));
       await references.used(address('gone', { workspaceUri: LOCAL }));
       return references;
     }
@@ -494,9 +504,9 @@ describe('SessionReferences', () => {
       host: devenv,
       configuredName: 'OpenCode',
       sessions: [
-        { sessionId: 'listed', title: 'New title' },
-        { sessionId: 'untitled-now' },
-        { sessionId: 'never-referenced', title: 'Not ours' },
+        { sessionId: LISTED_SESSION_ID, title: 'New title' },
+        { sessionId: UNTITLED_SESSION_ID },
+        { sessionId: UNREFERENCED_SESSION_ID, title: 'Not ours' },
       ],
     };
 
@@ -506,27 +516,27 @@ describe('SessionReferences', () => {
       await references.observeListing(listing);
 
       const listed = references.list(devenv, 'OpenCode', '/home/me/work');
-      expect(listed.find((r) => r.sessionId === 'listed')?.title).toBe('New title');
-      expect(listed.find((r) => r.sessionId === 'untitled-now')).not.toHaveProperty('title');
-      expect(ids(listed)).not.toContain('never-referenced');
+      expect(listed.find((r) => r.sessionId === LISTED_SESSION_ID)?.title).toBe('New title');
+      expect(listed.find((r) => r.sessionId === UNTITLED_SESSION_ID)).not.toHaveProperty('title');
+      expect(ids(listed)).not.toContain(UNREFERENCED_SESSION_ID);
       expect(ids(listed)).toContain('gone');
     });
 
     it('prunes by a complete listing only within its host, configuration and cwd, keeping sessions open in this window', async () => {
       const references = await seeded();
 
-      await references.observeListing({ ...listing, complete: { cwd: '/home/me/work', openInThisWindow: new Set(['open']) } });
+      await references.observeListing({ ...listing, complete: { cwd: '/home/me/work', openInThisWindow: new Set([OPEN_SESSION_ID]) } });
 
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work')).sort()).toEqual(['listed', 'open', 'untitled-now']);
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work/sub'))).toEqual(['other-cwd']);
-      expect(ids(references.list(devenv, 'Codex', '/home/me/work'))).toEqual(['other-agent']);
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work')).sort()).toEqual([LISTED_SESSION_ID, OPEN_SESSION_ID, UNTITLED_SESSION_ID].sort());
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work/sub'))).toEqual([FOURTH_SESSION_ID]);
+      expect(ids(references.list(devenv, 'Codex', '/home/me/work'))).toEqual([THIRD_SESSION_ID]);
       expect(ids(references.list('local', 'OpenCode', '/home/me/work'))).toEqual(['gone']);
     });
 
     it('writes nothing when the listing changes nothing', async () => {
       const globalState = memoryStore();
       const references = new SessionReferences(globalState, ticking());
-      await references.setTitle(address('listed'), 'New title');
+      await references.setTitle(address(LISTED_SESSION_ID), 'New title');
       const saved = globalState.values.get(REFERENCES_KEY);
 
       await references.observeListing({ ...listing, complete: { cwd: '/home/me/work', openInThisWindow: new Set() } });
@@ -539,61 +549,61 @@ describe('SessionReferences', () => {
     it('still shows its own changes', async () => {
       const globalState = revertibleStore();
       const references = new SessionReferences(globalState, ticking());
-      await references.used(address('a'));
-      await references.setTitle(address('a'), 'Named');
+      await references.used(address(FIRST_SESSION_ID));
+      await references.setTitle(address(FIRST_SESSION_ID), 'Named');
 
       globalState.serveEarlier(REFERENCES_KEY);
 
-      expect(references.get(idOf('a'))?.title).toBe('Named');
+      expect(references.get(idOf(FIRST_SESSION_ID))?.title).toBe('Named');
     });
 
     it('writes no earlier value back', async () => {
       const globalState = revertibleStore();
       const references = new SessionReferences(globalState, ticking());
-      await references.used(address('a'));
-      await references.setTitle(address('a'), 'Named');
+      await references.used(address(FIRST_SESSION_ID));
+      await references.setTitle(address(FIRST_SESSION_ID), 'Named');
 
       globalState.serveEarlier(REFERENCES_KEY);
-      await references.used(address('b'));
+      await references.used(address(SECOND_SESSION_ID));
 
       const after = new SessionReferences(globalState);
-      expect(listed(after)).toEqual(['a', 'b']);
-      expect(after.get(idOf('a'))?.title).toBe('Named');
+      expect(listed(after)).toEqual([FIRST_SESSION_ID, SECOND_SESSION_ID]);
+      expect(after.get(idOf(FIRST_SESSION_ID))?.title).toBe('Named');
     });
 
     it.each([
-      ['removed', (references: SessionReferences) => references.remove(idOf('a'))],
+      ['removed', (references: SessionReferences) => references.remove(idOf(FIRST_SESSION_ID))],
       ['pruned by a complete listing', (references: SessionReferences) => references.observeListing({
         host: devenv,
         configuredName: 'OpenCode',
-        sessions: [{ sessionId: 'b' }],
+        sessions: [{ sessionId: SECOND_SESSION_ID }],
         complete: { cwd: '/home/me/work', openInThisWindow: new Set() },
       })],
     ])('does not bring back a reference it %s', async (_, removal) => {
       const globalState = revertibleStore();
       const references = new SessionReferences(globalState, ticking());
-      await references.used(address('a'));
-      await references.used(address('b'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(SECOND_SESSION_ID));
       await removal(references);
 
       globalState.serveEarlier(REFERENCES_KEY);
-      expect(listed(references)).toEqual(['b']);
-      await references.used(address('c'));
+      expect(listed(references)).toEqual([SECOND_SESSION_ID]);
+      await references.used(address(THIRD_SESSION_ID));
 
-      expect(listed(new SessionReferences(globalState))).toEqual(['b', 'c']);
+      expect(listed(new SessionReferences(globalState))).toEqual([SECOND_SESSION_ID, THIRD_SESSION_ID]);
     });
 
     it('does not bring back references it reset', async () => {
       const globalState = revertibleStore();
       const references = new SessionReferences(globalState, ticking());
-      await references.used(address('a'));
+      await references.used(address(FIRST_SESSION_ID));
       await references.reset();
 
       globalState.serveEarlier(REFERENCES_KEY);
       expect(listed(references)).toEqual([]);
-      await references.used(address('b'));
+      await references.used(address(SECOND_SESSION_ID));
 
-      expect(listed(new SessionReferences(globalState))).toEqual(['b']);
+      expect(listed(new SessionReferences(globalState))).toEqual([SECOND_SESSION_ID]);
       expect(globalState.values.get(REFERENCES_KEY)).toMatchObject({ epoch: 1 });
     });
 
@@ -601,24 +611,24 @@ describe('SessionReferences', () => {
       const globalState = revertibleStore();
       const one = new SessionReferences(globalState, ticking());
       const other = new SessionReferences(globalState, ticking());
-      await one.setTitle(address('a'), 'One');
-      await other.setTitle(address('a'), 'Other');
-      expect(one.get(idOf('a'))?.title).toBe('Other');
+      await one.setTitle(address(FIRST_SESSION_ID), 'One');
+      await other.setTitle(address(FIRST_SESSION_ID), 'Other');
+      expect(one.get(idOf(FIRST_SESSION_ID))?.title).toBe('Other');
 
       globalState.serveEarlier(REFERENCES_KEY, 2);
 
-      expect(one.get(idOf('a'))).toBeUndefined();
+      expect(one.get(idOf(FIRST_SESSION_ID))).toBeUndefined();
     });
 
     it('stops showing its own changes a day after making them', async () => {
       const globalState = revertibleStore();
       const clock = stopped();
       const references = new SessionReferences(globalState, clock);
-      await references.used(address('a'));
+      await references.used(address(FIRST_SESSION_ID));
       globalState.serveEarlier(REFERENCES_KEY);
 
       clock.advance(DAY - 1);
-      expect(listed(references)).toEqual(['a']);
+      expect(listed(references)).toEqual([FIRST_SESSION_ID]);
       clock.advance(1);
       expect(listed(references)).toEqual([]);
     });
@@ -629,59 +639,59 @@ describe('SessionReferences', () => {
       const globalState = revertibleStore();
       const one = new SessionReferences(globalState, ticking());
       const other = new SessionReferences(globalState, ticking());
-      await one.used(address('a'));
+      await one.used(address(FIRST_SESSION_ID));
 
       globalState.serveEarlier(REFERENCES_KEY);
-      await other.used(address('b'));
-      expect(listed(one)).toEqual(['a', 'b']);
-      await one.used(address('c'));
+      await other.used(address(SECOND_SESSION_ID));
+      expect(listed(one)).toEqual([FIRST_SESSION_ID, SECOND_SESSION_ID]);
+      await one.used(address(THIRD_SESSION_ID));
 
-      expect(listed(new SessionReferences(globalState))).toEqual(['a', 'b', 'c']);
+      expect(listed(new SessionReferences(globalState))).toEqual([FIRST_SESSION_ID, SECOND_SESSION_ID, THIRD_SESSION_ID]);
     });
 
     it('settles a change and a removal made from the same revision on the removal, in every window', async () => {
       const globalState = revertibleStore();
       const one = new SessionReferences(globalState, ticking());
       const other = new SessionReferences(globalState, ticking());
-      await one.used(address('a'));
-      await other.remove(idOf('a'));
+      await one.used(address(FIRST_SESSION_ID));
+      await other.remove(idOf(FIRST_SESSION_ID));
 
       globalState.serveEarlier(REFERENCES_KEY);
-      await one.setTitle(address('a'), 'One');
-      await other.used(address('b'));
+      await one.setTitle(address(FIRST_SESSION_ID), 'One');
+      await other.used(address(SECOND_SESSION_ID));
 
-      expect(one.get(idOf('a'))).toBeUndefined();
-      expect(other.get(idOf('a'))).toBeUndefined();
-      expect(new SessionReferences(globalState).get(idOf('a'))).toBeUndefined();
+      expect(one.get(idOf(FIRST_SESSION_ID))).toBeUndefined();
+      expect(other.get(idOf(FIRST_SESSION_ID))).toBeUndefined();
+      expect(new SessionReferences(globalState).get(idOf(FIRST_SESSION_ID))).toBeUndefined();
     });
 
     it('settles two changes made from the same revision on the same one, in every window', async () => {
       const globalState = revertibleStore();
       const one = new SessionReferences(globalState, ticking());
       const other = new SessionReferences(globalState, ticking());
-      await one.used(address('a'));
-      await other.setTitle(address('a'), 'Other');
+      await one.used(address(FIRST_SESSION_ID));
+      await other.setTitle(address(FIRST_SESSION_ID), 'Other');
 
       globalState.serveEarlier(REFERENCES_KEY);
-      await one.setTitle(address('a'), 'One');
-      await other.used(address('b'));
+      await one.setTitle(address(FIRST_SESSION_ID), 'One');
+      await other.used(address(SECOND_SESSION_ID));
 
-      expect(one.get(idOf('a'))?.title).toBe('Other');
-      expect(other.get(idOf('a'))?.title).toBe('Other');
-      expect(new SessionReferences(globalState).get(idOf('a'))?.title).toBe('Other');
+      expect(one.get(idOf(FIRST_SESSION_ID))?.title).toBe('Other');
+      expect(other.get(idOf(FIRST_SESSION_ID))?.title).toBe('Other');
+      expect(new SessionReferences(globalState).get(idOf(FIRST_SESSION_ID))?.title).toBe('Other');
     });
 
     it('drops its own earlier changes once it reads a reset made elsewhere', async () => {
       const globalState = revertibleStore();
       const one = new SessionReferences(globalState, ticking());
       const other = new SessionReferences(globalState, ticking());
-      await one.used(address('a'));
+      await one.used(address(FIRST_SESSION_ID));
 
       await other.reset();
-      await one.used(address('b'));
+      await one.used(address(SECOND_SESSION_ID));
 
-      expect(listed(one)).toEqual(['b']);
-      expect(listed(new SessionReferences(globalState))).toEqual(['b']);
+      expect(listed(one)).toEqual([SECOND_SESSION_ID]);
+      expect(listed(new SessionReferences(globalState))).toEqual([SECOND_SESSION_ID]);
     });
   });
 
@@ -690,37 +700,37 @@ describe('SessionReferences', () => {
       const globalState = memoryStore();
       const clock = stopped();
       const references = new SessionReferences(globalState, clock);
-      await references.used(address('a'));
-      await references.remove(idOf('a'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.remove(idOf(FIRST_SESSION_ID));
       const removed = () => (globalState.values.get(REFERENCES_KEY) as { removed: unknown[] }).removed;
 
       clock.advance(30 * DAY - 1);
-      await references.used(address('b'));
-      expect(removed()).toEqual([{ host: devenv, configuredName: 'OpenCode', sessionId: 'a', revision: 2, removedAt: '2026-10-29T10:00:00.000Z' }]);
+      await references.used(address(SECOND_SESSION_ID));
+      expect(removed()).toEqual([{ host: devenv, configuredName: 'OpenCode', sessionId: FIRST_SESSION_ID, revision: 2, removedAt: '2026-10-29T10:00:00.000Z' }]);
 
       clock.advance(1);
-      await references.used(address('c'));
+      await references.used(address(THIRD_SESSION_ID));
       expect(removed()).toEqual([]);
     });
 
     it('leaves none for a reference evicted past its capacity', async () => {
       const globalState = memoryStore();
       const references = new SessionReferences(globalState, ticking(), 1);
-      await references.used(address('a'));
-      await references.used(address('b'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.used(address(SECOND_SESSION_ID));
 
-      expect(globalState.values.get(REFERENCES_KEY)).toMatchObject({ references: [{ sessionId: 'b' }], removed: [] });
-      expect(listed(references)).toEqual(['b']);
+      expect(globalState.values.get(REFERENCES_KEY)).toMatchObject({ references: [{ sessionId: SECOND_SESSION_ID }], removed: [] });
+      expect(listed(references)).toEqual([SECOND_SESSION_ID]);
     });
 
     it('lets a session removed earlier be referenced again', async () => {
       const references = new SessionReferences(memoryStore(), ticking());
-      await references.used(address('a'));
-      await references.remove(idOf('a'));
+      await references.used(address(FIRST_SESSION_ID));
+      await references.remove(idOf(FIRST_SESSION_ID));
 
-      await references.used(address('a'));
+      await references.used(address(FIRST_SESSION_ID));
 
-      expect(listed(references)).toEqual(['a']);
+      expect(listed(references)).toEqual([FIRST_SESSION_ID]);
     });
   });
 
@@ -729,8 +739,8 @@ describe('SessionReferences', () => {
       const globalState = heldStore();
       const references = new SessionReferences(globalState, ticking());
       const order: string[] = [];
-      const first = references.used(address('a'));
-      const second = references.setTitle(address('b'), 'Fix the build');
+      const first = references.used(address(FIRST_SESSION_ID));
+      const second = references.setTitle(address(SECOND_SESSION_ID), 'Fix the build');
       const settled = references.settled().then(() => order.push('settled'));
 
       globalState.finish[1]?.();
@@ -750,17 +760,17 @@ describe('SessionReferences', () => {
       let announced = 0;
       references.on('changed', () => { announced++; });
       const order: string[] = [];
-      const writing = references.used(address('a'));
+      const writing = references.used(address(FIRST_SESSION_ID));
       const disposed = references.dispose().then(() => order.push('disposed'));
 
-      void references.used(address('b'));
+      void references.used(address(SECOND_SESSION_ID));
       globalState.finish[0]?.();
       await writing;
       order.push('written');
       await disposed;
 
       expect(order).toEqual(['written', 'disposed']);
-      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual(['a']);
+      expect(ids(references.list(devenv, 'OpenCode', '/home/me/work'))).toEqual([FIRST_SESSION_ID]);
       expect(announced).toBe(1);
     });
   });
@@ -769,18 +779,18 @@ describe('SessionReferences', () => {
 describe('WorkspaceState', () => {
   it('reads back the last active session saved before', async () => {
     const workspaceState = memoryStore();
-    await new WorkspaceState(workspaceState).setLastActiveSession({ ...address('a'), extra: 'dropped' } as SessionAddress);
+    await new WorkspaceState(workspaceState).setLastActiveSession({ ...address(FIRST_SESSION_ID), extra: 'dropped' } as SessionAddress);
 
-    expect(new WorkspaceState(workspaceState).lastActiveSession()).toEqual(address('a'));
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address('a') });
+    expect(new WorkspaceState(workspaceState).lastActiveSession()).toEqual(address(FIRST_SESSION_ID));
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address(FIRST_SESSION_ID) });
   });
 
   it.each([
     ['nothing', undefined],
-    ['a malformed session', { schemaVersion: 2, lastActiveSession: { ...address('a'), cwd: 5 } }],
-    ['a session without a host', { schemaVersion: 2, lastActiveSession: { ...address('a'), host: undefined } }],
-    ['an earlier version', { schemaVersion: 0, lastActiveSession: address('a') }],
-    ['the first version, which derived hosts', { schemaVersion: 1, lastActiveSession: address('a') }],
+    ['a malformed session', { schemaVersion: 2, lastActiveSession: { ...address(FIRST_SESSION_ID), cwd: 5 } }],
+    ['a session without a host', { schemaVersion: 2, lastActiveSession: { ...address(FIRST_SESSION_ID), host: undefined } }],
+    ['an earlier version', { schemaVersion: 0, lastActiveSession: address(FIRST_SESSION_ID) }],
+    ['the first version, which derived hosts', { schemaVersion: 1, lastActiveSession: address(FIRST_SESSION_ID) }],
   ])('has no last active session from %s', (_, saved) => {
     const workspaceState = memoryStore(saved === undefined ? {} : { [WORKSPACE_KEY]: saved });
 
@@ -803,10 +813,10 @@ describe('WorkspaceState', () => {
     const state = new WorkspaceState(workspaceState);
 
     await state.setWorkspaceTarget(onDevenv);
-    await state.setLastActiveSession(address('a'));
+    await state.setLastActiveSession(address(FIRST_SESSION_ID));
     await state.setWorkspaceTarget(onClient);
 
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address('a'), workspaceTarget: onClient });
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address(FIRST_SESSION_ID), workspaceTarget: onClient });
   });
 
   it.each([
@@ -825,21 +835,21 @@ describe('WorkspaceState', () => {
   });
 
   it('drops a malformed field when writing the other, keeping the valid one', async () => {
-    const workspaceState = memoryStore({ [WORKSPACE_KEY]: { schemaVersion: 2, lastActiveSession: { ...address('a'), cwd: 5 }, workspaceTarget: onDevenv } });
+    const workspaceState = memoryStore({ [WORKSPACE_KEY]: { schemaVersion: 2, lastActiveSession: { ...address(FIRST_SESSION_ID), cwd: 5 }, workspaceTarget: onDevenv } });
 
-    await new WorkspaceState(workspaceState).setLastActiveSession(address('b'));
+    await new WorkspaceState(workspaceState).setLastActiveSession(address(SECOND_SESSION_ID));
 
-    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address('b'), workspaceTarget: onDevenv });
+    expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({ schemaVersion: 3, lastActiveSession: address(SECOND_SESSION_ID), workspaceTarget: onDevenv });
   });
 
   it('reads a later version as empty and never overwrites it', async () => {
-    const later = { schemaVersion: 4, lastActiveSession: address('a'), workspaceTarget: onDevenv, tabLayout: { tabs: [address('a')], selected: address('a'), mru: [address('a')] } };
+    const later = { schemaVersion: 4, lastActiveSession: address(FIRST_SESSION_ID), workspaceTarget: onDevenv, tabLayout: { tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] } };
     const workspaceState = memoryStore({ [WORKSPACE_KEY]: later });
     const state = new WorkspaceState(workspaceState);
 
-    await state.setLastActiveSession(address('b'));
+    await state.setLastActiveSession(address(SECOND_SESSION_ID));
     await state.setWorkspaceTarget(onClient);
-    await state.setTabLayout({ tabs: [address('b')], selected: address('b'), mru: [address('b')] });
+    await state.setTabLayout({ tabs: [address(SECOND_SESSION_ID)], selected: address(SECOND_SESSION_ID), mru: [address(SECOND_SESSION_ID)] });
     await state.rebind('OpenCode', 'oc');
 
     expect(state.lastActiveSession()).toBeUndefined();
@@ -851,14 +861,14 @@ describe('WorkspaceState', () => {
   describe('tab layout', () => {
     it('saves ordered address-only tabs, selection and MRU independently of session references', async () => {
       const workspaceState = memoryStore();
-      const a = { ...reference('a'), tabId: 'opaque', transcript: ['private'], activity: 'running' };
-      await new WorkspaceState(workspaceState).setTabLayout({ tabs: [a, address('b')], selected: a, mru: [address('b'), a] });
+      const a = { ...reference(FIRST_SESSION_ID), tabId: 'opaque', transcript: ['private'], activity: 'running' };
+      await new WorkspaceState(workspaceState).setTabLayout({ tabs: [a, address(SECOND_SESSION_ID)], selected: a, mru: [address(SECOND_SESSION_ID), a] });
 
       expect(new WorkspaceState(workspaceState).tabLayout()).toEqual({
-        tabs: [address('a'), address('b')], selected: address('a'), mru: [address('b'), address('a')],
+        tabs: [address(FIRST_SESSION_ID), address(SECOND_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(SECOND_SESSION_ID), address(FIRST_SESSION_ID)],
       });
       expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({
-        schemaVersion: 3, tabLayout: { tabs: [address('a'), address('b')], selected: address('a'), mru: [address('b'), address('a')] },
+        schemaVersion: 3, tabLayout: { tabs: [address(FIRST_SESSION_ID), address(SECOND_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(SECOND_SESSION_ID), address(FIRST_SESSION_ID)] },
       });
       expect(workspaceState.values.has(REFERENCES_KEY)).toBe(false);
     });
@@ -866,40 +876,40 @@ describe('WorkspaceState', () => {
     it('distinguishes an absent layout from explicitly closing every tab', async () => {
       const workspaceState = memoryStore();
       const state = new WorkspaceState(workspaceState);
-      await state.setLastActiveSession(address('legacy'));
+      await state.setLastActiveSession(address(LEGACY_SESSION_ID));
       expect(state.tabLayout()).toBeUndefined();
 
       await state.setTabLayout({ tabs: [], selected: null, mru: [] });
 
       expect(new WorkspaceState(workspaceState).tabLayout()).toEqual({ tabs: [], selected: null, mru: [] });
-      expect(state.lastActiveSession()).toEqual(address('legacy'));
+      expect(state.lastActiveSession()).toEqual(address(LEGACY_SESSION_ID));
     });
 
     it('migrates version two fields on a layout write and preserves layout on other writes', async () => {
       const workspaceState = memoryStore({ [WORKSPACE_KEY]: {
-        schemaVersion: 2, lastActiveSession: address('legacy'), workspaceTarget: onDevenv,
+        schemaVersion: 2, lastActiveSession: address(LEGACY_SESSION_ID), workspaceTarget: onDevenv,
       } });
       const state = new WorkspaceState(workspaceState);
-      expect(state.lastActiveSession()).toEqual(address('legacy'));
+      expect(state.lastActiveSession()).toEqual(address(LEGACY_SESSION_ID));
       expect(state.workspaceTarget()).toEqual(onDevenv);
       expect(state.tabLayout()).toBeUndefined();
-      const layout = { tabs: [address('a')], selected: address('a'), mru: [address('a')] };
+      const layout = { tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] };
 
       await state.setTabLayout(layout);
       expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({
-        schemaVersion: 3, lastActiveSession: address('legacy'), workspaceTarget: onDevenv, tabLayout: layout,
+        schemaVersion: 3, lastActiveSession: address(LEGACY_SESSION_ID), workspaceTarget: onDevenv, tabLayout: layout,
       });
-      await state.setLastActiveSession(address('b'));
+      await state.setLastActiveSession(address(SECOND_SESSION_ID));
       await state.setWorkspaceTarget(onClient);
 
       expect(workspaceState.values.get(WORKSPACE_KEY)).toEqual({
-        schemaVersion: 3, lastActiveSession: address('b'), workspaceTarget: onClient, tabLayout: layout,
+        schemaVersion: 3, lastActiveSession: address(SECOND_SESSION_ID), workspaceTarget: onClient, tabLayout: layout,
       });
     });
 
     it.each([0, 1, 2])('does not read a tab layout from schema %s', (schemaVersion) => {
       const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: {
-        schemaVersion, tabLayout: { tabs: [address('a')], selected: address('a'), mru: [address('a')] },
+        schemaVersion, tabLayout: { tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] },
       } }));
 
       expect(state.tabLayout()).toBeUndefined();
@@ -924,7 +934,7 @@ describe('WorkspaceState', () => {
     it.each([null, 5, [], {}, { tabs: false }, { tabs: [], selected: address('foreign'), mru: [address('foreign')] }].map((raw) => [raw]))(
       'treats a malformed present layout as empty without choosing a foreign session: %j', (tabLayout) => {
         const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: {
-          schemaVersion: 3, lastActiveSession: address('legacy'), tabLayout,
+          schemaVersion: 3, lastActiveSession: address(LEGACY_SESSION_ID), tabLayout,
         } }));
 
         expect(state.tabLayout()).toEqual({ tabs: [], selected: null, mru: [] });
@@ -933,30 +943,30 @@ describe('WorkspaceState', () => {
 
     it('clears a selection outside the tabs and completes a malformed MRU from tab order', () => {
       const state = new WorkspaceState(memoryStore({ [WORKSPACE_KEY]: { schemaVersion: 3, tabLayout: {
-        tabs: [address('a'), address('b')], selected: address('foreign'), mru: 'invalid',
+        tabs: [address(FIRST_SESSION_ID), address(SECOND_SESSION_ID)], selected: address('foreign'), mru: 'invalid',
       } } }));
 
-      expect(state.tabLayout()).toEqual({ tabs: [address('a'), address('b')], selected: null, mru: [address('a'), address('b')] });
+      expect(state.tabLayout()).toEqual({ tabs: [address(FIRST_SESSION_ID), address(SECOND_SESSION_ID)], selected: null, mru: [address(FIRST_SESSION_ID), address(SECOND_SESSION_ID)] });
     });
 
     it('clones addresses and arrays when saving and reading a layout', async () => {
       const workspaceState = memoryStore();
       const state = new WorkspaceState(workspaceState);
-      const a = { ...address('a') };
+      const a = { ...address(FIRST_SESSION_ID) };
       const layout = { tabs: [a], selected: a, mru: [a] };
       await state.setTabLayout(layout);
       a.sessionId = 'changed';
       layout.tabs.length = 0;
       layout.mru.length = 0;
       const read = state.tabLayout();
-      expect(read).toEqual({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+      expect(read).toEqual({ tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] });
       if (read) {
         (read.tabs as SessionAddress[]).length = 0;
         (read.selected as { sessionId: string }).sessionId = 'changed-again';
         (read.mru as SessionAddress[]).length = 0;
       }
 
-      expect(state.tabLayout()).toEqual({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+      expect(state.tabLayout()).toEqual({ tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] });
     });
 
     it('rebinds layout addresses and its legacy pointer, deduplicating name collisions', async () => {
@@ -983,7 +993,7 @@ describe('WorkspaceState', () => {
     it('rebinds a layout without a legacy pointer and avoids writing unrelated renames', async () => {
       const workspaceState = memoryStore();
       const state = new WorkspaceState(workspaceState);
-      await state.setTabLayout({ tabs: [address('a')], selected: null, mru: [address('a')] });
+      await state.setTabLayout({ tabs: [address(FIRST_SESSION_ID)], selected: null, mru: [address(FIRST_SESSION_ID)] });
       const stored = workspaceState.values.get(WORKSPACE_KEY);
       await state.rebind('Claude', 'cc');
       expect(workspaceState.values.get(WORKSPACE_KEY)).toBe(stored);
@@ -991,7 +1001,7 @@ describe('WorkspaceState', () => {
       await state.rebind('OpenCode', 'oc');
 
       expect(state.tabLayout()).toEqual({
-        tabs: [address('a', { configuredName: 'oc' })], selected: null, mru: [address('a', { configuredName: 'oc' })],
+        tabs: [address(FIRST_SESSION_ID, { configuredName: 'oc' })], selected: null, mru: [address(FIRST_SESSION_ID, { configuredName: 'oc' })],
       });
     });
 
@@ -999,7 +1009,7 @@ describe('WorkspaceState', () => {
       const workspaceState = heldStore();
       const state = new WorkspaceState(workspaceState);
       const order: string[] = [];
-      const writing = state.setTabLayout({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+      const writing = state.setTabLayout({ tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] });
       const settled = state.settled().then(() => order.push('settled'));
       const disposed = state.dispose().then(() => order.push('disposed'));
       await state.setTabLayout({ tabs: [], selected: null, mru: [] });
@@ -1011,31 +1021,31 @@ describe('WorkspaceState', () => {
 
       expect(order).toEqual(['settled', 'disposed']);
       expect(workspaceState.finish).toHaveLength(1);
-      expect(state.tabLayout()).toEqual({ tabs: [address('a')], selected: address('a'), mru: [address('a')] });
+      expect(state.tabLayout()).toEqual({ tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] });
     });
   });
 
   it('rebinds the last active session to the new name of its configuration, and no other', async () => {
     const workspaceState = memoryStore();
     const state = new WorkspaceState(workspaceState);
-    await state.setLastActiveSession(address('a'));
+    await state.setLastActiveSession(address(FIRST_SESSION_ID));
 
     await state.rebind('Claude', 'cc');
-    expect(state.lastActiveSession()).toEqual(address('a'));
+    expect(state.lastActiveSession()).toEqual(address(FIRST_SESSION_ID));
 
     await state.rebind('OpenCode', 'oc');
-    expect(state.lastActiveSession()).toEqual(address('a', { configuredName: 'oc' }));
+    expect(state.lastActiveSession()).toEqual(address(FIRST_SESSION_ID, { configuredName: 'oc' }));
   });
 
   it('retires only explicitly listed workspace keys without reading their contents', async () => {
     const workspaceState = memoryStore({
       'your-turn.retired.v1': { schemaVersion: 1 },
       'acp.sessionHistory.v1': { version: 1 },
-      [WORKSPACE_KEY]: { schemaVersion: 2, lastActiveSession: address('a') },
+      [WORKSPACE_KEY]: { schemaVersion: 2, lastActiveSession: address(FIRST_SESSION_ID) },
     });
     await new WorkspaceState(workspaceState, ['your-turn.retired.v1']).discardRetired();
     expect([...workspaceState.values.keys()]).toEqual(['acp.sessionHistory.v1', WORKSPACE_KEY]);
-    expect(new WorkspaceState(workspaceState).lastActiveSession()).toEqual(address('a'));
+    expect(new WorkspaceState(workspaceState).lastActiveSession()).toEqual(address(FIRST_SESSION_ID));
   });
 
   it('has no retired keys by default and leaves earlier extension data alone', async () => {
@@ -1049,7 +1059,7 @@ describe('WorkspaceState', () => {
     const state = new WorkspaceState(workspaceState, ['your-turn.retired.v1']);
     const order: string[] = [];
     const discarding = state.discardRetired();
-    const setting = state.setLastActiveSession(address('a'));
+    const setting = state.setLastActiveSession(address(FIRST_SESSION_ID));
     const learning = state.setWorkspaceTarget(onDevenv);
     const settled = state.settled().then(() => order.push('settled'));
 
@@ -1071,10 +1081,10 @@ describe('WorkspaceState', () => {
     const workspaceState = heldStore({ 'your-turn.retired.v1': {} });
     const state = new WorkspaceState(workspaceState, ['your-turn.retired.v1']);
     const order: string[] = [];
-    const writing = state.setLastActiveSession(address('a'));
+    const writing = state.setLastActiveSession(address(FIRST_SESSION_ID));
     const disposed = state.dispose().then(() => order.push('disposed'));
 
-    void state.setLastActiveSession(address('b'));
+    void state.setLastActiveSession(address(SECOND_SESSION_ID));
     void state.setWorkspaceTarget(onDevenv);
     void state.discardRetired();
     workspaceState.finish[0]?.();
@@ -1083,7 +1093,7 @@ describe('WorkspaceState', () => {
     await disposed;
 
     expect(order).toEqual(['written', 'disposed']);
-    expect(state.lastActiveSession()).toEqual(address('a'));
+    expect(state.lastActiveSession()).toEqual(address(FIRST_SESSION_ID));
     expect(state.workspaceTarget()).toBeUndefined();
     expect([...workspaceState.values.keys()]).toEqual(['your-turn.retired.v1', WORKSPACE_KEY]);
   });
@@ -1095,33 +1105,33 @@ describe('StartupRequests', () => {
 
   it('hands a request to a window of its workspace once, across reloads', async () => {
     const globalState = memoryStore();
-    await new StartupRequests(globalState).request(address('a'));
+    await new StartupRequests(globalState).request(address(FIRST_SESSION_ID));
 
     const window = new StartupRequests(globalState);
-    expect(await window.take(DEVENV)).toEqual(address('a'));
+    expect(await window.take(DEVENV)).toEqual(address(FIRST_SESSION_ID));
     expect(await window.take(DEVENV)).toBeUndefined();
     expect(await new StartupRequests(globalState).take(DEVENV)).toBeUndefined();
   });
 
   it('keeps only the fields of an address in a request, whatever else the caller passes', async () => {
     const globalState = memoryStore();
-    await new StartupRequests(globalState).request({ ...address('a'), extra: 'dropped' } as SessionAddress);
+    await new StartupRequests(globalState).request({ ...address(FIRST_SESSION_ID), extra: 'dropped' } as SessionAddress);
 
-    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address('a'));
+    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address(FIRST_SESSION_ID));
   });
 
   it('gives a window of another workspace nothing, leaving the request for its own', async () => {
     const globalState = memoryStore();
-    await new StartupRequests(globalState).request(address('a'));
+    await new StartupRequests(globalState).request(address(FIRST_SESSION_ID));
 
     expect(await new StartupRequests(globalState).take(otherWorkspace)).toBeUndefined();
-    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address('a'));
+    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address(FIRST_SESSION_ID));
   });
 
   it('answers a request only once it is written', async () => {
     const globalState = heldStore();
     const order: string[] = [];
-    const requesting = new StartupRequests(globalState).request(address('a')).then(() => order.push('request answered'));
+    const requesting = new StartupRequests(globalState).request(address(FIRST_SESSION_ID)).then(() => order.push('request answered'));
     const taking = new StartupRequests(globalState).take(DEVENV).then(() => order.push('take answered'));
 
     globalState.finish[1]?.();
@@ -1134,12 +1144,12 @@ describe('StartupRequests', () => {
 
   it('answers a take only once the take is written', async () => {
     const globalState = heldStore();
-    const requesting = new StartupRequests(globalState).request(address('a'));
+    const requesting = new StartupRequests(globalState).request(address(FIRST_SESSION_ID));
     globalState.finish[0]?.();
     await requesting;
     const order: string[] = [];
     const taking = new StartupRequests(globalState).take(DEVENV).then(() => order.push('take answered'));
-    const requestingOther = new StartupRequests(globalState).request(address('b', { workspaceUri: LOCAL }))
+    const requestingOther = new StartupRequests(globalState).request(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }))
       .then(() => order.push('request answered'));
 
     globalState.finish[2]?.();
@@ -1155,23 +1165,23 @@ describe('StartupRequests', () => {
     const clock = ticking();
     const source = new StartupRequests(globalState, clock);
     const window = new StartupRequests(globalState, clock);
-    await source.request(address('a'));
-    await source.request(address('b'));
+    await source.request(address(FIRST_SESSION_ID));
+    await source.request(address(SECOND_SESSION_ID));
 
-    expect(await window.take(DEVENV)).toEqual(address('b'));
+    expect(await window.take(DEVENV)).toEqual(address(SECOND_SESSION_ID));
     expect(await window.take(DEVENV)).toBeUndefined();
 
-    await source.request(address('c'));
-    expect(await window.take(DEVENV)).toEqual(address('c'));
+    await source.request(address(THIRD_SESSION_ID));
+    expect(await window.take(DEVENV)).toEqual(address(THIRD_SESSION_ID));
   });
 
   it.each([
-    ['until', 10 * MINUTE - 1, address('a')],
+    ['until', 10 * MINUTE - 1, address(FIRST_SESSION_ID)],
     ['not from', 10 * MINUTE, undefined],
   ])('hands a request out %s ten minutes after it was made', async (_, after, expected) => {
     const globalState = memoryStore();
     const clock = stopped();
-    await new StartupRequests(globalState, clock).request(address('a'));
+    await new StartupRequests(globalState, clock).request(address(FIRST_SESSION_ID));
 
     clock.advance(after);
 
@@ -1182,10 +1192,10 @@ describe('StartupRequests', () => {
     const globalState = memoryStore();
     const clock = stopped();
     const requests = new StartupRequests(globalState, clock);
-    await requests.request(address('a'));
+    await requests.request(address(FIRST_SESSION_ID));
     await requests.take(DEVENV);
     clock.advance(5 * MINUTE);
-    await requests.request(address('b', { workspaceUri: LOCAL }));
+    await requests.request(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }));
     const before = globalState.values.get(STARTUP_REQUESTS_KEY);
 
     await new StartupRequests(globalState, clock).discardExpired();
@@ -1195,7 +1205,7 @@ describe('StartupRequests', () => {
     await new StartupRequests(globalState, clock).discardExpired();
     expect(globalState.values.get(STARTUP_REQUESTS_KEY)).toEqual({
       schemaVersion: 1,
-      requests: [{ ...address('b', { workspaceUri: LOCAL }), requestId: expect.any(String) as unknown, expiresAt: '2026-10-29T10:15:00.000Z' }],
+      requests: [{ ...address(SECOND_SESSION_ID, { workspaceUri: LOCAL }), requestId: expect.any(String) as unknown, expiresAt: '2026-10-29T10:15:00.000Z' }],
       taken: [],
     });
   });
@@ -1203,12 +1213,12 @@ describe('StartupRequests', () => {
   it('does not hand out again a request it took while an earlier value is served, nor write that value back', async () => {
     const globalState = revertibleStore();
     const requests = new StartupRequests(globalState);
-    await requests.request(address('a'));
+    await requests.request(address(FIRST_SESSION_ID));
     await requests.take(DEVENV);
 
     globalState.serveEarlier(STARTUP_REQUESTS_KEY);
     expect(await requests.take(DEVENV)).toBeUndefined();
-    await requests.request(address('b', { workspaceUri: LOCAL }));
+    await requests.request(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }));
 
     expect(await new StartupRequests(globalState).take(DEVENV)).toBeUndefined();
   });
@@ -1216,16 +1226,16 @@ describe('StartupRequests', () => {
   it('keeps its own request while an earlier value is served', async () => {
     const globalState = revertibleStore();
     const requests = new StartupRequests(globalState);
-    await requests.request(address('a'));
+    await requests.request(address(FIRST_SESSION_ID));
 
     globalState.serveEarlier(STARTUP_REQUESTS_KEY);
-    await requests.request(address('b', { workspaceUri: LOCAL }));
+    await requests.request(address(SECOND_SESSION_ID, { workspaceUri: LOCAL }));
 
-    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address('a'));
+    expect(await new StartupRequests(globalState).take(DEVENV)).toEqual(address(FIRST_SESSION_ID));
   });
 
   it('drops malformed requests and takes, keeping the rest', async () => {
-    const valid = { ...address('a'), requestId: 'one', expiresAt: '2026-10-29T10:10:00.000Z' };
+    const valid = { ...address(FIRST_SESSION_ID), requestId: 'one', expiresAt: '2026-10-29T10:10:00.000Z' };
     const globalState = memoryStore({
       [STARTUP_REQUESTS_KEY]: {
         schemaVersion: 1,
@@ -1234,7 +1244,7 @@ describe('StartupRequests', () => {
       },
     });
 
-    expect(await new StartupRequests(globalState, stopped()).take(DEVENV)).toEqual(address('a'));
+    expect(await new StartupRequests(globalState, stopped()).take(DEVENV)).toEqual(address(FIRST_SESSION_ID));
   });
 
   it('reads a later version as empty and never overwrites it', async () => {
@@ -1242,7 +1252,7 @@ describe('StartupRequests', () => {
     const globalState = memoryStore({ [STARTUP_REQUESTS_KEY]: later });
     const requests = new StartupRequests(globalState);
 
-    await requests.request(address('a'));
+    await requests.request(address(FIRST_SESSION_ID));
     await requests.discardExpired();
 
     expect(await requests.take(DEVENV)).toBeUndefined();

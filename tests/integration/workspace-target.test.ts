@@ -16,7 +16,6 @@ import { remoteWebview } from '@tests/integration/webviews';
 
 suite("The window's workspace target", () => {
   const agentName = 'fake-persisted-folder';
-  const sessionId = `persisted-folder-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}`;
   const config = () => vscode.workspace.getConfiguration('your-turn');
   let api: ExtensionTestApi;
   let folder: vscode.Uri;
@@ -43,7 +42,7 @@ suite("The window's workspace target", () => {
     original = config().inspect('agents')?.globalValue;
     await config().update(
       'agents',
-      { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
+      { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1' } } },
       vscode.ConfigurationTarget.Global,
     );
   });
@@ -150,7 +149,8 @@ suite("The window's workspace target", () => {
   test('records a session opened here as its reference and as the last active session of this workspace', async () => {
     await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
     await api.persistedStateSettled();
-
+    const sessionId = workspaceState().lastActiveSession()?.sessionId;
+    assert.ok(sessionId, 'the created session was persisted');
     const address = { configuredName: agentName, sessionId, cwd: folder.fsPath, host: 'file://', workspaceUri: folder.toString() };
     assert.deepStrictEqual(new WorkspaceState(api.storage.workspaceState).lastActiveSession(), address);
     const reference = api.sessionReferences.get({ host: 'file://', configuredName: agentName, sessionId });
@@ -174,12 +174,13 @@ suite("The window's workspace target", () => {
     );
     owned.push(() => manager.dispose(), () => updates.dispose());
     manager.setPersistedState(references, state);
+    const session = await manager.connectToAgent(agentName);
+    const sessionId = session.sessionId;
     const recorded = () => [
       references.get({ host: onDevenv().host, configuredName: agentName, sessionId }),
       workspaceState().lastActiveSession(),
     ];
 
-    await manager.connectToAgent(agentName);
     await references.settled();
     await state.settled();
     assert.deepStrictEqual(recorded(), [undefined, undefined]);

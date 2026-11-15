@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { join } from 'node:path';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
+import { WorkspaceState } from '@/core/PersistedState';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { observed } from '@tests/integration/observed';
@@ -18,7 +19,6 @@ const named = (name: string) => vscode.window.terminals.filter((terminal) => ter
 for (const version of [1, 2]) {
   suite(`Command Output Test Suite, ACP v${version}`, () => {
     const agentName = `fake-output-v${version}`;
-    const sessionId = `commandoutput-v${version}`;
     let api: ExtensionTestApi;
     let original: unknown;
     const posts: ExtensionToWebviewMessage[] = [];
@@ -26,7 +26,7 @@ for (const version of [1, 2]) {
     const config = () => vscode.workspace.getConfiguration('your-turn');
     /** The context the chat view gives the command's output, which VS Code's menu passes to Open in Terminal. */
     const context = {
-      yourTurnSessionId: sessionId,
+      yourTurnSessionId: '',
       yourTurnTitle: 'npm test',
       ...(version === 1 ? { yourTurnToolCallId: 'run-1' } : { yourTurnTerminalId: 'term-1' }),
     };
@@ -41,12 +41,17 @@ for (const version of [1, 2]) {
       original = config().inspect('agents')?.globalValue;
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1' } } },
         vscode.ConfigurationTarget.Global,
       );
       await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
       await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+      await api.persistedStateSettled();
+      const address = new WorkspaceState(api.storage.workspaceState).lastActiveSession();
+      assert.ok(address, 'the created session was persisted');
+      assert.strictEqual(address.configuredName, agentName);
+      context.yourTurnSessionId = address.sessionId;
       await api.sendChatMessage({ type: 'sendPrompt', text: 'run' });
       await observed(api.chatPosts, () => posts.find((post) => post.type === 'promptEnd'));
     });

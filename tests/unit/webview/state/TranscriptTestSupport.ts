@@ -11,6 +11,8 @@ import { showsEmptyState, type Turn, type TurnPart } from '@/webview/state/Trans
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
+export const TRANSCRIPT_SESSION_ID = '27de9d66-0738-44ea-9937-84274196d1a6';
+export const OTHER_TRANSCRIPT_SESSION_ID = 'd700a7ad-1b4c-4765-9f5d-0868c136e1ca';
 
 type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type' | 'toolCallId'>;
 
@@ -50,7 +52,7 @@ export function chatView() {
     store,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
     connect: (session: Partial<SessionSnapshot> = {}) => {
-      const full = { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session };
+      const full = { sessionId: TRANSCRIPT_SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session };
       store.dispatch({ type: 'state', activeSessionId: full.sessionId, session: full });
     },
     answer: (text: string, messageId: string | null = null) => store.dispatch({ type: 'agentText', messageId, text }),

@@ -9,6 +9,8 @@ import {
   type PickersState
 } from '@/webview/state/Pickers';
 import { createStore } from '@/webview/state/Store';
+const SESSION_ID = '52068c99-3a94-44bd-9016-174fe795ecbb';
+const OTHER_SESSION_ID = 'e05a5881-4ea2-46b0-9cd3-b40f6dbfb78b';
 
 const model: Picker = {
   id: 'model',
@@ -32,7 +34,7 @@ const effort: Picker = {
 };
 
 function snapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
-  return { sessionId: 's1', agentName: 'Fake Agent', cwd: '/work', pickers: [], commands: [], ...session };
+  return { sessionId: SESSION_ID, agentName: 'Fake Agent', cwd: '/work', pickers: [], commands: [], ...session };
 }
 
 function chatView() {
@@ -41,8 +43,8 @@ function chatView() {
   return {
     pickers: (): PickersState => store.getSnapshot().pickers,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
-    connect: (pickers: Picker[]) =>
-      store.dispatch({ type: 'state', activeSessionId: 's1', session: snapshot({ pickers }) }),
+    connect: (pickers: Picker[], sessionId = SESSION_ID) =>
+      store.dispatch({ type: 'state', activeSessionId: sessionId, session: snapshot({ pickers, sessionId }) }),
     takePosted: () => posted.splice(0),
   };
 }
@@ -67,7 +69,7 @@ describe('which pickers are shown', () => {
     const view = chatView();
     view.connect([model]);
 
-    view.connect([]);
+    view.connect([], OTHER_SESSION_ID);
 
     expect(view.pickers().pickers).toEqual([]);
   });

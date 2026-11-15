@@ -35,7 +35,6 @@ async function shownChanges(title: string): Promise<{ before: string; after: str
 for (const version of [1, 2]) {
   suite(`Tool Call Diffs Test Suite, ACP v${version}`, () => {
     const agentName = `fake-diffs-v${version}`;
-    const sessionId = `toolcalldiffs-v${version}`;
     let api: ExtensionTestApi;
     let dir: string;
     let original: { agents: unknown; showToolCallDiffs: unknown } | undefined;
@@ -64,7 +63,7 @@ for (const version of [1, 2]) {
       original = { agents: config().inspect('agents')?.globalValue, showToolCallDiffs: config().inspect('showToolCallDiffs')?.globalValue };
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1' } } },
         vscode.ConfigurationTarget.Global,
       );
       await vscode.commands.executeCommand('your-turn-chat.focus');

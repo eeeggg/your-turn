@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { SessionTabs, type TabReference } from '@/core/SessionTabs';
 import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 
-const first: TabReference = { sessionId: 's1', agentName: 'configured', agentDisplayName: 'Agent', cwd: '/work', title: 'First' };
+const FIRST_SESSION_ID = '2779b18b-8433-482d-b740-376fd1a5c020';
+const SECOND_SESSION_ID = '5c048a8f-26fd-4a69-88dc-97da2ce2345c';
+const THIRD_SESSION_ID = 'a04b816f-ddce-43a9-9814-e9214353d2d1';
+const ELSEWHERE_SESSION_ID = 'd24ada26-c248-445b-9297-cc0d1fefc518';
+const REMOTE_SESSION_ID = 'fa49271c-b487-49f3-a06a-be7baa1f5a04';
+const first: TabReference = { sessionId: FIRST_SESSION_ID, agentName: 'configured', agentDisplayName: 'Agent', cwd: '/work', title: 'First' };
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -25,9 +30,9 @@ describe('SessionTabs', () => {
   it('upserts by configuration and session ID without moving a tab in display order', () => {
     const tabs = new SessionTabs();
     const a = tabs.open(first);
-    const b = tabs.open({ ...first, sessionId: 's2' });
+    const b = tabs.open({ ...first, sessionId: SECOND_SESSION_ID });
     expect(tabs.open({ ...first, title: 'Renamed' })).toBe(a);
-    expect(tabs.snapshot()).toEqual({ tabs: [{ ...first, tabId: a, title: 'Renamed' }, { ...first, sessionId: 's2', tabId: b }], selectedTabId: a });
+    expect(tabs.snapshot()).toEqual({ tabs: [{ ...first, tabId: a, title: 'Renamed' }, { ...first, sessionId: SECOND_SESSION_ID, tabId: b }], selectedTabId: a });
     expect(a).not.toBe(b);
   });
 
@@ -42,14 +47,14 @@ describe('SessionTabs', () => {
   it('returns the most recently selected remaining reference without pretending it opened', () => {
     const tabs = new SessionTabs();
     const a = tabs.open(first);
-    const b = tabs.open({ ...first, sessionId: 's2' });
-    const c = tabs.open({ ...first, sessionId: 's3' });
+    const b = tabs.open({ ...first, sessionId: SECOND_SESSION_ID });
+    const c = tabs.open({ ...first, sessionId: THIRD_SESSION_ID });
     tabs.select(a);
-    expect(tabs.close(a)).toEqual({ ...first, sessionId: 's3', tabId: c });
+    expect(tabs.close(a)).toEqual({ ...first, sessionId: THIRD_SESSION_ID, tabId: c });
     expect(tabs.snapshot().selectedTabId).toBeNull();
     tabs.select(c);
     expect(tabs.close(b)).toBeUndefined();
-    expect(tabs.snapshot()).toEqual({ tabs: [{ ...first, sessionId: 's3', tabId: c }], selectedTabId: c });
+    expect(tabs.snapshot()).toEqual({ tabs: [{ ...first, sessionId: THIRD_SESSION_ID, tabId: c }], selectedTabId: c });
     expect(tabs.close(c)).toBeUndefined();
     expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
   });
@@ -58,7 +63,7 @@ describe('SessionTabs', () => {
     const tabs = new SessionTabs();
     const a = tabs.open(first);
     const old = tabs.snapshot();
-    tabs.open({ ...first, sessionId: 's2' });
+    tabs.open({ ...first, sessionId: SECOND_SESSION_ID });
     const { title: _title, ...untitled } = first;
     tabs.update(untitled);
     tabs.update({ ...first, sessionId: 'missing' });
@@ -83,15 +88,15 @@ describe('SessionTabs', () => {
     tabs.on('changed', () => { changes++; });
 
     const tabId = tabs.open(first);
-    expect(tabs.has('configured', 's1')).toBe(true);
-    expect(tabs.has('other', 's1')).toBe(false);
+    expect(tabs.has('configured', FIRST_SESSION_ID)).toBe(true);
+    expect(tabs.has('other', FIRST_SESSION_ID)).toBe(false);
     expect(changes).toBe(1);
 
     tabs.open(first);
     expect(changes).toBe(1);
 
     tabs.close(tabId);
-    expect(tabs.has('configured', 's1')).toBe(false);
+    expect(tabs.has('configured', FIRST_SESSION_ID)).toBe(false);
     expect(changes).toBe(2);
   });
 
@@ -100,7 +105,7 @@ describe('SessionTabs', () => {
     const selected: (string | null)[] = [];
     tabs.on('changed', () => { selected.push(tabs.snapshot().selectedTabId); });
     const a = tabs.open(first);
-    const b = tabs.open({ ...first, sessionId: 's2' });
+    const b = tabs.open({ ...first, sessionId: SECOND_SESSION_ID });
     tabs.select(a);
     tabs.close(a);
     expect(selected).toEqual([a, b, a, null]);
@@ -109,37 +114,37 @@ describe('SessionTabs', () => {
   it('reconstructs display order, selection and MRU after a new activation without loading sessions', async () => {
     const workspace = new WorkspaceState(memoryStore());
     const references = new SessionReferences(memoryStore());
-    await references.setTitle(address('s1'), 'Stored title');
+    await references.setTitle(address(FIRST_SESSION_ID), 'Stored title');
     const tabs = durableTabs(workspace, references);
     const a = tabs.open(first);
-    tabs.open({ ...first, sessionId: 's2', title: 'Second' });
-    tabs.open({ ...first, sessionId: 's3', title: 'Third' });
+    tabs.open({ ...first, sessionId: SECOND_SESSION_ID, title: 'Second' });
+    tabs.open({ ...first, sessionId: THIRD_SESSION_ID, title: 'Third' });
     tabs.select(a);
     await workspace.settled();
 
     const restored = durableTabs(workspace, references);
     const snapshot = restored.snapshot();
-    expect(snapshot.tabs.map(({ sessionId }) => sessionId)).toEqual(['s1', 's2', 's3']);
+    expect(snapshot.tabs.map(({ sessionId }) => sessionId)).toEqual([FIRST_SESSION_ID, SECOND_SESSION_ID, THIRD_SESSION_ID]);
     expect(snapshot.tabs[0]?.title).toBe('Stored title');
     expect(snapshot.selectedTabId).toBe(snapshot.tabs[0]?.tabId);
     const selected = snapshot.tabs[0];
     if (!selected) { throw new Error('Missing restored tab'); }
     const next = restored.close(selected.tabId);
-    expect(next?.sessionId).toBe('s3');
+    expect(next?.sessionId).toBe(THIRD_SESSION_ID);
   });
 
   it('migrates a legacy last session only when no layout exists and preserves an explicitly empty layout', async () => {
     const workspace = new WorkspaceState(memoryStore());
-    await workspace.setLastActiveSession(address('s1'));
+    await workspace.setLastActiveSession(address(FIRST_SESSION_ID));
     const migrated = durableTabs(workspace);
-    expect(migrated.snapshot().tabs.map(({ sessionId }) => sessionId)).toEqual(['s1']);
+    expect(migrated.snapshot().tabs.map(({ sessionId }) => sessionId)).toEqual([FIRST_SESSION_ID]);
     await workspace.setTabLayout({ tabs: [], selected: null, mru: [] });
     expect(durableTabs(workspace).snapshot()).toEqual({ tabs: [], selectedTabId: null });
   });
 
   it('persists closing all tabs so the legacy pointer cannot reopen one on reload', async () => {
     const workspace = new WorkspaceState(memoryStore());
-    await workspace.setLastActiveSession(address('s1'));
+    await workspace.setLastActiveSession(address(FIRST_SESSION_ID));
     const tabs = durableTabs(workspace);
     const firstTab = tabs.snapshot().tabs[0];
     if (!firstTab) { throw new Error('Missing migrated tab'); }
@@ -151,15 +156,15 @@ describe('SessionTabs', () => {
   it('keeps restored tabs within this window workspace and host', async () => {
     const workspace = new WorkspaceState(memoryStore());
     await workspace.setTabLayout({
-      tabs: [address('s1'), { ...address('elsewhere'), workspaceUri: 'file:///elsewhere' }, { ...address('remote'), host: 'vscode-remote://other' }],
-      selected: address('s1'), mru: [],
+      tabs: [address(FIRST_SESSION_ID), { ...address(ELSEWHERE_SESSION_ID), workspaceUri: 'file:///elsewhere' }, { ...address(REMOTE_SESSION_ID), host: 'vscode-remote://other' }],
+      selected: address(FIRST_SESSION_ID), mru: [],
     });
-    expect(durableTabs(workspace).snapshot().tabs.map(({ sessionId }) => sessionId)).toEqual(['s1']);
+    expect(durableTabs(workspace).snapshot().tabs.map(({ sessionId }) => sessionId)).toEqual([FIRST_SESSION_ID]);
   });
 
   it('reconciles restored references when a remote window learns a different host', async () => {
     const workspace = new WorkspaceState(memoryStore());
-    await workspace.setTabLayout({ tabs: [address('s1')], selected: address('s1'), mru: [address('s1')] });
+    await workspace.setTabLayout({ tabs: [address(FIRST_SESSION_ID)], selected: address(FIRST_SESSION_ID), mru: [address(FIRST_SESSION_ID)] });
     let reveal: (value: typeof target) => void = () => { throw new Error('Target observation was not installed'); };
     const ready = new Promise<typeof target>((resolve) => { reveal = resolve; });
     const tabs = new SessionTabs({
@@ -184,12 +189,12 @@ describe('SessionTabs', () => {
     const firstId = tabs.open(first);
     expect(workspace.tabLayout()).toBeUndefined();
     tabs.close(firstId);
-    const remaining = tabs.open({ ...first, sessionId: 's2' });
+    const remaining = tabs.open({ ...first, sessionId: SECOND_SESSION_ID });
     known = target;
     reveal(target);
     await tabs.settled();
-    expect(workspace.tabLayout()).toEqual({ tabs: [address('s2')], selected: address('s2'), mru: [address('s2')] });
-    expect(tabs.address(remaining)).toEqual(address('s2'));
+    expect(workspace.tabLayout()).toEqual({ tabs: [address(SECOND_SESSION_ID)], selected: address(SECOND_SESSION_ID), mru: [address(SECOND_SESSION_ID)] });
+    expect(tabs.address(remaining)).toEqual(address(SECOND_SESSION_ID));
     await tabs.dispose();
   });
 
@@ -215,6 +220,6 @@ describe('SessionTabs', () => {
     expect(tabs.snapshot().tabs).toEqual([{ ...first, title: 'Reported after rename', agentName: 'renamed', tabId: firstId }]);
     expect(tabs.selectedAddress()?.configuredName).toBe('renamed');
     await tabs.settled();
-    expect(workspace.tabLayout()?.tabs).toEqual([{ ...address('s1'), configuredName: 'renamed' }]);
+    expect(workspace.tabLayout()?.tabs).toEqual([{ ...address(FIRST_SESSION_ID), configuredName: 'renamed' }]);
   });
 });

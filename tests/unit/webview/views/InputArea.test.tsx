@@ -9,6 +9,7 @@ import { StoreContext } from '@/webview/views/StoreContext';
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
+const SESSION_ID = '17040418-6daf-4892-9868-4d34172cd873';
 
 let scrolledIntoView: Element[];
 
@@ -52,8 +53,8 @@ function renderInputArea() {
     connect: (session: Partial<SessionSnapshot> = {}) =>
       send({
         type: 'state',
-        activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session },
+        activeSessionId: session.sessionId ?? SESSION_ID,
+        session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session },
       }),
     type: (text: string) => fireEvent.change(prompt(), { target: { value: text } }),
     press: (key: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(prompt(), { key, ...init }),

@@ -10,8 +10,7 @@ suite('Renaming an agent configuration in a folder window', () => {
   const group = process.env['VSCODE_TEST_GROUP'] ?? 'default';
   const before = `fake-rename-before-${group}`;
   const after = `fake-rename-after-${group}`;
-  const sessionId = `rename-${group}`;
-  const entry = { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } };
+  const entry = { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1' } };
   const config = () => vscode.workspace.getConfiguration('your-turn');
   let api: ExtensionTestApi;
   let original: unknown;
@@ -43,6 +42,8 @@ suite('Renaming an agent configuration in a folder window', () => {
     await config().update('agents', { [before]: entry }, vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand('your-turn.connectAgent', before);
     await api.persistedStateSettled();
+    const sessionId = new WorkspaceState(api.storage.workspaceState).lastActiveSession()?.sessionId;
+    assert.ok(sessionId, 'the created session was persisted');
     const id = (configuredName: string) => ({ host: 'file://', configuredName, sessionId });
     assert.ok(api.sessionReferences.get(id(before)), 'the session has a reference under its first name');
 

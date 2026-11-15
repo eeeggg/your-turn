@@ -9,6 +9,9 @@ import {
   type DiffFile
 } from '@/core/ToolCallDiffs';
 
+const SESSION_ID = 'b16a8f43-4704-4666-bf92-44ecc0ab7f04';
+const OTHER_SESSION_ID = 'a5279b9a-b07e-4c32-b6d6-e8e4c5571ab7';
+
 /** As ACP asks: absolute paths, no `a/` or `b/`. Git writes no hunks for a binary file. */
 const gitPatch = `diff --git /work/logo.png /work/logo.png
 index f14bf99..3ca8acd 100644
@@ -290,7 +293,7 @@ describe("each session's tool calls' diffs", () => {
   it("gives each diff's files, cut off past the line limit across them", () => {
     const diffs = new ToolCallDiffs();
 
-    const shown = diffs.shown('s1', 't1', [added('/work/b.ts', lines(TOOL_CALL_DIFF_LINE_LIMIT - 1)), added('/work/a.ts', 'a\n'), added('/work/c.ts', 'c\n')], '/work');
+    const shown = diffs.shown(SESSION_ID, 't1', [added('/work/b.ts', lines(TOOL_CALL_DIFF_LINE_LIMIT - 1)), added('/work/a.ts', 'a\n'), added('/work/c.ts', 'c\n')], '/work');
 
     expect(linesShown(shown)).toEqual([[[TOOL_CALL_DIFF_LINE_LIMIT - 1, null]], [[1, null]], [[0, 'cutOff']]]);
     expect(shown[1]?.[0]?.path).toBe('a.ts');
@@ -298,36 +301,36 @@ describe("each session's tool calls' diffs", () => {
 
   it('diffs a tool call again only when its diffs or the working directory change', () => {
     const diffs = new ToolCallDiffs();
-    const first = diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n')], '/work');
+    const first = diffs.shown(SESSION_ID, 't1', [added('/work/a.ts', 'a\n')], '/work');
 
-    expect(diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n')], '/work')).toBe(first);
-    expect(diffs.shown('s1', 't1', [added('/work/a.ts', 'b\n')], '/work')).not.toBe(first);
-    expect(diffs.shown('s1', 't1', [added('/work/a.ts', 'b\n')], '/')[0]?.[0]?.path).toBe('work/a.ts');
+    expect(diffs.shown(SESSION_ID, 't1', [added('/work/a.ts', 'a\n')], '/work')).toBe(first);
+    expect(diffs.shown(SESSION_ID, 't1', [added('/work/a.ts', 'b\n')], '/work')).not.toBe(first);
+    expect(diffs.shown(SESSION_ID, 't1', [added('/work/a.ts', 'b\n')], '/')[0]?.[0]?.path).toBe('work/a.ts');
   });
 
   it("finds a file by its place across the tool call's diffs, in its session only, as last shown", () => {
     const diffs = new ToolCallDiffs();
     const twoFiles: FileDiff = { kind: 'changes', changes: [change('add', '/work/dist', { fileType: 'directory' }), change('add', '/work/b.ts')], patch: null };
-    diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n'), twoFiles], '/work');
+    diffs.shown(SESSION_ID, 't1', [added('/work/a.ts', 'a\n'), twoFiles], '/work');
 
-    expect([0, 1, 2, 3].map((index) => diffs.file('s1', 't1', index)?.reported?.path)).toEqual(['/work/a.ts', undefined, '/work/b.ts', undefined]);
-    expect(diffs.file('s1', 't1', 1)).toBeDefined();
-    expect(diffs.file('s2', 't1', 0)).toBeUndefined();
-    expect(diffs.file('s1', 't2', 0)).toBeUndefined();
+    expect([0, 1, 2, 3].map((index) => diffs.file(SESSION_ID, 't1', index)?.reported?.path)).toEqual(['/work/a.ts', undefined, '/work/b.ts', undefined]);
+    expect(diffs.file(SESSION_ID, 't1', 1)).toBeDefined();
+    expect(diffs.file(OTHER_SESSION_ID, 't1', 0)).toBeUndefined();
+    expect(diffs.file(SESSION_ID, 't2', 0)).toBeUndefined();
 
-    diffs.shown('s1', 't1', [], '/work');
-    expect(diffs.file('s1', 't1', 0)).toBeUndefined();
+    diffs.shown(SESSION_ID, 't1', [], '/work');
+    expect(diffs.file(SESSION_ID, 't1', 0)).toBeUndefined();
   });
 
   it("forgets a session's tool calls, and only that session's", () => {
     const diffs = new ToolCallDiffs();
-    diffs.shown('s1', 't1', [added('/work/a.ts', 'a\n')], '/work');
-    diffs.shown('s2', 't1', [added('/work/b.ts', 'b\n')], '/work');
+    diffs.shown(SESSION_ID, 't1', [added('/work/a.ts', 'a\n')], '/work');
+    diffs.shown(OTHER_SESSION_ID, 't1', [added('/work/b.ts', 'b\n')], '/work');
 
-    diffs.forgetSession('s1');
+    diffs.forgetSession(SESSION_ID);
 
-    expect(diffs.file('s1', 't1', 0)).toBeUndefined();
-    expect(diffs.file('s2', 't1', 0)?.reported?.path).toBe('/work/b.ts');
+    expect(diffs.file(SESSION_ID, 't1', 0)).toBeUndefined();
+    expect(diffs.file(OTHER_SESSION_ID, 't1', 0)?.reported?.path).toBe('/work/b.ts');
   });
 });
 

@@ -3,6 +3,8 @@ import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { Reviews } from '@/core/review/Reviews';
 import { Takeovers, type DocumentEdit } from '@/core/review/Takeovers';
 
+const SESSION_ID = '5e738b94-4f62-47ca-b153-c82d906aef01';
+
 const text = (...lines: string[]) => lines.map((line) => `${line}\n`).join('');
 
 const baseline = text('one', 'two', 'three');
@@ -16,18 +18,18 @@ function lineEdited(before: string, line: number, replacement: string): { after:
   return { after: before.slice(0, start) + replacement + before.slice(end), edits: [{ first: line, last: line, addedLines: 0, start, end, text: replacement }] };
 }
 
-/** Takeovers over session `s1`'s review, shown, with `/w/a.ts` changed by the agent from `baseline` to `agents`. */
+/** Takeovers over the shown session's review, with `/w/a.ts` changed by the agent from `baseline` to `agents`. */
 async function takeovers() {
   const reviews = new Reviews({ read: async () => agents, restore: async () => {}, watch: () => ({ dispose: () => {} }) });
   onTestFinished(async () => { await reviews.dispose(); });
-  reviews.activeSessionChanged('s1');
+  reviews.activeSessionChanged(SESSION_ID);
   const update: SessionUpdate = {
     kind: 'toolCall',
     toolCallId: 't1',
     status: 'completed',
     content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/a.ts', oldText: baseline, newText: agents } }],
   };
-  await reviews.handleSessionUpdate('s1', update, 'v1');
+  await reviews.handleSessionUpdate(SESSION_ID, update, 'v1');
   return { subject: new Takeovers(reviews), reviews, baselineOf: () => reviews.shown()?.file('/w/a.ts')?.baseline };
 }
 
@@ -83,7 +85,7 @@ describe('Takeovers', () => {
     subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
     reviews.shown()?.keepFile('/w/a.ts');
     expect(baselineOf()).toBeUndefined();
-    await reviews.handleSessionUpdate('s1', {
+    await reviews.handleSessionUpdate(SESSION_ID, {
       kind: 'toolCall',
       toolCallId: 't2',
       status: 'completed',

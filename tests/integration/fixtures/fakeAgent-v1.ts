@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentContext, ContentBlock, SessionConfigOption } from '@agentclientprotocol/sdk';
 import { appendFileSync, readFileSync, unlinkSync, watch, writeFileSync } from 'node:fs';
@@ -27,7 +28,8 @@ import { Readable, Writable } from 'node:stream';
  * as in use.
  */
 
-const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
+const COMPACTION_SESSION = '0717894d-6488-4fa1-9cc9-9d859cd1a914';
+const OTHER_COMPACTION_SESSION = 'd59bb150-ee82-4e47-ab32-74ecf761b471';
 const LISTS_SESSIONS = process.env['ACP_TEST_LISTS_SESSIONS'] !== undefined;
 const RECORDS = process.env['ACP_TEST_RECORDS'];
 const COMPACTION = process.env['ACP_TEST_COMPACTION'] !== undefined;
@@ -73,7 +75,11 @@ function restoredOptions({ model, effort, fast }: Choices): SessionConfigOption[
   ];
 }
 
-/** Open a session it is asked to load or resume, which starts out with model A at low effort and not fast. */
+/**
+ * Open a session it is asked to load or resume, which starts out with model A at low effort and not fast.
+ * shortcut: historical loads are scripted, not backed by a database. Seed known sessions and validate request IDs
+ * when Slice 1 authority or Slice 2 routing tests need it; do not tie session lifetime to process lifetime.
+ */
 function restore(sessionId: string): SessionConfigOption[] {
   if (sessionId === 'gone') {
     throw new RequestError(-32002, 'Resource not found', { sessionId });
@@ -360,12 +366,12 @@ agent({ name: 'fake-agent' })
     if (COMPACTION) {
       if (initializes.join(',') !== '2,1') { throw RequestError.invalidParams(undefined, 'Missing v1 initialize'); }
       return { sessions: [
-        { sessionId: SESSION_ID, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' },
-        { sessionId: `${SESSION_ID}-other`, cwd: params.cwd ?? process.cwd(), title: 'Another session with a deliberately long title for tab overflow' },
+        { sessionId: COMPACTION_SESSION, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' },
+        { sessionId: OTHER_COMPACTION_SESSION, cwd: params.cwd ?? process.cwd(), title: 'Another session with a deliberately long title for tab overflow' },
       ] };
     }
     listings += 1;
-    return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
+    return { sessions: [{ sessionId: randomUUID(), cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
   .onRequest(methods.agent.authenticate, async ({ client, requestId }) => {
     if (requestId === null) { throw new Error('Authentication needs a parent request ID'); }
@@ -382,7 +388,7 @@ agent({ name: 'fake-agent' })
     sessionCreationAttempts++;
     if (AUTHENTICATION_QUESTION && !authenticated) { throw new RequestError(-32000, 'Authentication required'); }
     record('session/new', params);
-    return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
+    return { sessionId: randomUUID(), configOptions: [modelOption('model-a')] };
   })
   .onRequest(methods.agent.session.load, async ({ params, client }) => {
     record('session/load', params);

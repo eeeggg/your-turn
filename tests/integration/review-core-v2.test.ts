@@ -36,7 +36,7 @@ for (const version of [2]) {
       original = config().inspect('agents')?.globalValue;
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: `review-core-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}-${version}` } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1' } } },
         vscode.ConfigurationTarget.Global,
       );
       await vscode.commands.executeCommand('your-turn-chat.focus');

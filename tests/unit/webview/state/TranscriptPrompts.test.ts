@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { promptHistory } from '@/webview/state/Transcript';
-import { chatView, promptEnd, queuedPrompts } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { chatView, promptEnd, queuedPrompts, TRANSCRIPT_SESSION_ID, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
 describe('prompts', () => {
@@ -205,7 +205,7 @@ describe('the queue', () => {
   it('drops the queue when the transcript is cleared', () => {
     type View = ReturnType<typeof chatView>;
     const clears: [string, (view: View) => void][] = [
-      ['another session', (view) => view.connect({ sessionId: 's2' })],
+      ['another session', (view) => view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID })],
       ['a disconnect', (view) => view.send({ type: 'state', activeSessionId: null, session: null })],
       ['a load', (view) => view.send({ type: 'loadSessionStart' })],
       ['clearTranscript', (view) => view.send({ type: 'clearTranscript' })],
@@ -366,7 +366,7 @@ describe('the queue', () => {
   it('does not reuse ownership or cancelled recall across session replacement, loading or clearing', () => {
     const view = chatView();
     const oldIds: number[] = [];
-    for (const clear of [() => view.connect({ sessionId: 's2' }), () => view.send({ type: 'loadSessionStart' }), () => view.send({ type: 'clearTranscript' })]) {
+    for (const clear of [() => view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID }), () => view.send({ type: 'loadSessionStart' }), () => view.send({ type: 'clearTranscript' })]) {
       view.connect();
       view.prompt('running');
       view.prompt('cancelled');
@@ -429,7 +429,7 @@ describe('the prompt history', () => {
     view.connect();
     view.prompt('q1');
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
 
     expect(promptHistory(view.transcript())).toEqual([]);
   });
@@ -467,13 +467,13 @@ describe('following stream', () => {
   it('asks the view to follow each time the transcript is cleared', () => {
     const view = chatView();
     const clears: [string, () => void][] = [
-      ['another session', () => view.connect({ sessionId: 's2' })],
+      ['another session', () => view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID })],
       ['a disconnect', () => view.send({ type: 'state', activeSessionId: null, session: null })],
       ['a load', () => view.send({ type: 'loadSessionStart' })],
       ['clearTranscript', () => view.send({ type: 'clearTranscript' })],
     ];
     for (const [name, clear] of clears) {
-      view.connect({ sessionId: 's1' });
+      view.connect({ sessionId: TRANSCRIPT_SESSION_ID });
       view.prompt('hello');
       const before = view.transcript().followRequests;
 

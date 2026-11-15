@@ -1,4 +1,5 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { methods } from '@agentclientprotocol/sdk';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
@@ -24,11 +25,11 @@ function setup() {
   const waitingForPrompt: (() => void)[] = [];
   const agents = new InProcessAgents({
     fake: () => fakeAgent()
-      .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' }))
+      .onRequest(methods.agent.session.new, () => ({ sessionId: randomUUID() }))
       .onRequest(methods.agent.session.prompt, async ({ params, client }) => {
         prompts.push(params.prompt.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join(''));
         waitingForPrompt.shift()?.();
-        await client.notify(methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } } });
+        await client.notify(methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'working' } } });
         return new Promise(() => {});
       }),
   });

@@ -1,9 +1,27 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { connect, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
+import { connect, DEFAULT_SESSION_ID, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
+const OTHER_SESSION_ID = '6d6f181f-5cfa-48d7-bc38-1d687e385d55';
 
 describe('session state', () => {
+  it('posts the presentation tab ID rather than the session ID when closing a tab', () => {
+    page = loadChatPage();
+    const sessionId = '5a089aee-37da-46ab-9b04-097b16d5cf52';
+    const tabId = 'tab-close-target';
+    connect(page, { sessionId }, tabId);
+    page.takePosted();
+
+    const close = page.document.querySelector<HTMLButtonElement>('#sessionTabs button[aria-label="Close Fake Agent"]');
+    expect(close).not.toBeNull();
+    close?.click();
+    const posted = page.takePosted();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: 'closeSessionTab' });
+    expect(posted[0]).not.toEqual({ type: 'closeSessionTab', tabId: sessionId });
+    expect(posted).toEqual([{ type: 'closeSessionTab', tabId }]);
+  });
+
   it('closes every test-owned page after the test finishes', () => {
     const opened: ChatPage[] = [];
     const heard: string[] = [];
@@ -100,11 +118,11 @@ describe('session state', () => {
 
   it('clears the transcript when the host reports a different session', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
-    connect(page, { sessionId: 's2', agentName: 'OpenCode' });
+    connect(page, { sessionId: OTHER_SESSION_ID, agentName: 'OpenCode' }, 'tab-other');
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
     expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
@@ -113,18 +131,18 @@ describe('session state', () => {
 
   it('keeps the transcript when the host reports the same session again', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
 
     expect([...page.document.querySelectorAll('.message.user')].map((el) => el.textContent)).toEqual(['hello']);
   });
 
   it('clears the transcript on disconnect, leaving only the empty state', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
     page.send({ type: 'promptStart' });
@@ -139,12 +157,12 @@ describe('session state', () => {
 
   it('keeps the transcript cleared when the same session reconnects', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
     page.send({ type: 'state', activeSessionId: null, session: null });
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
   });

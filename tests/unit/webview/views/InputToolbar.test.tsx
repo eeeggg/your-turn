@@ -6,6 +6,7 @@ import { initialState, update, type Action } from '@/webview/state/RootState';
 import { InputToolbar } from '@/webview/views/InputToolbar';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
+const SESSION_ID = 'b6a7edcb-d5c3-40b4-a121-341f88837580';
 
 afterEach(() => {
   cleanup();
@@ -48,8 +49,8 @@ function renderToolbar(session: Partial<SessionSnapshot>) {
   );
   send({
     type: 'state',
-    activeSessionId: 's1',
-    session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [], ...session },
+    activeSessionId: session.sessionId ?? SESSION_ID,
+    session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [], ...session },
   });
   return { container, send, takePosted: () => posted.splice(0) };
 }

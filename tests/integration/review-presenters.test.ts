@@ -12,6 +12,9 @@ import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { createReviewEditors as controlledReviewEditors } from '@tests/ui/instrumentation/ReviewPresenters';
 import { listenControl } from '@tests/ui/instrumentation/ControlChannel';
 
+const SESSION_ID = 'deba8266-a99a-4fd9-9cf6-aa8c19e6efea';
+const OTHER_SESSION_ID = '03c47e85-1a44-40ec-8140-6466e39eaa91';
+
 /** A completed tool call that changed `file` from `old` to `now`, the empty text with nothing there for a deletion. */
 const edited = (toolCallId: string, file: string, old: string, now: string): SessionUpdate => ({
   kind: 'toolCall',
@@ -51,7 +54,7 @@ suite('Review presenters', () => {
   let prior: unknown;
   let owned: { reviews?: Reviews; presenters?: ReviewPresenters; editors?: ReturnType<typeof createReviewEditors> } = {};
 
-  /** `a.txt` and `b.txt` changed in session `s1`, shown, in that order. */
+  /** `a.txt` and `b.txt` changed in the selected session, shown in that order. */
   setup(async () => {
     owned = {};
     folder = '';
@@ -67,9 +70,9 @@ suite('Review presenters', () => {
     const record = recording();
     shown = record.shown;
     owned.presenters = new ReviewPresenters(controls, reviews, record.display);
-    reviews.activeSessionChanged('s1');
-    await reviews.handleSessionUpdate('s1', edited('t1', a, 'one\n', 'one\nadded\n'), 'v1');
-    await reviews.handleSessionUpdate('s1', edited('t2', b, 'b\n', 'B\n'), 'v1');
+    reviews.activeSessionChanged(SESSION_ID);
+    await reviews.handleSessionUpdate(SESSION_ID, edited('t1', a, 'one\n', 'one\nadded\n'), 'v1');
+    await reviews.handleSessionUpdate(SESSION_ID, edited('t2', b, 'b\n', 'B\n'), 'v1');
   });
 
   teardown(async function () {
@@ -97,7 +100,7 @@ suite('Review presenters', () => {
     assert.deepStrictEqual(shown.files, [vscode.Uri.file(a).toString(), vscode.Uri.file(b).toString()]);
     await controls.keepFile(a);
     assert.deepStrictEqual(shown.files, [vscode.Uri.file(b).toString()]);
-    reviews.activeSessionChanged('s2');
+    reviews.activeSessionChanged(OTHER_SESSION_ID);
     assert.strictEqual(shown.buttons, true);
     assert.deepStrictEqual(shown.files, []);
     reviews.activeSessionChanged(null);
@@ -344,7 +347,7 @@ suite('Review presenters', () => {
 
   test("undoes a deleted file from its editor, which says it was not found, and opens it again with its baseline", async () => {
     const gone = path.join(folder, 'gone.txt');
-    await reviews.handleSessionUpdate('s1', edited('t3', gone, 'gone\n', ''), 'v1');
+    await reviews.handleSessionUpdate(SESSION_ID, edited('t3', gone, 'gone\n', ''), 'v1');
     await controls.previous(a);
     assert.strictEqual(shown.position, '3 of 3');
     assert.strictEqual(activeFile(), undefined);

@@ -7,7 +7,7 @@ import {
   TOOL_CALL_CONTENT_LIMIT,
   type ContentContext
 } from '@/webview/state/Transcript';
-import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { chatView, promptEnd, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ kind: 'text', text }));
 /** A file as the extension sends it, added with one line. */
@@ -274,7 +274,7 @@ describe('commands', () => {
     view.connect();
     view.send({ type: 'terminal', terminalId: 't1', ...running });
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     expect(view.transcript().terminals.size).toBe(0);
     view.send({ type: 'terminal', terminalId: 't1', ...running }, { type: 'clearTranscript' });
     expect(view.transcript().terminals.size).toBe(0);

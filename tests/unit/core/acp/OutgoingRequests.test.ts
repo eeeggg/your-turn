@@ -24,7 +24,7 @@ it('tracks actual outside-session wire IDs, preserves ID types, and removes answ
   expect(tracker.has('acp-negotiation-v2')).toBe(false);
   for (const message of [
     { jsonrpc: '2.0', id: 7, method: 'authenticate', params: {} },
-    { jsonrpc: '2.0', id: '7', method: 'session/prompt', params: { sessionId: 's1' } },
+    { jsonrpc: '2.0', id: '7', method: 'session/prompt', params: { sessionId: '20dc7f9a-63e7-4a38-b9c7-ef05e4667cc2' } },
   ] as AnyMessage[]) {
     const sending = writer.write(message);
     await agentReads.read();

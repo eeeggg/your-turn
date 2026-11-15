@@ -3,10 +3,12 @@ import type { SessionSnapshot, SlashCommand } from '@/shared/WebviewMessages';
 import { canPrompt, sessionName, type ActiveSession } from '@/webview/state/ActiveSession';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
+const SESSION_ID = 'b8513b93-c484-46fc-8eab-b1bb03c9eca5';
+const OTHER_SESSION_ID = '854a90a1-fb88-463c-a67f-365281cc3ae0';
 
 function snapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
-    sessionId: 's1',
+    sessionId: SESSION_ID,
     agentName: 'Fake Agent',
     cwd: '/work',
     pickers: [],
@@ -23,7 +25,7 @@ function chatView() {
     session: (): ActiveSession | null => store.getSnapshot().activeSession,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
     connect: (session: Partial<SessionSnapshot> = {}) =>
-      store.dispatch({ type: 'state', activeSessionId: session.sessionId ?? 's1', session: snapshot(session) }),
+      store.dispatch({ type: 'state', activeSessionId: session.sessionId ?? SESSION_ID, session: snapshot(session) }),
     notified: () => notified,
   };
 }
@@ -42,7 +44,7 @@ describe('the active session', () => {
     view.connect({ agentName: 'OpenCode', title: 'Fix the build', cwd: '/work/project', commands: [init] });
 
     expect(view.session()).toEqual({
-      sessionId: 's1',
+      sessionId: SESSION_ID,
       agentName: 'OpenCode',
       title: 'Fix the build',
       cwd: '/work/project',
@@ -99,7 +101,7 @@ describe('the title', () => {
 
   it('names the session by its title, else by its agent', () => {
     const session: ActiveSession = {
-      sessionId: 's1',
+      sessionId: SESSION_ID,
       agentName: 'OpenCode',
       title: 'Fix the build',
       cwd: '/w',
@@ -157,12 +159,12 @@ describe('whether a turn is running', () => {
 
   it('does not carry over to a different session', () => {
     const view = chatView();
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: SESSION_ID });
     view.send({ type: 'promptStart' });
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_SESSION_ID });
 
-    expect(view.session()).toMatchObject({ sessionId: 's2', turnRunning: false });
+    expect(view.session()).toMatchObject({ sessionId: OTHER_SESSION_ID, turnRunning: false });
   });
 
   it('does not start without a session', () => {
@@ -214,13 +216,13 @@ describe('loading', () => {
 
   it('continues when the same session is reported again, but not into a different one', () => {
     const view = chatView();
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: SESSION_ID });
     view.send({ type: 'loadSessionStart' });
 
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: SESSION_ID });
     expect(view.session()?.loading).toBe(true);
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_SESSION_ID });
     expect(view.session()?.loading).toBe(false);
   });
 

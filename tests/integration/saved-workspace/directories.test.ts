@@ -69,9 +69,15 @@ for (const version of [1, 2]) {
       );
       owned.push(() => manager.dispose(), () => updates.dispose());
 
-      await manager.connectToAgent(agentName);
-      await manager.loadSession(agentName, 'loaded');
-      await manager.resumeSession(agentName, 'resumed');
+      const created = await manager.connectToAgent(agentName);
+      const loadedId = '2cc68f2e-d950-4c2f-b0c3-ed600106ef52';
+      const resumedId = '8ba00873-a5e3-443e-a60b-071ff4831878';
+      const loaded = await manager.loadSession(agentName, loadedId);
+      const resumed = await manager.resumeSession(agentName, resumedId);
+      assert.notStrictEqual(created.sessionId, loadedId);
+      assert.notStrictEqual(created.sessionId, resumedId);
+      assert.strictEqual(loaded.sessionId, loadedId);
+      assert.strictEqual(resumed.sessionId, resumedId);
 
       const [first, second] = (vscode.workspace.workspaceFolders ?? []).map(({ uri }) => uri.fsPath);
       const directories = { cwd: first, additionalDirectories: [second] };

@@ -4,50 +4,23 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
-import type { ImageNetwork } from '@/core/MarkdownImageNetwork';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
-import { AgentTerminals } from '@/core/AgentTerminals';
-import {
-  ChatViewController,
-  type ChatSessions,
-  type ChatViewEnvironment
-} from '@/core/ChatViewController';
+import { ChatViewController } from '@/core/ChatViewController';
 import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
-import type { FileEditor } from '@/core/ReportedFiles';
-import { SessionManager, type SessionInfo } from '@/core/SessionManager';
-import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
+import type { SessionInfo } from '@/core/SessionManager';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
-import { initialState, update } from '@/webview/state/RootState';
-
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-const modelOption: ConfigOption = {
-  kind: 'select',
-  id: 'model',
-  name: 'Model',
-  description: null,
-  category: 'model',
-  current: 'a',
-  groups: [{ header: null, values: [{ id: 'a', name: 'Model A', description: null }, { id: 'b', name: 'Model B', description: 'The big one' }] }],
-};
+import {
+  SESSION_ID,
+  OTHER_SESSION_ID,
+  deferred,
+  modelOption,
+  sessionInfo,
+  setup,
+  sendPrompt,
+  type FakeEnvironment,
+} from '@tests/unit/core/ChatViewControllerTestSupport';
 
 /** {@link modelOption} as the webview gets it. */
 const modelPicker: Picker = {
@@ -74,162 +47,13 @@ const modePicker: Picker = {
   groups: [{ header: null, values: [{ id: 'ask', name: 'Ask', description: 'Asks first' }, { id: 'code', name: 'Code', description: null }] }],
 };
 
-function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
-  return {
-    sessionId: 's1',
-    agentId: 'fake',
-    agentName: 'fake',
-    agentDisplayName: 'Fake Agent',
-    cwd: '/work/project',
-    createdAt: '2026-10-18T00:00:00Z',
-    modes: null,
-    configOptions: [modelOption],
-    availableCommands: [],
-    ...overrides,
-  };
-}
-
-/** Sessions whose prompts stay in flight until the test answers them. */
-class FakeSessions implements ChatSessions {
-  private readonly activity = new SessionManager(new InProcessAgents({}), new ConnectionManager(new SessionUpdateHandler(), 'test', () => unusedHandlers), {
-    workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: async () => undefined,
-    agentConfigs: () => ({}), activeFileLink: () => undefined,
-  }, { chooseAuthMethod: async () => undefined });
-  applyForegroundState: ChatSessions['applyForegroundState'] = (id, state) => this.activity.applyForegroundState(id, state);
-  beginPrompt: ChatSessions['beginPrompt'] = (id) => this.activity.beginPrompt(id);
-  endPrompt: ChatSessions['endPrompt'] = (id, submission) => this.activity.endPrompt(id, submission);
-  clearActivity: ChatSessions['clearActivity'] = (id) => this.activity.clearActivity(id);
-  hasForegroundWork: ChatSessions['hasForegroundWork'] = (id) => this.activity.hasForegroundWork(id);
-  activeId: string | null = 's1';
-  session: SessionInfo | undefined = sessionInfo();
-  readonly prompts: { text: string; reply: Deferred<undefined> }[] = [];
-
-  getActiveSessionId = () => this.activeId;
-  getSession = (sessionId: string) => (this.session?.sessionId === sessionId ? this.session : undefined);
-  sendPrompt = vi.fn<ChatSessions['sendPrompt']>((_sessionId, text) => {
-    const reply = deferred<undefined>();
-    this.prompts.push({ text, reply });
-    return reply.promise;
-  });
-  cancelTurn = vi.fn<ChatSessions['cancelTurn']>(async () => {});
-  setMode = vi.fn<ChatSessions['setMode']>(async () => {});
-  setConfigOption = vi.fn<ChatSessions['setConfigOption']>(async () => null);
-  recordTurnEnded = vi.fn<ChatSessions['recordTurnEnded']>();
-  applyAvailableCommands = vi.fn<ChatSessions['applyAvailableCommands']>();
-  applyConfigOptions = vi.fn<ChatSessions['applyConfigOptions']>((sessionId, options) => {
-    if (this.session?.sessionId === sessionId) {
-      this.session.configOptions = options;
-    }
-  });
-  applyCurrentMode = vi.fn<ChatSessions['applyCurrentMode']>((sessionId, modeId) => {
-    if (this.session?.sessionId === sessionId && this.session.modes) {
-      this.session.modes = { ...this.session.modes, current: modeId };
-    }
-  });
-  /** A null title clears it, a missing one leaves it unchanged. */
-  applySessionInfoUpdate = vi.fn<ChatSessions['applySessionInfoUpdate']>((sessionId, update) => {
-    if (this.session?.sessionId !== sessionId) { return; }
-    if (update.title === null) {
-      delete this.session.title;
-    } else if (update.title !== undefined) {
-      this.session.title = update.title;
-    }
-  });
-
-  /** End the turn of the oldest prompt still in flight. */
-  answer(): void {
-    const prompt = this.prompts.shift();
-    if (!prompt) {
-      throw new Error('no prompt in flight');
-    }
-    prompt.reply.resolve(undefined);
-  }
-
-  fail(error: unknown): void {
-    const prompt = this.prompts.shift();
-    if (!prompt) {
-      throw new Error('no prompt in flight');
-    }
-    prompt.reply.reject(error);
-  }
-}
-
-class FakeEnvironment implements ChatViewEnvironment {
-  visible = true;
-  notifications: { message: string; items: string[]; reply: Deferred<string | undefined> }[] = [];
-  showInformationMessage: ChatViewEnvironment['showInformationMessage'] = <T extends string>(message: string, ...items: T[]) => {
-    const reply = deferred<T | undefined>();
-    this.notifications.push({ message, items, reply: { ...reply, resolve: (value) => reply.resolve(value as T | undefined) } });
-    return reply.promise;
-  };
-  reveal = vi.fn<ChatViewEnvironment['reveal']>(async () => { this.visible = true; });
-  posted: ExtensionToWebviewMessage[] = [];
-
-  post(message: ExtensionToWebviewMessage): void {
-    this.posted.push(message);
-  }
-  executeCommand = vi.fn<ChatViewEnvironment['executeCommand']>(async () => {});
-  showsDiffs = false;
-
-  showsToolCallDiffs(): boolean {
-    return this.showsDiffs;
-  }
-
-  /** Messages posted since the last call. */
-  take(): ExtensionToWebviewMessage[] {
-    const taken = this.posted;
-    this.posted = [];
-    return taken;
-  }
-}
-
-/** A workspace with nothing in it. */
-class FakeEditor implements FileEditor {
-  exists = vi.fn<FileEditor['exists']>(async () => false);
-  readText = vi.fn<FileEditor['readText']>(async () => null);
-  open = vi.fn<FileEditor['open']>(async () => {});
-  showChanges = vi.fn<FileEditor['showChanges']>(async () => {});
-  showInformationMessage = vi.fn<FileEditor['showInformationMessage']>(async () => undefined);
-}
-
-function setup(network?: ImageNetwork) {
-  const sessions = new FakeSessions();
-  onTestFinished(() => { expect(sessions.prompts, 'chat prompts left pending by the test').toHaveLength(0); });
-  const environment = new FakeEnvironment();
-  const editor = new FakeEditor();
-  const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
-  onTestFinished(async () => {
-    const disposed = terminals.dispose();
-    if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
-    await disposed;
-  });
-  const controller = new ChatViewController(sessions, environment, editor, terminals, {
-    workspaceRoots: () => ({ cwd: '/work/project', additionalDirectories: ['/other'] }),
-  }, network);
-  onTestFinished(async () => {
-    const disposed = controller.dispose();
-    if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
-    await disposed;
-  });
-  return { sessions, environment, editor, terminals, controller };
-}
-
-function sendPrompt(controller: ChatViewController, sessions: FakeSessions, text: string): Promise<void> {
-  const turn = controller.handleMessage({ type: 'sendPrompt', text });
-  onTestFinished(async () => {
-    for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); }
-    await turn;
-  });
-  return turn;
-}
-
 const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Read' };
 
 describe('ChatViewController', () => {
   const rasterUri = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
   async function imageContext(controller: ChatViewController, environment: FakeEnvironment): Promise<number> {
-    await controller.handleMessage({ type: 'markdownImageContext', sessionId: 's1' });
+    await controller.handleMessage({ type: 'markdownImageContext', sessionId: SESSION_ID });
     const response = environment.take().find((message) => message.type === 'markdownImageContext');
     if (response?.type !== 'markdownImageContext') { throw new Error('No Markdown image context'); }
     return response.context;
@@ -289,8 +113,8 @@ describe('ChatViewController', () => {
     const signal = await started.promise;
     if (change === 'remove') { await controller.handleMessage({ type: 'releaseMarkdownImage', context, occurrence: 1 }); }
     else if (change === 'clear') { controller.clearTranscript(); }
-    else if (change === 'close') { controller.notifySessionRemoved('s1'); }
-    else { sessions.activeId = 's2'; sessions.session = sessionInfo({ sessionId: 's2' }); controller.notifyActiveSessionChanged(); }
+    else if (change === 'close') { controller.notifySessionRemoved(SESSION_ID); }
+    else { sessions.activeId = OTHER_SESSION_ID; sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID }); controller.notifyActiveSessionChanged(); }
     expect(signal.aborted).toBe(true);
     environment.take();
     reply.resolve({ status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([Buffer.from(rasterUri.split(',')[1] ?? '', 'base64')]) });
@@ -313,7 +137,7 @@ describe('ChatViewController', () => {
     });
     const context = await imageContext(controller, environment);
     for (let index = 0; index < 4; index++) {
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
     }
     for (const occurrence of [1, 2]) {
       await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence, source: `https://images.example/${occurrence === 1 ? 'first' : 'second'}` });
@@ -416,12 +240,12 @@ describe('ChatViewController', () => {
     environment.take();
     const context = await imageContext(controller, environment);
     if (change === 'clear') { controller.clearTranscript(); }
-    else if (change === 'replay') { controller.notifyLoadSessionStart('s1'); }
+    else if (change === 'replay') { controller.notifyLoadSessionStart(SESSION_ID); }
     else {
-      sessions.activeId = 's2';
-      sessions.session = sessionInfo({ sessionId: 's2' });
+      sessions.activeId = OTHER_SESSION_ID;
+      sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID });
       controller.notifyActiveSessionChanged();
-      sessions.activeId = 's1';
+      sessions.activeId = SESSION_ID;
       sessions.session = sessionInfo();
       controller.notifyActiveSessionChanged();
     }
@@ -463,7 +287,7 @@ describe('ChatViewController', () => {
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
     expect(environment.take()).toEqual([]);
     for (let index = 0; index < 4; index++) {
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: `native-${index}`, src: source }]);
     }
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: rasterUri });
@@ -489,7 +313,7 @@ describe('ChatViewController', () => {
     const { controller, sessions, environment } = setup();
     controller.notifyActiveSessionChanged();
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
-    controller.notifySessionOpened('s1');
+    controller.notifySessionOpened(SESSION_ID);
     const first = environment.take();
     const snapshot = first.find((message) => message.type === 'sessionTabs');
     expect(snapshot).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-1', tabs: [
@@ -498,37 +322,37 @@ describe('ChatViewController', () => {
     if (snapshot?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
     expect(snapshot.selectedTabId).toBe(snapshot.tabs[0]?.tabId);
 
-    sessions.session = sessionInfo({ sessionId: 's2', title: 'Second' });
-    sessions.activeId = 's2';
+    sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID, title: 'Second' });
+    sessions.activeId = OTHER_SESSION_ID;
     controller.notifyActiveSessionChanged();
     controller.notifyLoadSessionEnd(false);
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
     await controller.handleMessage({ type: 'ready' });
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([snapshot]);
 
-    controller.notifySessionOpened('s2');
+    controller.notifySessionOpened(OTHER_SESSION_ID);
     const second = environment.take().find((message) => message.type === 'sessionTabs');
     expect(second?.type === 'sessionTabs' && second.tabs).toEqual([
       snapshot.tabs[0],
       { tabId: 'tab-2', title: 'Second', agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
     ]);
-    controller.notifySessionOpened('s2');
+    controller.notifySessionOpened(OTHER_SESSION_ID);
     expect(environment.take()).toEqual([second]);
   });
 
   it('updates tab labels and foreground indicators without creating content or prompt boundaries', async () => {
     const { controller, sessions, environment } = setup();
-    controller.notifySessionOpened('s1');
+    controller.notifySessionOpened(SESSION_ID);
     const initial = environment.take().find((message) => message.type === 'sessionTabs');
     if (initial?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
     const tab = initial.tabs[0];
-    controller.handleSessionUpdate('s1', { kind: 'sessionInfo', title: 'Renamed' });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'sessionInfo', title: 'Renamed' });
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([
       { ...initial, tabs: [{ ...tab, title: 'Renamed' }] },
     ]);
-    controller.handleSessionUpdate('s1', { kind: 'sessionInfo', title: null });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'sessionInfo', title: null });
     environment.take();
-    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'running' });
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([
       { ...initial, tabs: [{ ...tab, running: true }] },
     ]);
@@ -538,72 +362,19 @@ describe('ChatViewController', () => {
     await turn;
     expect(controller.hasRunningTurn).toBe(true);
     expect(environment.take().some((message) => message.type === 'promptEnd')).toBe(false);
-    controller.notifySessionRemoved('s1');
+    controller.notifySessionRemoved(SESSION_ID);
     const removed = environment.take();
     expect(removed).toEqual([initial]);
   });
 
   it('keeps the running indicator attached to a live tab after its configuration is renamed', () => {
     const { controller, environment } = setup();
-    controller.notifySessionOpened('s1');
+    controller.notifySessionOpened(SESSION_ID);
     controller.sessionTabs.agentsChanged({ fake: { command: 'agent' } }, { renamed: { command: 'agent' } });
     environment.take();
-    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'running' });
     const snapshot = environment.take().find((message) => message.type === 'sessionTabs');
     expect(snapshot).toMatchObject({ tabs: [{ running: true }] });
-  });
-
-  it('keeps the next submission active when autonomous idle releases the queue synchronously', async () => {
-    const { controller, sessions, environment } = setup();
-    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
-    let next: Promise<void> | undefined;
-    const post = environment.post.bind(environment);
-    environment.post = (message) => {
-      post(message);
-      if (message.type === 'foregroundActivity' && !message.running) { next = sendPrompt(controller, sessions, 'next'); }
-    };
-    controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
-    environment.post = post;
-    expect(controller.hasRunningTurn).toBe(true);
-    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
-    sessions.answer();
-    await next;
-  });
-
-  it('does not clear work submitted synchronously when an idle notification releases the queue', async () => {
-    const { controller, sessions, environment } = setup();
-    const first = sendPrompt(controller, sessions, 'first');
-    let next: Promise<void> | undefined;
-    const post = environment.post.bind(environment);
-    environment.post = (message) => {
-      post(message);
-      if (message.type === 'promptEnd') { next = sendPrompt(controller, sessions, 'next'); }
-    };
-    sessions.answer();
-    await first;
-    environment.post = post;
-    expect(controller.hasRunningTurn).toBe(true);
-    expect(environment.executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
-    sessions.answer();
-    await next;
-  });
-
-  it.each(['resolve', 'reject'] as const)('does not end older outstanding work when a newer submission settles by %s', async (settle) => {
-    const { controller, sessions, environment } = setup();
-    const first = sendPrompt(controller, sessions, 'first');
-    const second = sendPrompt(controller, sessions, 'steer');
-    environment.take();
-    const newer = sessions.prompts.pop();
-    if (!newer) { throw new Error('missing steering submission'); }
-    if (settle === 'resolve') { newer.reply.resolve(undefined); }
-    else { newer.reply.reject(new Error('refused')); }
-    await second;
-    expect(controller.hasRunningTurn).toBe(true);
-    expect(environment.take().filter((message) => message.type === 'promptEnd')).toEqual([]);
-    sessions.answer();
-    await first;
-    expect(controller.hasRunningTurn).toBe(false);
-    expect(environment.take()).toEqual([{ type: 'promptEnd' }]);
   });
 
   it('rejects stale controls after reconnect and rechecks connection ownership after native reveal', async () => {
@@ -611,14 +382,14 @@ describe('ChatViewController', () => {
     environment.visible = false;
     const old = new ElicitationRequests();
     const detachOld = controller.attachElicitations('Agent', old, 'fake');
-    const withdrawn = old.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Old', requestedSchema: {} });
+    const withdrawn = old.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Old', requestedSchema: {} });
     const rejected = expect(withdrawn).rejects.toMatchObject({ kind: 'closed' });
     const oldId = old.snapshot()[0]?.interactionId ?? '';
     old.close(); detachOld(); await rejected;
     const replacement = new ElicitationRequests();
     const detach = controller.attachElicitations('Agent', replacement, 'replacement');
     sessions.session = sessionInfo({ agentId: 'replacement' });
-    const answer = replacement.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'New', requestedSchema: {} });
+    const answer = replacement.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'New', requestedSchema: {} });
     const id = replacement.snapshot()[0]?.interactionId ?? '';
     await controller.handleMessage({ type: 'questionResponse', interactionId: oldId, action: 'accept', content: {} });
     await controller.handleMessage({ type: 'questionDraft', interactionId: oldId, draft: { injected: 'stale' } });
@@ -666,7 +437,7 @@ describe('ChatViewController', () => {
     environment.visible = false;
     const requests = new ElicitationRequests();
     const detach = controller.attachElicitations('Agent', requests, 'fake');
-    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Foreign?', requestedSchema: {} });
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Foreign?', requestedSchema: {} });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     expect(environment.take()).toEqual([{ type: 'questions', questions: [] }, { type: 'questions', questions: [] }]);
     expect(environment.notifications).toEqual([]);
@@ -686,8 +457,8 @@ describe('ChatViewController', () => {
     environment.visible = false;
     const requests = new ElicitationRequests();
     const detach = controller.attachElicitations('Agent', requests, 'fake');
-    const first = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'First?', requestedSchema: {} });
-    const second = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: 's1' }, message: 'Second?', requestedSchema: {} });
+    const first = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'First?', requestedSchema: {} });
+    const second = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: SESSION_ID }, message: 'Second?', requestedSchema: {} });
     const id = requests.snapshot()[1]?.interactionId ?? '';
     expect(environment.notifications.map(({ message, items }) => ({ message, items }))).toEqual([
       { message: 'Agent has a question for Work session.', items: ['Open'] },
@@ -715,7 +486,7 @@ describe('ChatViewController', () => {
     environment.visible = false;
     const requests = new ElicitationRequests();
     const detach = controller.attachElicitations('Agent', requests, 'fake');
-    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Pending?', requestedSchema: {} });
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Pending?', requestedSchema: {} });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     sessions.activeId = 'other';
     environment.notifications[0]?.reply.resolve('Open');
@@ -750,7 +521,7 @@ describe('ChatViewController', () => {
     const { controller, environment } = setup();
     const requests = new ElicitationRequests();
     const detach = controller.attachElicitations('Agent', requests, 'fake');
-    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Count?', requestedSchema: { title: 'Settings', properties: { count: { type: 'integer', default: 0 } }, required: ['count'] } });
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Count?', requestedSchema: { title: 'Settings', properties: { count: { type: 'integer', default: 0 } }, required: ['count'] } });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     environment.take();
     await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 0.5 } });
@@ -760,7 +531,7 @@ describe('ChatViewController', () => {
     expect(await answer).toEqual(response);
     const messages = environment.take();
     expect(messages).toEqual([
-      { type: 'questionSettled', record: { interactionId: id, sessionId: 's1', agentName: 'Agent', message: 'Count?', title: 'Settings', description: null, fields: [expect.objectContaining({ name: 'count', kind: 'integer', default: 0 })], response } },
+      { type: 'questionSettled', record: { interactionId: id, sessionId: SESSION_ID, agentName: 'Agent', message: 'Count?', title: 'Settings', description: null, fields: [expect.objectContaining({ name: 'count', kind: 'integer', default: 0 })], response } },
       { type: 'questions', questions: [] },
     ]);
     await controller.handleMessage({ type: 'questionResponse', interactionId: id, ...response });
@@ -782,7 +553,7 @@ describe('ChatViewController', () => {
     expect(await answer).toEqual({ action: 'accept', content: {} });
     expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
     const abort = new AbortController();
-    const withdrawn = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: 's1' }, message: 'Pending?', requestedSchema: {} }, abort.signal);
+    const withdrawn = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: SESSION_ID }, message: 'Pending?', requestedSchema: {} }, abort.signal);
     const rejected = expect(withdrawn).rejects.toMatchObject({ kind: 'cancelled' });
     environment.take();
     abort.abort();
@@ -816,7 +587,7 @@ describe('ChatViewController', () => {
     const { controller, environment, sessions } = setup();
     const requests = new ElicitationRequests();
     const detach = controller.attachElicitations('Agent', requests, 'fake');
-    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Count?', requestedSchema: { properties: { count: { type: 'integer', default: 0 } } } });
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Count?', requestedSchema: { properties: { count: { type: 'integer', default: 0 } } } });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, agentName: 'Agent', message: 'Count?', draft: null, fields: [expect.objectContaining({ kind: 'integer', default: 0 })] })] });
     await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { count: '-' } });
@@ -830,7 +601,7 @@ describe('ChatViewController', () => {
     expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
     await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 3 } });
     expect(requests.snapshot()).toHaveLength(1);
-    sessions.activeId = 's1';
+    sessions.activeId = SESSION_ID;
     controller.notifyActiveSessionChanged();
     await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 1.5 } });
     expect(environment.take()).toContainEqual({ type: 'questionErrors', interactionId: id, errors: { count: 'Invalid value' } });
@@ -851,14 +622,14 @@ describe('ChatViewController', () => {
       return dispose.call(this).then(() => { outputReleased = true; });
     });
     onTestFinished(() => { release.mockRestore(); });
-    controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'pending' }] });
-    controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: null, text: 'pending text' });
-    terminals.handleSessionUpdate('s1', { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('pending terminal') });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'pending' }] });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: null, text: 'pending text' });
+    terminals.handleSessionUpdate(SESSION_ID, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('pending terminal') });
     environment.take();
     const disposed = controller.dispose();
     const releasedAtDisposal = disposed.then(() => outputReleased);
     expect(controller.dispose()).toBe(disposed);
-    controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: null, text: 'late' });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: null, text: 'late' });
     await controller.handleMessage({ type: 'sendPrompt', text: 'late' });
     await vi.runAllTimersAsync();
     await disposed;
@@ -905,9 +676,9 @@ describe('ChatViewController', () => {
 
       expect(environment.take()).toEqual([{
         type: 'state',
-        activeSessionId: 's1',
+        activeSessionId: SESSION_ID,
         session: {
-          sessionId: 's1',
+          sessionId: SESSION_ID,
           agentName: 'Fake Agent',
           title: 'Fix the build',
           cwd: '/work/project',
@@ -926,7 +697,7 @@ describe('ChatViewController', () => {
       controller.notifyActiveSessionChanged();
 
       const [state] = environment.take();
-      expect(state).toMatchObject({ type: 'state', session: { sessionId: 's1' } });
+      expect(state).toMatchObject({ type: 'state', session: { sessionId: SESSION_ID } });
       expect(state?.type === 'state' ? state.session : undefined).not.toHaveProperty('title');
     });
 
@@ -942,7 +713,7 @@ describe('ChatViewController', () => {
     it('passes on replays and changes to the pickers', () => {
       const { environment, controller } = setup();
 
-      controller.notifyLoadSessionStart('s1');
+      controller.notifyLoadSessionStart(SESSION_ID);
       controller.notifyLoadSessionEnd(false);
       controller.notifyPickersChanged();
 
@@ -1023,7 +794,7 @@ describe('ChatViewController', () => {
     it('shows the title the agent sets', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate('s1', infoUpdate({ title: 'New title' }));
+      controller.handleSessionUpdate(SESSION_ID, infoUpdate({ title: 'New title' }));
 
       expect(titles(environment)).toEqual(['New title']);
     });
@@ -1032,7 +803,7 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo({ title: 'Fix the build' });
 
-      controller.handleSessionUpdate('s1', infoUpdate({ updatedAt: '2026-10-18T12:00:00Z' }));
+      controller.handleSessionUpdate(SESSION_ID, infoUpdate({ updatedAt: '2026-10-18T12:00:00Z' }));
 
       expect(titles(environment)).toEqual(['Fix the build']);
     });
@@ -1041,320 +812,9 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo({ title: 'Fix the build' });
 
-      controller.handleSessionUpdate('s1', infoUpdate({ title: null }));
+      controller.handleSessionUpdate(SESSION_ID, infoUpdate({ title: null }));
 
       expect(titles(environment)).toEqual([null]);
-    });
-  });
-
-  describe('turns', () => {
-    it('restores foreground state and review context when a controller is recreated during autonomous work', async () => {
-      const { sessions, controller, environment, editor, terminals } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'requiresAction' });
-      await controller.dispose();
-      environment.take();
-      environment.executeCommand.mockClear();
-      const replacement = new ChatViewController(sessions, environment, editor, terminals);
-      onTestFinished(() => replacement.dispose());
-      await replacement.handleMessage({ type: 'ready' });
-      expect(replacement.hasRunningTurn).toBe(true);
-      const messages = environment.take();
-      const first = messages[0];
-      if (!first) { throw new Error('Missing session state'); }
-      const opened = update(initialState, first, 0).state;
-      const streaming = update(opened, { type: 'agentText', messageId: 'autonomous', text: 'Working' }, 1).state;
-      const state = messages.reduce((state, message) => update(state, message, 2).state, streaming);
-      expect(state.activeSession?.turnRunning).toBe(true);
-      expect(state.transcript.currentTurn).toBe(streaming.transcript.currentTurn);
-      expect(state.transcript.entries).toEqual(streaming.transcript.entries);
-      expect(messages.map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
-      expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'your-turn.turnInProgress', true]]);
-    });
-
-    it.each(['answer', 'fail'] as const)('does not end newer autonomous work when an older prompt settles via %s', async (outcome) => {
-      const { sessions, controller, environment } = setup();
-      const turn = sendPrompt(controller, sessions, 'go');
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
-      environment.take();
-      if (outcome === 'answer') { sessions.answer(); } else { sessions.fail(new Error('Rejected')); }
-      await turn;
-      expect(controller.hasRunningTurn).toBe(true);
-      expect(environment.take()).toEqual(outcome === 'answer' ? [] : [{ type: 'error', message: 'Rejected' }]);
-    });
-
-    it('holds queued prompts until prompt acceptance settles and does not release twice for repeated idle', async () => {
-      const { sessions, controller, environment } = setup();
-      const turn = sendPrompt(controller, sessions, 'go');
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'running' });
-      environment.take();
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
-      expect(environment.take()).toEqual([]);
-      expect(controller.hasRunningTurn).toBe(true);
-      sessions.answer();
-      await turn;
-      expect(environment.take()).toEqual([{ type: 'promptEnd' }]);
-    });
-
-    it('keeps immediate submission feedback through an initial idle snapshot until foreground work starts', async () => {
-      const { sessions, controller, environment } = setup();
-      const turn = sendPrompt(controller, sessions, 'go');
-      environment.take();
-      controller.handleSessionUpdate('s1', { kind: 'foreground', state: 'idle' });
-      expect(controller.hasRunningTurn).toBe(true);
-      expect(environment.take()).toEqual([]);
-      sessions.fail(new Error('Rejected'));
-      await turn;
-      expect(controller.hasRunningTurn).toBe(false);
-    });
-
-    it('refuses a prompt when no session is active', async () => {
-      const { sessions, environment, controller } = setup();
-      sessions.activeId = null;
-
-      await sendPrompt(controller, sessions, 'hello');
-
-      expect(sessions.sendPrompt).not.toHaveBeenCalled();
-      expect(environment.take()).toEqual([{ type: 'error', message: 'No active session. Create a session first.' }]);
-    });
-
-    it('runs a turn and reports its end', async () => {
-      const { sessions, environment, controller } = setup();
-
-      const turn = sendPrompt(controller, sessions, 'hello');
-      expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith('s1', 'hello');
-      expect(environment.take()).toEqual([{ type: 'promptStart' }]);
-      expect(controller.hasRunningTurn).toBe(true);
-
-      sessions.answer();
-      await turn;
-
-      expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith('s1');
-      expect(environment.take()).toStrictEqual([{ type: 'promptEnd' }]);
-      expect(controller.hasRunningTurn).toBe(false);
-    });
-
-    it('reports a failed prompt as an error that ends the turn', async () => {
-      const { sessions, environment, controller } = setup();
-
-      const turn = sendPrompt(controller, sessions, 'hello');
-      sessions.fail(new Error('agent crashed'));
-      await turn;
-
-      expect(controller.hasRunningTurn).toBe(false);
-      expect(sessions.recordTurnEnded).not.toHaveBeenCalled();
-      expect(environment.take()).toEqual([
-        { type: 'promptStart' },
-        { type: 'error', message: 'agent crashed' },
-        { type: 'promptEnd' },
-      ]);
-    });
-
-    it('uses a generic message when the failure has none', async () => {
-      const { sessions, environment, controller } = setup();
-
-      const turn = sendPrompt(controller, sessions, 'hello');
-      sessions.fail({});
-      await turn;
-
-      expect(environment.take()).toContainEqual({ type: 'error', message: 'Prompt failed' });
-    });
-
-    it('tells the editor a turn is in progress until it ends, also when it fails', async () => {
-      const { sessions, environment, controller } = setup();
-      const inProgress = (value: boolean) => ['setContext', 'your-turn.turnInProgress', value];
-
-      const turn = sendPrompt(controller, sessions, 'hello');
-      expect(environment.executeCommand.mock.calls).toEqual([inProgress(true)]);
-      sessions.answer();
-      await turn;
-      expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false)]);
-
-      const failing = sendPrompt(controller, sessions, 'again');
-      sessions.fail(new Error('agent crashed'));
-      await failing;
-      expect(environment.executeCommand.mock.calls).toEqual([inProgress(true), inProgress(false), inProgress(true), inProgress(false)]);
-    });
-
-    it('tells its turn listeners each time it tells the editor, for the review to pause', async () => {
-      const { sessions, controller } = setup();
-      const heard: boolean[] = [];
-      controller.addTurnListener((inProgress) => heard.push(inProgress));
-
-      const turn = sendPrompt(controller, sessions, 'hello');
-      sessions.answer();
-      await turn;
-      expect(heard).toEqual([true, false]);
-    });
-
-    it('tells a chat view that opens during a turn that the turn is running, so it holds the next prompt', async () => {
-      const { sessions, environment, controller } = setup();
-      const turn = sendPrompt(controller, sessions, 'hello');
-      environment.take();
-
-      await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
-
-      sessions.answer();
-      await turn;
-      environment.take();
-      await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs']);
-    });
-
-    describe('in a session the chat view no longer shows', () => {
-      function switchTo(sessions: FakeSessions, controller: ChatViewController, sessionId: string): void {
-        sessions.activeId = sessionId;
-        controller.notifyActiveSessionChanged();
-      }
-
-      it('does not tell the chat view when the turn ends or fails, so it cannot end a turn of the session shown now', async () => {
-        const outcomes: [string, (sessions: FakeSessions) => void][] = [
-          ['ends', (sessions) => sessions.answer()],
-          ['fails', (sessions) => sessions.fail(new Error('agent crashed'))],
-        ];
-        for (const [name, outcome] of outcomes) {
-          const { sessions, environment, controller } = setup();
-          const turn = sendPrompt(controller, sessions, 'hello');
-          switchTo(sessions, controller, 's2');
-          environment.take();
-
-          outcome(sessions);
-          await turn;
-
-          expect(environment.take(), name).toEqual([]);
-        }
-      });
-
-      it('takes the Cancel button off the title bar while another session is shown, and puts it back on return', async () => {
-        const { sessions, environment, controller } = setup();
-        const turn = sendPrompt(controller, sessions, 'hello');
-        environment.executeCommand.mockClear();
-
-        switchTo(sessions, controller, 's2');
-        switchTo(sessions, controller, 's1');
-
-        expect(environment.executeCommand.mock.calls).toEqual([
-          ['setContext', 'your-turn.turnInProgress', false],
-          ['setContext', 'your-turn.turnInProgress', true],
-        ]);
-        sessions.answer();
-        await turn;
-      });
-
-      it('tells the chat view the turn is still running when it shows that session again', async () => {
-        const { sessions, environment, controller } = setup();
-        const turn = sendPrompt(controller, sessions, 'hello');
-        switchTo(sessions, controller, 's2');
-        expect(environment.take().map((message) => message.type)).toEqual(['promptStart', 'state']);
-
-        switchTo(sessions, controller, 's1');
-
-        expect(environment.take().map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
-        sessions.answer();
-        await turn;
-      });
-
-      it("says no turn is running while another session is active, and the left session's turn is again on return", async () => {
-        const { sessions, controller } = setup();
-        const turn = sendPrompt(controller, sessions, 'hello');
-
-        switchTo(sessions, controller, 's2');
-        expect(controller.hasRunningTurn).toBe(false);
-        switchTo(sessions, controller, 's1');
-        expect(controller.hasRunningTurn).toBe(true);
-        sessions.answer();
-        await turn;
-      });
-    });
-
-    it('does not tell the chat view again that a turn is running when the same session is reported again', async () => {
-      const { sessions, environment, controller } = setup();
-      await controller.handleMessage({ type: 'ready' });
-      const turn = sendPrompt(controller, sessions, 'hello');
-      environment.take();
-
-      controller.notifyActiveSessionChanged();
-
-      expect(environment.take().map((message) => message.type)).toEqual(['state']);
-      sessions.answer();
-      await turn;
-    });
-
-    describe('when the agent of a session exits', () => {
-      it('tells the chat view why its session ended, which ends the turn', async () => {
-        const { sessions, environment, controller } = setup();
-        await controller.handleMessage({ type: 'ready' });
-        const turn = sendPrompt(controller, sessions, 'hello');
-        environment.take();
-
-        controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
-
-        expect(environment.take()).toEqual([{ type: 'sessionEnded', message: 'Fake Agent exited unexpectedly (code 1).' }]);
-        sessions.fail(new Error('ACP connection closed'));
-        await turn;
-      });
-
-      it('says nothing more when the turn then fails, the session being gone', async () => {
-        const { sessions, environment, controller } = setup();
-        await controller.handleMessage({ type: 'ready' });
-        const turn = sendPrompt(controller, sessions, 'hello');
-        controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
-        sessions.activeId = null;
-        controller.notifyActiveSessionChanged();
-        environment.take();
-
-        sessions.fail(new Error('ACP connection closed'));
-        await turn;
-
-        expect(environment.take()).toEqual([]);
-      });
-
-      it('forgets the turn, so the chat view is not told it is running when it opens again', async () => {
-        const { sessions, environment, controller } = setup();
-        await controller.handleMessage({ type: 'ready' });
-        const turn = sendPrompt(controller, sessions, 'hello');
-
-        controller.notifySessionEnded('s1', 'Fake Agent exited unexpectedly (code 1).');
-        environment.take();
-        await controller.handleMessage({ type: 'ready' });
-
-        expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs']);
-        expect(controller.hasRunningTurn).toBe(false);
-        sessions.fail(new Error('ACP connection closed'));
-        await turn;
-      });
-
-      it('does not tell the chat view about a session it does not show', async () => {
-        const { environment, controller } = setup();
-        await controller.handleMessage({ type: 'ready' });
-        environment.take();
-
-        controller.notifySessionEnded('s2', 'Other exited unexpectedly (code 1).');
-
-        expect(environment.take()).toEqual([]);
-      });
-    });
-
-    it('knows how many prompts the chat view holds, none once a chat view opens anew', async () => {
-      const { controller } = setup();
-      expect(controller.queuedPrompts).toBe(0);
-
-      await controller.handleMessage({ type: 'queuedPrompts', count: 2 });
-      expect(controller.queuedPrompts).toBe(2);
-
-      await controller.handleMessage({ type: 'ready' });
-      expect(controller.queuedPrompts).toBe(0);
-    });
-
-    it('tells the chat view to clear the transcript', () => {
-      const { environment, controller } = setup();
-
-      controller.clearTranscript();
-
-      expect(environment.take()).toEqual([{ type: 'clearTranscript' }]);
     });
   });
 
@@ -1382,7 +842,7 @@ describe('ChatViewController', () => {
 
       await controller.handleMessage({ type: 'cancelTurn' });
 
-      expect(sessions.cancelTurn).toHaveBeenCalledExactlyOnceWith('s1');
+      expect(sessions.cancelTurn).toHaveBeenCalledExactlyOnceWith(SESSION_ID);
     });
 
     it('ignores cancel when no session is active and keeps quiet when cancel fails', async () => {
@@ -1391,7 +851,7 @@ describe('ChatViewController', () => {
       await controller.handleMessage({ type: 'cancelTurn' });
       expect(sessions.cancelTurn).not.toHaveBeenCalled();
 
-      sessions.activeId = 's1';
+      sessions.activeId = SESSION_ID;
       sessions.cancelTurn.mockRejectedValueOnce(new Error('gone'));
       await controller.handleMessage({ type: 'cancelTurn' });
       expect(environment.take()).toEqual([]);
@@ -1403,7 +863,7 @@ describe('ChatViewController', () => {
 
       await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' });
 
-      expect(sessions.setMode).toHaveBeenCalledExactlyOnceWith('s1', 'code');
+      expect(sessions.setMode).toHaveBeenCalledExactlyOnceWith(SESSION_ID, 'code');
       expect(sessions.setConfigOption).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([]);
     });
@@ -1431,7 +891,7 @@ describe('ChatViewController', () => {
 
       await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'model', value: 'b' });
 
-      expect(sessions.setConfigOption).toHaveBeenCalledExactlyOnceWith('s1', 'model', 'b');
+      expect(sessions.setConfigOption).toHaveBeenCalledExactlyOnceWith(SESSION_ID, 'model', 'b');
       expect(sessions.setMode).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([{ type: 'pickers', pickers: [{ ...modelPicker, current: 'b' }] }]);
     });
@@ -1466,14 +926,14 @@ describe('ChatViewController', () => {
       const { environment, controller, sessions } = setup();
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'background', toolKind: 'execute', content: [
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'background', toolKind: 'execute', content: [
         { kind: 'text', text: 'command output' }, { kind: 'image', data, mimeType: 'image/png' },
       ] });
-      sessions.activeId = 's2';
+      sessions.activeId = OTHER_SESSION_ID;
       controller.notifyActiveSessionChanged();
       await vi.runAllTimersAsync();
       for (let index = 0; index < 5; index++) {
-        controller.handleSessionUpdate('s2', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+        controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
       const received = environment.take();
       expect(received.filter((message) => message.type === 'agentImage').map((message) => message.src !== null)).toEqual([true, true, true, true, true]);
@@ -1487,7 +947,7 @@ describe('ChatViewController', () => {
     ])('presents %s after inspecting its actual header', (mimeType, hex) => {
       const { environment, controller } = setup();
       const data = Buffer.from(hex, 'hex').toString('base64');
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: `data:${mimeType};base64,${data}` }]);
     });
 
@@ -1500,7 +960,7 @@ describe('ChatViewController', () => {
       header.writeUInt32BE(width, 16);
       header.writeUInt32BE(height, 20);
       const data = header.toString('base64');
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', ...(accepted
         ? { src: `data:image/png;base64,${data}` }
         : { src: null, fallback: width === 0 ? 'Invalid image dimensions' : 'Image exceeds dimension or pixel limit' }) }]);
@@ -1510,7 +970,7 @@ describe('ChatViewController', () => {
       const { environment, controller } = setup();
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(length - header.length)]).toString('base64');
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', ...(length === 10 * 1024 * 1024
         ? { src: `data:image/png;base64,${data}` }
         : { src: null, fallback: 'Image exceeds 10 MiB payload limit' }) }]);
@@ -1518,7 +978,7 @@ describe('ChatViewController', () => {
 
     it.each(['', 'A===', 'AAAA=', 'AA A', 'AB==', 'data:image/png;base64,AAAA'])('rejects noncanonical base64 %j', (data) => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback: 'Invalid image data' }]);
     });
 
@@ -1527,20 +987,20 @@ describe('ChatViewController', () => {
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
       for (let index = 0; index < 4; index++) {
-        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `kept${index}`, data, mimeType: 'image/png' });
+        controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `kept${index}`, data, mimeType: 'image/png' });
       }
       const content = [{ kind: 'image' as const, data, mimeType: 'image/png' }];
-      controller.handleSessionUpdate('s1', surface === 'tool'
+      controller.handleSessionUpdate(SESSION_ID, surface === 'tool'
         ? { kind: 'toolCall', toolCallId: 'replace', content }
         : { kind: surface === 'agent' ? 'agentRichMessage' : surface === 'thought' ? 'thoughtRichMessage' : 'promptRichMessage', messageId: 'replace', content });
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'blocked', data, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'blocked', data, mimeType: 'image/png' });
       expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'blocked', src: null, fallback: 'Session image budget exceeded' });
-      controller.handleSessionUpdate('s1', surface === 'tool'
+      controller.handleSessionUpdate(SESSION_ID, surface === 'tool'
         ? { kind: 'toolCall', toolCallId: 'replace', content: [] }
         : { kind: surface === 'agent' ? 'agentMessage' : surface === 'thought' ? 'thoughtMessage' : 'promptMessage', messageId: 'replace', text: '' });
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'fits', data, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'fits', data, mimeType: 'image/png' });
       expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'fits', src: `data:image/png;base64,${data}` });
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'stillBlocked', data: header.toString('base64'), mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'stillBlocked', data: header.toString('base64'), mimeType: 'image/png' });
       expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'stillBlocked', src: null, fallback: 'Session image budget exceeded' });
     });
 
@@ -1550,11 +1010,11 @@ describe('ChatViewController', () => {
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
       for (let index = 0; index < 5; index++) {
-        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+        controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
       if (operation === 'clear') { controller.clearTranscript(); }
-      else if (operation === 'replay') { controller.notifyLoadSessionStart('s1'); }
-      else { sessions.activeId = 's2'; controller.notifyActiveSessionChanged(); }
+      else if (operation === 'replay') { controller.notifyLoadSessionStart(SESSION_ID); }
+      else { sessions.activeId = OTHER_SESSION_ID; controller.notifyActiveSessionChanged(); }
       environment.take();
       controller.handleSessionUpdate(sessions.activeId ?? '', { kind: 'agentImage', messageId: 'fresh', data, mimeType: 'image/png' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'fresh', src: `data:image/png;base64,${data}` }]);
@@ -1566,7 +1026,7 @@ describe('ChatViewController', () => {
       ['image/jpeg', 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'Image MIME type does not match its bytes'],
     ])('explains rejected %s content', (mimeType, data, fallback) => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback }]);
     });
 
@@ -1575,17 +1035,17 @@ describe('ChatViewController', () => {
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
       for (let index = 0; index < 5; index++) {
-        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+        controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
       environment.take();
       controller.notifyLoadSessionStart('background');
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'late', data: header.toString('base64'), mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'late', data: header.toString('base64'), mimeType: 'image/png' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'late', src: null, fallback: 'Session image budget exceeded' }]);
     });
 
     it.each(['thoughtRichMessage', 'promptRichMessage'] as const)('translates %s in content order', (kind) => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind, messageId: 'm1', content: [
+      controller.handleSessionUpdate(SESSION_ID, { kind, messageId: 'm1', content: [
         { kind: 'text', text: 'before' },
         { kind: 'image', data: '', mimeType: 'image/png', reference: true },
         { kind: 'text', text: 'after' },
@@ -1598,8 +1058,8 @@ describe('ChatViewController', () => {
     it('validates an image before delivering it after buffered text', () => {
       const { environment, controller } = setup();
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
-      controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: 'm1', text: 'Before' });
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data: png, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'm1', text: 'Before' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data: png, mimeType: 'image/png' });
       expect(environment.take()).toEqual([
         { type: 'agentText', messageId: 'm1', text: 'Before' },
         { type: 'agentImage', messageId: 'm1', src: `data:image/png;base64,${png}` },
@@ -1609,7 +1069,7 @@ describe('ChatViewController', () => {
     it('delivers ordered whole-message content with validated images', () => {
       const { environment, controller } = setup();
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
-      controller.handleSessionUpdate('s1', { kind: 'agentRichMessage', messageId: 'm1', content: [
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentRichMessage', messageId: 'm1', content: [
         { kind: 'text', text: 'before' }, { kind: 'image', mimeType: 'image/png', data: png }, { kind: 'text', text: 'after' },
       ] });
       expect(environment.take()).toEqual([{ type: 'agentRichMessage', messageId: 'm1', content: [
@@ -1620,8 +1080,8 @@ describe('ChatViewController', () => {
     it('delivers validated images in thoughts and replayed prompts', () => {
       const { environment, controller } = setup();
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
-      controller.handleSessionUpdate('s1', { kind: 'thoughtImage', messageId: 't1', data: png, mimeType: 'image/png' });
-      controller.handleSessionUpdate('s1', { kind: 'promptImage', messageId: 'u1', data: png, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'thoughtImage', messageId: 't1', data: png, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'promptImage', messageId: 'u1', data: png, mimeType: 'image/png' });
       expect(environment.take()).toEqual([
         { type: 'thoughtImage', messageId: 't1', src: `data:image/png;base64,${png}` },
         { type: 'promptImage', messageId: 'u1', src: `data:image/png;base64,${png}` },
@@ -1630,14 +1090,14 @@ describe('ChatViewController', () => {
 
     it('labels an image resource link as a reference without loading its URI', () => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data: '', mimeType: 'image/png', reference: true });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data: '', mimeType: 'image/png', reference: true });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, reference: true }]);
     });
 
     it('delivers validated tool-call images in content order', () => {
       const { environment, controller } = setup();
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 't1', content: [
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 't1', content: [
         { kind: 'text', text: 'before' }, { kind: 'image', data: png, mimeType: 'image/png' }, { kind: 'text', text: 'after' },
       ] });
       expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [
@@ -1652,7 +1112,7 @@ describe('ChatViewController', () => {
       ['truncated bytes', 'iVBORw0KGgo=', 'image/png', 'Invalid image data'],
     ])('reports a fallback for %s', (_reason, data, mimeType, fallback) => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm1', data, mimeType });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback }]);
     });
 
@@ -1661,7 +1121,7 @@ describe('ChatViewController', () => {
       sessions.session = session;
       vi.useFakeTimers();
       try {
-        controller.handleSessionUpdate('s1', update);
+        controller.handleSessionUpdate(SESSION_ID, update);
         vi.advanceTimersByTime(16);
       } finally {
         vi.useRealTimers();
@@ -1672,7 +1132,7 @@ describe('ChatViewController', () => {
     it('tells the webview about updates to the active session only', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate('s1', toolCall);
+      controller.handleSessionUpdate(SESSION_ID, toolCall);
       controller.handleSessionUpdate('other', toolCall);
 
       expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', title: 'Read' }]);
@@ -1681,9 +1141,9 @@ describe('ChatViewController', () => {
     it('delivers reported usage immediately in the webview contract without changing its values', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } });
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 15000, size: 100000, cost: null });
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 15000, size: 100000, cost: null });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } });
 
       expect(environment.take()).toEqual([
         { type: 'usage', usage: { used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } } },
@@ -1697,41 +1157,41 @@ describe('ChatViewController', () => {
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(9 * 1024 * 1024 - header.length)]).toString('base64');
       for (let index = 0; index < 6; index++) {
-        controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+        controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
       const received = environment.take().filter((message) => message.type === 'agentImage');
       expect(received.map((message) => message.src !== null)).toEqual([true, true, true, true, true, false]);
-      controller.handleSessionUpdate('s1', { kind: 'agentMessage', messageId: 'm0', text: '' });
-      controller.handleSessionUpdate('s1', { kind: 'agentImage', messageId: 'm6', data, mimeType: 'image/png' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'm0', text: '' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm6', data, mimeType: 'image/png' });
       const after = environment.take().filter((message) => message.type === 'agentImage');
       expect(after.map((message) => message.src !== null)).toEqual([true]);
     });
 
     it('delivers compaction patches and chunks in order between buffered text messages', () => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: 'm1', text: 'Before' });
-      controller.handleSessionUpdate('s1', {
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'm1', text: 'Before' });
+      controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: '_paused',
         summary: { present: false }, error: { present: false },
       });
-      controller.handleSessionUpdate('s1', {
+      controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionSummaryChunk', compactionId: 'c1',
         content: { type: 'resource_link', uri: 'file:///summary', name: 'summary', _meta: { nested: [null, true, 3] } },
       });
-      controller.handleSessionUpdate('s1', {
+      controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
         summary: { present: true, value: [{ type: 'text', text: 'Summary' }] }, error: { present: true, value: '' },
       });
-      controller.handleSessionUpdate('s1', {
+      controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
         summary: { present: true, value: null }, error: { present: true, value: null },
       });
-      controller.handleSessionUpdate('s1', {
+      controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
         summary: { present: true, value: [] }, error: { present: false },
       });
-      controller.handleSessionUpdate('s1', { kind: 'agentText', messageId: 'm2', text: 'After' });
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 10, size: 100, cost: null });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'm2', text: 'After' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 10, size: 100, cost: null });
 
       expect(environment.take()).toEqual([
         { type: 'agentText', messageId: 'm1', text: 'Before' },
@@ -1767,8 +1227,8 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate('other', patch);
       controller.handleSessionUpdate('other', chunk);
       sessions.activeId = null;
-      controller.handleSessionUpdate('s1', patch);
-      controller.handleSessionUpdate('s1', chunk);
+      controller.handleSessionUpdate(SESSION_ID, patch);
+      controller.handleSessionUpdate(SESSION_ID, chunk);
       expect(environment.take()).toEqual([]);
     });
 
@@ -1776,24 +1236,24 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
 
       controller.handleSessionUpdate('other', { kind: 'usage', used: 999, size: 200000, cost: null });
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 1000, size: 200000, cost: null });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 1000, size: 200000, cost: null });
       sessions.activeId = null;
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 2000, size: 200000, cost: null });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 2000, size: 200000, cost: null });
 
       expect(environment.take()).toEqual([{ type: 'usage', usage: { used: 1000, size: 200000, cost: null } }]);
     });
 
     it('delivers fresh usage during load replay without replaying a cached snapshot', () => {
       const { environment, controller } = setup();
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 90000, size: 200000, cost: { amount: 1.25, currency: 'USD' } });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 90000, size: 200000, cost: { amount: 1.25, currency: 'USD' } });
       environment.take();
 
-      controller.notifyLoadSessionStart('s1');
+      controller.notifyLoadSessionStart(SESSION_ID);
       controller.notifyLoadSessionEnd(true);
       expect(environment.take()).toEqual([{ type: 'loadSessionStart' }, { type: 'loadSessionEnd', ok: true }]);
 
-      controller.notifyLoadSessionStart('s1');
-      controller.handleSessionUpdate('s1', { kind: 'usage', used: 15000, size: 100000, cost: null });
+      controller.notifyLoadSessionStart(SESSION_ID);
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 15000, size: 100000, cost: null });
       controller.notifyLoadSessionEnd(true);
       expect(environment.take()).toEqual([
         { type: 'loadSessionStart' },
@@ -1831,7 +1291,7 @@ describe('ChatViewController', () => {
       sessions.session = sessionInfo();
       environment.showsDiffs = true;
 
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 't1', content: [
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 't1', content: [
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/project/new.ts', oldText: null, newText: 'a' } },
         { kind: 'text', text: 'moved' },
         { kind: 'diff', diff: {
@@ -1872,11 +1332,11 @@ describe('ChatViewController', () => {
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a', newText: 'b' } },
       ] };
 
-      controller.handleSessionUpdate('s1', edited);
+      controller.handleSessionUpdate(SESSION_ID, edited);
       environment.showsDiffs = true;
-      controller.handleSessionUpdate('s1', edited);
+      controller.handleSessionUpdate(SESSION_ID, edited);
       environment.showsDiffs = false;
-      controller.handleSessionUpdate('s1', edited);
+      controller.handleSessionUpdate(SESSION_ID, edited);
 
       expect(environment.take()).toEqual([
         { type: 'toolCall', toolCallId: 't1', content: [{ kind: 'text', text: 'edited' }] },
@@ -1907,11 +1367,11 @@ describe('ChatViewController', () => {
         terminals.handleSessionUpdate(sessionId, update);
       };
 
-      feed('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'terminal', terminalId: 'term' }] });
-      feed('s1', { kind: 'terminal', terminalId: 'term', command: 'npm test' });
-      feed('s1', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('\x1b[31mfailed\x1b[0m\n') });
+      feed(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'terminal', terminalId: 'term' }] });
+      feed(SESSION_ID, { kind: 'terminal', terminalId: 'term', command: 'npm test' });
+      feed(SESSION_ID, { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('\x1b[31mfailed\x1b[0m\n') });
       feed('other', { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('elsewhere') });
-      feed('s1', { kind: 'terminal', terminalId: 'term', exitStatus: { exitCode: 1, signal: null } });
+      feed(SESSION_ID, { kind: 'terminal', terminalId: 'term', exitStatus: { exitCode: 1, signal: null } });
       await vi.runAllTimersAsync();
 
       expect(environment.take()).toEqual([
@@ -1926,7 +1386,7 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
 
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
         { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
       ] });
       expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
@@ -1943,7 +1403,7 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
 
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
       sessions.activeId = null;
       await vi.runAllTimersAsync();
 
@@ -1953,7 +1413,7 @@ describe('ChatViewController', () => {
     describe("the output of a session that ended, which goes once the chat view clears the session's transcript", () => {
       function shown() {
         const { sessions, terminals, controller } = setup();
-        for (const sessionId of ['s1', 's2']) {
+        for (const sessionId of [SESSION_ID, OTHER_SESSION_ID]) {
           terminals.handleSessionUpdate(sessionId, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('out') });
         }
         controller.notifyActiveSessionChanged();
@@ -1969,44 +1429,44 @@ describe('ChatViewController', () => {
       it('stays while the chat view keeps the transcript of a session whose agent exited, and goes once it shows another', () => {
         const { sessions, terminals, controller, removed } = shown();
 
-        controller.notifySessionEnded('s1', 'Fake exited unexpectedly (code 1).');
-        removed('s1');
-        expect(terminals.info('s1', 't1')).toBeDefined();
+        controller.notifySessionEnded(SESSION_ID, 'Fake exited unexpectedly (code 1).');
+        removed(SESSION_ID);
+        expect(terminals.info(SESSION_ID, 't1')).toBeDefined();
 
-        sessions.activeId = 's2';
+        sessions.activeId = OTHER_SESSION_ID;
         controller.notifyActiveSessionChanged();
-        expect(terminals.info('s1', 't1')).toBeUndefined();
-        expect(terminals.info('s2', 't1')).toBeDefined();
+        expect(terminals.info(SESSION_ID, 't1')).toBeUndefined();
+        expect(terminals.info(OTHER_SESSION_ID, 't1')).toBeDefined();
       });
 
       it('goes when the user disconnects, as the chat view then shows nothing', () => {
         const { terminals, removed } = shown();
 
-        removed('s1');
+        removed(SESSION_ID);
 
-        expect(terminals.info('s1', 't1')).toBeUndefined();
-        expect(terminals.info('s2', 't1')).toBeDefined();
+        expect(terminals.info(SESSION_ID, 't1')).toBeUndefined();
+        expect(terminals.info(OTHER_SESSION_ID, 't1')).toBeDefined();
       });
 
       it('goes when the transcript is cleared', () => {
         const { terminals, controller, removed } = shown();
-        controller.notifySessionEnded('s1', 'Fake exited unexpectedly (code 1).');
-        removed('s1');
+        controller.notifySessionEnded(SESSION_ID, 'Fake exited unexpectedly (code 1).');
+        removed(SESSION_ID);
 
         controller.clearTranscript();
 
-        expect(terminals.info('s1', 't1')).toBeUndefined();
+        expect(terminals.info(SESSION_ID, 't1')).toBeUndefined();
       });
     });
 
     it("forgets a removed session's commands", () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute' });
 
-      controller.notifySessionRemoved('s1');
+      controller.notifySessionRemoved(SESSION_ID);
       environment.take();
-      controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] });
 
       expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] }]);
     });
@@ -2029,15 +1489,15 @@ describe('ChatViewController', () => {
       sessions.activeId = null;
       const commands = [{ name: 'init', description: 'Init', takesInput: false, hint: null }];
 
-      controller.handleSessionUpdate('s2', { kind: 'commands', commands });
-      controller.handleSessionUpdate('s2', { kind: 'configOptions', options: [modelOption] });
-      controller.handleSessionUpdate('s2', { kind: 'currentMode', modeId: 'code' });
-      controller.handleSessionUpdate('s2', { kind: 'sessionInfo', title: 'Title' });
+      controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'commands', commands });
+      controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'configOptions', options: [modelOption] });
+      controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'currentMode', modeId: 'code' });
+      controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'sessionInfo', title: 'Title' });
 
-      expect(sessions.applyAvailableCommands).toHaveBeenCalledExactlyOnceWith('s2', commands);
-      expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith('s2', [modelOption]);
-      expect(sessions.applyCurrentMode).toHaveBeenCalledExactlyOnceWith('s2', 'code');
-      expect(sessions.applySessionInfoUpdate).toHaveBeenCalledExactlyOnceWith('s2', expect.objectContaining({ title: 'Title' }));
+      expect(sessions.applyAvailableCommands).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, commands);
+      expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, [modelOption]);
+      expect(sessions.applyCurrentMode).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, 'code');
+      expect(sessions.applySessionInfoUpdate).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, expect.objectContaining({ title: 'Title' }));
       expect(environment.take()).toEqual([]);
     });
   });
@@ -2055,7 +1515,7 @@ describe('ChatViewController', () => {
       const { environment, controller } = setup();
 
       for (const text of ['Hel', 'lo', ' world']) {
-        controller.handleSessionUpdate('s1', answerChunk(text));
+        controller.handleSessionUpdate(SESSION_ID, answerChunk(text));
       }
       vi.advanceTimersByTime(15);
       expect(environment.take()).toEqual([]);
@@ -2063,7 +1523,7 @@ describe('ChatViewController', () => {
       vi.advanceTimersByTime(1);
       expect(environment.take()).toEqual([answer('Hello world')]);
 
-      controller.handleSessionUpdate('s1', answerChunk('!'));
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('!'));
       vi.advanceTimersByTime(16);
       expect(environment.take()).toEqual([answer('!')]);
     });
@@ -2073,9 +1533,9 @@ describe('ChatViewController', () => {
       const turn = sendPrompt(controller, sessions, 'hello');
       environment.take();
 
-      controller.handleSessionUpdate('s1', answerChunk('reading'));
-      controller.handleSessionUpdate('s1', toolCall);
-      controller.handleSessionUpdate('s1', answerChunk('done'));
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('reading'));
+      controller.handleSessionUpdate(SESSION_ID, toolCall);
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('done'));
       sessions.answer();
       await turn;
 
@@ -2092,9 +1552,9 @@ describe('ChatViewController', () => {
     it("sends a message's whole text without waiting, after the text before it, and joins none of it", () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate('s1', answerChunk('Hel', 'm1'));
-      controller.handleSessionUpdate('s1', { kind: 'agentMessage', messageId: 'm1', text: 'Hello' });
-      controller.handleSessionUpdate('s1', answerChunk('!', 'm1'));
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('Hel', 'm1'));
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'm1', text: 'Hello' });
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('!', 'm1'));
 
       expect(environment.take()).toEqual([answer('Hel', 'm1'), { type: 'agentMessage', messageId: 'm1', text: 'Hello' }]);
       vi.advanceTimersByTime(16);
@@ -2104,12 +1564,12 @@ describe('ChatViewController', () => {
     it('keeps text of different kinds or messages apart', () => {
       const { environment, controller } = setup();
 
-      controller.handleSessionUpdate('s1', { kind: 'promptText', messageId: 'u1', text: 'q' });
-      controller.handleSessionUpdate('s1', { kind: 'promptText', messageId: 'u2', text: 'r' });
-      controller.handleSessionUpdate('s1', { kind: 'thoughtText', messageId: null, text: 'hm' });
-      controller.handleSessionUpdate('s1', { kind: 'thoughtText', messageId: null, text: 'm' });
-      controller.handleSessionUpdate('s1', answerChunk('a', 'm1'));
-      controller.handleSessionUpdate('s1', answerChunk('b', 'm2'));
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'promptText', messageId: 'u1', text: 'q' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'promptText', messageId: 'u2', text: 'r' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'thoughtText', messageId: null, text: 'hm' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'thoughtText', messageId: null, text: 'm' });
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('a', 'm1'));
+      controller.handleSessionUpdate(SESSION_ID, answerChunk('b', 'm2'));
       vi.advanceTimersByTime(16);
 
       expect(environment.take()).toEqual([
@@ -2127,7 +1587,7 @@ describe('ChatViewController', () => {
     function withFiles() {
       const parts = setup();
       parts.environment.showsDiffs = true;
-      parts.controller.handleSessionUpdate('s1', { kind: 'toolCall', toolCallId: 't1', content: [
+      parts.controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 't1', content: [
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a\n', newText: 'b\n' } },
         { kind: 'diff', diff: {
           kind: 'changes',
@@ -2167,9 +1627,9 @@ describe('ChatViewController', () => {
       await controller.handleMessage({ type: 'openChanges', toolCallId: 't1', file: 1 });
       await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 3 });
       await controller.handleMessage({ type: 'openFile', toolCallId: 'unknown', file: 0 });
-      sessions.activeId = 's2';
+      sessions.activeId = OTHER_SESSION_ID;
       await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
-      sessions.activeId = 's1';
+      sessions.activeId = SESSION_ID;
       await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 1 });
 
       expect(editor.open.mock.calls).toEqual([['/work/b.bin']]);
@@ -2187,11 +1647,11 @@ describe('ChatViewController', () => {
 
     it("forgets a session's files when the session goes, and when a load is about to report them again", async () => {
       const removed = withFiles();
-      removed.controller.notifySessionRemoved('s1');
+      removed.controller.notifySessionRemoved(SESSION_ID);
       await removed.controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
 
       const reloaded = withFiles();
-      reloaded.controller.notifyLoadSessionStart('s1');
+      reloaded.controller.notifyLoadSessionStart(SESSION_ID);
       await reloaded.controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
 
       expect(removed.editor.open).not.toHaveBeenCalled();

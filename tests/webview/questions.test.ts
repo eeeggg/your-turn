@@ -1,9 +1,9 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { connect, loadChatPage } from '@tests/webview/chatPage';
+import { connect, DEFAULT_SESSION_ID, loadChatPage } from '@tests/webview/chatPage';
 
 const question: Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number] = {
-  interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, draft: null,
+  interactionId: 'q1', sessionId: DEFAULT_SESSION_ID, agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, draft: null,
   fields: [{ name: 'enabled', kind: 'boolean', title: 'Enabled', description: null, required: false, choices: null, minimum: null, maximum: null, minLength: null, maxLength: null, minItems: null, maxItems: null, pattern: null, format: null, default: false }],
 };
 
@@ -51,7 +51,7 @@ describe('bundled question delivery', () => {
     expect(page.takePosted()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { enabled: false } }]);
     expect(page.document.querySelector('.question-record')).toBeNull();
     page.send({ type: 'questionSettled', record: {
-      interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, fields: question.fields,
+      interactionId: 'q1', sessionId: DEFAULT_SESSION_ID, agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, fields: question.fields,
       response: { action: 'accept', content: { enabled: false } },
     } });
     const record = page.document.querySelector<HTMLDetailsElement>('.question-record');

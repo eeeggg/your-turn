@@ -12,6 +12,7 @@ import { initialState, update, type Action } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
+const SESSION_ID = 'ddcb43e9-df3c-4604-8444-be1fb55dcdfa';
 
 afterEach(() => {
   cleanup();
@@ -90,8 +91,8 @@ function renderChatView() {
     connect: () =>
       send({
         type: 'state',
-        activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] },
+        activeSessionId: SESSION_ID,
+        session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] },
       }),
     answer: (text: string) => send({ type: 'agentText', messageId: null, text }),
     thought: (text: string) => send({ type: 'thoughtText', messageId: null, text }),
@@ -114,7 +115,7 @@ describe('the chat view', () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'questionSettled', record: {
-      interactionId: 'q1', sessionId: 's1', agentName: 'Agent', title: 'Settings', message: 'Visit https://example.com?', description: 'Choose carefully',
+      interactionId: 'q1', sessionId: SESSION_ID, agentName: 'Agent', title: 'Settings', message: 'Visit https://example.com?', description: 'Choose carefully',
       fields: [{ name: 'enabled', kind: 'boolean', title: 'Enabled', description: 'Enable it?', required: false, choices: null, minimum: null, maximum: null, minLength: null, maxLength: null, minItems: null, maxItems: null, pattern: null, format: null }],
       response: action === 'accept' ? { action, content: { enabled: false } } : { action },
     } });
@@ -875,8 +876,8 @@ describe('tool calls', () => {
     const contexts = (selector: string) => view.all(selector).map((element) => JSON.parse(element.dataset['vscodeContext'] ?? 'null') as unknown);
 
     const expected = [
-      { webviewSection: 'commandOutput', yourTurnSessionId: 's1', yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
-      { webviewSection: 'commandOutput', yourTurnSessionId: 's1', yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
+      { webviewSection: 'commandOutput', yourTurnSessionId: SESSION_ID, yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
+      { webviewSection: 'commandOutput', yourTurnSessionId: SESSION_ID, yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
     ];
     expect(contexts('.tc-command')).toEqual(expected);
     expect(contexts('.tc-summary')).toEqual([...expected, null]);

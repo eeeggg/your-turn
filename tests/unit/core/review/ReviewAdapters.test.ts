@@ -5,6 +5,9 @@ import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
 import { Takeovers } from '@/core/review/Takeovers';
 
+const SESSION_ID = '67d942be-3e51-4d08-8a62-f910b53c74e6';
+const OTHER_SESSION_ID = 'ba43f621-805d-49e2-a376-0fd65ec9814b';
+
 const host = vi.hoisted(() => {
   function event() {
     const listeners = new Set<(value: never) => void>();
@@ -75,8 +78,8 @@ async function setup() {
   host.document.getText = () => text;
   const reviews = new Reviews({ read: async () => 'after\n', restore: async () => {}, watch: () => ({ dispose() {} }) });
   cleanup.push(() => reviews.dispose());
-  reviews.activeSessionChanged('s1');
-  await reviews.handleSessionUpdate('s1', {
+  reviews.activeSessionChanged(SESSION_ID);
+  await reviews.handleSessionUpdate(SESSION_ID, {
     kind: 'toolCall', toolCallId: 'edit', status: 'completed',
     content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: host.document.uri.fsPath, oldText: 'before\n', newText: 'after\n' } }],
   }, 'v1');
@@ -192,9 +195,9 @@ describe('Review adapter shutdown', () => {
     cleanup.push(() => sourceControl.dispose());
     const paths = vi.spyOn(controls, 'reviewedPaths');
     sourceControl.dispose();
-    reviews.activeSessionChanged('s2');
+    reviews.activeSessionChanged(OTHER_SESSION_ID);
     expect(paths).not.toHaveBeenCalled();
-    reviews.activeSessionChanged('s1');
+    reviews.activeSessionChanged(SESSION_ID);
     expect(controls.reviewedPaths()).toEqual(['/review/file.txt']);
   });
 });

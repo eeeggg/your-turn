@@ -31,6 +31,7 @@ for (const version of [1, 2]) {
     let exited: Promise<void> | undefined;
     const exits: (number | null)[] = [];
     const texts: string[] = [];
+    const textSessionIds: string[] = [];
     const textWaiters: { text: string; resolve: () => void }[] = [];
     const exitWaiters: (() => void)[] = [];
     const logs: string[] = [];
@@ -54,9 +55,10 @@ for (const version of [1, 2]) {
       });
 
       updates = new SessionUpdateHandler();
-      updates.addListener((_sessionId, update) => {
+      updates.addListener((sessionId, update) => {
         if (update.kind === 'agentText') {
           texts.push(update.text);
+          textSessionIds.push(sessionId);
           for (const waiter of textWaiters.splice(0)) {
             if (texts.includes(waiter.text)) {
               waiter.resolve();
@@ -135,23 +137,35 @@ for (const version of [1, 2]) {
 
     test('Creates a session and sets a config option', async () => {
       const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
-      assert.strictEqual(created.sessionId, 'fake-session');
+      assert.match(created.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
       assert.strictEqual(created.configOptions?.[0]?.category, 'model');
 
       const updated = await driver.setConfigOption(created.sessionId, 'model', 'model-b');
       assert.strictEqual(updated?.[0]?.current, 'model-b');
     });
 
+    test('Creates distinct sessions on the same connection', async () => {
+      const first = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+      const second = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+      assert.notStrictEqual(second.sessionId, first.sessionId);
+      const updated = await driver.setConfigOption(second.sessionId, 'model', 'model-b');
+      assert.strictEqual(updated?.[0]?.current, 'model-b');
+    });
+
     test('Routes session updates and answers permission requests during a prompt', async () => {
-      await driver.prompt('fake-session', [{ kind: 'text', text: 'hi' }]);
+      const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+      await driver.prompt(created.sessionId, [{ kind: 'text', text: 'hi' }]);
       assert.ok(texts.includes('hello'), `updates: ${JSON.stringify(texts)}`);
       assert.ok(texts.includes('perm:allow'), `updates: ${JSON.stringify(texts)}`);
+      assert.deepStrictEqual(textSessionIds, [created.sessionId, created.sessionId]);
     });
 
     test('Sends cancel as a notification', async () => {
+      const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
       const acknowledged = nextText('cancel-ack');
-      await driver.cancel('fake-session');
+      await driver.cancel(created.sessionId);
       await acknowledged;
+      assert.strictEqual(textSessionIds.at(-1), created.sessionId);
     });
 
     test('Traffic tap records both directions', () => {

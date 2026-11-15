@@ -12,6 +12,8 @@ const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
 const sourceDir = join(repoRoot, 'src', 'webview');
 const nonce = 'test-nonce';
 const scriptUri = 'chat.js';
+export const DEFAULT_SESSION_ID = 'ad95961b-770b-4c48-bde9-5869ab4086bd';
+const DEFAULT_TAB_ID = 'tab-primary';
 
 export interface ChatPage {
   readonly window: DOMWindow;
@@ -154,7 +156,7 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
 
 function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
-    sessionId: 's1',
+    sessionId: DEFAULT_SESSION_ID,
     agentName: 'Fake Agent',
     cwd: '/work/project',
     pickers: [],
@@ -164,11 +166,11 @@ function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapsho
 }
 
 /** Send a `state` message describing the active session, as the extension does on connect. */
-export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}): void {
+export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}, tabId = DEFAULT_TAB_ID): void {
   const full = sessionSnapshot(session);
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
-  page.send({ type: 'sessionTabs', selectedTabId: full.sessionId, tabs: [{
-    tabId: full.sessionId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], running: false,
+  page.send({ type: 'sessionTabs', selectedTabId: tabId, tabs: [{
+    tabId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], running: false,
   }] });
 }
 

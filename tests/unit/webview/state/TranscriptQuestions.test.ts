@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { QuestionRecord } from '@/shared/WebviewMessages';
-import { chatView } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { chatView, TRANSCRIPT_SESSION_ID, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 const record: QuestionRecord = {
-  interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: null, description: null, fields: [], response: { action: 'accept', content: {} },
+  interactionId: 'q1', sessionId: TRANSCRIPT_SESSION_ID, agentName: 'Agent', message: 'Confirm?', title: null, description: null, fields: [], response: { action: 'accept', content: {} },
 };
 
 describe('settled question records', () => {
@@ -37,7 +37,7 @@ describe('settled question records', () => {
     view.send({ type: 'questionSettled', record });
     expect(view.transcript().entries).toEqual([]);
     view.connect();
-    view.send({ type: 'questionSettled', record: { ...record, sessionId: 'other' } });
+    view.send({ type: 'questionSettled', record: { ...record, sessionId: OTHER_TRANSCRIPT_SESSION_ID } });
     expect(view.transcript().entries).toEqual([]);
     view.send({ type: 'questionSettled', record });
     expect(view.transcript().entries).toEqual([{ kind: 'question', id: 1, record, open: false }]);
@@ -46,7 +46,7 @@ describe('settled question records', () => {
     expect(view.transcript().entries).toEqual([]);
     view.send({ type: 'loadSessionEnd', ok: true });
     expect(view.transcript().entries).toEqual([]);
-    view.connect({ sessionId: 'other' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     expect(view.transcript().entries).toEqual([]);
   });
 });

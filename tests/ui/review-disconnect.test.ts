@@ -4,13 +4,13 @@ import {
   agentMoreActions, agentsViewRow, chooseAgentAction, editorTab,
   modifiedReviewEditor, plainFileEditor, plainFileInput, plainFileTab, promptInput,
   quickInput, quickInputRow, reviewDiffEditor, reviewLens, reviewStatus, reviewTabs,
-  reviewTitleAction, yourTurnContainerControl,
+  reviewTitleAction, sessionTabs, yourTurnContainerControl,
 } from '@tests/ui/workbench';
 import { expect, test } from '@tests/ui/window';
 
 const original = Array.from({ length: 30 }, (_, index) => `l${index + 1}\n`).join('');
 const agentText = original.replace('l2\n', 'AGENT changed\n').replace('l15\n', 'l15\nAGENT added\n').replace('l28\n', '');
-test.use({ controlledNativeDiff: true, workspaceFiles: { 'm.ts': original, 'other.ts': 'unrelated\n' } });
+test.use({ controlledNativeDiff: true, loadsSessions: true, workspaceFiles: { 'm.ts': original, 'other.ts': 'unrelated\n' } });
 
 test('disconnect retires a pending native review without losing unsaved editing or resolving changes', async ({ window, workspace, nativeDiffControl }, testInfo) => {
   if (!nativeDiffControl) { throw new Error('Native diff control is not enabled'); }
@@ -62,7 +62,8 @@ test('disconnect retires a pending native review without losing unsaved editing 
   expect(await readFile(join(workspace, 'm.ts'), 'utf8')).toBe(agentText);
   await window.screenshot({ path: testInfo.outputPath('review-disconnect-unsaved.png') });
 
-  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
+  await expect(sessionTabs(window).getByRole('tab')).toHaveCount(1);
+  await sessionTabs(window).getByRole('tab').click();
   await expect(promptInput(window)).toBeEnabled();
   await expect(reviewStatus(window)).toContainText('1 of 1');
   await reviewTitleAction(window, 'Open Review').click();

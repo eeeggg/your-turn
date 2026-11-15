@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action } from '@/webview/state/RootState';
-import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { chatView, promptEnd, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('session compaction', () => {
   type Patch = Extract<Action, { type: 'compactionUpdate' }>;
@@ -118,7 +118,7 @@ describe('session compaction', () => {
   });
 
   it.each([
-    ['session change', { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
+    ['session change', { type: 'state', activeSessionId: OTHER_TRANSCRIPT_SESSION_ID, session: { sessionId: OTHER_TRANSCRIPT_SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
     ['disconnect', { type: 'state', activeSessionId: null, session: null }],
     ['load', { type: 'loadSessionStart' }],
     ['clear', { type: 'clearTranscript' }],
@@ -142,7 +142,7 @@ describe('session compaction', () => {
       { kind: 'compaction', id: 1, compactionId: 'c1', status: 'in_progress', summary: [{ type: 'text', text: 'Retained' }], error: null, open: true, startedAt: 0, endedAt: null, timingAllowed: true },
       { kind: 'error', id: 2, text: 'Exited' },
     ]);
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     expect(view.transcript().entries).toEqual([]);
   });
 

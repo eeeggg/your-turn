@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { attachUrlElicitations, type UrlElicitationPrompt } from '@/core/UrlElicitations';
 
-const request = { mode: 'url' as const, rpcId: 1, scope: { sessionId: 'session' }, elicitationId: 'external', url: 'https://example.org/connect?state=abc', message: 'Authorize repository access' };
+const request = { mode: 'url' as const, rpcId: 1, scope: { sessionId: '6913c326-2ac9-49c2-833f-df81f5be50b7' }, elicitationId: 'external', url: 'https://example.org/connect?state=abc', message: 'Authorize repository access' };
 
 describe('URL elicitation consent delivery', () => {
   it.each(['accept', 'decline', 'cancel'] as const)('returns %s without content and opens only after accepted consent', async (action) => {

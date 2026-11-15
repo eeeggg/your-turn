@@ -378,7 +378,7 @@ test('a hidden agent question stays pending until native Open and submits typed 
   await expect(chatWebview(window)).toBeHidden();
   await writeFile(join(workspace, 'question.trigger'), 'open');
   const notification = nativeQuestionNotification(window);
-  await expect(notification).toContainText('fake-v1 has a question for ui-');
+  await expect(notification).toContainText(/fake-v1 has a question for [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/);
   await expect(chatWebview(window)).toBeHidden();
   await notification.getByRole('button', { name: 'Open', exact: true }).click();
   await expect(chatWebview(window)).toBeVisible();

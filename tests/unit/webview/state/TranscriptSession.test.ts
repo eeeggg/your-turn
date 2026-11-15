@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Action } from '@/webview/state/RootState';
-import { chatView, promptEnd, queuedPrompts } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { chatView, promptEnd, queuedPrompts, TRANSCRIPT_SESSION_ID, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('the transcript session', () => {
   it('leaves room for the empty state only without a session and an empty transcript', () => {
@@ -17,13 +17,13 @@ describe('the transcript session', () => {
 
   it('keeps the transcript for the same session and clears it for another', () => {
     const view = chatView();
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: TRANSCRIPT_SESSION_ID });
     view.prompt('hello');
 
-    view.connect({ sessionId: 's1', title: 'Renamed' });
+    view.connect({ sessionId: TRANSCRIPT_SESSION_ID, title: 'Renamed' });
     expect(view.summary()).toEqual(['prompt: hello']);
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     expect(view.summary()).toEqual([]);
   });
 
@@ -64,13 +64,13 @@ describe('the transcript session', () => {
 
   it('never reuses an entry ID after clearing the transcript', () => {
     const view = chatView();
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: TRANSCRIPT_SESSION_ID });
     view.send({ type: 'promptStart' });
     view.answer('old');
     view.send(promptEnd);
     const oldId = view.lastTurn().id;
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     view.send({ type: 'promptStart' });
     view.answer('new');
 
@@ -132,7 +132,7 @@ describe('session usage', () => {
   });
 
   it.each([
-    ['another session', { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
+    ['another session', { type: 'state', activeSessionId: OTHER_TRANSCRIPT_SESSION_ID, session: { sessionId: OTHER_TRANSCRIPT_SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
     ['a disconnect', { type: 'state', activeSessionId: null, session: null }],
     ['a load', { type: 'loadSessionStart' }],
     ['an explicit clear', { type: 'clearTranscript' }],
@@ -247,7 +247,7 @@ describe('a session whose agent exited', () => {
     const view = midTurn();
     view.send(ended, noSession);
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     view.send(noSession);
 
     expect(view.summary()).toEqual([]);
