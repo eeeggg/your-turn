@@ -9,6 +9,7 @@ import {
   type SessionOpening
 } from '@/core/SessionManager';
 import type { SessionTabs } from '@/core/SessionTabs';
+import type { SessionOrigin, SessionRegistration } from '@/core/SessionUpdateHandler';
 
 export interface AgentEntry {
   readonly name: string;
@@ -109,26 +110,23 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
   /** Sessions created here whose first turn has not ended. */
   private readonly awaitingFirstTurn = new Set<string>();
   private readonly announce = () => this.emit('changed');
-  private readonly infoChanged = (sessionId: string, update: Reported) => {
-    const agentName = this.sessions.getSession(sessionId)?.agentName;
-    if (agentName) {
-      this.learn(agentName, sessionId, update);
-    }
+  private readonly infoChanged = ({ identity }: SessionOrigin, update: Reported) => {
+    this.learn(identity.configuredName, identity.sessionId, update);
   };
-  private readonly turnEnded = (sessionId: string, agentName: string) => {
+  private readonly turnEnded = ({ sessionId, agentName }: SessionRegistration) => {
     this.learn(agentName, sessionId, { updatedAt: new Date(this.now()).toISOString() });
     if (this.awaitingFirstTurn.delete(sessionId)) {
       void this.refresh(agentName);
     }
   };
-  private readonly opened = (sessionId: string, agentName: string, how: SessionOpening) => {
+  private readonly opened = ({ sessionId, agentName }: SessionRegistration, how: SessionOpening) => {
     if (how === 'created') {
       this.awaitingFirstTurn.add(sessionId);
     } else {
       void this.refresh(agentName);
     }
   };
-  private readonly removed = (sessionId: string) => {
+  private readonly removed = ({ sessionId }: SessionRegistration) => {
     this.awaitingFirstTurn.delete(sessionId);
     this.announce();
   };

@@ -12,8 +12,9 @@ import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { createReviewEditors as controlledReviewEditors } from '@tests/ui/instrumentation/ReviewPresenters';
 import { listenControl } from '@tests/ui/instrumentation/ControlChannel';
 
-const SESSION_ID = 'deba8266-a99a-4fd9-9cf6-aa8c19e6efea';
-const OTHER_SESSION_ID = '03c47e85-1a44-40ec-8140-6466e39eaa91';
+const SESSION_ID = { sessionId: 'deba8266-a99a-4fd9-9cf6-aa8c19e6efea', agentName: 'fake', agentId: 'source' };
+const OTHER_SESSION_ID = { ...SESSION_ID, sessionId: '03c47e85-1a44-40ec-8140-6466e39eaa91' };
+const input = (update: SessionUpdate) => ({ origin: { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' }, update, schema: 'v1' as const });
 
 /** A completed tool call that changed `file` from `old` to `now`, the empty text with nothing there for a deletion. */
 const edited = (toolCallId: string, file: string, old: string, now: string): SessionUpdate => ({
@@ -71,8 +72,8 @@ suite('Review presenters', () => {
     shown = record.shown;
     owned.presenters = new ReviewPresenters(controls, reviews, record.display);
     reviews.activeSessionChanged(SESSION_ID);
-    await reviews.handleSessionUpdate(SESSION_ID, edited('t1', a, 'one\n', 'one\nadded\n'), 'v1');
-    await reviews.handleSessionUpdate(SESSION_ID, edited('t2', b, 'b\n', 'B\n'), 'v1');
+    await reviews.handleSessionUpdate(input(edited('t1', a, 'one\n', 'one\nadded\n')));
+    await reviews.handleSessionUpdate(input(edited('t2', b, 'b\n', 'B\n')));
   });
 
   teardown(async function () {
@@ -187,6 +188,44 @@ suite('Review presenters', () => {
       await editors.dispose();
       await showing;
     }
+  });
+
+  test('navigation capture rejects away-and-back even when it ends on the captured file', async () => {
+    const editors = createReviewEditors();
+    try {
+      await open(a);
+      const current = editors.captureNavigation();
+      assert.strictEqual(current(), true);
+      await open(b);
+      await open(a);
+      assert.strictEqual(current(), false);
+    } finally { await editors.dispose(); }
+  });
+
+  test('automatic quick-diff preparation does not cancel its own activation but stops after user navigation', async () => {
+    await open(b);
+    let release: () => void = () => {};
+    let started: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const waiting = new Promise<void>((resolve) => { started = resolve; });
+    const commands: string[] = [];
+    const editors = createReviewEditors(async (command) => { commands.push(command); },
+      async () => { started(); await gate; });
+    const current = editors.captureNavigation();
+    const showing = editors.showChange(a, current);
+    try {
+      await waiting;
+      assert.strictEqual(activeFile(), a);
+      assert.strictEqual(current(), true);
+      await open(b);
+      await open(a);
+      assert.strictEqual(current(), false);
+    } finally {
+      release();
+      await showing;
+      await editors.dispose();
+    }
+    assert.deepStrictEqual(commands, ['editor.action.dirtydiff.next']);
   });
 
   for (const operation of ['showChange', 'showChangeOf'] as const) {
@@ -347,7 +386,7 @@ suite('Review presenters', () => {
 
   test("undoes a deleted file from its editor, which says it was not found, and opens it again with its baseline", async () => {
     const gone = path.join(folder, 'gone.txt');
-    await reviews.handleSessionUpdate(SESSION_ID, edited('t3', gone, 'gone\n', ''), 'v1');
+    await reviews.handleSessionUpdate(input(edited('t3', gone, 'gone\n', '')));
     await controls.previous(a);
     assert.strictEqual(shown.position, '3 of 3');
     assert.strictEqual(activeFile(), undefined);

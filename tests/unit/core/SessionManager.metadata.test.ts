@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { methods, RequestError } from '@agentclientprotocol/sdk';
-import type { SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
+import { agent, methods, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
+import type { AgentContext, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { setLogSink } from '@/core/Log';
 import { SessionManager } from '@/core/SessionManager';
+import type { SessionLoad } from '@/core/SessionUpdateHandler';
+import { Reviews } from '@/core/review/Reviews';
 import { fakeAgent, fakeV2Agent, type AgentScript } from '@tests/unit/core/InProcessAgents';
 import {
   WORKSPACE,
@@ -23,6 +25,50 @@ import {
 
 describe('SessionManager', () => {
   describe('session settings', () => {
+    it.each(['config', 'mode'] as const)('does not apply a delayed %s setter to a replacement registration with the same ID', async (kind) => {
+      let enter: () => void = () => {};
+      let release: () => void = () => {};
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const modes = { availableModes: [{ id: 'ask', name: 'Ask' }, { id: 'code', name: 'Code' }], currentModeId: 'ask' };
+      const state = kind === 'config' ? { configOptions: [modelOption('a')] } : { modes };
+      const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } })
+        .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION, ...state }))
+        .onRequest(methods.agent.session.load, () => state)
+        .onRequest(methods.agent.session.setConfigOption, async () => {
+          enter();
+          await released;
+          return { configOptions: [modelOption('b')] };
+        })
+        .onRequest(methods.agent.session.setMode, async () => {
+          enter();
+          await released;
+          return {};
+        });
+      const { manager, reference, takeEvents, agents } = setup({ fake: script });
+      const original = await manager.connectToAgent('fake');
+      const setting = kind === 'config'
+        ? manager.setConfigOption(FIRST_SESSION, 'model', 'b')
+        : manager.setMode(FIRST_SESSION, 'code');
+      let replacement;
+      try {
+        await entered;
+        replacement = await manager.loadSession('fake', FIRST_SESSION);
+        expect(replacement).not.toBe(original);
+        takeEvents();
+      } finally {
+        release();
+        await setting;
+      }
+
+      expect(agents.launched).toHaveLength(1);
+      expect(manager.getSession(FIRST_SESSION)).toBe(replacement);
+      expect(replacement.configOptions).toEqual(kind === 'config' ? [modelConfig('a')] : null);
+      expect(replacement.modes?.current).toBe(kind === 'mode' ? 'ask' : undefined);
+      expect(reference(FIRST_SESSION)?.selections).toEqual({ options: {} });
+      expect(takeEvents()).toEqual([]);
+    });
+
     it('replaces the config options with the full set the agent returns', async () => {
       const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.setConfigOption, ({ params }) => ({
         configOptions: [modelOption(String(params.value))],
@@ -110,7 +156,7 @@ describe('SessionManager', () => {
 
       expect(setModes).toEqual(['code']);
       expect(manager.getSession(FIRST_SESSION)?.modes?.current).toBe('code');
-      expect(takeEvents()).toEqual([['mode-changed', FIRST_SESSION, 'code']]);
+      expect(takeEvents()).toEqual([['mode-changed', manager.getSession(FIRST_SESSION), 'code']]);
     });
 
     it('sets the mode through a mode config option when the agent has one', async () => {
@@ -135,6 +181,215 @@ describe('SessionManager', () => {
   });
 
   describe('session updates', () => {
+    it('rejects normalized input captured from a retired connection before global fan-out', async () => {
+      const { manager, connections, updates, received } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      const connect = connections.connect.bind(connections);
+      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
+        sink = input;
+        return connect(name, streams, id, input, closed);
+      });
+      const registration = await manager.connectToAgent('fake');
+      const projected: unknown[] = [];
+      updates.addListener((delivery) => projected.push(delivery));
+      sink?.handleUpdate(FIRST_SESSION, { kind: 'agentText', messageId: null, text: 'accepted' }, 'v1');
+      expect(projected).toHaveLength(1);
+      expect(received).toEqual([[FIRST_SESSION, { kind: 'agentText', messageId: null, text: 'accepted' }]]);
+      await manager.disconnectAgent('fake');
+      sink?.handleUpdate(FIRST_SESSION, { kind: 'configOptions', options: [modelConfig('b')] }, 'v1');
+      expect(projected).toHaveLength(1);
+      expect(received).toHaveLength(1);
+      expect(registration.configOptions).toEqual([modelConfig('a')]);
+    });
+
+    it('qualifies equal-ID V1/V2 review evidence through actual connections and runtime before fan-out', async () => {
+      const { manager, updates, receivedAtLeast } = setup({
+        fake: () => fakeAgent({ agentCapabilities: { sessionCapabilities: { list: {} } } })
+          .onRequest(methods.agent.session.list, async ({ client }) => {
+            await client.notify(methods.client.session.update, { sessionId: FIRST_SESSION, update: {
+              sessionUpdate: 'tool_call', toolCallId: 'same', title: 'Edit', status: 'completed',
+              content: [{ type: 'diff', path: '/w/a.ts', oldText: 'a', newText: 'A' }],
+            } });
+            return { sessions: [] };
+          }),
+        other: () => fakeV2Agent().onRequest(V2.methods.agent.session.list, async ({ client }) => {
+          const update: V2.UpdateSessionNotification['update'] = {
+            sessionUpdate: 'tool_call_update', toolCallId: 'same', title: 'Edit', status: 'completed',
+            content: [{ type: 'diff', changes: [{ operation: 'modify', path: '/w/b.ts', fileType: 'text' }],
+              patch: { format: 'git_patch', text: 'diff --git /w/b.ts /w/b.ts\n--- /w/b.ts\n+++ /w/b.ts\n@@ -1 +1 @@\n-b\n+B\n' } }],
+          };
+          await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update });
+          return { sessions: [] };
+        }),
+      });
+      const reviews = new Reviews({ read: async (path) => path === '/w/a.ts' ? 'A' : 'B\n', restore: async () => {}, watch: () => ({ dispose() {} }) });
+      onTestFinished(() => reviews.dispose());
+      const taking: Promise<void>[] = [];
+      const origins: { configuredName: string; sourceId: string; schema: string }[] = [];
+      updates.addListener(({ input, registration }) => {
+        expect(registration).toBeUndefined();
+        origins.push({ configuredName: input.origin.identity.configuredName, sourceId: input.origin.sourceId, schema: input.schema });
+        taking.push(reviews.handleSessionUpdate(input));
+      });
+      const received = receivedAtLeast(2);
+      await manager.listSessions('fake');
+      await manager.listSessions('other');
+      await received;
+      await Promise.all(taking);
+      expect(origins.map(({ configuredName, schema }) => [configuredName, schema])).toEqual([['fake', 'v1'], ['other', 'v2']]);
+      expect(origins[0]?.sourceId).not.toBe(origins[1]?.sourceId);
+      reviews.activeSessionChanged({ sessionId: FIRST_SESSION, agentName: 'fake', agentId: origins[0]?.sourceId ?? '' });
+      expect(reviews.shown()?.files().map(({ path }) => path)).toEqual(['/w/a.ts']);
+      reviews.activeSessionChanged({ sessionId: FIRST_SESSION, agentName: 'other', agentId: origins[1]?.sourceId ?? '' });
+      expect(reviews.shown()?.files().map(({ path }) => path)).toEqual(['/w/b.ts']);
+    });
+
+    it('keeps an early mode and explicit title clearing until its source registers', async () => {
+      const { manager, receivedAtLeast, references } = setup({ fake: () => fakeAgent()
+        .onRequest(methods.agent.session.new, async ({ client }) => {
+          await client.notify(methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'current_mode_update', currentModeId: 'code' } });
+          await client.notify(methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'session_info_update', title: null } });
+          return { sessionId: FIRST_SESSION, modes: { currentModeId: 'ask', availableModes: [{ id: 'ask', name: 'Ask' }, { id: 'code', name: 'Code' }] } };
+        }) });
+      await references.used(address(FIRST_SESSION));
+      await references.setTitle(address(FIRST_SESSION), 'Remembered title');
+      const received = receivedAtLeast(2);
+      const session = await manager.connectToAgent('fake');
+      await received;
+      expect(session.modes?.current).toBe('code');
+      expect(session.title).toBeUndefined();
+    });
+
+    it('does not publish obsolete load completion into a replacement registration', async () => {
+      let enter: () => void = () => {};
+      let release: () => void = () => {};
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let loads = 0;
+      const { manager, posted, chatView } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
+        .onRequest(methods.agent.session.load, async () => {
+          if (++loads === 1) { enter(); await gate; }
+          return {};
+        }) });
+      manager.on('session-load-start', (load) => chatView.notifyLoadSessionStart(load));
+      manager.on('session-load-end', (load, ok) => chatView.notifyLoadSessionEnd(load, ok));
+      const opening = manager.loadSession('fake', FIRST_SESSION).catch(() => undefined);
+      try {
+        await entered;
+        await manager.loadSession('fake', FIRST_SESSION);
+        posted.splice(0);
+      } finally { release(); }
+      await opening;
+      expect(posted).toEqual([]);
+    });
+
+    it.each(['before', 'after'] as const)('keeps early metadata and activity source-local when the other source registers %s delivery', async (order) => {
+      let earlyClient!: V2.AgentContext;
+      const option = (currentValue: string): V2.SessionConfigOption => ({
+        configId: 'model', name: 'Model', category: 'model', type: 'select', currentValue,
+        options: [{ value: 'a', name: 'A' }, { value: 'b', name: 'B' }],
+      });
+      const { manager, receivedAtLeast } = setup({
+        fake: sessionAgent(FIRST_SESSION).script,
+        other: () => fakeV2Agent()
+          .onRequest(V2.methods.agent.session.list, ({ client }) => { earlyClient = client; return { sessions: [] }; })
+          .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION, configOptions: [option('a')] })),
+      });
+      await manager.listSessions('other');
+      const selected = order === 'before' ? await manager.connectToAgent('fake') : undefined;
+      const received = receivedAtLeast(4);
+      for (const update of [
+        { sessionUpdate: 'config_option_update', configOptions: [option('b')] },
+        { sessionUpdate: 'available_commands_update', availableCommands: [{ type: 'command', name: 'other', description: 'Other' }] },
+        { sessionUpdate: 'session_info_update', title: 'Other title' },
+        { sessionUpdate: 'state_update', state: 'running' },
+      ] satisfies V2.UpdateSessionNotification['update'][]) {
+        await earlyClient.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update });
+      }
+      await received;
+      const first = selected ?? await manager.connectToAgent('fake');
+      expect(first.configOptions).toEqual([modelConfig('a')]);
+      expect(first.availableCommands).toEqual([]);
+      expect(first.title).toBeUndefined();
+      expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(false);
+
+      await manager.disconnectAgent('fake');
+      const other = await manager.connectToAgent('other');
+      expect(other.configOptions).toEqual([modelConfig('b')]);
+      expect(other.availableCommands).toEqual([{ name: 'other', description: 'Other', takesInput: false, hint: null }]);
+      expect(other.title).toBe('Other title');
+      expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
+    });
+
+    it('does not apply another accepting source metadata to the selected session with the same ID', async () => {
+      let client!: AgentContext;
+      const { manager, receivedAtLeast } = setup({
+        fake: sessionAgent(FIRST_SESSION).script,
+        other: () => fakeAgent({ agentCapabilities: { sessionCapabilities: { list: {} } } }).onRequest(methods.agent.session.list, ({ client: connected }) => {
+          client = connected;
+          return { sessions: [] };
+        }),
+      });
+      const session = await manager.connectToAgent('fake');
+      await manager.ensureConnected('other');
+      await manager.listSessions('other');
+      const received = receivedAtLeast(1);
+      await client.notify(methods.client.session.update, {
+        sessionId: FIRST_SESSION, update: { sessionUpdate: 'config_option_update', configOptions: [modelOption('b')] },
+      });
+      await received;
+      expect(session.configOptions).toEqual([modelConfig('a')]);
+    });
+
+    it('applies metadata once before dispatch even when no controller receives the update', async () => {
+      let client!: AgentContext;
+      const { manager, receivedAtLeast, updates } = setup({
+        fake: () => fakeAgent().onRequest(methods.agent.session.new, ({ client: connected }) => {
+          client = connected;
+          return { sessionId: FIRST_SESSION };
+        }),
+      });
+      const session = await manager.connectToAgent('fake');
+      const seen: unknown[] = [];
+      const applying = vi.spyOn(manager, 'applyConfigOptions');
+      updates.addListener(({ registration }) => {
+        expect(registration).toBe(session);
+        seen.push(session.configOptions);
+      });
+      const received = receivedAtLeast(1);
+      await client.notify(methods.client.session.update, {
+        sessionId: FIRST_SESSION, update: { sessionUpdate: 'config_option_update', configOptions: [modelOption('b')] },
+      });
+      await received;
+      expect(session.configOptions).toEqual([modelConfig('b')]);
+      expect(seen).toEqual([[modelConfig('b')]]);
+      expect(applying).not.toHaveBeenCalled();
+    });
+
+    it('reports an unregistered source title with its captured owner rather than the current raw-ID occupant', async () => {
+      let client!: AgentContext;
+      const { manager, receivedAtLeast, agents } = setup({
+        fake: sessionAgent(FIRST_SESSION).script,
+        other: () => fakeAgent({ agentCapabilities: { sessionCapabilities: { list: {} } } })
+          .onRequest(methods.agent.session.list, ({ client: connected }) => { client = connected; return { sessions: [] }; }),
+      });
+      const selected = await manager.connectToAgent('fake');
+      await manager.listSessions('other');
+      const reports: unknown[][] = [];
+      manager.on('session-info-changed', (...args) => reports.push(args));
+      const received = receivedAtLeast(1);
+      await client.notify(methods.client.session.update, {
+        sessionId: FIRST_SESSION, update: { sessionUpdate: 'session_info_update', title: 'Other title' },
+      });
+      await received;
+      expect(selected.title).toBeUndefined();
+      expect(reports).toEqual([[{
+        identity: { configuredName: 'other', sessionId: FIRST_SESSION },
+        sourceId: agents.running('other')[0]?.process.id,
+      }, { kind: 'sessionInfo', title: 'Other title' }]]);
+      expect(reports[0]?.[0]).not.toHaveProperty('sourceId', selected.agentId);
+    });
+
     it('keeps slash commands, config options and a title that arrive while the session is being created', async () => {
       const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, async ({ client }) => {
         const notify = (update: SessionNotification['update']) =>
@@ -455,6 +710,54 @@ describe('SessionManager', () => {
     });
 
     describe('reapplied after a load or resume', () => {
+      it.each(['load', 'resume'] as const)('stops an obsolete %s after a saved-option reply without retargeting the replacement', async (how) => {
+        let enter: () => void = () => {};
+        let release: () => void = () => {};
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        const released = new Promise<void>((resolve) => { release = resolve; });
+        const requests: string[] = [];
+        let openings = 0;
+        const initial = [modelOption('a'), fastOption(false)];
+        const restored = [modelOption('b'), fastOption(true)];
+        const open = () => ({ configOptions: ++openings === 1 ? initial : restored });
+        const script: AgentScript = () => fakeAgent(caps)
+          .onRequest(methods.agent.session.load, open)
+          .onRequest(methods.agent.session.resume, open)
+          .onRequest(methods.agent.session.setConfigOption, async ({ params }) => {
+            requests.push(params.configId);
+            if (params.configId === 'model') {
+              enter();
+              await released;
+            }
+            return { configOptions: [modelOption('b'), fastOption(false)] };
+          });
+        const { manager, references, reference, takeEvents } = setup({ fake: script });
+        const saved = { options: { model: 'b', fast: true } };
+        await references.saveSelections(address(FIRST_SESSION), saved);
+        let load: SessionLoad | undefined;
+        manager.once('session-load-start', (started) => { load = started; });
+        const opening = how === 'load'
+          ? manager.loadSession('fake', FIRST_SESSION)
+          : manager.resumeSession('fake', FIRST_SESSION);
+        const result = opening.then(() => 'opened', () => 'rejected');
+        let replacement;
+        try {
+          await entered;
+          replacement = await manager.resumeSession('fake', FIRST_SESSION);
+          takeEvents();
+        } finally {
+          release();
+        }
+
+        expect(await result).toBe('rejected');
+        expect(requests).toEqual(['model']);
+        expect(manager.getActiveSession()).toBe(replacement);
+        expect(manager.openSessionOf('fake')).toBe(replacement);
+        expect(replacement.configOptions?.map((option) => option.current)).toEqual(['b', true]);
+        expect(reference(FIRST_SESSION)?.selections).toEqual(saved);
+        expect(takeEvents()).toEqual(how === 'load' ? [['session-load-end', load, false]] : []);
+      });
+
       const select = (id: string, category: 'mode' | 'model' | 'thought_level', currentValue: string, values: string[]): SessionConfigOption => ({
         id, name: id, category, type: 'select', currentValue, options: values.map((value) => ({ value, name: value })),
       });
@@ -652,6 +955,43 @@ describe('SessionManager', () => {
         expect(references.get({ host: WORKSPACE.host, configuredName: 'other', sessionId: FIRST_SESSION })).toMatchObject({ title: 'Kept title' });
       });
 
+      it.each([
+        ['load', 'rename'], ['resume', 'rename'],
+        ['load', 'remove'], ['resume', 'remove'],
+      ] as const)('keeps deferred %s persistence bound to its registration after %s', async (how, change) => {
+        const other = reapplyingAgent();
+        const { manager, references, reference, workspace, withPendingWorkspaceTarget } = setup({ other: other.script });
+        await references.setTitle(address(FIRST_SESSION), 'Original reference');
+        await references.saveSelections(address(FIRST_SESSION), { options: { model: 'b' } });
+        const before = reference(FIRST_SESSION);
+        const learn = withPendingWorkspaceTarget();
+        const usedThrough = { configuredName: 'fake' };
+        if (how === 'load') { await manager.loadSession('other', FIRST_SESSION, usedThrough); }
+        else { await manager.resumeSession('other', FIRST_SESSION, usedThrough); }
+        manager.applySessionInfoUpdate(FIRST_SESSION, { title: 'Deferred title' });
+        if (change === 'rename') {
+          manager.agentsChanged({ other: { command: 'other' } }, { renamed: { command: 'other' } });
+        } else {
+          await manager.disconnectAgent('other');
+        }
+
+        learn();
+        await manager.recordsSettled();
+        await references.settled();
+        await workspace.settled();
+
+        expect(references.get({ host: WORKSPACE.host, configuredName: 'other', sessionId: FIRST_SESSION })).toBeUndefined();
+        if (change === 'rename') {
+          expect(reference(FIRST_SESSION)).toBeUndefined();
+          expect(references.get({ host: WORKSPACE.host, configuredName: 'renamed', sessionId: FIRST_SESSION }))
+            .toMatchObject({ title: 'Deferred title', selections: { options: { model: 'b' } } });
+          expect(workspace.lastActiveSession()?.configuredName).toBe('renamed');
+        } else {
+          expect(reference(FIRST_SESSION)).toEqual(before);
+          expect(workspace.lastActiveSession()).toBeUndefined();
+        }
+      });
+
       it('reapplies the mode saved for an agent using the modes API when it offers it', async () => {
         const logged = notReapplied();
         const requested: string[] = [];
@@ -675,6 +1015,177 @@ describe('SessionManager', () => {
 
   describe('renamed configurations', () => {
     const fakeConfig = { command: 'fake' };
+
+    it('notifies configuration renames after moving live ownership, but not unrelated changes', async () => {
+      const { manager, agents } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      const session = await manager.connectToAgent('fake');
+      const renames: unknown[][] = [];
+      manager.on('configuration-renamed', (from, to) => {
+        renames.push([from, to, session.agentName, manager.openSessionOf(to) === session,
+          manager.isConnected(to), manager.hasSession(from), manager.isConnected(from)]);
+      });
+
+      manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+      manager.agentsChanged({ renamed: fakeConfig }, { again: fakeConfig });
+      manager.agentsChanged({ again: fakeConfig }, { again: fakeConfig, fake: { command: 'other' } });
+      manager.agentsChanged({ again: fakeConfig, fake: { command: 'other' } }, { again: fakeConfig, fake: { command: 'changed' } });
+
+      expect(renames).toEqual([
+        ['fake', 'renamed', 'renamed', true, true, false, false],
+        ['renamed', 'again', 'again', true, true, false, false],
+      ]);
+      expect(manager.getActiveSession()).toBe(session);
+      expect(agents.launched).toHaveLength(1);
+    });
+
+    it.each([
+      ['load', 'initialization'], ['load', 'opening'],
+      ['resume', 'initialization'], ['resume', 'opening'],
+    ] as const)('keeps %s bound to the current configuration after renames during %s', async (how, stage) => {
+      let enter: () => void = () => {};
+      let release: () => void = () => {};
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const pause = async () => { enter(); await released; };
+      const open = async () => {
+        if (stage === 'opening') { await pause(); }
+        return { configOptions: [modelOption('a')] };
+      };
+      const requested: unknown[] = [];
+      const script: AgentScript = () => agent()
+        .onRequest(methods.agent.initialize, async () => {
+          if (stage === 'initialization') { await pause(); }
+          return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } };
+        })
+        .onRequest(methods.agent.session.load, open)
+        .onRequest(methods.agent.session.resume, open)
+        .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
+          requested.push(params);
+          return { configOptions: [modelOption(String(params.value))] };
+        });
+      const { manager, agents, references, workspace } = setup({ fake: script });
+      await references.saveSelections(address(FIRST_SESSION), { options: { model: 'b' } });
+      const events: unknown[][] = [];
+      let load: SessionLoad | undefined;
+      manager.once('session-load-start', (started) => { load = started; });
+      manager.on('session-opened', (...args) => events.push(['opened', ...args]));
+      manager.on('session-load-end', (...args) => events.push(['load-end', ...args]));
+      manager.on('session-added', (...args) => events.push(['added', ...args]));
+      const opening = how === 'load' ? manager.loadSession('fake', FIRST_SESSION) : manager.resumeSession('fake', FIRST_SESSION);
+      const result = opening.then((session) => ({ session }), (error: unknown) => ({ error }));
+      try {
+        await entered;
+        manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+        manager.agentsChanged({ renamed: fakeConfig }, { again: fakeConfig });
+        manager.agentsChanged({ again: fakeConfig }, { again: fakeConfig, fake: { command: 'other' } });
+      } finally {
+        release();
+      }
+      const outcome = await result;
+      expect(outcome).not.toHaveProperty('error');
+      if (!('session' in outcome)) { throw outcome.error; }
+      const { session } = outcome;
+      expect(manager.openSessionOf('again')).toBe(session);
+      expect(manager.hasSession('fake')).toBe(false);
+      expect(session.agentName).toBe('again');
+      expect(session.configOptions).toEqual([modelConfig('b')]);
+      expect(requested).toEqual([{ sessionId: FIRST_SESSION, configId: 'model', value: 'b' }]);
+      expect(events).toEqual(how === 'load'
+        ? [['added', session], ['load-end', load, true], ['opened', session, 'loaded']]
+        : [['added', session], ['opened', session, 'resumed']]);
+      if (how === 'load') {
+        expect(load?.origin.identity.configuredName).toBe(stage === 'opening' ? 'fake' : 'again');
+        expect(load?.registration).toBe(session);
+      }
+      await references.settled();
+      await workspace.settled();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'fake', sessionId: FIRST_SESSION })).toBeUndefined();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'again', sessionId: FIRST_SESSION })?.selections).toEqual({ options: { model: 'b' } });
+      expect(workspace.lastActiveSession()?.configuredName).toBe('again');
+      await manager.ensureConnected('again');
+      expect(agents.launched).toHaveLength(1);
+      await manager.disconnectAgent('again');
+      expect(manager.getActiveSession()).toBeUndefined();
+    });
+
+    it.each(['initialization', 'creation'] as const)('keeps the captured configuration through two renames and old-name reuse during %s', async (stage) => {
+      let enter: () => void = () => {};
+      let release: () => void = () => {};
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const released = new Promise<void>((resolve) => { release = resolve; });
+      const pause = async () => { enter(); await released; };
+      const script: AgentScript = () => agent()
+        .onRequest(methods.agent.initialize, async () => {
+          if (stage === 'initialization') { await pause(); }
+          return { protocolVersion: PROTOCOL_VERSION, agentCapabilities: { loadSession: true } };
+        })
+        .onRequest(methods.agent.session.new, async () => {
+          if (stage === 'creation') { await pause(); }
+          return { sessionId: FIRST_SESSION };
+        });
+      const { manager, agents, references, workspace } = setup({ fake: script });
+      const opening = manager.connectToAgent('fake');
+      try {
+        await entered;
+        manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+        manager.agentsChanged({ renamed: fakeConfig }, { again: fakeConfig });
+        manager.agentsChanged({ again: fakeConfig }, { again: fakeConfig, fake: { command: 'other' } });
+      } finally {
+        release();
+      }
+      const session = await opening;
+      await manager.recordsSettled();
+      await references.settled();
+      await workspace.settled();
+
+      expect(session.agentName).toBe('again');
+      expect(manager.openSessionOf('again')).toBe(session);
+      expect(manager.hasSession('fake')).toBe(false);
+      expect(manager.isConnected('again')).toBe(true);
+      expect(manager.isConnected('fake')).toBe(false);
+      expect(manager.getCachedCapabilities('again')?.load).toBe(true);
+      expect(workspace.lastActiveSession()?.configuredName).toBe('again');
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'fake', sessionId: FIRST_SESSION })).toBeUndefined();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'again', sessionId: FIRST_SESSION })).toBeDefined();
+
+      await manager.ensureConnected('again');
+      expect(agents.launched).toHaveLength(1);
+      await manager.disconnectAgent('again');
+      expect(manager.getActiveSession()).toBeUndefined();
+      expect(manager.isConnected('again')).toBe(false);
+    });
+
+    it('keeps the renamed live registration on its original connection', async () => {
+      const prompted: string[] = [];
+      const fake = sessionAgent(FIRST_SESSION, (app) => app
+        .onRequest(methods.agent.session.prompt, ({ params }) => {
+          prompted.push(params.sessionId);
+          return { stopReason: 'end_turn' };
+        })
+        .onRequest(methods.agent.session.setConfigOption, ({ params }) => ({
+          configOptions: [modelOption(String(params.value))],
+        })));
+      const { manager } = setup({ fake: fake.script });
+      const session = await manager.connectToAgent('fake');
+
+      manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
+
+      expect(manager.getActiveSession()).toBe(session);
+      expect(session.agentName).toBe('renamed');
+      expect(manager.openSessionOf('renamed')).toBe(session);
+      expect(manager.hasSession('fake')).toBe(false);
+      expect(manager.isConnected('renamed')).toBe(true);
+      expect(manager.isConnected('fake')).toBe(false);
+      await manager.sendPrompt(FIRST_SESSION, 'Continue after rename');
+      await manager.setConfigOption(FIRST_SESSION, 'model', 'b');
+      expect(prompted).toEqual([FIRST_SESSION]);
+      expect(session.configOptions).toEqual([modelConfig('b')]);
+
+      await manager.disconnectAgent('renamed');
+
+      expect(manager.getActiveSession()).toBeUndefined();
+      expect(manager.isConnected('renamed')).toBe(false);
+    });
 
     it("rebinds this host's references and this workspace's last active session to the new name", async () => {
       const { manager, references, workspace, reference } = setup({ fake: sessionAgent(FIRST_SESSION).script });
@@ -716,17 +1227,19 @@ describe('SessionManager', () => {
       expect(references.get({ host: WORKSPACE.host, configuredName: 'again', sessionId: FIRST_SESSION })?.title).toBe('After both');
     });
 
-    it('records under the old name again once a configuration has it again', async () => {
+    it('keeps recording the original session under its renamed configuration when the old name is reused', async () => {
       const { manager, references, reference } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       await manager.connectToAgent('fake');
       manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
 
       manager.agentsChanged({ renamed: fakeConfig }, { renamed: fakeConfig, fake: { command: 'other' } });
-      manager.applySessionInfoUpdate(FIRST_SESSION, { title: 'Under the old name' });
+      manager.applySessionInfoUpdate(FIRST_SESSION, { title: 'Still the original session' });
       await manager.recordsSettled();
       await references.settled();
 
-      expect(reference(FIRST_SESSION)?.title).toBe('Under the old name');
+      expect(reference(FIRST_SESSION)).toBeUndefined();
+      expect(references.get({ host: WORKSPACE.host, configuredName: 'renamed', sessionId: FIRST_SESSION })?.title)
+        .toBe('Still the original session');
     });
   });
 });

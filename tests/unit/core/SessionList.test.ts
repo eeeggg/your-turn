@@ -55,7 +55,7 @@ function setup(scripts: Record<string, AgentScript>, tabs?: Pick<SessionTabs, 'h
   let target: WorkspaceTarget | undefined = WORKSPACE;
   const manager = new SessionManager(
     agents,
-    new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
+    new ConnectionManager('0.0.0-test', () => unusedHandlers),
     {
       workspaceRoots: () => work,
       workspaceTarget: () => target,
@@ -64,6 +64,7 @@ function setup(scripts: Record<string, AgentScript>, tabs?: Pick<SessionTabs, 'h
       activeFileLink: () => undefined,
     },
     authPrompt,
+    new SessionUpdateHandler(),
   );
   onTestFinished(async () => { await manager.dispose(); });
   const references = new SessionReferences(memoryStore(), () => Date.now());

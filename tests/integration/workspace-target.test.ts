@@ -168,9 +168,10 @@ suite("The window's workspace target", () => {
     const updates = new SessionUpdateHandler();
     const manager = new SessionManager(
       new AgentManager(),
-      new ConnectionManager(updates, '0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
+      new ConnectionManager('0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
       environment,
       { chooseAuthMethod: async () => undefined },
+      updates,
     );
     owned.push(() => manager.dispose(), () => updates.dispose());
     manager.setPersistedState(references, state);

@@ -51,9 +51,10 @@ function setup(userAgents: Agents, { workspace = {}, defaults = {}, registry = a
   const launcher = new InProcessAgents({ one: () => fakeAgent(), two: () => fakeAgent() });
   const manager = new SessionManager(
     launcher,
-    new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
+    new ConnectionManager('0.0.0-test', () => unusedHandlers),
     { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
     { chooseAuthMethod: async () => undefined },
+    new SessionUpdateHandler(),
   );
   const user = new ScriptedUser();
   const lookedFor: string[] = [];

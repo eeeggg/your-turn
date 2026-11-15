@@ -3,7 +3,8 @@ import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { Reviews } from '@/core/review/Reviews';
 import { Takeovers, type DocumentEdit } from '@/core/review/Takeovers';
 
-const SESSION_ID = '5e738b94-4f62-47ca-b153-c82d906aef01';
+const SESSION_ID = { sessionId: '5e738b94-4f62-47ca-b153-c82d906aef01', agentName: 'fake', agentId: 'source' };
+const origin = { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' };
 
 const text = (...lines: string[]) => lines.map((line) => `${line}\n`).join('');
 
@@ -29,7 +30,7 @@ async function takeovers() {
     status: 'completed',
     content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/a.ts', oldText: baseline, newText: agents } }],
   };
-  await reviews.handleSessionUpdate(SESSION_ID, update, 'v1');
+  await reviews.handleSessionUpdate({ origin, update, schema: 'v1' });
   return { subject: new Takeovers(reviews), reviews, baselineOf: () => reviews.shown()?.file('/w/a.ts')?.baseline };
 }
 
@@ -85,12 +86,12 @@ describe('Takeovers', () => {
     subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
     reviews.shown()?.keepFile('/w/a.ts');
     expect(baselineOf()).toBeUndefined();
-    await reviews.handleSessionUpdate(SESSION_ID, {
+    await reviews.handleSessionUpdate({ origin, update: {
       kind: 'toolCall',
       toolCallId: 't2',
       status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/a.ts', oldText: typed.after, newText: agents } }],
-    }, 'v1');
+    }, schema: 'v1' });
     expect(baselineOf()).toBe(typed.after);
     subject.edited('/w/a.ts', 'undo', typed.after, agents, lineEdited(typed.after, 0, 'one').edits);
     expect(baselineOf()).toBeUndefined();

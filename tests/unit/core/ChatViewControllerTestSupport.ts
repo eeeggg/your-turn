@@ -1,6 +1,6 @@
 import { expect, onTestFinished, vi } from 'vitest';
 import type { ImageNetwork } from '@/core/MarkdownImageNetwork';
-import type { ConfigOption } from '@/core/acp/AcpDriver';
+import type { ConfigOption, ForegroundState, SessionUpdate } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import {
   ChatViewController,
@@ -10,7 +10,7 @@ import {
 import type { FileEditor } from '@/core/ReportedFiles';
 import { SessionManager, type SessionInfo } from '@/core/SessionManager';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler, type SessionDelivery, type SessionLoad } from '@/core/SessionUpdateHandler';
 import { InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
@@ -60,11 +60,11 @@ export function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 /** Sessions whose prompts stay in flight until the test answers them. */
 export class FakeSessions implements ChatSessions {
-  private readonly activity = new SessionManager(new InProcessAgents({}), new ConnectionManager(new SessionUpdateHandler(), 'test', () => unusedHandlers), {
+  private readonly activity = new SessionManager(new InProcessAgents({}), new ConnectionManager('test', () => unusedHandlers), {
     workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: async () => undefined,
     agentConfigs: () => ({}), activeFileLink: () => undefined,
-  }, { chooseAuthMethod: async () => undefined });
-  applyForegroundState: ChatSessions['applyForegroundState'] = (id, state) => this.activity.applyForegroundState(id, state);
+  }, { chooseAuthMethod: async () => undefined }, new SessionUpdateHandler());
+  applyForegroundState = (id: string, state: ForegroundState) => this.activity.applyForegroundState(id, state);
   beginPrompt: ChatSessions['beginPrompt'] = (id) => this.activity.beginPrompt(id);
   endPrompt: ChatSessions['endPrompt'] = (id, submission) => this.activity.endPrompt(id, submission);
   clearActivity: ChatSessions['clearActivity'] = (id) => this.activity.clearActivity(id);
@@ -84,19 +84,19 @@ export class FakeSessions implements ChatSessions {
   setMode = vi.fn<ChatSessions['setMode']>(async () => {});
   setConfigOption = vi.fn<ChatSessions['setConfigOption']>(async () => null);
   recordTurnEnded = vi.fn<ChatSessions['recordTurnEnded']>();
-  applyAvailableCommands = vi.fn<ChatSessions['applyAvailableCommands']>();
-  applyConfigOptions = vi.fn<ChatSessions['applyConfigOptions']>((sessionId, options) => {
+  applyAvailableCommands = vi.fn<SessionManager['applyAvailableCommands']>();
+  applyConfigOptions = vi.fn<SessionManager['applyConfigOptions']>((sessionId, options) => {
     if (this.session?.sessionId === sessionId) {
       this.session.configOptions = options;
     }
   });
-  applyCurrentMode = vi.fn<ChatSessions['applyCurrentMode']>((sessionId, modeId) => {
+  applyCurrentMode = vi.fn<SessionManager['applyCurrentMode']>((sessionId, modeId) => {
     if (this.session?.sessionId === sessionId && this.session.modes) {
       this.session.modes = { ...this.session.modes, current: modeId };
     }
   });
   /** A null title clears it, a missing one leaves it unchanged. */
-  applySessionInfoUpdate = vi.fn<ChatSessions['applySessionInfoUpdate']>((sessionId, update) => {
+  applySessionInfoUpdate = vi.fn<SessionManager['applySessionInfoUpdate']>((sessionId, update) => {
     if (this.session?.sessionId !== sessionId) { return; }
     if (update.title === null) {
       delete this.session.title;
@@ -172,7 +172,47 @@ export function setup(network?: ImageNetwork) {
     if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
     await disposed;
   });
-  const controller = new ChatViewController(sessions, environment, editor, terminals, {
+  class TestController extends ChatViewController {
+    private testLoad: SessionLoad | undefined;
+    override notifyLoadSessionStart(input: string | SessionLoad): void {
+      if (typeof input !== 'string') { super.notifyLoadSessionStart(input); return; }
+      const registration = sessions.getSession(input);
+      if (!registration) { return; }
+      this.testLoad = { registration, origin: { identity: { configuredName: registration.agentName, sessionId: input }, sourceId: registration.agentId }, attempt: Symbol() };
+      super.notifyLoadSessionStart(this.testLoad);
+    }
+    override notifyLoadSessionEnd(load: SessionLoad, ok: boolean): boolean;
+    override notifyLoadSessionEnd(ok: boolean): boolean;
+    override notifyLoadSessionEnd(input: SessionLoad | boolean, ok?: boolean): boolean {
+      if (typeof input !== 'boolean') { return super.notifyLoadSessionEnd(input, ok ?? false); }
+      if (!this.testLoad) { this.notifyLoadSessionStart(sessions.activeId ?? ''); }
+      if (!this.testLoad) { return false; }
+      const load = this.testLoad;
+      this.testLoad = undefined;
+      return super.notifyLoadSessionEnd(load, input);
+    }
+    override handleSessionUpdate(delivery: SessionDelivery): void;
+    override handleSessionUpdate(sessionId: string, update: SessionUpdate): void;
+    override handleSessionUpdate(input: SessionDelivery | string, update?: SessionUpdate): void {
+      if (typeof input !== 'string') { super.handleSessionUpdate(input); return; }
+      if (!update) { throw new Error('Missing test update'); }
+      const sessionId = input;
+      const registration = sessions.getSession(sessionId);
+      switch (update.kind) {
+        case 'foreground': sessions.applyForegroundState(sessionId, update.state); break;
+        case 'commands': sessions.applyAvailableCommands(sessionId, update.commands); break;
+        case 'configOptions': sessions.applyConfigOptions(sessionId, update.options); break;
+        case 'currentMode': sessions.applyCurrentMode(sessionId, update.modeId); break;
+        case 'sessionInfo': sessions.applySessionInfoUpdate(sessionId, update); break;
+        default: break;
+      }
+      super.handleSessionUpdate({ input: {
+        origin: { identity: { configuredName: registration?.agentName ?? 'fake', sessionId }, sourceId: registration?.agentId ?? 'fake' },
+        update, schema: 'v1',
+      }, registration });
+    }
+  }
+  const controller = new TestController(sessions, environment, editor, terminals, {
     workspaceRoots: () => ({ cwd: '/work/project', additionalDirectories: ['/other'] }),
   }, network);
   onTestFinished(async () => {

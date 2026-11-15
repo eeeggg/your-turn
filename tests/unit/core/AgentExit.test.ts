@@ -36,9 +36,10 @@ function setup() {
   const updates = new SessionUpdateHandler();
   const manager = new SessionManager(
     agents,
-    new ConnectionManager(updates, '0.0.0-test', () => unusedHandlers),
+    new ConnectionManager('0.0.0-test', () => unusedHandlers),
     { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => ({ fake: { command: 'fake' } }), activeFileLink: () => undefined },
     { chooseAuthMethod: vi.fn() },
+    updates,
   );
   onTestFinished(async () => { await manager.dispose(); });
   const turnInProgress: unknown[] = [];
@@ -53,14 +54,14 @@ function setup() {
     visible: true, reveal: async () => {}, showInformationMessage: async () => undefined,
   }, unusedEditor, terminals);
   onTestFinished(async () => { updates.dispose(); await controller.dispose(); });
-  updates.addListener((sessionId, update) => controller.handleSessionUpdate(sessionId, update));
-  updates.addListener((sessionId, update) => terminals.handleSessionUpdate(sessionId, update));
-  manager.on('session-removed', (sessionId) => {
+  updates.addListener((delivery) => controller.handleSessionUpdate(delivery));
+  updates.addListener(({ input }) => terminals.handleSessionUpdate(input.origin.identity.sessionId, input.update));
+  manager.on('session-removed', ({ sessionId }) => {
     terminals.endSession(sessionId);
     controller.notifySessionRemoved(sessionId);
   });
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
-  manager.on('session-ended', (sessionId, reason) => controller.notifySessionEnded(sessionId, reason));
+  manager.on('session-ended', ({ sessionId }, reason) => controller.notifySessionEnded(sessionId, reason));
 
   const prompt = (text: string) => {
     store.dispatch({ type: 'promptEdited', text });

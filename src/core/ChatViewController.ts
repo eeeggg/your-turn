@@ -21,6 +21,7 @@ import type {
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/SessionManager';
+import type { SessionDelivery, SessionLoad } from '@/core/SessionUpdateHandler';
 import type { AgentTerminals } from '@/core/AgentTerminals';
 import { CommandOutputFeed, type ShownContent } from '@/core/CommandOutputFeed';
 import { logDebug, logError, logInfo, messageOf } from '@/core/Log';
@@ -41,11 +42,6 @@ export type ChatSessions = Pick<
   | 'setMode'
   | 'setConfigOption'
   | 'recordTurnEnded'
-  | 'applyAvailableCommands'
-  | 'applyConfigOptions'
-  | 'applyCurrentMode'
-  | 'applySessionInfoUpdate'
-  | 'applyForegroundState'
   | 'beginPrompt'
   | 'endPrompt'
   | 'clearActivity'
@@ -195,6 +191,8 @@ export class ChatViewController {
   private shownSessionId: string | null = null;
   /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
   private shownSessionEnded = false;
+  private reportedRunning = false;
+  private shownLoad: SessionLoad | undefined;
   private readonly imageBytes = new Map<string, number>();
   private markdownImageContext = 0;
   private markdownImageSession: string | null = null;
@@ -380,33 +378,21 @@ export class ChatViewController {
     }
   }
 
-  handleSessionUpdate(sessionId: string, update: SessionUpdate, agentId?: string): void {
+  handleSessionUpdate({ input: { origin, update }, registration }: SessionDelivery): void {
     if (this.disposed) { return; }
-    // Applied before the active-session check: an agent can send these while
-    // a session is still being created, before it becomes the active session.
+    const { sessionId } = origin.identity;
+    if (!registration || this.sessions.getSession(sessionId) !== registration) { return; }
     switch (update.kind) {
       case 'foreground': {
-        const wasRunning = this.isRunning(sessionId);
-        this.sessions.applyForegroundState(sessionId, update.state, agentId);
         const running = this.isRunning(sessionId);
-        if (sessionId === this.sessions.getActiveSessionId() && wasRunning !== running) {
+        if (sessionId === this.sessions.getActiveSessionId() && this.reportedRunning !== running) {
           this.setTurnInProgress(running);
           this.post({ type: 'foregroundActivity', running });
         }
         this.sendTabs();
         return;
       }
-      case 'commands':
-        this.sessions.applyAvailableCommands(sessionId, update.commands);
-        break;
-      case 'configOptions':
-        this.sessions.applyConfigOptions(sessionId, update.options);
-        break;
-      case 'currentMode':
-        this.sessions.applyCurrentMode(sessionId, update.modeId);
-        break;
       case 'sessionInfo':
-        this.sessions.applySessionInfoUpdate(sessionId, update);
         {
           const session = this.sessions.getSession(sessionId);
           if (session) { this.tabs.update(session); }
@@ -497,8 +483,10 @@ export class ChatViewController {
    * A `session/load` replay is starting, which reports the session's tool calls again. The webview wipes the transcript,
    * disables input, and shows a loading overlay until {@link notifyLoadSessionEnd}.
    */
-  notifyLoadSessionStart(sessionId: string): void {
-    if (sessionId !== this.sessions.getActiveSessionId()) { return; }
+  notifyLoadSessionStart(load: SessionLoad): void {
+    const { sessionId } = load.registration;
+    if (sessionId !== this.sessions.getActiveSessionId() || this.sessions.getSession(sessionId) !== load.registration) { return; }
+    this.shownLoad = load;
     this.imageBytes.clear();
     this.resetMarkdownImages();
     this.diffs.forgetSession(sessionId);
@@ -506,9 +494,16 @@ export class ChatViewController {
   }
 
   /** The replay finished, successfully or not. */
-  notifyLoadSessionEnd(ok: boolean): void {
+  notifyLoadSessionEnd(load: SessionLoad, ok: boolean): boolean {
+    if (this.shownLoad !== load) { return false; }
+    this.shownLoad = undefined;
+    const activeId = this.sessions.getActiveSessionId();
+    if (activeId !== null && activeId !== load.registration.sessionId) { return false; }
+    const current = this.sessions.getSession(load.registration.sessionId);
+    if (current && current !== load.registration) { return false; }
     this.post({ type: 'loadSessionEnd', ok });
     this.sendActivity();
+    return true;
   }
 
   /** Clear the transcript, as when a new session starts. */
@@ -824,6 +819,7 @@ export class ChatViewController {
    * package.json), and tells the listeners.
    */
   private setTurnInProgress(inProgress: boolean): void {
+    this.reportedRunning = inProgress;
     void this.environment.executeCommand('setContext', 'your-turn.turnInProgress', inProgress);
     for (const listener of this.turnListeners) { listener(inProgress); }
   }

@@ -102,17 +102,17 @@ export function setup(scripts: Record<string, AgentScript>) {
     activeFileLink: () => fileLink,
   };
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
-  const connections = new ConnectionManager(updates, '0.0.0-test', () => ({
+  const connections = new ConnectionManager('0.0.0-test', () => ({
     ...unusedHandlers,
     permissions: { ...unusedHandlers.permissions, cancelSession: () => {} },
   }));
-  const manager = new SessionManager(agents, connections, environment, authPrompt);
+  const manager = new SessionManager(agents, connections, environment, authPrompt, updates);
   onTestFinished(async () => { await manager.dispose(); });
   const references = new SessionReferences(memoryStore(), () => Date.now());
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
 
-  // As in the extension, the chat view applies session updates to the sessions.
+  // As in the extension, runtime applies metadata before the chat view projects it.
   const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
   const executeCommand = vi.fn(async () => {});
   const posted: ExtensionToWebviewMessage[] = [];
@@ -124,13 +124,15 @@ export function setup(scripts: Record<string, AgentScript>) {
     terminals,
     environment,
   );
-  manager.on('session-opened', (sessionId) => chatView.notifySessionOpened(sessionId));
+  manager.on('session-opened', ({ sessionId }) => chatView.notifySessionOpened(sessionId));
   onTestFinished(async () => { updates.dispose(); await chatView.dispose(); });
   const received: [string, SessionUpdate][] = [];
   const receivedWaiters: { count: number; resolve: () => void }[] = [];
-  updates.addListener((sessionId, update, _schema, agentId) => {
+  updates.addListener((delivery) => {
+    const { input: { origin, update } } = delivery;
+    const { sessionId } = origin.identity;
     received.push([sessionId, update]);
-    chatView.handleSessionUpdate(sessionId, update, agentId);
+    chatView.handleSessionUpdate(delivery);
     for (const waiter of receivedWaiters.splice(0)) {
       if (received.length >= waiter.count) {
         waiter.resolve();
@@ -149,6 +151,7 @@ export function setup(scripts: Record<string, AgentScript>) {
     agents,
     connections,
     manager,
+    updates,
     posted,
     chatView,
     executeCommand,

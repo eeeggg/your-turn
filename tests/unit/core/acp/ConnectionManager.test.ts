@@ -3,7 +3,6 @@ import { methods } from '@agentclientprotocol/sdk';
 import type { AgentContext } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { connectedDriver, fakeAgent, InProcessAgents } from '@tests/unit/core/InProcessAgents';
 
 const SESSION_ID = '8b22e365-3d6d-4aa5-ad43-162c3f3b6299';
@@ -76,10 +75,11 @@ describe('ConnectionManager', () => {
   it('gives each connection its own handlers', async () => {
     const agents = new InProcessAgents({ one: () => fakeAgent(), two: () => fakeAgent() });
     const createHandlers = vi.fn(handlers);
-    const manager = new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', createHandlers);
+    const manager = new ConnectionManager('0.0.0-test', createHandlers);
 
     for (const name of ['one', 'two']) {
-      await manager.connect(name, agents.launch(name, { command: name }, '/work', { error() {}, exit() {} }));
+      const process = agents.launch(name, { command: name }, '/work', { error() {}, exit() {} });
+      await manager.connect(name, process, process.id, { handleUpdate() {} });
     }
 
     expect(createHandlers).toHaveBeenCalledTimes(2);

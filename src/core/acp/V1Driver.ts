@@ -8,7 +8,6 @@ import type * as Acp from '@agentclientprotocol/sdk';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { logDebug, logInfo, logTrace } from '@/core/Log';
-import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type {
   AcpDriver,
   AgentDescription,
@@ -27,6 +26,7 @@ import type {
   SessionRoots,
   SessionState,
   SessionUpdate,
+  SessionUpdateSink,
   SlashCommand,
   ToolCallContent,
   ToolCallStatus,
@@ -53,7 +53,7 @@ export class V1Driver implements AcpDriver {
     agentName: string,
     stream: Acp.Stream,
     clientVersion: string,
-    updates: SessionUpdateHandler,
+    updates: SessionUpdateSink,
     handlers: ClientHandlers,
   ): Promise<V1Driver> {
     const { permissions } = handlers;

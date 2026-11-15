@@ -79,9 +79,9 @@ function setup(scripts: Record<string, AgentScript>, selection?: { selectedAddre
     agentConfigs: () => Object.fromEntries(Object.keys(scripts).map((name) => [name, { command: name }])),
     activeFileLink: () => undefined,
   };
-  const manager = new SessionManager(agents, new ConnectionManager(updates, '0.0.0-test', () => unusedHandlers), environment, {
+  const manager = new SessionManager(agents, new ConnectionManager('0.0.0-test', () => unusedHandlers), environment, {
     chooseAuthMethod: async () => undefined,
-  });
+  }, updates);
   onTestFinished(async () => { await manager.dispose(); updates.dispose(); });
   const globalState = memoryStore();
   const references = new SessionReferences(globalState, () => Date.now());

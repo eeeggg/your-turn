@@ -1,14 +1,12 @@
 import { ndJsonStream } from '@agentclientprotocol/sdk';
 import type { Stream } from '@agentclientprotocol/sdk';
-import { randomUUID } from 'node:crypto';
 
 import type { AgentStreams } from '@/core/AgentManager';
 import type { ClientHandlers, Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { captureTraffic } from '@/core/Traffic';
 import { logDebug, logError, logInfo } from '@/core/Log';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import type { AcpDriver } from '@/core/acp/AcpDriver';
+import type { AcpDriver, SessionUpdateSink } from '@/core/acp/AcpDriver';
 import { negotiate } from '@/core/acp/Negotiation';
 import { V1Driver } from '@/core/acp/V1Driver';
 import { V2Driver } from '@/core/acp/V2Driver';
@@ -19,18 +17,15 @@ import { OutgoingRequests } from '@/core/acp/OutgoingRequests';
  */
 export class ConnectionManager {
   constructor(
-    private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly clientVersion: string,
     private readonly createHandlers: (context: { agentName: string; agentId: string; elicitations: Elicitations & ElicitationInteractions }) => ClientHandlers,
   ) {}
 
   /** Connect to an agent over its streams and initialize the connection. */
-  async connect(agentName: string, streams: AgentStreams, agentId: string = randomUUID(), onClosed?: () => void): Promise<AcpDriver> {
+  async connect(agentName: string, streams: AgentStreams, agentId: string, updates: SessionUpdateSink, onClosed?: () => void): Promise<AcpDriver> {
     logDebug('Connecting to agent', { agentName });
 
     const stream = ndJsonStream(streams.input, streams.output);
-    const updates = new SessionUpdateHandler();
-    updates.addListener((sessionId, update, schema) => this.sessionUpdateHandler.handleUpdate(sessionId, update, schema, agentId));
 
     // Wrap the stream to capture all ACP traffic separately from diagnostics.
     const outgoing = new OutgoingRequests();
@@ -42,7 +37,6 @@ export class ConnectionManager {
     const close = () => {
       if (closed) { return; }
       closed = true;
-      updates.dispose();
       try { elicitations.close(); }
       finally {
         try { outgoing.close(); handlers.close?.(); }

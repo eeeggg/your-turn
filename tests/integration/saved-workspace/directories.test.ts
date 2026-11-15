@@ -63,9 +63,10 @@ for (const version of [1, 2]) {
       const updates = new SessionUpdateHandler();
       const manager = new SessionManager(
         new AgentManager(),
-        new ConnectionManager(updates, '0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
+        new ConnectionManager('0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
         createWorkspaceEnvironment(state),
         { chooseAuthMethod: async () => undefined },
+        updates,
       );
       owned.push(() => manager.dispose(), () => updates.dispose());
 

@@ -162,7 +162,7 @@ describe('elicitation wire behavior', () => {
       ? () => fakeAgent().onRequest(V1.methods.agent.authenticate, ({ client, requestId }) => duringAuth(client, requestId))
       : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ client, requestId }) => duringAuth(client, requestId)) });
     const updates = new SessionUpdateHandler();
-    const manager = new ConnectionManager(updates, 'test', ({ elicitations }) => {
+    const manager = new ConnectionManager('test', ({ elicitations }) => {
       requests = elicitations;
       const detach = attachUrlElicitations('fake', elicitations, {
         choose: (_agent, interaction) => {
@@ -175,7 +175,7 @@ describe('elicitation wire behavior', () => {
       return { ...unusedHandlers, close: () => { void detach(); } };
     });
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     await driver.authenticate('browser');
     expect(opened).toEqual(['http://localhost:3000/connect?state=abc']);
     expect(requests?.snapshot()).toEqual([]);
@@ -201,7 +201,7 @@ describe('elicitation wire behavior', () => {
       ? () => fakeAgent().onRequest(V1.methods.agent.authenticate, ({ client, requestId }) => duringAuth(client, requestId))
       : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ client, requestId }) => duringAuth(client, requestId)) });
     const updates = new SessionUpdateHandler();
-    const manager = new ConnectionManager(updates, 'test', ({ elicitations }) => {
+    const manager = new ConnectionManager('test', ({ elicitations }) => {
       interactions = elicitations;
       elicitations.subscribe((change) => {
         if (change.kind === 'created') { elicitations.respond(change.interaction.interactionId, { action: 'accept', content: { enabled: false } }); }
@@ -209,7 +209,7 @@ describe('elicitation wire behavior', () => {
       return { ...unusedHandlers, elicitations };
     });
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     await driver.authenticate('browser');
   });
 
@@ -219,9 +219,9 @@ describe('elicitation wire behavior', () => {
     }) });
     const updates = new SessionUpdateHandler();
     let releases = 0;
-    const manager = new ConnectionManager(updates, 'test', () => ({ ...unusedHandlers, close: () => { releases++; } }));
+    const manager = new ConnectionManager('test', () => ({ ...unusedHandlers, close: () => { releases++; } }));
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    await expect(manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }))).rejects.toThrow('Initialization refused');
+    await expect(manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} })).rejects.toThrow('Initialization refused');
     expect(releases).toBe(1);
     await agents.launched[0]?.crash();
     expect(releases).toBe(1);
@@ -231,12 +231,12 @@ describe('elicitation wire behavior', () => {
     const agents = new InProcessAgents({ fake: version === 1 ? fakeAgent : fakeV2Agent });
     const updates = new SessionUpdateHandler();
     const attached = new Set<string>();
-    const manager = new ConnectionManager(updates, 'test', ({ agentName }) => {
+    const manager = new ConnectionManager('test', ({ agentName }) => {
       attached.add(agentName);
       return { ...unusedHandlers, close: () => { attached.delete(agentName); } };
     });
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     expect([...attached]).toEqual(['fake']);
     await agents.launched[0]?.crash();
     expect([...attached]).toEqual([]);
@@ -260,12 +260,12 @@ describe('elicitation wire behavior', () => {
       : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ requestId }) => duringAuth(requestId)) });
     const updates = new SessionUpdateHandler();
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    const manager = new ConnectionManager(updates, 'test', (context) => {
+    const manager = new ConnectionManager('test', (context) => {
       expect(context.agentName).toBe('fake');
       requests = context.elicitations;
       return unusedHandlers;
     });
-    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     await driver.authenticate('browser');
     if (!requests || observed.parent === null) { throw new Error('Authentication did not run'); }
     await expect(requests.create({ mode: 'form', rpcId: 'late', scope: { requestId: observed.parent }, message: 'Question', requestedSchema: {} })).rejects.toMatchObject({ kind: 'invalid' });

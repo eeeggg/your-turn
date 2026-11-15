@@ -1,11 +1,18 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
-import type { SessionUpdate } from '@/core/acp/AcpDriver';
+import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { Reviews, type ReviewFiles } from '@/core/review/Reviews';
 import type { FileContent } from '@/core/review/Review';
 import { setLogSink } from '@/core/Log';
+import type { QualifiedSessionUpdate, SessionRegistration, SessionLoad } from '@/core/SessionUpdateHandler';
 
-const SESSION_ID = '9f0a753c-2018-4a39-9be2-458f06ba72d1';
-const OTHER_SESSION_ID = '28ec645b-c197-45da-a461-d0b72685ef39';
+const SESSION_ID = { sessionId: '9f0a753c-2018-4a39-9be2-458f06ba72d1', agentName: 'fake', agentId: 'source' };
+const OTHER_SESSION_ID = { sessionId: '28ec645b-c197-45da-a461-d0b72685ef39', agentName: 'fake', agentId: 'source' };
+
+function input(registration: SessionRegistration, update: SessionUpdate, schema: AcpSchema): QualifiedSessionUpdate {
+  return { origin: { identity: { configuredName: registration.agentName, sessionId: registration.sessionId }, sourceId: registration.agentId }, update, schema };
+}
+
+const load: SessionLoad = { registration: SESSION_ID, origin: input(SESSION_ID, { kind: 'commands', commands: [] }, 'v1').origin, attempt: Symbol() };
 
 /** A completed tool call that changed `path` from `old` to `now`, which the disk holds. */
 const edited = (toolCallId: string, path: string, old: string, now: string): Extract<SessionUpdate, { kind: 'toolCall' }> => ({
@@ -54,6 +61,110 @@ function reviews(files: Partial<ReviewFiles> = {}) {
 }
 
 describe('Reviews', () => {
+  it('keeps an empty selected registration selected through rename before its first evidence', async () => {
+    const { reviews: subject, shownPaths } = reviews();
+    const selected = { ...SESSION_ID };
+    subject.activeSessionChanged(selected);
+    selected.agentName = 'renamed';
+    subject.configurationRenamed('fake', 'renamed');
+    await subject.handleSessionUpdate(input(selected, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+  });
+
+  it.each(['v1', 'v2'] as const)('keeps same-source sibling %s guards and replay independent when A is removed', async (schema) => {
+    const { reviews: subject, shownPaths } = reviews();
+    const evidence = schema === 'v1' ? edited : patched;
+    await subject.handleSessionUpdate(input(SESSION_ID, { ...evidence('same', '/w/a.ts', 'a', 'A'), status: 'running' }, schema));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, { ...evidence('same', '/w/b.ts', 'b', 'B'), status: 'running' }, schema));
+    subject.loadStarted(load);
+    await subject.handleSessionUpdate(input(SESSION_ID, { kind: 'toolCall', toolCallId: 'same', status: 'completed' }, schema));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, { kind: 'toolCall', toolCallId: 'same', status: 'completed' }, schema));
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    expect(shownPaths()).toEqual(['/w/b.ts']);
+    subject.sessionRemoved(SESSION_ID);
+    subject.loadEnded(load);
+    expect(shownPaths()).toEqual(['/w/b.ts']);
+    subject.activeSessionChanged(SESSION_ID);
+    expect(shownPaths()).toEqual([]);
+    await subject.handleSessionUpdate(input(SESSION_ID, { kind: 'toolCall', toolCallId: 'same', status: 'completed' }, schema));
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+  });
+
+  it('moves retained review and an admitted read through two renames without binding reused names', async () => {
+    let release: (text: FileContent) => void = () => {};
+    const { reviews: subject, shownPaths } = reviews({ read: () => new Promise((resolve) => { release = resolve; }) });
+    const registration = { ...SESSION_ID };
+    subject.activeSessionChanged(registration);
+    const reading = subject.handleSessionUpdate(input(registration, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    registration.agentName = 'renamed';
+    subject.configurationRenamed('fake', 'renamed');
+    registration.agentName = 'again';
+    subject.configurationRenamed('renamed', 'again');
+    release('A');
+    await reading;
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+    subject.activeSessionChanged({ ...SESSION_ID, agentId: 'another' });
+    expect(shownPaths()).toBeUndefined();
+    subject.activeSessionChanged(registration);
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+  });
+
+  it('keeps admitted evidence after retirement but drops the retired source partial-tool state', async () => {
+    let release: (text: FileContent) => void = () => {};
+    const { reviews: subject, shownPaths } = reviews({ read: (path) => path === '/w/a.ts'
+      ? new Promise((resolve) => { release = resolve; }) : Promise.resolve('B') });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, { ...edited('partial', '/w/b.ts', 'b', 'B'), status: 'running' }, 'v1'));
+    const reading = subject.handleSessionUpdate(input(SESSION_ID, edited('done', '/w/a.ts', 'a', 'A'), 'v1'));
+    subject.sourceRetired(SESSION_ID.agentId);
+    release('A');
+    await reading;
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+    await subject.handleSessionUpdate(input(SESSION_ID, { kind: 'toolCall', toolCallId: 'partial', status: 'completed' }, 'v1'));
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+  });
+
+  it('starts a fresh guard on a replacement source while preserving its retained review', async () => {
+    const { reviews: subject, shownPaths } = reviews();
+    subject.activeSessionChanged(SESSION_ID);
+    const old = edited('same', '/w/a.ts', 'a', 'A');
+    await subject.handleSessionUpdate(input(SESSION_ID, { ...old, status: 'running' }, 'v1'));
+    const replacement = { ...SESSION_ID, agentId: 'replacement' };
+    subject.activeSessionChanged(replacement);
+    await subject.handleSessionUpdate(input(replacement, { kind: 'toolCall', toolCallId: 'same', status: 'completed' }, 'v1'));
+    expect(shownPaths()).toEqual([]);
+  });
+
+  it('does not let an obsolete load completion end replacement replay suppression', async () => {
+    const { reviews: subject, shownPaths } = reviews();
+    subject.activeSessionChanged(SESSION_ID);
+    const replacement = { ...load, attempt: Symbol() };
+    subject.loadStarted(load);
+    subject.loadStarted(replacement);
+    subject.loadEnded(load);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    expect(shownPaths() ?? []).toEqual([]);
+    subject.loadEnded(replacement);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1'));
+    expect(shownPaths()).toEqual(['/w/b.ts']);
+  });
+
+  it('keeps equal session and tool IDs from separate configurations in separate retained reviews', async () => {
+    const { reviews: subject, shownPaths } = reviews();
+    const a: SessionRegistration = { sessionId: SESSION_ID.sessionId, agentName: 'a', agentId: 'source-a' };
+    const b: SessionRegistration = { sessionId: SESSION_ID.sessionId, agentName: 'b', agentId: 'source-b' };
+    const input = (registration: SessionRegistration, update: SessionUpdate): QualifiedSessionUpdate => ({
+      origin: { identity: { configuredName: registration.agentName, sessionId: registration.sessionId }, sourceId: registration.agentId },
+      update, schema: 'v1',
+    });
+    subject.activeSessionChanged(a);
+    await subject.handleSessionUpdate(input(a, edited('same', '/w/a.ts', 'a', 'A')));
+    await subject.handleSessionUpdate(input(b, edited('same', '/w/b.ts', 'b', 'B')));
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+    subject.activeSessionChanged(b);
+    expect(shownPaths()).toEqual(['/w/b.ts']);
+  });
+
   it.each(['v1', 'v2'] as const)('drains %s evidence after session removal without new watchers or notifications during disposal', async (schema) => {
     const reads: { path: string; give: (text: FileContent) => void }[] = [];
     const { reviews: subject, watched, heard } = reviews({
@@ -70,10 +181,10 @@ describe('Reviews', () => {
     });
     subject.activeSessionChanged(SESSION_ID);
     const evidence = schema === 'v1' ? edited : patched;
-    const handlingOld = subject.handleSessionUpdate(SESSION_ID, evidence('t1', '/w/a.ts', 'a', 'A'), schema);
+    const handlingOld = subject.handleSessionUpdate(input(SESSION_ID, evidence('t1', '/w/a.ts', 'a', 'A'), schema));
     handling.push(handlingOld);
     subject.sessionRemoved(SESSION_ID);
-    handling.push(subject.handleSessionUpdate(SESSION_ID, evidence('t2', '/w/b.ts', 'b', 'B'), schema));
+    handling.push(subject.handleSessionUpdate(input(SESSION_ID, evidence('t2', '/w/b.ts', 'b', 'B'), schema)));
     const before = heard();
     let oldFinished = false;
     void handlingOld.then(() => { oldFinished = true; });
@@ -85,8 +196,8 @@ describe('Reviews', () => {
     reads[0]?.give('A');
     await disposed;
     await Promise.all(handling);
-    await subject.handleSessionUpdate('late', evidence('t3', '/w/c.ts', 'c', 'C'), schema);
-    subject.activeSessionChanged('late');
+    await subject.handleSessionUpdate(input({ ...SESSION_ID, sessionId: 'late' }, evidence('t3', '/w/c.ts', 'c', 'C'), schema));
+    subject.activeSessionChanged({ ...SESSION_ID, sessionId: 'late' });
 
     expect(await finishedAtDisposal).toBe(true);
     expect(reads.map(({ path }) => path)).toEqual(['/w/a.ts', '/w/b.ts']);
@@ -107,7 +218,7 @@ describe('Reviews', () => {
     });
     onTestFinished(() => { setLogSink(undefined); });
     const evidence = schema === 'v1' ? edited : patched;
-    const handling = subject.handleSessionUpdate(SESSION_ID, {
+    const handling = subject.handleSessionUpdate(input(SESSION_ID, {
       kind: 'toolCall',
       toolCallId: 't1',
       status: 'completed',
@@ -115,7 +226,7 @@ describe('Reviews', () => {
         ...evidence('t1', '/w/a.ts', 'a', 'A').content ?? [],
         ...evidence('t1', '/w/b.ts', 'b', 'B').content ?? [],
       ],
-    }, schema);
+    }, schema));
     onTestFinished(async () => {
       const disposed = subject.dispose();
       for (const read of reads) { read.give(null); }
@@ -155,8 +266,8 @@ describe('Reviews', () => {
       for (const read of reads) { read.give(null); }
       await disposed;
     });
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     subject.activeSessionChanged(SESSION_ID);
     const before = heard();
     refreshing = true;
@@ -209,8 +320,8 @@ describe('Reviews', () => {
       for (const read of reads) { read.give(null); }
       await expect(disposed).rejects.toMatchObject({ errors: [{ errors: [failure] }] });
     });
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     refreshing = true;
     watchers.get('/w/b.ts')?.();
     const disposed = subject.dispose();
@@ -225,8 +336,8 @@ describe('Reviews', () => {
 
   it("shows the active session's review, each session's evidence kept apart", async () => {
     const { reviews: subject, shownPaths } = reviews();
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     expect(shownPaths()).toBeUndefined();
     subject.activeSessionChanged(SESSION_ID);
     expect(shownPaths()).toEqual(['/w/a.ts']);
@@ -236,10 +347,10 @@ describe('Reviews', () => {
 
   it("feeds each session's updates to the guard of the driver that passed them up", async () => {
     const { reviews: subject, shownPaths } = reviews();
-    await subject.handleSessionUpdate(SESSION_ID, patched('t1', '/w/a.ts', 'a', 'A'), 'v2');
-    await subject.handleSessionUpdate(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v2');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, patched('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, patched('t1', '/w/a.ts', 'a', 'A'), 'v2'));
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v2'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, patched('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1'));
     subject.activeSessionChanged(SESSION_ID);
     expect(shownPaths()).toEqual(['/w/a.ts']);
     expect(subject.shown()?.file('/w/a.ts')?.baseline).toBe('a');
@@ -250,9 +361,9 @@ describe('Reviews', () => {
   it("keeps a session's review when another driver's update comes for it, fed to that driver's guard from then on", async () => {
     const { reviews: subject, shownPaths } = reviews();
     subject.activeSessionChanged(SESSION_ID);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(SESSION_ID, patched('t2', '/w/b.ts', 'b', 'B'), 'v2');
-    await subject.handleSessionUpdate(SESSION_ID, edited('t3', '/w/b.ts', 'x', 'B'), 'v2');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(SESSION_ID, patched('t2', '/w/b.ts', 'b', 'B'), 'v2'));
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t3', '/w/b.ts', 'x', 'B'), 'v2'));
     expect(shownPaths()).toEqual(['/w/a.ts', '/w/b.ts']);
     expect(subject.shown()?.file('/w/b.ts')?.baseline).toBe('b');
   });
@@ -260,7 +371,7 @@ describe('Reviews', () => {
   it('keeps collecting evidence for a session not shown', async () => {
     const { reviews: subject, shownPaths } = reviews();
     subject.activeSessionChanged(SESSION_ID);
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     subject.activeSessionChanged(OTHER_SESSION_ID);
     expect(shownPaths()).toEqual(['/w/b.ts']);
   });
@@ -271,27 +382,27 @@ describe('Reviews', () => {
     expect(heard()).toBe(1);
     subject.activeSessionChanged(SESSION_ID);
     expect(heard()).toBe(1);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
     expect(heard()).toBe(2);
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     expect(heard()).toBe(2);
   });
 
   it("takes nothing of a load's replay as evidence, and what comes after it", async () => {
     const { reviews: subject, shownPaths } = reviews();
     subject.activeSessionChanged(SESSION_ID);
-    subject.loadStarted(SESSION_ID);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    subject.loadEnded(SESSION_ID);
+    subject.loadStarted(load);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    subject.loadEnded(load);
     expect(shownPaths() ?? []).toEqual([]);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1'));
     expect(shownPaths()).toEqual(['/w/b.ts']);
   });
 
   it("keeps a removed session's review, shown again when its session is", async () => {
     const { reviews: subject, shownPaths } = reviews();
     subject.activeSessionChanged(SESSION_ID);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
     subject.sessionRemoved(SESSION_ID);
     subject.activeSessionChanged(null);
     expect(shownPaths()).toBeUndefined();
@@ -302,23 +413,23 @@ describe('Reviews', () => {
   it("watches the files of every session's review, shown or not, its session removed or not", async () => {
     const { reviews: subject, watched } = reviews();
     subject.activeSessionChanged(SESSION_ID);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     subject.sessionRemoved(OTHER_SESSION_ID);
     expect(watched).toEqual(['/w/a.ts', '/w/b.ts']);
   });
 
   it("stops watching every session's files when disposed", async () => {
     const { reviews: subject, watched } = reviews();
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    await subject.handleSessionUpdate(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('t1', '/w/b.ts', 'b', 'B'), 'v1'));
     await subject.dispose();
     expect(watched).toEqual([]);
   });
 
   it('follows evidence read after its session was removed, as its turn may go on', async () => {
     const { reviews: subject, watched } = reviews();
-    const reading = subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
+    const reading = subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
     subject.sessionRemoved(SESSION_ID);
     await reading;
     expect(watched).toEqual(['/w/a.ts']);
@@ -327,10 +438,10 @@ describe('Reviews', () => {
   it('takes evidence again for a session removed mid-load, keeping its review', async () => {
     const { reviews: subject, shownPaths } = reviews();
     subject.activeSessionChanged(SESSION_ID);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1');
-    subject.loadStarted(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t1', '/w/a.ts', 'a', 'A'), 'v1'));
+    subject.loadStarted(load);
     subject.sessionRemoved(SESSION_ID);
-    await subject.handleSessionUpdate(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1');
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('t2', '/w/b.ts', 'b', 'B'), 'v1'));
     expect(shownPaths()).toEqual(['/w/a.ts', '/w/b.ts']);
   });
 });

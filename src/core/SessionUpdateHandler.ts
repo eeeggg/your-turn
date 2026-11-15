@@ -1,8 +1,40 @@
 import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { logError } from '@/core/Log';
 
-/** `schema` names the driver that passed the update up. */
-export type SessionUpdateListener = (sessionId: string, update: SessionUpdate, schema: AcpSchema, agentId?: string) => void;
+export interface SessionIdentity {
+  readonly configuredName: string;
+  readonly sessionId: string;
+}
+
+export interface SessionOrigin {
+  readonly identity: SessionIdentity;
+  readonly sourceId: string;
+}
+
+export interface QualifiedSessionUpdate {
+  readonly origin: SessionOrigin;
+  readonly update: SessionUpdate;
+  readonly schema: AcpSchema;
+}
+
+export interface SessionRegistration {
+  readonly sessionId: string;
+  readonly agentId: string;
+  readonly agentName: string;
+}
+
+export interface SessionDelivery {
+  readonly input: QualifiedSessionUpdate;
+  readonly registration: SessionRegistration | undefined;
+}
+
+export interface SessionLoad {
+  readonly registration: SessionRegistration;
+  readonly origin: SessionOrigin;
+  readonly attempt: symbol;
+}
+
+export type SessionUpdateListener = (delivery: SessionDelivery) => void;
 
 /**
  * Routes the session updates of every connection's ACP driver to registered listeners.
@@ -19,10 +51,10 @@ export class SessionUpdateHandler {
     this.listeners.delete(listener);
   }
 
-  handleUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema, agentId?: string): void {
+  handleUpdate(delivery: SessionDelivery): void {
     for (const listener of this.listeners) {
       try {
-        listener(sessionId, update, schema, agentId);
+        listener(delivery);
       } catch (e) {
         logError('Error in session update listener', e);
       }

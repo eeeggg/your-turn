@@ -58,9 +58,10 @@ suite('The Agents view', () => {
     const updates = new SessionUpdateHandler();
     const manager = new SessionManager(
       new AgentManager(),
-      new ConnectionManager(updates, '0.0.0-test', () => { throw new Error('No agent should start for a history update'); }),
+      new ConnectionManager('0.0.0-test', () => { throw new Error('No agent should start for a history update'); }),
       environment,
       { chooseAuthMethod: async () => undefined },
+      updates,
     );
     owned.push(() => manager.dispose(), () => updates.dispose());
     return manager;

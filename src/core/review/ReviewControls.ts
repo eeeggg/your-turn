@@ -4,18 +4,20 @@ import { messageOf } from '@/core/Log';
 import { keptChange, undoneChange, type Change, type TextEdit } from '@/core/review/Hunks';
 import type { FileContent } from '@/core/review/Review';
 import type { Reviews } from '@/core/review/Reviews';
+import type { SessionRegistration } from '@/core/SessionUpdateHandler';
 
 /** The editors the review's controls act on, by a file's path. */
 export interface ReviewEditors {
+  captureNavigation(): () => boolean;
   /** The file in the active editor, when it is one on disk. */
   activePath(): string | undefined;
   /** Whether this file's review presentation is open in an editor. */
   isOpen(path: string): boolean;
   open(path: string): Promise<void>;
   /** Opens the file with quick diff's view showing the change after the cursor, once VS Code has diffed it. */
-  showChange(path: string): Promise<void>;
+  showChange(path: string, stillCurrent?: () => boolean): Promise<void>;
   /** Opens the file with quick diff's view showing `changes[index]`, once VS Code's diff of it is `changes`. */
-  showChangeOf(path: string, changes: readonly Change[], index: number): Promise<void>;
+  showChangeOf(path: string, changes: readonly Change[], index: number, stillCurrent?: () => boolean): Promise<void>;
   /** Closes quick diff's view on the file, before the review's edit would move it on to a change of VS Code's choice. */
   closeChange(path: string): Promise<void>;
   showError(message: string): void;
@@ -185,10 +187,15 @@ export class ReviewControls {
    * The shown session's turn ended: the first unresolved change in review order, once the files its edits name were
    * read, unless a review presentation is already open.
    */
-  async turnEnded(sessionId: string): Promise<void> {
-    await this.reviews.settled(sessionId);
-    if (this.reviews.shown()?.files().some((file) => this.editors.isOpen(file.path))) { return; }
-    await this.openReview();
+  async turnEnded(registration: SessionRegistration): Promise<void> {
+    const navigationCurrent = this.editors.captureNavigation();
+    await this.reviews.afterShownTurn(registration, async (review, stillSelected) => {
+      if (!stillSelected() || !navigationCurrent() || review.files().some((file) => this.editors.isOpen(file.path))) { return; }
+      const file = review.files()[0];
+      if (file) {
+        await this.editors.showChange(file.path, () => stillSelected() && navigationCurrent() && review.file(file.path) === file);
+      }
+    });
   }
 
   /**

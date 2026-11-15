@@ -5,6 +5,10 @@
  * requests through `ClientHandlers`.
  */
 
+export interface SessionUpdateSink {
+  handleUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): void;
+}
+
 /** Which past sessions the agent can work with. */
 export interface AgentCapabilities {
   list: boolean;

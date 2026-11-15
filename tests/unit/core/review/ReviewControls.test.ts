@@ -4,8 +4,9 @@ import type { FileContent } from '@/core/review/Review';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
 
-const SESSION_ID = 'e6a9042f-7b38-46d1-9c52-130fb8ade765';
-const OTHER_SESSION_ID = '410dc953-ae62-4f78-b905-67e8213acdb4';
+const SESSION_ID = { sessionId: 'e6a9042f-7b38-46d1-9c52-130fb8ade765', agentName: 'fake', agentId: 'source' };
+const OTHER_SESSION_ID = { ...SESSION_ID, sessionId: '410dc953-ae62-4f78-b905-67e8213acdb4' };
+const input = (update: SessionUpdate) => ({ origin: { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' }, update, schema: 'v1' as const });
 
 /** A completed tool call that changed `path` from `old` to `now`, which the disk holds. */
 const edited = (toolCallId: string, path: string, old: string | null, now: string): SessionUpdate => ({
@@ -41,6 +42,7 @@ async function controls({ deleted = false, changes = false } = {}) {
   let failSave = false;
   let applies = true;
   let active: string | undefined;
+  let navigation = 0;
   let read = async (path: string): Promise<FileContent> => disk[path] ?? null;
   const reviews = new Reviews({
     read: (path) => read(path),
@@ -53,12 +55,13 @@ async function controls({ deleted = false, changes = false } = {}) {
   });
   onTestFinished(async () => { await reviews.dispose(); });
   reviews.activeSessionChanged(SESSION_ID);
-  await reviews.handleSessionUpdate(SESSION_ID, edited('t1', '/w/a.ts', 'a\n', 'A\n'), 'v1');
-  await reviews.handleSessionUpdate(SESSION_ID, edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
-  await reviews.handleSessionUpdate(SESSION_ID, edited('t3', '/w/c.ts', 'c\n', 'C\n'), 'v1');
-  if (deleted) { await reviews.handleSessionUpdate(SESSION_ID, edited('t4', '/w/gone.ts', 'gone\n', ''), 'v1'); }
-  if (changes) { await reviews.handleSessionUpdate(SESSION_ID, edited('t5', '/w/m.ts', twoChanges.before, twoChanges.after), 'v1'); }
+  await reviews.handleSessionUpdate(input(edited('t1', '/w/a.ts', 'a\n', 'A\n')));
+  await reviews.handleSessionUpdate(input(edited('t2', '/w/b.ts', 'b\n', 'B\n')));
+  await reviews.handleSessionUpdate(input(edited('t3', '/w/c.ts', 'c\n', 'C\n')));
+  if (deleted) { await reviews.handleSessionUpdate(input(edited('t4', '/w/gone.ts', 'gone\n', ''))); }
+  if (changes) { await reviews.handleSessionUpdate(input(edited('t5', '/w/m.ts', twoChanges.before, twoChanges.after))); }
   const subject = new ReviewControls(reviews, {
+    captureNavigation: () => { const captured = navigation; return () => navigation === captured; },
     activePath: () => active,
     isOpen: (path) => active === path || opened.includes(path) || shown.includes(path),
     open: async (path) => { opened.push(path); },
@@ -97,7 +100,7 @@ async function controls({ deleted = false, changes = false } = {}) {
     documents,
     disk,
     setRead: (next: typeof read) => { read = next; },
-    activate: (path: string | undefined) => { active = path; },
+    activate: (path: string | undefined) => { active = path; navigation++; },
     fail: () => { failing = true; },
     failSaves: () => { failSave = true; },
     refuseEdits: () => { applies = false; },
@@ -105,6 +108,57 @@ async function controls({ deleted = false, changes = false } = {}) {
 }
 
 describe('ReviewControls', () => {
+  it('does not cancel selected A presentation when sibling B emits output and ends its turn', async () => {
+    const { controls: subject, shown, reviews, setRead } = await controls();
+    subject.keepAll();
+    let release: (text: FileContent) => void = () => {};
+    setRead(() => new Promise((resolve) => { release = resolve; }));
+    const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
+    const presenting = subject.turnEnded(SESSION_ID);
+    await reviews.handleSessionUpdate({ origin: {
+      identity: { configuredName: OTHER_SESSION_ID.agentName, sessionId: OTHER_SESSION_ID.sessionId }, sourceId: OTHER_SESSION_ID.agentId,
+    }, update: { kind: 'agentText', messageId: null, text: 'B finished' }, schema: 'v1' });
+    await subject.turnEnded(OTHER_SESSION_ID);
+    release('B\n');
+    await Promise.all([reading, presenting]);
+    expect(shown).toEqual(['/w/b.ts']);
+  });
+
+  it('does not open after editor navigation away and back during evidence settlement', async () => {
+    const { controls: subject, shown, reviews, setRead, activate } = await controls();
+    subject.keepAll();
+    let release: (text: FileContent) => void = () => {};
+    setRead(() => new Promise((resolve) => { release = resolve; }));
+    const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
+    const presenting = subject.turnEnded(SESSION_ID);
+    activate('/w/other.ts');
+    activate(undefined);
+    release('B\n');
+    await Promise.all([reading, presenting]);
+    expect(shown).toEqual([]);
+    expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
+  });
+
+  it.each(['switch', 'away-back', 'remove', 'retire'] as const)('does not present a settled turn after registration invalidation by %s', async (change) => {
+    const { controls: subject, shown, reviews, setRead } = await controls();
+    subject.keepAll();
+    let release: (text: FileContent) => void = () => {};
+    setRead(() => new Promise((resolve) => { release = resolve; }));
+    const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
+    const presenting = subject.turnEnded(SESSION_ID);
+    if (change === 'remove') { reviews.sessionRemoved(SESSION_ID); }
+    else if (change === 'retire') { reviews.sourceRetired(SESSION_ID.agentId); }
+    else {
+      reviews.activeSessionChanged(OTHER_SESSION_ID);
+      if (change === 'away-back') { reviews.activeSessionChanged(SESSION_ID); }
+    }
+    release('B\n');
+    await Promise.all([reading, presenting]);
+    expect(shown).toEqual([]);
+    reviews.activeSessionChanged(SESSION_ID);
+    expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
+  });
+
   it.each(['keep', 'undo'] as const)('rejects %s File for a deletion recreated before its watcher reads it', async (action) => {
     const { controls: subject, reviews, disk, restored, saved } = await controls({ deleted: true });
     disk['/w/gone.ts'] = 'recreated\n';
@@ -440,9 +494,10 @@ describe('ReviewControls', () => {
     });
     onTestFinished(async () => { await reviews.dispose(); });
     reviews.activeSessionChanged(SESSION_ID);
-    await reviews.handleSessionUpdate(SESSION_ID, edited('t1', '/w/gone.ts', 'gone\n', ''), 'v1');
-    await reviews.handleSessionUpdate(SESSION_ID, edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
+    await reviews.handleSessionUpdate(input(edited('t1', '/w/gone.ts', 'gone\n', '')));
+    await reviews.handleSessionUpdate(input(edited('t2', '/w/b.ts', 'b\n', 'B\n')));
     const subject = new ReviewControls(reviews, {
+      captureNavigation: () => () => true,
       activePath: () => undefined,
       isOpen: () => false,
       open: async () => {},
@@ -483,7 +538,7 @@ describe('ReviewControls', () => {
   it('shows a change once the files the turn\'s edits name were read, as the turn can end before', async () => {
     const { controls: subject, shown, reviews } = await controls();
     reviews.shown()?.keepAll();
-    void reviews.handleSessionUpdate(SESSION_ID, edited('t6', '/w/b.ts', 'b\n', 'B\n'), 'v1');
+    void reviews.handleSessionUpdate(input(edited('t6', '/w/b.ts', 'b\n', 'B\n')));
     await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual(['/w/b.ts']);
   });
@@ -511,7 +566,7 @@ describe('ReviewControls', () => {
     for (const name of names) {
       const path = `/w/${name}.ts`;
       disk[path] = name === 'live' ? 'changed\n' : null;
-      await reviews.handleSessionUpdate(SESSION_ID, edited(name, path, name === 'empty' ? '' : 'before\n', name === 'live' ? 'changed\n' : ''), 'v1');
+      await reviews.handleSessionUpdate(input(edited(name, path, name === 'empty' ? '' : 'before\n', name === 'live' ? 'changed\n' : '')));
     }
     expect(subject.reviewedPaths()).toEqual(want);
     await subject.openReview();

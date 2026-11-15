@@ -62,9 +62,10 @@ for (const version of [1, 2]) {
       const updates = new SessionUpdateHandler();
       const manager = new SessionManager(
         new AgentManager(),
-        new ConnectionManager(updates, '0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
+        new ConnectionManager('0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
         environment,
         { chooseAuthMethod: async () => undefined },
+        updates,
       );
       manager.setPersistedState(references, workspace);
       owned.push(() => manager.dispose(), () => updates.dispose());
@@ -76,7 +77,7 @@ for (const version of [1, 2]) {
       await workspace.setLastActiveSession(address);
 
       const texts: string[] = [];
-      updates.addListener((id, update) => {
+      updates.addListener(({ input: { origin: { identity: { sessionId: id } }, update } }) => {
         if (id === sessionId && (update.kind === 'promptText' || update.kind === 'agentText')) {
           texts.push(`${update.kind}: ${update.text}`);
         }

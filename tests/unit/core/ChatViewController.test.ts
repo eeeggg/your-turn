@@ -724,6 +724,19 @@ describe('ChatViewController', () => {
       ]);
     });
 
+    it('does not publish an old load completion after selection moves to another session', () => {
+      const { environment, controller, sessions } = setup();
+      controller.notifyLoadSessionStart(SESSION_ID);
+      sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID });
+      sessions.activeId = OTHER_SESSION_ID;
+      controller.notifyActiveSessionChanged();
+      environment.take();
+
+      controller.notifyLoadSessionEnd(false);
+
+      expect(environment.take()).toEqual([]);
+    });
+
     it('says nothing about pickers when no session is active', () => {
       const { sessions, environment, controller } = setup();
       sessions.activeId = null;
@@ -930,6 +943,7 @@ describe('ChatViewController', () => {
         { kind: 'text', text: 'command output' }, { kind: 'image', data, mimeType: 'image/png' },
       ] });
       sessions.activeId = OTHER_SESSION_ID;
+      sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID });
       controller.notifyActiveSessionChanged();
       await vi.runAllTimersAsync();
       for (let index = 0; index < 5; index++) {
@@ -1014,7 +1028,7 @@ describe('ChatViewController', () => {
       }
       if (operation === 'clear') { controller.clearTranscript(); }
       else if (operation === 'replay') { controller.notifyLoadSessionStart(SESSION_ID); }
-      else { sessions.activeId = OTHER_SESSION_ID; controller.notifyActiveSessionChanged(); }
+      else { sessions.activeId = OTHER_SESSION_ID; sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID }); controller.notifyActiveSessionChanged(); }
       environment.take();
       controller.handleSessionUpdate(sessions.activeId ?? '', { kind: 'agentImage', messageId: 'fresh', data, mimeType: 'image/png' });
       expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'fresh', src: `data:image/png;base64,${data}` }]);

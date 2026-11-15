@@ -5,8 +5,8 @@ import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
 import { Takeovers } from '@/core/review/Takeovers';
 
-const SESSION_ID = '67d942be-3e51-4d08-8a62-f910b53c74e6';
-const OTHER_SESSION_ID = 'ba43f621-805d-49e2-a376-0fd65ec9814b';
+const SESSION_ID = { sessionId: '67d942be-3e51-4d08-8a62-f910b53c74e6', agentName: 'fake', agentId: 'source' };
+const OTHER_SESSION_ID = { ...SESSION_ID, sessionId: 'ba43f621-805d-49e2-a376-0fd65ec9814b' };
 
 const host = vi.hoisted(() => {
   function event() {
@@ -79,12 +79,13 @@ async function setup() {
   const reviews = new Reviews({ read: async () => 'after\n', restore: async () => {}, watch: () => ({ dispose() {} }) });
   cleanup.push(() => reviews.dispose());
   reviews.activeSessionChanged(SESSION_ID);
-  await reviews.handleSessionUpdate(SESSION_ID, {
+  await reviews.handleSessionUpdate({ origin: { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' }, update: {
     kind: 'toolCall', toolCallId: 'edit', status: 'completed',
     content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: host.document.uri.fsPath, oldText: 'before\n', newText: 'after\n' } }],
-  }, 'v1');
+  }, schema: 'v1' });
   const unused = () => { throw new Error('Unexpected editor interaction'); };
   const controls = new ReviewControls(reviews, {
+    captureNavigation: () => () => true,
     activePath: unused, isOpen: unused, open: unused, showChange: unused, showChangeOf: unused,
     closeChange: unused, showError: unused, text: unused, applyEdit: unused, save: unused,
   });

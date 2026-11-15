@@ -1,4 +1,5 @@
-import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
+import type { AcpSchema } from '@/core/acp/AcpDriver';
+import type { QualifiedSessionUpdate, SessionIdentity, SessionRegistration, SessionLoad } from '@/core/SessionUpdateHandler';
 import { FollowedFiles, type WatchFile } from '@/core/review/FollowedFiles';
 import { Review, type ReadFile, type RestoreFile, type ReviewedFile } from '@/core/review/Review';
 import { V1Guard } from '@/core/review/V1Guard';
@@ -15,31 +16,56 @@ export interface ReviewFiles {
 export type ShownReviewListener = () => void;
 
 interface SessionReview {
+  identity: SessionIdentity;
   readonly review: Review;
-  /** The sibling of the driver whose update came last. */
-  guard: { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard };
+  readonly guards: Map<string, { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard }>;
   readonly followed: FollowedFiles;
 }
 
+const keyOf = ({ configuredName, sessionId }: SessionIdentity): string => JSON.stringify([configuredName, sessionId]);
+const identityOf = ({ agentName, sessionId }: SessionRegistration): SessionIdentity => ({ configuredName: agentName, sessionId });
+
 /**
- * Each session's review, the guard that feeds it and its files followed, made on its first update and kept until
- * disposed, so a session removed and opened again shows its review again; a removed session's turn may go on, so its
- * evidence is still taken. The guard is the sibling of the driver that passed the update up, made anew, the review
- * kept, when another driver's update comes for the session. The one shown is the active session's, the one the chat
- * view shows. A load's replay is not evidence.
+ * Retains each configuration/session's review independently of registration. Each source has its own guards;
+ * load attempts suppress only that source/session's replay. Removal preserves admitted evidence and does not retire
+ * the source. The selected registration projects its retained review.
  */
 export class Reviews {
   private readonly sessions = new Map<string, SessionReview>();
-  private readonly loading = new Set<string>();
+  private readonly loading = new Map<string, SessionLoad>();
   private readonly listeners = new Set<ShownReviewListener>();
   /** Each session's updates so far, settled once all were taken. */
   private readonly taken = new Map<string, Promise<unknown>>();
   private readonly pending = new Set<Promise<void>>();
   private shownSessionId: string | null = null;
+  private selected: SessionRegistration | null = null;
+  private selectionRevision = 0;
   private disposed = false;
   private disposal: Promise<void> | undefined;
 
   constructor(private readonly files: ReviewFiles) {}
+
+  configurationRenamed(from: string, to: string): void {
+    if (this.selected) { this.shownSessionId = keyOf(identityOf(this.selected)); }
+    for (const [key, session] of this.sessions) {
+      if (session.identity.configuredName !== from) { continue; }
+      this.sessions.delete(key);
+      session.identity = { ...session.identity, configuredName: to };
+      const renamed = keyOf(session.identity);
+      this.sessions.set(renamed, session);
+      const taken = this.taken.get(key);
+      if (taken) { this.taken.delete(key); this.taken.set(renamed, taken); }
+      if (this.shownSessionId === key) { this.shownSessionId = renamed; }
+    }
+  }
+
+  sourceRetired(sourceId: string): void {
+    if (this.selected?.agentId === sourceId) { this.selectionRevision++; }
+    for (const session of this.sessions.values()) { session.guards.delete(sourceId); }
+    for (const [key, load] of this.loading) {
+      if (load.origin.sourceId === sourceId) { this.loading.delete(key); }
+    }
+  }
 
   addListener(listener: ShownReviewListener): void {
     if (this.disposed) { return; }
@@ -68,11 +94,17 @@ export class Reviews {
   }
 
   /** Settles once the files its evidence names were read. */
-  handleSessionUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): Promise<void> {
-    if (this.disposed || this.loading.has(sessionId)) { return Promise.resolve(); }
-    const session = this.session(sessionId, schema);
-    if (session.guard.schema !== schema) { session.guard = this.guard(schema, session.review); }
-    const handled = session.guard.guard.handleSessionUpdate(update);
+  handleSessionUpdate({ origin, update, schema }: QualifiedSessionUpdate): Promise<void> {
+    const sessionId = keyOf(origin.identity);
+    const sourceKey = JSON.stringify([origin.sourceId, origin.identity.sessionId]);
+    if (this.disposed || this.loading.has(sourceKey)) { return Promise.resolve(); }
+    const session = this.session(origin.identity);
+    let guard = session.guards.get(origin.sourceId);
+    if (guard?.schema !== schema) {
+      guard = this.guard(schema, session.review);
+      session.guards.set(origin.sourceId, guard);
+    }
+    const handled = guard.guard.handleSessionUpdate(update);
     this.pending.add(handled);
     void handled.then(
       () => this.pending.delete(handled),
@@ -83,28 +115,42 @@ export class Reviews {
   }
 
   /** Settles once the session's updates so far were taken, as its turn can end before the files they name were read. */
-  async settled(sessionId: string): Promise<void> {
-    await this.taken.get(sessionId);
+  async afterShownTurn(registration: SessionRegistration, present: (review: Review, stillSelected: () => boolean) => Promise<void>): Promise<void> {
+    if (this.disposed || this.selected !== registration) { return; }
+    const entry = this.sessions.get(keyOf(identityOf(registration)));
+    if (!entry) { return; }
+    const revision = this.selectionRevision;
+    const taken = this.taken.get(keyOf(entry.identity));
+    const current = () => !this.disposed && this.selected === registration && this.selectionRevision === revision
+      && this.sessions.get(keyOf(entry.identity)) === entry;
+    await taken;
+    if (current()) { await present(entry.review, current); }
   }
 
-  loadStarted(sessionId: string): void {
+  loadStarted(load: SessionLoad): void {
     if (this.disposed) { return; }
-    this.loading.add(sessionId);
+    this.loading.set(JSON.stringify([load.origin.sourceId, load.origin.identity.sessionId]), load);
   }
 
-  loadEnded(sessionId: string): void {
-    this.loading.delete(sessionId);
+  loadEnded(load: SessionLoad): void {
+    const key = JSON.stringify([load.origin.sourceId, load.origin.identity.sessionId]);
+    if (this.loading.get(key) === load) { this.loading.delete(key); }
   }
 
   /** A load it started will not end. */
-  sessionRemoved(sessionId: string): void {
-    this.loading.delete(sessionId);
-    this.taken.delete(sessionId);
+  sessionRemoved(registration: SessionRegistration): void {
+    if (this.selected === registration) { this.selectionRevision++; }
+    for (const [key, load] of this.loading) {
+      if (load.registration === registration) { this.loading.delete(key); }
+    }
   }
 
-  activeSessionChanged(sessionId: string | null): void {
+  activeSessionChanged(registration: SessionRegistration | null): void {
+    const sessionId = registration ? keyOf(identityOf(registration)) : null;
     if (this.disposed) { return; }
-    if (sessionId === this.shownSessionId) { return; }
+    if (registration === this.selected) { return; }
+    this.selected = registration;
+    this.selectionRevision++;
     this.shownSessionId = sessionId;
     this.changed();
   }
@@ -114,6 +160,7 @@ export class Reviews {
     this.disposed = true;
     this.listeners.clear();
     this.shownSessionId = null;
+    this.selected = null;
     const followed = [...this.sessions.values()].map((session) => session.followed.dispose());
     this.sessions.clear();
     this.loading.clear();
@@ -127,20 +174,21 @@ export class Reviews {
     return this.disposal;
   }
 
-  private session(sessionId: string, schema: AcpSchema): SessionReview {
+  private session(identity: SessionIdentity): SessionReview {
+    const sessionId = keyOf(identity);
     let session = this.sessions.get(sessionId);
     if (!session) {
       const review = new Review(this.files.restore);
       review.addListener(() => {
-        if (sessionId === this.shownSessionId) { this.changed(); }
+        if (session && keyOf(session.identity) === this.shownSessionId) { this.changed(); }
       });
-      session = { review, guard: this.guard(schema, review), followed: new FollowedFiles(review, this.files.read, this.files.watch) };
+      session = { identity, review, guards: new Map(), followed: new FollowedFiles(review, this.files.read, this.files.watch) };
       this.sessions.set(sessionId, session);
     }
     return session;
   }
 
-  private guard(schema: AcpSchema, review: Review): SessionReview['guard'] {
+  private guard(schema: AcpSchema, review: Review): { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard } {
     return { schema, guard: schema === 'v1' ? new V1Guard(review, this.files.read) : new V2Guard(review, this.files.read) };
   }
 

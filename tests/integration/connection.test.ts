@@ -55,7 +55,7 @@ for (const version of [1, 2]) {
       });
 
       updates = new SessionUpdateHandler();
-      updates.addListener((sessionId, update) => {
+      updates.addListener(({ input: { origin: { identity: { sessionId } }, update } }) => {
         if (update.kind === 'agentText') {
           texts.push(update.text);
           textSessionIds.push(sessionId);
@@ -68,7 +68,7 @@ for (const version of [1, 2]) {
           }
         }
       });
-      manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
+      manager = new ConnectionManager(CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
 
       // Inside the test host, process.execPath is the Electron binary.
       let finishExit: () => void = () => {};
@@ -85,7 +85,12 @@ for (const version of [1, 2]) {
           for (const resolve of exitWaiters.splice(0)) { resolve(); }
         },
       });
-      driver = await manager.connect('fake-agent', agent);
+      const sourceId = agent.id;
+      driver = await manager.connect('fake-agent', agent, sourceId, {
+        handleUpdate: (sessionId, update, schema) => updates?.handleUpdate({ input: {
+          origin: { identity: { configuredName: 'fake-agent', sessionId }, sourceId }, update, schema,
+        }, registration: undefined }),
+      });
     });
 
     const nextText = (text: string) => texts.includes(text)

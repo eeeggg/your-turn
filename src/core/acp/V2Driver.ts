@@ -2,7 +2,6 @@ import * as Acp from '@agentclientprotocol/sdk/experimental/v2';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { logDebug, logInfo, logTrace } from '@/core/Log';
-import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { logDeviation } from '@/core/StandardDeviations';
 import {
   AuthRequired,
@@ -27,6 +26,7 @@ import {
   type SessionRoots,
   type SessionState,
   type SessionUpdate,
+  type SessionUpdateSink,
   type SlashCommand,
   type TerminalExitStatus,
   type ToolCallContent,
@@ -54,7 +54,7 @@ export class V2Driver implements AcpDriver {
     agentName: string,
     stream: Acp.Stream,
     clientVersion: string,
-    updates: SessionUpdateHandler,
+    updates: SessionUpdateSink,
     handlers: ClientHandlers,
   ): Promise<V2Driver> {
     const { permissions } = handlers;

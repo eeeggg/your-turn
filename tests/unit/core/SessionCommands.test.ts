@@ -102,16 +102,17 @@ function setup(scripts: Record<string, AgentScript>, persistedTabs = false) {
   };
   const manager = new SessionManager(
     agents,
-    new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
+    new ConnectionManager('0.0.0-test', () => unusedHandlers),
     environment,
     { chooseAuthMethod: async () => undefined },
+    new SessionUpdateHandler(),
   );
   const globalState = memoryStore();
   const references = new SessionReferences(globalState);
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
   const tabs = new SessionTabs(persistedTabs ? { workspace, references, environment } : undefined);
-  manager.on('session-opened', (sessionId) => {
+  manager.on('session-opened', ({ sessionId }) => {
     const session = manager.getSession(sessionId);
     if (session) { tabs.open(session); }
   });
@@ -213,7 +214,7 @@ describe('SessionCommands', () => {
 
     await commands.selectTab(tabId);
 
-    expect(manager.getActiveAgentName()).toBe('one');
+    expect(manager.getActiveAgentName()).toBe('renamed');
     expect(tabs.snapshot()).toMatchObject({ selectedTabId: tabId, tabs: [{ tabId, agentName: 'renamed' }] });
     expect(tabs.snapshot().tabs).toHaveLength(1);
     expect(agents.launched).toHaveLength(1);
@@ -239,11 +240,13 @@ describe('SessionCommands', () => {
     await commands.closeTab(snapshot.selectedTabId);
 
     expect(tabs.snapshot()).toEqual(snapshot);
-    expect(manager.isConnected('one')).toBe(true);
+    expect(manager.isConnected('renamed')).toBe(true);
+    expect(manager.isConnected('one')).toBe(false);
     expect(user.take()).toEqual([asked('Close this session tab?', 'This stops the turn in progress.', 'Close Tab')]);
     user.answer('Close Tab');
     await commands.closeTab(snapshot.selectedTabId);
     expect(manager.getActiveSessionId()).toBeNull();
+    expect(manager.isConnected('renamed')).toBe(false);
     expect(manager.isConnected('one')).toBe(false);
     expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
   });
@@ -264,7 +267,7 @@ describe('SessionCommands', () => {
 
     await commands.closeTab(dormant);
 
-    expect(manager.getActiveAgentName()).toBe('one');
+    expect(manager.getActiveAgentName()).toBe('renamed');
     expect(tabs.snapshot().selectedTabId).toBe(tabId);
     expect(agents.launched).toHaveLength(1);
     expect(one.requests).toEqual([]);

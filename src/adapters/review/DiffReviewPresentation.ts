@@ -102,6 +102,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     return input instanceof vscode.TabInputTextDiff && this.pathOf(input.original) !== undefined
       ? this.pathOf(input.modified) : this.editors.activePath();
   }
+  captureNavigation(): () => boolean { return this.editors.captureNavigation(); }
   isOpen(path: string): boolean {
     return vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
       input instanceof vscode.TabInputTextDiff && this.baselines.get(path)?.uri.toString() === input.original.toString()))
@@ -119,30 +120,33 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     });
   }
 
-  showChange(path: string): Promise<void> {
+  showChange(path: string, stillCurrent?: () => boolean): Promise<void> {
     return this.present(async () => {
-      if (!enabled() && !this.controls?.deleted(path)) { await this.editors.showChange(path); return; }
+      if (stillCurrent && !stillCurrent()) { return; }
+      if (!enabled() && !this.controls?.deleted(path)) { await this.editors.showChange(path, stillCurrent); return; }
       if (!this.controls?.deleted(path)) { await vscode.workspace.openTextDocument(vscode.Uri.file(path)); }
-      if (this.disposed) { return; }
+      if (this.disposed || (stillCurrent && !stillCurrent())) { return; }
       const changes = this.controls?.changes(path) ?? [];
-      if (changes.length > 0) { await this.showChangeOf(path, changes, 0); }
+      if (changes.length > 0) { await this.showChangeOf(path, changes, 0, stillCurrent); }
       // Disk evidence can precede VS Code's reload of an already-open document.
-      else { await this.showDiff(path, 0); }
+      else { await this.showDiff(path, 0, {}, stillCurrent); }
     });
   }
 
-  showChangeOf(path: string, changes: readonly Change[], index: number): Promise<void> {
+  showChangeOf(path: string, changes: readonly Change[], index: number, stillCurrent?: () => boolean): Promise<void> {
     return this.present(async () => {
-      if (this.controls?.deleted(path)) { await this.showDiff(path, 0); return; }
-      if (!enabled()) { await this.editors.showChangeOf(path, changes, index); return; }
+      if (stillCurrent && !stillCurrent()) { return; }
+      if (this.controls?.deleted(path)) { await this.showDiff(path, 0, {}, stillCurrent); return; }
+      if (!enabled()) { await this.editors.showChangeOf(path, changes, index, stillCurrent); return; }
       const change = changes[index];
       if (!change) { return; }
       const line = Math.max(0, change.modified.start - (change.modified.start === change.modified.end ? 1 : 0));
-      await this.showDiff(path, line);
+      await this.showDiff(path, line, {}, stillCurrent);
     });
   }
 
-  private async showDiff(path: string, line: number, options: vscode.TextDocumentShowOptions = {}): Promise<void> {
+  private async showDiff(path: string, line: number, options: vscode.TextDocumentShowOptions = {}, stillCurrent?: () => boolean): Promise<void> {
+    if (stillCurrent && !stillCurrent()) { return; }
     const baseline = this.controls?.baseline(path);
     if (baseline === undefined) { return; }
     let entry = this.baselines.get(path);
@@ -155,7 +159,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     entry.text = baseline ?? '';
     const target = entry;
     const opening = (entry.opening ?? Promise.resolve()).then(async () => {
-      if (this.baselines.get(path) !== target) { return; }
+      if (this.baselines.get(path) !== target || (stillCurrent && !stillCurrent())) { return; }
       // Tab decorations depend on workbench settings and diff-label rendering; the title remains explicit without them.
       const title = `${basename(path)}${target.deleted ? ' (Deleted)' : ''} — Review`;
       await this.openDiff(target.uri, target.deleted ? target.absent : vscode.Uri.file(path), title, {

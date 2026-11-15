@@ -117,7 +117,6 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
   const connectionManager: ConnectionManager = new ConnectionManager(
-    sessionUpdateHandler,
     (context.extension.packageJSON as { version: string }).version,
     ({ agentName, agentId, elicitations }) => {
       const detachForms = chatViewController.attachElicitations(agentName, elicitations, agentId);
@@ -137,6 +136,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     connectionManager,
     workspaceEnvironment,
     authMethodPicker,
+    sessionUpdateHandler,
   );
   sessionManager.setPersistedState(sessionReferences, workspaceState);
 
@@ -216,9 +216,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
       }
     });
   });
-  sessionUpdateHandler.addListener((sessionId, update, _schema, agentId) => chatViewController.handleSessionUpdate(sessionId, update, agentId));
-  sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
+  sessionUpdateHandler.addListener((delivery) => chatViewController.handleSessionUpdate(delivery));
+  sessionUpdateHandler.addListener(({ input }) => agentTerminals.handleSessionUpdate(input.origin.identity.sessionId, input.update));
   const reviews = new Reviews(workspaceFiles);
+  sessionManager.on('configuration-renamed', (from, to) => reviews.configurationRenamed(from, to));
+  sessionManager.on('source-retired', (sourceId) => reviews.sourceRetired(sourceId));
   let disposal: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     if (disposal) { return disposal; }
@@ -245,7 +247,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const reviewChanges = new vscode.EventEmitter<void>();
   context.subscriptions.push(reviewChanges);
   reviews.addListener(() => reviewChanges.fire());
-  sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
+  sessionUpdateHandler.addListener(({ input }) => { void reviews.handleSessionUpdate(input); });
   const reviewDiffs = factories.createReviewPresentation?.(reviews) ?? new DiffReviewPresentation(reviews);
   const reviewControls = new ReviewControls(reviews, reviewDiffs);
   reviewDiffs.attach(reviewControls);
@@ -253,9 +255,10 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   chatViewController.addTurnListener((inProgress) => reviewPresenters.turnInProgress(inProgress));
   const reviewSourceControl = new ReviewSourceControl(reviewControls, reviews);
   const reviewTakeovers = new ReviewTakeovers(new Takeovers(reviews), reviewControls);
-  sessionManager.on('session-removed', (sessionId) => {
+  sessionManager.on('session-removed', (registration) => {
+    const { sessionId } = registration;
     agentTerminals.endSession(sessionId);
-    reviews.sessionRemoved(sessionId);
+    reviews.sessionRemoved(registration);
     chatViewController.notifySessionRemoved(sessionId);
   });
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
@@ -266,20 +269,19 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
-  sessionManager.on('active-session-changed', (sessionId) => {
-    reviews.activeSessionChanged(sessionId);
+  sessionManager.on('active-session-changed', (registration) => {
+    reviews.activeSessionChanged(registration);
     chatViewController.notifyActiveSessionChanged();
   });
-  sessionManager.on('session-opened', (sessionId) => {
+  sessionManager.on('session-opened', ({ sessionId }) => {
     chatViewController.notifySessionOpened(sessionId);
   });
-  sessionManager.on('session-ended', (sessionId, reason) => {
+  sessionManager.on('session-ended', ({ sessionId }, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
   });
   let turnEndShown = Promise.resolve();
-  sessionManager.on('turn-ended', (sessionId) => {
-    if (sessionId !== sessionManager.getActiveSessionId()) { return; }
-    turnEndShown = reviewControls.turnEnded(sessionId).catch((e: unknown) => logError("Showing the turn's change failed", e));
+  sessionManager.on('turn-ended', (registration) => {
+    turnEndShown = reviewControls.turnEnded(registration).catch((e: unknown) => logError("Showing the turn's change failed", e));
   });
   sessionManager.on('clear-transcript', () => {
     chatViewController.clearTranscript();
@@ -287,16 +289,17 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   sessionManager.on('mode-changed', () => {
     chatViewController.notifyPickersChanged();
   });
-  sessionManager.on('session-load-start', (sessionId) => {
+  sessionManager.on('session-load-start', (load) => {
+    const { sessionId } = load.registration;
     // The load replays the terminals' updates, which would add their chunks to what is kept again.
     agentTerminals.forgetSession(sessionId);
-    reviews.loadStarted(sessionId);
-    chatViewController.notifyLoadSessionStart(sessionId);
+    reviews.loadStarted(load);
+    chatViewController.notifyLoadSessionStart(load);
   });
-  sessionManager.on('session-load-end', (sessionId, _agentName, ok) => {
-    reviews.loadEnded(sessionId);
-    chatViewController.notifyLoadSessionEnd(ok);
-    if (ok) {
+  sessionManager.on('session-load-end', (load, ok) => {
+    reviews.loadEnded(load);
+    const shown = chatViewController.notifyLoadSessionEnd(load, ok);
+    if (ok && shown) {
       // The loadSession response carries modes/configOptions for the
       // restored session. Re-send the state so the pickers pick them up
       // (the original `active-session-changed` was emitted before the RPC
