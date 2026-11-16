@@ -150,6 +150,15 @@ function displayedSelections(session: SessionInfo): Selections {
 
 export type SessionOpening = 'created' | 'loaded' | 'resumed';
 
+/** Runtime admission for review decisions; waiting prompts do not revoke an admitted decision. */
+interface ReviewAdmission {
+  resolutionBlocked(): boolean;
+  onChanged(listener: (retiredSource?: string) => void): () => void;
+  runDecision<T>(action: (stillAdmitted: () => boolean) => Promise<T>): Promise<
+    { kind: 'blocked' } | { kind: 'completed'; value: T }
+  >;
+}
+
 /** The configuration a session was last used through, and the host, when not this window's. */
 interface UsedThrough {
   readonly configuredName: string;
@@ -158,6 +167,7 @@ interface UsedThrough {
 
 /** The events a {@link SessionManager} emits, with the arguments each passes its listeners. */
 export interface SessionManagerEvents {
+  'activity-changed': [retiredSource?: string];
   'connection-changed': [agentName: string];
   'source-retired': [sourceId: string];
   'configuration-renamed': [from: string, to: string];
@@ -184,7 +194,7 @@ export interface SessionManagerEvents {
  * agent process runs per agent name; it is launched on first use, either for a
  * session or to list an agent's sessions, and reused after that.
  */
-export class SessionManager extends EventEmitter<SessionManagerEvents> {
+export class SessionManager extends EventEmitter<SessionManagerEvents> implements ReviewAdmission {
   /** Running agents by agent name. */
   private agents = new Map<string, RunningAgent>();
   /** Launches in progress by agent name, so concurrent callers share one process. */
@@ -198,6 +208,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
 
   private sessions = new Map<string, SessionInfo>();
   private readonly activity = new Map<string, { foreground: ForegroundState | null; submissions: Set<symbol>; agentId: string | undefined }>();
+  private decisions: Promise<void> | undefined;
+  private activityRevision = 0;
   private activeSessionId: string | null = null;
 
   /** Maps agentName → sessionId for the one-session-per-agent model. */
@@ -491,7 +503,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         if (key.startsWith(`[${JSON.stringify(process.id)},`)) { pending.delete(key); }
       }
     }
-    this.clearUnregisteredActivity(process.id);
+    for (const [key, activity] of this.activity) {
+      if (activity.agentId === process.id) { this.activity.delete(key); }
+    }
+    this.emit('activity-changed', process.id);
     this.emit('source-retired', process.id);
   }
 
@@ -523,8 +538,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         else { this.pendingModes.set(key, update.modeId); }
         break;
       case 'foreground':
-        if (registration) { this.applyForegroundState(sessionId, update.state, process.id); }
-        else { this.pendingForeground.set(key, update.state); }
+        this.applyForegroundState(sessionId, update.state, process.id);
+        if (!registration) { this.pendingForeground.set(key, update.state); }
         break;
       default:
         break;
@@ -723,7 +738,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
       prompt.unshift({ kind: 'fileLink', ...fileLink });
     }
 
+    const submission = this.beginPrompt(sessionId);
+    const activity = this.activity.get(JSON.stringify([session.agentId, sessionId]));
+    const decisions = this.decisions;
     try {
+      if (decisions) { await decisions; }
+      if (this.driverFor(session) !== agent.driver) { throw new Error('Prompt session is no longer current.'); }
       await agent.driver.prompt(sessionId, prompt);
     } catch (e) {
       // The connection can close before the process's exit is reported; the exit ends the session and says why,
@@ -732,6 +752,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
         await agent.exited;
       }
       throw e;
+    } finally {
+      activity?.submissions.delete(submission);
+      this.emit('activity-changed');
     }
   }
 
@@ -1155,7 +1178,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
   /** Forget a session; the caller announces any change to the active session. */
   private removeSession(session: SessionInfo): void {
     if (this.sessions.get(session.sessionId) !== session) { return; }
-    this.activity.delete(session.sessionId);
     this.sessions.delete(session.sessionId);
     if (this.agentSessions.get(session.agentName) === session.sessionId) {
       this.agentSessions.delete(session.agentName);
@@ -1219,38 +1241,60 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> {
     return this.sessions.get(sessionId);
   }
 
-  /** Also retains snapshots that arrive before session/new or session/resume answers. */
-  applyForegroundState(sessionId: string, state: ForegroundState, agentId?: string): void {
-    const activity = this.activity.get(sessionId) ?? { foreground: null, submissions: new Set<symbol>(), agentId: agentId ?? this.sessions.get(sessionId)?.agentId };
-    activity.foreground = state;
-    this.activity.set(sessionId, activity);
+  resolutionBlocked(): boolean {
+    return this.disposed || [...this.activity.values()].some((activity) => activity.submissions.size > 0
+      || activity.foreground === 'running' || activity.foreground === 'requiresAction');
   }
 
-  beginPrompt(sessionId: string): symbol {
-    const activity = this.activity.get(sessionId) ?? { foreground: null, submissions: new Set<symbol>(), agentId: this.sessions.get(sessionId)?.agentId };
-    const submission = Symbol(sessionId);
-    activity.submissions.add(submission);
-    this.activity.set(sessionId, activity);
-    return submission;
+  onChanged(listener: (retiredSource?: string) => void): () => void {
+    this.on('activity-changed', listener);
+    return () => { this.off('activity-changed', listener); };
   }
 
-  endPrompt(sessionId: string, submission: symbol): void {
-    this.activity.get(sessionId)?.submissions.delete(submission);
-  }
-
-  clearActivity(sessionId: string): void {
-    this.activity.delete(sessionId);
-  }
-
-  /** An opening that never registered a session must not seed a later connection. */
-  private clearUnregisteredActivity(agentId: string): void {
-    for (const [sessionId, activity] of this.activity) {
-      if (activity.agentId === agentId && !this.sessions.has(sessionId)) { this.activity.delete(sessionId); }
+  async runDecision<T>(action: (stillAdmitted: () => boolean) => Promise<T>): Promise<
+    { kind: 'blocked' } | { kind: 'completed'; value: T }
+  > {
+    if (this.resolutionBlocked()) { return { kind: 'blocked' }; }
+    const previous = this.decisions;
+    let release!: () => void;
+    const settled = new Promise<void>((resolve) => { release = resolve; });
+    this.decisions = settled;
+    try {
+      if (previous) { await previous; }
+      if (this.resolutionBlocked()) { return { kind: 'blocked' }; }
+      const revision = this.activityRevision;
+      const stillAdmitted = () => !this.disposed && this.activityRevision === revision;
+      return { kind: 'completed', value: await action(stillAdmitted) };
+    } finally {
+      if (this.decisions === settled) { this.decisions = undefined; }
+      release();
     }
   }
 
+  /** Also retains snapshots that arrive before session/new or session/resume answers. */
+  applyForegroundState(sessionId: string, state: ForegroundState, agentId?: string): void {
+    agentId ??= this.sessions.get(sessionId)?.agentId;
+    const key = JSON.stringify([agentId, sessionId]);
+    const activity = this.activity.get(key) ?? { foreground: null, submissions: new Set<symbol>(), agentId };
+    activity.foreground = state;
+    this.activity.set(key, activity);
+    if (state === 'running' || state === 'requiresAction') { this.activityRevision++; }
+    this.emit('activity-changed');
+  }
+
+  private beginPrompt(sessionId: string): symbol {
+    const agentId = this.sessions.get(sessionId)?.agentId;
+    const key = JSON.stringify([agentId, sessionId]);
+    const activity = this.activity.get(key) ?? { foreground: null, submissions: new Set<symbol>(), agentId };
+    const submission = Symbol(sessionId);
+    activity.submissions.add(submission);
+    this.activity.set(key, activity);
+    this.emit('activity-changed');
+    return submission;
+  }
+
   hasForegroundWork(sessionId: string): boolean {
-    const activity = this.activity.get(sessionId);
+    const activity = this.activity.get(JSON.stringify([this.sessions.get(sessionId)?.agentId, sessionId]));
     return activity !== undefined && (activity.submissions.size > 0 || activity.foreground === 'running' || activity.foreground === 'requiresAction');
   }
 

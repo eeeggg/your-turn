@@ -4,6 +4,7 @@ import { logError } from '@/core/Log';
 import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
+import type { ReviewDecision } from '@/core/review/Reviews';
 import { createReviewEditors } from '@/adapters/review/ReviewPresenters';
 
 const SCHEME = 'your-turn-review-diff';
@@ -25,6 +26,9 @@ interface LensChange {
   readonly baseline: string;
   readonly document: string;
   readonly index: number;
+  readonly change: Change;
+  readonly keep: ReviewDecision;
+  readonly undo: ReviewDecision;
 }
 
 /** Existing files stay editable; deleted files compare the retained baseline with a read-only virtual absence. */
@@ -109,14 +113,13 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       || this.editors.isOpen(path);
   }
   text(path: string): string | undefined { return this.editors.text(path); }
-  applyEdit(path: string, edit: Parameters<ReviewEditors['applyEdit']>[1]): Promise<boolean> { return this.editors.applyEdit(path, edit); }
-  save(path: string): Promise<void> { return this.editors.save(path); }
   showError(message: string): void { this.editors.showError(message); }
 
-  open(path: string): Promise<void> {
+  open(path: string, stillCurrent?: () => boolean): Promise<void> {
     return this.present(async () => {
-      if ((enabled() || this.controls?.deleted(path)) && this.controls?.baseline(path) !== undefined) { await this.showChange(path); }
-      else { await this.editors.open(path); }
+      if (stillCurrent && !stillCurrent()) { return; }
+      if ((enabled() || this.controls?.deleted(path)) && this.controls?.baseline(path) !== undefined) { await this.showChange(path, stillCurrent); }
+      else { await this.editors.open(path, stillCurrent); }
     });
   }
 
@@ -192,7 +195,10 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       const side = original ? change.original : change.modified;
       const line = Math.min(document.lineCount - 1, Math.max(0, side.start - (side.end === side.start ? 1 : 0)));
       const range = new vscode.Range(line, 0, line, 0);
-      const snapshot: LensChange = { review: String(this.generation), path, baseline: baseline ?? '', document: text, index };
+      const keep = this.reviews.captureDecision({ action: 'keep-change', path, change });
+      const undo = this.reviews.captureDecision({ action: 'undo-change', path, change });
+      if (!keep || !undo) { return []; }
+      const snapshot: LensChange = { review: String(this.generation), path, baseline: baseline ?? '', document: text, index, change, keep, undo };
       return [
         new vscode.CodeLens(range, { title: `Change ${index + 1} of ${changes.length}`, command: '' }),
         new vscode.CodeLens(range, { title: 'Keep Change', command: 'your-turn.keepDiffChange', arguments: [snapshot] }),
@@ -206,13 +212,17 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     if (this.disposed || !enabled() || !this.controls) { return; }
     let path: string;
     let change: Change | undefined;
-    if (argument && typeof argument === 'object' && 'review' in argument) {
+    let captured: ReviewDecision | undefined;
+    if (argument !== undefined) {
+      if (!argument || typeof argument !== 'object' || !('review' in argument)) { return; }
       const snapshot = argument as Partial<LensChange>;
       if (snapshot.review !== String(this.generation) || typeof snapshot.path !== 'string'
         || typeof snapshot.index !== 'number' || !Number.isInteger(snapshot.index)) { return; }
       path = snapshot.path;
       if ((this.controls.baseline(path) ?? '') !== snapshot.baseline || this.text(path) !== snapshot.document) { return; }
-      change = this.controls.changes(path)[snapshot.index];
+      change = snapshot.change;
+      captured = action === 'keep' ? snapshot.keep : snapshot.undo;
+      if (!captured) { return; }
     } else {
       const selected = this.selectedChange();
       if (!selected) { return; }
@@ -220,8 +230,8 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       change = selected.change;
     }
     if (change) {
-      if (action === 'keep') { await this.controls.keepChange(path, change); }
-      else { await this.controls.undoChange(path, change); }
+      if (action === 'keep') { await this.controls.keepChange(path, change, captured); }
+      else { await this.controls.undoChange(path, change, captured); }
       await this.latest;
     }
   }

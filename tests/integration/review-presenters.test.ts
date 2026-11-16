@@ -65,7 +65,10 @@ suite('Review presenters', () => {
     b = path.join(folder, 'b.txt');
     fs.writeFileSync(a, 'one\nadded\n');
     fs.writeFileSync(b, 'B\n');
-    owned.reviews = reviews = new Reviews(workspaceFiles);
+    owned.reviews = reviews = new Reviews(workspaceFiles, {
+      resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+    });
     owned.editors = createReviewEditors();
     controls = new ReviewControls(reviews, owned.editors);
     const record = recording();
@@ -134,7 +137,7 @@ suite('Review presenters', () => {
       const finishedAtDisposal = Promise.resolve(disposed).then(() => finished);
       assert.strictEqual(subject.dispose(), disposed);
       const before = updates;
-      reviews.shown()?.keepFile(b);
+      await controls.keepFile(b);
       subject.turnInProgress(true);
       await open(b);
       release();
@@ -368,7 +371,7 @@ suite('Review presenters', () => {
     await controls.keepFile(b);
     assert.strictEqual(activeFile(), a);
     assert.strictEqual(shown.position, '1 of 1');
-    controls.keepAll();
+    await controls.keepAll();
     assert.strictEqual(shown.position, '0 of 0');
     reviews.activeSessionChanged(null);
     assert.strictEqual(shown.position, undefined);

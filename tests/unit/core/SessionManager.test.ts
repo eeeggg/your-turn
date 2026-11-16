@@ -8,10 +8,12 @@ import type {
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import {
   UnknownSession,
+  type AcpDriver,
   type AuthMethod,
 } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { Reviews } from '@/core/review/Reviews';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import {
   AuthenticationCancelled,
@@ -68,14 +70,26 @@ describe('SessionManager', () => {
   });
 
   it.each([false, true])('retains every outstanding submission when the newer one ends (reported idle: %s)', async (reportedIdle) => {
-    const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+    const replies: (() => void)[] = [];
+    let receive!: () => void;
+    const received = new Promise<void>((resolve) => { receive = resolve; });
+    const { manager } = setup({ fake: sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+      await new Promise<void>((resolve) => {
+        replies.push(resolve);
+        if (replies.length === 2) { receive(); }
+      });
+      return { stopReason: 'end_turn' };
+    })).script });
     await manager.connectToAgent('fake');
-    const first = manager.beginPrompt(FIRST_SESSION);
-    const second = manager.beginPrompt(FIRST_SESSION);
-    if (reportedIdle) { manager.applyForegroundState(FIRST_SESSION, 'idle'); }
-    manager.endPrompt(FIRST_SESSION, second);
-    expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
-    manager.endPrompt(FIRST_SESSION, first);
+    const first = manager.sendPrompt(FIRST_SESSION, 'first');
+    const second = manager.sendPrompt(FIRST_SESSION, 'second');
+    await received;
+    try {
+      if (reportedIdle) { manager.applyForegroundState(FIRST_SESSION, 'idle'); }
+      replies[1]?.();
+      await second;
+      expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
+    } finally { replies[0]?.(); await first; }
     expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(false);
   });
 
@@ -695,6 +709,423 @@ describe('SessionManager', () => {
   });
 
   describe('prompts and session controls', () => {
+    it.each(['running', 'requiresAction'] as const)('blocks review authority decisions while an unregistered sibling reports %s', async (state) => {
+      const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      const selected = await manager.connectToAgent('fake');
+      const subject = new Reviews({ read: async () => 'A', restore: async () => {}, watch: () => ({ dispose() {} }), snapshot: () => undefined,
+        applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
+      }, manager);
+      onTestFinished(() => subject.dispose());
+      subject.activeSessionChanged(selected);
+      await subject.handleSessionUpdate({ origin: {
+        identity: { configuredName: selected.agentName, sessionId: selected.sessionId }, sourceId: selected.agentId,
+      }, schema: 'v1', update: { kind: 'toolCall', toolCallId: 'edit', status: 'completed',
+        content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/a.ts', oldText: 'a', newText: 'A' } }],
+      } });
+      const captured = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+      if (!captured) { throw new Error('Missing decision'); }
+      manager.applyForegroundState(SECOND_SESSION, state, 'sibling-source');
+      expect(await subject.decide(captured)).toMatchObject({ kind: 'blocked' });
+      expect(subject.shown()?.files()).toEqual([{ path: '/w/a.ts', baseline: 'a', current: 'A' }]);
+      manager.applyForegroundState(SECOND_SESSION, 'idle', 'sibling-source');
+      expect(await subject.decide(captured)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+    });
+
+    it('clears selected Stop on source retirement while a local prompt continuation remains unfinished', async () => {
+      let release!: () => void;
+      let start!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { start = resolve; });
+      const { manager, connections, chatView, executeCommand } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      const connect = connections.connect.bind(connections);
+      vi.spyOn(connections, 'connect').mockImplementation(async (...args) => {
+        const driver = await connect(...args);
+        vi.spyOn(driver, 'prompt').mockImplementationOnce(async () => { start(); await gate; });
+        return driver;
+      });
+      await manager.connectToAgent('fake');
+      await chatView.handleMessage({ type: 'ready' });
+      const turn = chatView.handleMessage({ type: 'sendPrompt', text: 'go' });
+      await entered;
+      try {
+        await manager.disconnectAgent('fake');
+        expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', false);
+      } finally { release(); await turn; }
+    });
+
+    it('keeps a replacement source submission busy when a retired source continuation settles late', async () => {
+      let release!: () => void;
+      let start!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { start = resolve; });
+      const fake = sessionAgent([FIRST_SESSION, FIRST_SESSION], (app) => app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })));
+      const { manager, connections, chatView, executeCommand } = setup({ fake: fake.script });
+      const drivers: AcpDriver[] = [];
+      const connect = connections.connect.bind(connections);
+      vi.spyOn(connections, 'connect').mockImplementation(async (...args) => {
+        const driver = await connect(...args);
+        drivers.push(driver);
+        return driver;
+      });
+      await manager.connectToAgent('fake');
+      await chatView.handleMessage({ type: 'ready' });
+      const oldDriver = drivers[0];
+      if (!oldDriver) { throw new Error('Missing old driver'); }
+      vi.spyOn(oldDriver, 'prompt').mockImplementationOnce(async () => { start(); await gate; });
+      const oldTurn = chatView.handleMessage({ type: 'sendPrompt', text: 'old' });
+      await entered;
+      await manager.disconnectAgent('fake');
+      await manager.connectToAgent('fake');
+      const driver = drivers[1];
+      if (!driver) { throw new Error('Missing replacement driver'); }
+      let finish!: () => void;
+      const pending = new Promise<void>((resolve) => { finish = resolve; });
+      vi.spyOn(driver, 'prompt').mockImplementationOnce(async () => { await pending; });
+      const newTurn = manager.sendPrompt(FIRST_SESSION, 'new');
+      try {
+        expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
+        release();
+        await oldTurn;
+        expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
+        expect(manager.resolutionBlocked()).toBe(true);
+        expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
+      } finally { release(); finish(); await Promise.all([oldTurn, newTurn]); }
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('updates selected Stop for direct runtime prompts and clears it when dispatch settles', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+        await gate;
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager, chatView, executeCommand } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      await chatView.handleMessage({ type: 'ready' });
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try {
+        expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', true);
+      } finally { release(); await turn; }
+      expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', false);
+    });
+
+    it('blocks an idle-queued decision when a prompt is submitted before it executes', async () => {
+      let release!: () => void;
+      let start!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { start = resolve; });
+      const effects: string[] = [];
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, () => {
+        effects.push('prompt');
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const first = manager.runDecision(async () => { start(); await gate; });
+      await entered;
+      const second = manager.runDecision(async () => { effects.push('second'); });
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      release();
+      await first;
+      expect(await second).toEqual({ kind: 'blocked' });
+      await turn;
+      expect(effects).toEqual(['prompt']);
+    });
+
+    it('publishes activity changes before dispatch and after settlement, and removes listeners', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+        await gate;
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const heard: boolean[] = [];
+      const unsubscribe = manager.onChanged(() => heard.push(manager.resolutionBlocked()));
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try {
+        expect(heard).toEqual([true]);
+        release();
+        await turn;
+        expect(heard).toEqual([true, false]);
+      } finally { release(); await turn; unsubscribe(); }
+      manager.applyForegroundState(FIRST_SESSION, 'running');
+      expect(heard).toEqual([true, false]);
+    });
+
+    it('serializes idle decisions and releases admission when the earlier decision fails', async () => {
+      let release!: () => void;
+      let start!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { start = resolve; });
+      const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      await manager.connectToAgent('fake');
+      const effects: string[] = [];
+      const first = manager.runDecision(async () => {
+        effects.push('first');
+        start();
+        await gate;
+        throw new Error('Restore failed');
+      });
+      const failed = expect(first).rejects.toThrow('Restore failed');
+      await entered;
+      const second = manager.runDecision(async () => { effects.push('second'); return 'done'; });
+      try { expect(effects).toEqual(['first']); }
+      finally { release(); await failed; }
+      expect(await second).toEqual({ kind: 'completed', value: 'done' });
+      expect(effects).toEqual(['first', 'second']);
+    });
+
+    it('does not dispatch a waiting prompt after its captured registration is replaced', async () => {
+      let release!: () => void;
+      let start!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { start = resolve; });
+      const prompts: string[] = [];
+      const fake = sessionAgent(FIRST_SESSION, (app) => app
+        .onRequest(methods.agent.session.load, () => ({}))
+        .onRequest(methods.agent.session.prompt, ({ params }) => {
+          prompts.push(params.sessionId);
+          return { stopReason: 'end_turn' };
+        }), { agentCapabilities: { loadSession: true } });
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const decision = manager.runDecision(async () => { start(); await gate; });
+      await entered;
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      const failed = expect(turn).rejects.toThrow('Prompt session is no longer current');
+      try { await manager.loadSession('fake', FIRST_SESSION); }
+      finally { release(); await decision; await failed; }
+      expect(prompts).toEqual([]);
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('does not let a controller removal notification release an unfinished runtime submission', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+        await gate;
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager, chatView } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try {
+        chatView.notifySessionRemoved(FIRST_SESSION);
+        expect(manager.resolutionBlocked()).toBe(true);
+      } finally { release(); await turn; }
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it.each(['running', 'requires_action'] as const)('blocks decisions for an unregistered source reporting %s, until only that source retires', async (state) => {
+      let client!: V2.AgentContext;
+      const { manager, receivedAtLeast } = setup({
+        fake: sessionAgent(FIRST_SESSION).script,
+        other: () => fakeV2Agent().onRequest(V2.methods.agent.session.list, ({ client: connected }) => {
+          client = connected;
+          return { sessions: [] };
+        }),
+      });
+      await manager.connectToAgent('fake');
+      await manager.listSessions('other');
+      const received = receivedAtLeast(1);
+      const update: V2.UpdateSessionNotification['update'] = state === 'running'
+        ? { sessionUpdate: 'state_update', state: 'running' }
+        : { sessionUpdate: 'state_update', state: 'requires_action' };
+      await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update });
+      await received;
+      expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(false);
+      let executed = false;
+      expect(await manager.runDecision(async () => { executed = true; })).toEqual({ kind: 'blocked' });
+      expect(executed).toBe(false);
+      await manager.disconnectAgent('fake');
+      expect(manager.resolutionBlocked()).toBe(true);
+      await manager.disconnectAgent('other');
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('keeps a removed registration submission busy until it settles on the accepting source', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app
+        .onRequest(methods.agent.session.load, () => ({}))
+        .onRequest(methods.agent.session.prompt, async () => {
+          await gate;
+          return { stopReason: 'end_turn' };
+        }), { agentCapabilities: { loadSession: true } });
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try {
+        await manager.loadSession('fake', SECOND_SESSION);
+        expect(manager.hasForegroundWork(SECOND_SESSION)).toBe(false);
+        expect(manager.resolutionBlocked()).toBe(true);
+      } finally { release(); await turn; }
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it.each(['running', 'requiresAction'] as const)('invalidates an admitted decision after reported %s even if idle follows before its next stage', async (state) => {
+      let release!: () => void;
+      let start!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { start = resolve; });
+      const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      await manager.connectToAgent('fake');
+      const decision = manager.runDecision(async (stillAdmitted) => {
+        start();
+        await gate;
+        return stillAdmitted();
+      });
+      await entered;
+      try {
+        manager.applyForegroundState(FIRST_SESSION, state);
+        manager.applyForegroundState(FIRST_SESSION, 'idle');
+      } finally { release(); }
+      expect(await decision).toEqual({ kind: 'completed', value: false });
+    });
+
+    it('retains an outstanding submission through configuration rename and releases its captured activity', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+        await gate;
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try {
+        manager.agentsChanged({ fake: { command: 'fake' } }, { renamed: { command: 'fake' } });
+        expect(manager.getSession(FIRST_SESSION)?.agentName).toBe('renamed');
+        expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
+        expect(await manager.runDecision(async () => 'unexpected')).toEqual({ kind: 'blocked' });
+      } finally { release(); await turn; }
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('releases a waiting prompt after an admitted decision fails', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const prompts: string[] = [];
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, ({ params }) => {
+        prompts.push(params.sessionId);
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const decision = manager.runDecision(async () => { await gate; throw new Error('Restore failed'); });
+      const failed = expect(decision).rejects.toThrow('Restore failed');
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try { expect(prompts).toEqual([]); }
+      finally { release(); await failed; await turn; }
+      expect(prompts).toEqual([FIRST_SESSION]);
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('does not dispatch a waiting prompt after its accepting source retires', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const { manager, connections } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+      const connect = connections.connect.bind(connections);
+      const dispatched: string[] = [];
+      vi.spyOn(connections, 'connect').mockImplementation(async (...args) => {
+        const driver = await connect(...args);
+        vi.spyOn(driver, 'prompt').mockImplementation(async (sessionId) => { dispatched.push(sessionId); });
+        return driver;
+      });
+      await manager.connectToAgent('fake');
+      const decision = manager.runDecision(async () => { await gate; });
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      const failed = expect(turn).rejects.toThrow('Prompt session is no longer current');
+      try { await manager.disconnectAgent('fake'); }
+      finally { release(); await decision; await failed; }
+      expect(dispatched).toEqual([]);
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it.each(['resolve', 'reject'] as const)('releases direct prompt activity when dispatch settles by %s', async (outcome) => {
+      let release!: () => void;
+      const reply = new Promise<void>((resolve) => { release = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+        await reply;
+        if (outcome === 'reject') { throw RequestError.internalError(undefined, 'Prompt refused'); }
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      const settled = outcome === 'reject'
+        ? expect(turn).rejects.toThrow('Prompt refused')
+        : expect(turn).resolves.toBeUndefined();
+      try {
+        expect(manager.resolutionBlocked()).toBe(true);
+      } finally { release(); await settled; }
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('accounts a prompt immediately but dispatches it only after an admitted decision settles', async () => {
+      let release!: () => void;
+      let started!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const entered = new Promise<void>((resolve) => { started = resolve; });
+      const prompts: string[] = [];
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, ({ params }) => {
+        prompts.push(params.sessionId);
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      let valid: (() => boolean) | undefined;
+      const decision = manager.runDecision(async (stillAdmitted) => {
+        valid = stillAdmitted;
+        started();
+        await gate;
+        return stillAdmitted();
+      });
+      await entered;
+      const turn = manager.sendPrompt(FIRST_SESSION, 'go');
+      try {
+        expect(manager.resolutionBlocked()).toBe(true);
+        expect(prompts).toEqual([]);
+        expect(valid?.()).toBe(true);
+        let executed = false;
+        expect(await manager.runDecision(async () => { executed = true; })).toEqual({ kind: 'blocked' });
+        expect(executed).toBe(false);
+      } finally { release(); }
+      expect(await decision).toEqual({ kind: 'completed', value: true });
+      await turn;
+      expect(prompts).toEqual([FIRST_SESSION]);
+      expect(manager.resolutionBlocked()).toBe(false);
+    });
+
+    it('accounts a direct prompt before dispatch settles and releases it on completion', async () => {
+      let release!: () => void;
+      let receive!: () => void;
+      const reply = new Promise<void>((resolve) => { release = resolve; });
+      const received = new Promise<void>((resolve) => { receive = resolve; });
+      const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+        receive();
+        await reply;
+        return { stopReason: 'end_turn' };
+      }));
+      const { manager, chatView } = setup({ fake: fake.script });
+      await manager.connectToAgent('fake');
+      await chatView.dispose();
+
+      const turn = manager.sendPrompt(FIRST_SESSION, 'explain this');
+      try {
+        expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
+        await received;
+        expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(true);
+      } finally {
+        release();
+        await turn;
+      }
+      expect(manager.hasForegroundWork(FIRST_SESSION)).toBe(false);
+    });
+
     it('sends the prompt with the active file linked first', async () => {
       const prompts: unknown[] = [];
       const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, ({ params }) => {

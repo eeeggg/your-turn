@@ -4,22 +4,86 @@ import { FollowedFiles, type WatchFile } from '@/core/review/FollowedFiles';
 import { Review, type ReadFile, type RestoreFile, type ReviewedFile } from '@/core/review/Review';
 import { V1Guard } from '@/core/review/V1Guard';
 import { V2Guard } from '@/core/review/V2Guard';
+import { keptChange, undoneChange, type Change, type TextEdit } from '@/core/review/Hunks';
+import { lineChanges, splitLines } from '@/core/diff/LineChanges';
+import { Takeovers, type DocumentEdit, type EditSource } from '@/core/review/Takeovers';
 
 /** What reviews need of the files they review. */
 export interface ReviewFiles {
   read: ReadFile;
   restore: RestoreFile;
   watch: WatchFile;
+  snapshot(path: string): ReviewDocument | undefined;
+  applyEdit(path: string, edit: TextEdit, stillCurrent: () => boolean): Promise<boolean>;
+  save(path: string): Promise<void>;
+}
+
+interface ReviewDocument {
+  readonly instance: object;
+  readonly version: number;
+  readonly dirty: boolean;
+  readonly text: string;
 }
 
 /** The shown review changed: another session's is shown, or a file in it came under review, changed or left it. */
 export type ShownReviewListener = () => void;
 
+export interface ReviewAdmission {
+  resolutionBlocked(): boolean;
+  onChanged(listener: () => void): () => void;
+  runDecision<T>(action: (stillAdmitted: () => boolean) => Promise<T>): Promise<
+    { kind: 'blocked' } | { kind: 'completed'; value: T }
+  >;
+}
+
+export interface ReviewDecisionRequest {
+  readonly action: 'keep-file' | 'keep-all' | 'undo-file' | 'keep-change' | 'undo-change';
+  readonly path?: string;
+  readonly change?: Change;
+}
+
+export interface ReviewDecision {
+  readonly action: ReviewDecisionRequest['action'];
+}
+
+export interface ReviewDocumentObservation {
+  readonly path: string;
+  readonly source: EditSource;
+  readonly before: string;
+  readonly after: string;
+  readonly edits: readonly DocumentEdit[];
+}
+
+export type ReviewDecisionResult =
+  | { readonly kind: 'applied'; readonly saved: boolean; readonly resolved: readonly string[] }
+  | { readonly kind: 'blocked' | 'stale'; readonly reason: string }
+  | { readonly kind: 'failed'; readonly reason: string; readonly applied: readonly string[]; readonly unsaved: readonly string[] };
+
 interface SessionReview {
   identity: SessionIdentity;
   readonly review: Review;
+  readonly view: ReviewView;
   readonly guards: Map<string, { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard }>;
   readonly followed: FollowedFiles;
+  readonly takeovers: Takeovers;
+}
+
+interface ReviewView {
+  files(): readonly ReviewedFile[];
+  file(path: string): ReviewedFile | undefined;
+}
+
+class CapturedDecision implements ReviewDecision {
+  constructor(
+    readonly action: ReviewDecisionRequest['action'],
+    readonly owner: Reviews,
+    readonly entry: SessionReview,
+    readonly registration: SessionRegistration,
+    readonly revision: number,
+    readonly files: readonly ReviewedFile[],
+    readonly documents: readonly (ReviewDocument | undefined)[],
+    readonly change: Change | undefined,
+  ) {}
 }
 
 const keyOf = ({ configuredName, sessionId }: SessionIdentity): string => JSON.stringify([configuredName, sessionId]);
@@ -42,8 +106,152 @@ export class Reviews {
   private selectionRevision = 0;
   private disposed = false;
   private disposal: Promise<void> | undefined;
+  private readonly detachAdmission: () => void;
+  private effect: CapturedDecision | undefined;
 
-  constructor(private readonly files: ReviewFiles) {}
+  constructor(private readonly files: ReviewFiles, private readonly admission: ReviewAdmission) {
+    this.detachAdmission = admission.onChanged(() => this.changed());
+  }
+
+  resolutionBlocked(): boolean { return this.admission.resolutionBlocked(); }
+
+  captureSelection(): () => boolean {
+    const registration = this.selected;
+    const revision = this.selectionRevision;
+    return () => !this.disposed && this.selected === registration && this.selectionRevision === revision;
+  }
+
+  observeDocument({ path, source, before, after, edits }: ReviewDocumentObservation): void {
+    if (this.disposed) { return; }
+    if ((source === 'review' || source === 'save') && this.effect?.files.some((file) => file.path === path)) {
+      this.effect.entry.takeovers.edited(path, source, before, after, edits);
+      return;
+    }
+    if (this.shownSessionId !== null) { this.sessions.get(this.shownSessionId)?.takeovers.edited(path, source, before, after, edits); }
+  }
+
+  captureDecision(request: ReviewDecisionRequest): ReviewDecision | undefined {
+    const registration = this.selected;
+    const entry = this.shownSessionId === null ? undefined : this.sessions.get(this.shownSessionId);
+    if (this.disposed || !registration || !entry) { return undefined; }
+    const files = request.action === 'keep-all' ? entry.review.files()
+      : request.path === undefined ? [] : [entry.review.file(request.path)].filter((file) => file !== undefined);
+    if (files.length === 0) { return undefined; }
+    const documents = files.map((file) => this.files.snapshot(file.path));
+    if (request.action === 'keep-change' || request.action === 'undo-change') {
+      const file = files[0];
+      const document = documents[0];
+      const change = request.change;
+      if (file?.current == null || !document || !change
+        || !lineChanges(splitLines(file.baseline ?? ''), splitLines(document.text)).some((candidate) =>
+          candidate.original.start === change.original.start && candidate.original.end === change.original.end
+          && candidate.modified.start === change.modified.start && candidate.modified.end === change.modified.end)) { return undefined; }
+    }
+    return new CapturedDecision(request.action, this, entry, registration, this.selectionRevision, files,
+      documents, request.change && { original: { ...request.change.original }, modified: { ...request.change.modified } });
+  }
+
+  async decide(decision: ReviewDecision): Promise<ReviewDecisionResult> {
+    const stale = (): ReviewDecisionResult => ({ kind: 'stale', reason: 'The review decision is no longer current.' });
+    const blocked = (): ReviewDecisionResult => ({ kind: 'blocked', reason: 'Workspace activity blocks review resolution.' });
+    if (!(decision instanceof CapturedDecision) || decision.owner !== this) { return stale(); }
+    const admitted = await this.admission.runDecision(async (stillAdmitted): Promise<ReviewDecisionResult> => {
+      if (!stillAdmitted()) { return blocked(); }
+      if (!this.decisionCurrent(decision)) { return stale(); }
+      if (decision.action === 'keep-change' || decision.action === 'undo-change') {
+        const file = decision.files[0];
+        const document = decision.documents[0];
+        const change = decision.change;
+        if (!file || !document || !change) { return stale(); }
+        let applied = false;
+        try {
+          this.effect = decision;
+          const edit = decision.action === 'undo-change' ? undoneChange(file.baseline ?? '', document.text, change) : undefined;
+          if (decision.action === 'keep-change') {
+            decision.entry.review.setBaseline(file.path, keptChange(file.baseline ?? '', document.text, change));
+          } else if (edit && !(await this.files.applyEdit(file.path, edit,
+            () => stillAdmitted() && this.decisionCurrent(decision)))) {
+            if (!stillAdmitted()) { return blocked(); }
+            if (!this.decisionCurrent(decision)) { return stale(); }
+            throw new Error('The change could not be undone.');
+          }
+          applied = true;
+          if (!stillAdmitted()) { throw new Error('Workspace activity interrupted review resolution after the change was applied.'); }
+          const actual = this.files.snapshot(file.path);
+          const expected = edit ? document.text.slice(0, edit.start) + edit.text + document.text.slice(edit.end) : document.text;
+          const pending = decision.entry.review.file(file.path);
+          if (!this.decisionOwnerCurrent(decision) || actual?.instance !== document.instance
+            || actual.text !== expected || actual.version !== document.version + (edit ? 1 : 0)
+            || (edit && pending !== file)) {
+            throw new Error('The review target changed after the change was applied.');
+          }
+          await this.files.save(file.path);
+          return { kind: 'applied', saved: true,
+            resolved: decision.entry.review.file(file.path) ? [] : [file.path] };
+        } catch (error) {
+          return { kind: 'failed', reason: error instanceof Error ? error.message : String(error),
+            applied: applied ? [file.path] : [], unsaved: applied ? [file.path] : [] };
+        } finally {
+          this.effect = undefined;
+        }
+      }
+      try {
+        for (const file of decision.files) {
+          if (file.current === null && await this.files.read(file.path) !== null) { return stale(); }
+          if (!stillAdmitted()) { return blocked(); }
+          if (!this.decisionCurrent(decision)) { return stale(); }
+        }
+      } catch (error) {
+        return { kind: 'failed', reason: error instanceof Error ? error.message : String(error), applied: [], unsaved: [] };
+      }
+      if (decision.action === 'undo-file') {
+        const file = decision.files[0];
+        if (!file) { return stale(); }
+        try {
+          if (await this.files.read(file.path) !== file.current) { return stale(); }
+          if (!stillAdmitted()) { return blocked(); }
+          if (!this.decisionCurrent(decision)) { return stale(); }
+          this.effect = decision;
+          await this.files.restore(file.path, file.baseline, (preparedDocument) =>
+            stillAdmitted() && this.decisionCurrent(decision, preparedDocument));
+          const saved = !decision.documents[0]?.dirty || file.baseline === null;
+          const remaining = decision.entry.review.file(file.path);
+          if (remaining && remaining !== file) {
+            return { kind: 'failed', reason: 'The review target changed after the file was restored.', applied: [file.path], unsaved: [] };
+          }
+          if (saved && remaining === file) { decision.entry.review.read(file.path, file.baseline); }
+          return { kind: 'applied', saved, resolved: saved ? [file.path] : [] };
+        } catch (error) {
+          if (!stillAdmitted()) { return blocked(); }
+          if (!this.decisionCurrent(decision)) { return stale(); }
+          return { kind: 'failed', reason: error instanceof Error ? error.message : String(error), applied: [], unsaved: [] };
+        } finally {
+          this.effect = undefined;
+        }
+      }
+      for (const file of decision.files) { decision.entry.review.keepFile(file.path); }
+      return { kind: 'applied', saved: true, resolved: decision.files.map((file) => file.path) };
+    });
+    return admitted.kind === 'blocked' ? blocked() : admitted.value;
+  }
+
+  private decisionCurrent(decision: CapturedDecision, preparedDocument?: object): boolean {
+    return this.decisionOwnerCurrent(decision)
+      && decision.files.every((file, index) => {
+        const captured = decision.documents[index];
+        const document = this.files.snapshot(file.path);
+        return decision.entry.review.file(file.path) === file
+          && ((!captured && preparedDocument !== undefined && document?.instance === preparedDocument
+            && !document.dirty && document.text === file.current)
+            || (captured?.instance === document?.instance && captured?.version === document?.version
+              && captured?.dirty === document?.dirty && captured?.text === document?.text));
+      });
+  }
+
+  private decisionOwnerCurrent(decision: CapturedDecision): boolean {
+    return !this.disposed && this.selected === decision.registration && this.selectionRevision === decision.revision
+      && this.sessions.get(keyOf(decision.entry.identity)) === decision.entry;
+  }
 
   configurationRenamed(from: string, to: string): void {
     if (this.selected) { this.shownSessionId = keyOf(identityOf(this.selected)); }
@@ -81,16 +289,8 @@ export class Reviews {
     return this.shownSessionId !== null;
   }
 
-  shown(): Review | undefined {
-    return this.shownSessionId === null ? undefined : this.sessions.get(this.shownSessionId)?.review;
-  }
-
-  /** A deletion decision must still belong to the shown review and to an absent disk file. */
-  async deletionCurrent(file: ReviewedFile): Promise<boolean> {
-    const review = this.shown();
-    if (file.current !== null || review?.file(file.path) !== file) { return false; }
-    const content = await this.files.read(file.path);
-    return content === null && this.shown() === review && review.file(file.path) === file;
+  shown(): ReviewView | undefined {
+    return this.shownSessionId === null ? undefined : this.sessions.get(this.shownSessionId)?.view;
   }
 
   /** Settles once the files its evidence names were read. */
@@ -115,7 +315,7 @@ export class Reviews {
   }
 
   /** Settles once the session's updates so far were taken, as its turn can end before the files they name were read. */
-  async afterShownTurn(registration: SessionRegistration, present: (review: Review, stillSelected: () => boolean) => Promise<void>): Promise<void> {
+  async afterShownTurn(registration: SessionRegistration, present: (review: ReviewView, stillSelected: () => boolean) => Promise<void>): Promise<void> {
     if (this.disposed || this.selected !== registration) { return; }
     const entry = this.sessions.get(keyOf(identityOf(registration)));
     if (!entry) { return; }
@@ -124,7 +324,7 @@ export class Reviews {
     const current = () => !this.disposed && this.selected === registration && this.selectionRevision === revision
       && this.sessions.get(keyOf(entry.identity)) === entry;
     await taken;
-    if (current()) { await present(entry.review, current); }
+    if (current()) { await present(entry.view, current); }
   }
 
   loadStarted(load: SessionLoad): void {
@@ -158,6 +358,7 @@ export class Reviews {
   dispose(): Promise<void> {
     if (this.disposal) { return this.disposal; }
     this.disposed = true;
+    this.detachAdmission();
     this.listeners.clear();
     this.shownSessionId = null;
     this.selected = null;
@@ -182,7 +383,9 @@ export class Reviews {
       review.addListener(() => {
         if (session && keyOf(session.identity) === this.shownSessionId) { this.changed(); }
       });
-      session = { identity, review, guards: new Map(), followed: new FollowedFiles(review, this.files.read, this.files.watch) };
+      const takeovers = new Takeovers({ shown: () => review, addListener: (listener) => review.addListener(listener) });
+      const view: ReviewView = Object.freeze({ files: () => review.files(), file: (path: string) => review.file(path) });
+      session = { identity, review, view, guards: new Map(), followed: new FollowedFiles(review, this.files.read, this.files.watch), takeovers };
       this.sessions.set(sessionId, session);
     }
     return session;

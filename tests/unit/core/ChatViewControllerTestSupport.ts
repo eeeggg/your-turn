@@ -8,10 +8,8 @@ import {
   type ChatViewEnvironment
 } from '@/core/ChatViewController';
 import type { FileEditor } from '@/core/ReportedFiles';
-import { SessionManager, type SessionInfo } from '@/core/SessionManager';
-import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler, type SessionDelivery, type SessionLoad } from '@/core/SessionUpdateHandler';
-import { InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
+import type { SessionManager, SessionInfo } from '@/core/SessionManager';
+import type { SessionDelivery, SessionLoad } from '@/core/SessionUpdateHandler';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
 export const SESSION_ID = '32350bd8-7efa-4316-a84c-e051a33e7580';
@@ -60,25 +58,38 @@ export function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 /** Sessions whose prompts stay in flight until the test answers them. */
 export class FakeSessions implements ChatSessions {
-  private readonly activity = new SessionManager(new InProcessAgents({}), new ConnectionManager('test', () => unusedHandlers), {
-    workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: async () => undefined,
-    agentConfigs: () => ({}), activeFileLink: () => undefined,
-  }, { chooseAuthMethod: async () => undefined }, new SessionUpdateHandler());
-  applyForegroundState = (id: string, state: ForegroundState) => this.activity.applyForegroundState(id, state);
-  beginPrompt: ChatSessions['beginPrompt'] = (id) => this.activity.beginPrompt(id);
-  endPrompt: ChatSessions['endPrompt'] = (id, submission) => this.activity.endPrompt(id, submission);
-  clearActivity: ChatSessions['clearActivity'] = (id) => this.activity.clearActivity(id);
-  hasForegroundWork: ChatSessions['hasForegroundWork'] = (id) => this.activity.hasForegroundWork(id);
+  private readonly activityListeners = new Set<() => void>();
+  onChanged(listener: () => void): () => void {
+    this.activityListeners.add(listener);
+    return () => { this.activityListeners.delete(listener); };
+  }
+  private readonly activity = new Map<string, { foreground?: ForegroundState; submissions: Set<symbol> }>();
+  applyForegroundState = (id: string, state: ForegroundState) => {
+    const activity = this.activity.get(id) ?? { submissions: new Set<symbol>() };
+    this.activity.set(id, { ...activity, foreground: state });
+  };
+  retireSession(id: string): void { this.activity.delete(id); }
+  hasForegroundWork: ChatSessions['hasForegroundWork'] = (id) => {
+    const activity = this.activity.get(id);
+    return activity !== undefined && (activity.submissions.size > 0 || activity.foreground === 'running' || activity.foreground === 'requiresAction');
+  };
   activeId: string | null = SESSION_ID;
   session: SessionInfo | undefined = sessionInfo();
   readonly prompts: { text: string; reply: Deferred<undefined> }[] = [];
 
   getActiveSessionId = () => this.activeId;
   getSession = (sessionId: string) => (this.session?.sessionId === sessionId ? this.session : undefined);
-  sendPrompt = vi.fn<ChatSessions['sendPrompt']>((_sessionId, text) => {
+  sendPrompt = vi.fn<ChatSessions['sendPrompt']>((sessionId, text) => {
+    const activity = this.activity.get(sessionId) ?? { submissions: new Set<symbol>() };
+    const submission = Symbol();
+    activity.submissions.add(submission);
+    this.activity.set(sessionId, activity);
     const reply = deferred<undefined>();
     this.prompts.push({ text, reply });
-    return reply.promise;
+    return reply.promise.finally(() => {
+      activity.submissions.delete(submission);
+      for (const listener of this.activityListeners) { listener(); }
+    });
   });
   cancelTurn = vi.fn<ChatSessions['cancelTurn']>(async () => {});
   setMode = vi.fn<ChatSessions['setMode']>(async () => {});

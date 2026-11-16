@@ -15,7 +15,7 @@ import { ProgressLocation, QuickPickItemKind, type Commands, type QuickPickItem,
 export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompts' | 'clearTranscript' | 'sessionTabs' | 'notifyTabsChanged'>;
 
 /** What commands need of the shown review. */
-export type ShownReview = Pick<ReviewControls, 'reviewedPaths' | 'keepAll'>;
+export type ShownReview = Pick<ReviewControls, 'reviewedPaths' | 'resolutionBlocked' | 'captureKeepAll' | 'keepAll'>;
 
 /** A switch of session: what it asks, its choices, and whether it stops the agent. */
 interface Switch {
@@ -403,6 +403,7 @@ export class SessionCommands {
     const stopsTurn = stopsAgent && this.chatView.hasRunningTurn;
     const queued = this.chatView.queuedPrompts;
     const reviewed = this.review.reviewedPaths().length;
+    const keep = reviewed > 0 && !this.review.resolutionBlocked() ? this.review.captureKeepAll() : undefined;
     if (!stopsTurn && queued === 0 && reviewed === 0) { return true; }
 
     const losses = [
@@ -418,14 +419,16 @@ export class SessionCommands {
           ...(reviewed > 0 ? [`${counted(reviewed, 'file is', 'files are')} still under review, kept until this session is opened again in this window.`] : []),
         ].join(' '),
       },
-      ...(reviewed > 0 ? [{
+      ...(keep ? [{
         label: keepAllAction,
         detail: [...consequences, `Keep ${counted(reviewed, 'file', 'files')} under review before continuing.`].join(' '),
       }] : []),
       { label: 'Cancel' },
     ], { title: action, placeHolder: question });
     if (choice?.label === keepAllAction) {
-      this.review.keepAll();
+      if (!keep) { return false; }
+      const result = await this.review.keepAll(keep);
+      if (result.kind !== 'applied') { return false; }
       return true;
     }
     return choice?.label === action;

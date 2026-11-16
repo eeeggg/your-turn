@@ -222,7 +222,9 @@ describe('SessionManager', () => {
           return { sessions: [] };
         }),
       });
-      const reviews = new Reviews({ read: async (path) => path === '/w/a.ts' ? 'A' : 'B\n', restore: async () => {}, watch: () => ({ dispose() {} }) });
+      const reviews = new Reviews({ read: async (path) => path === '/w/a.ts' ? 'A' : 'B\n', restore: async () => {}, watch: () => ({ dispose() {} }), snapshot: () => undefined,
+        applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
+      }, manager);
       onTestFinished(() => reviews.dispose());
       const taking: Promise<void>[] = [];
       const origins: { configuredName: string; sourceId: string; schema: string }[] = [];

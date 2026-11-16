@@ -161,6 +161,30 @@ export default defineConfig(
     rules: { "@typescript-eslint/no-restricted-imports": "off" },
   },
   {
+    files: ["src/**/*.ts"],
+    ignores: ["src/core/review/Reviews.ts", "src/core/review/Review.ts", "src/core/review/Takeovers.ts", "src/core/review/FollowedFiles.ts", "src/core/review/V1Guard.ts", "src/core/review/V2Guard.ts"],
+    rules: {
+      "no-restricted-syntax": ["error",
+        {
+          selector: "ImportDeclaration[source.value='@/core/review/Review'] ImportSpecifier[imported.name='Review']",
+          message: "Only review internals may access mutable Review storage. Use Reviews projections and decisions.",
+        },
+        {
+          selector: "ExportNamedDeclaration[source.value='@/core/review/Review'] ExportSpecifier[local.name='Review']",
+          message: "Do not re-export mutable Review storage.",
+        },
+        {
+          selector: "ImportDeclaration[source.value='@/core/review/Review'] ImportNamespaceSpecifier, ExportAllDeclaration[source.value='@/core/review/Review']",
+          message: "Do not expose mutable Review storage through namespace imports or re-exports.",
+        },
+        {
+          selector: ":matches(ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@\\/core\\/review\\/(Takeovers|FollowedFiles|V1Guard|V2Guard)$/]",
+          message: "Review mutation implementations belong inside Reviews. Use its observation and decision interface.",
+        },
+      ],
+    },
+  },
+  {
     files: ["src/core/**/*.ts"],
     rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract] }),
   },

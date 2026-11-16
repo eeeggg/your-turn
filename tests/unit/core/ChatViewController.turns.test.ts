@@ -10,6 +10,29 @@ import {
 } from '@tests/unit/core/ChatViewControllerTestSupport';
 
 describe('ChatViewController', () => {
+  it('reports overlapping errors before one completion when submissions settle together', async () => {
+    const { controller, sessions, environment } = setup();
+    const first = sendPrompt(controller, sessions, 'first');
+    const second = sendPrompt(controller, sessions, 'steer');
+    environment.take();
+    sessions.answer();
+    sessions.fail(new Error('Refused'));
+    await Promise.all([first, second]);
+    expect(environment.take()).toEqual([{ type: 'error', message: 'Refused' }, { type: 'promptEnd' }]);
+  });
+
+  it('reports the final overlapping prompt error before releasing queued prompts', async () => {
+    const { controller, sessions, environment } = setup();
+    const first = sendPrompt(controller, sessions, 'first');
+    const second = sendPrompt(controller, sessions, 'second');
+    sessions.answer();
+    await first;
+    environment.take();
+    sessions.fail(new Error('Refused'));
+    await second;
+    expect(environment.take()).toEqual([{ type: 'error', message: 'Refused' }, { type: 'promptEnd' }]);
+  });
+
   it('keeps the next submission active when autonomous idle releases the queue synchronously', async () => {
     const { controller, sessions, environment } = setup();
     controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'running' });
@@ -333,6 +356,7 @@ describe('ChatViewController', () => {
         await controller.handleMessage({ type: 'ready' });
         const turn = sendPrompt(controller, sessions, 'hello');
 
+        sessions.retireSession(SESSION_ID);
         controller.notifySessionEnded(SESSION_ID, 'Fake Agent exited unexpectedly (code 1).');
         environment.take();
         await controller.handleMessage({ type: 'ready' });

@@ -15,6 +15,7 @@ import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
 import { SessionStartup } from '@/core/SessionStartup';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { SessionTabs } from '@/core/SessionTabs';
+import type { ReviewDecision, ReviewDecisionResult } from '@/core/review/Reviews';
 import { ProgressLocation } from '@/core/VsCodeApi';
 import {
   fakeAgent,
@@ -119,12 +120,22 @@ function setup(scripts: Record<string, AgentScript>, persistedTabs = false) {
   const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn(), sessionTabs: tabs, notifyTabsChanged: vi.fn() };
   /** The session each Keep All was made in. */
   const keptIn: (string | null)[] = [];
+  let resolutionBlocked = false;
+  class CapturedKeep implements ReviewDecision {
+    readonly action = 'keep-all';
+    constructor(readonly paths: readonly string[]) {}
+  }
   const review = {
     paths: [] as string[],
+    resolutionBlocked: () => resolutionBlocked,
+    blockResolution: () => { resolutionBlocked = true; },
     reviewedPaths: () => review.paths,
-    keepAll: () => {
+    captureKeepAll: (): ReviewDecision => new CapturedKeep([...review.paths]),
+    keepAll: async (decision?: ReviewDecision): Promise<ReviewDecisionResult> => {
+      const resolved = decision instanceof CapturedKeep ? [...decision.paths] : [...review.paths];
       keptIn.push(manager.getActiveSessionId());
-      review.paths = [];
+      review.paths = review.paths.filter((path) => !resolved.includes(path));
+      return { kind: 'applied', saved: true, resolved };
     },
   };
   const user = new ScriptedUser();
@@ -643,6 +654,102 @@ describe('SessionCommands', () => {
         }),
         progress('Connecting to two...'),
       ]);
+    });
+
+    it.each([
+      ['connect', 'Keep All and Switch'],
+      ['new-same', 'Keep All and Start'],
+      ['new-other', 'Keep All and Start'],
+      ['open', 'Keep All and Open'],
+      ['close', 'Keep All and Close'],
+    ] as const)('awaits Keep All and permits %s departure only for applied outcomes', async (departure, label) => {
+      for (const kind of ['blocked', 'stale', 'failed', 'applied'] as const) {
+        const { manager, review, user, commands, transcript, tabs } = setup({
+          one: sessionAgent('one', { agentCapabilities: { loadSession: true } }).script,
+          two: sessionAgent('two').script,
+        });
+        await manager.connectToAgent('one');
+        review.paths = ['/w/a.ts'];
+        const selected = tabs.snapshot().selectedTabId;
+        if (!selected) { throw new Error('Missing selected session tab'); }
+        let release = () => {};
+        let started = () => {};
+        const waiting = new Promise<void>((resolve) => { started = resolve; });
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        vi.spyOn(review, 'keepAll').mockImplementation(async () => {
+          started();
+          await gate;
+          return kind === 'applied' ? { kind, saved: true, resolved: ['/w/a.ts'] }
+            : kind === 'failed' ? { kind, reason: 'Cannot save', applied: ['/w/a.ts'], unsaved: ['/w/a.ts'] }
+              : { kind, reason: 'Not current' };
+        });
+        user.answer(label);
+        const leaving = departure === 'connect' ? commands.connect('two')
+          : departure === 'new-same' ? commands.newSession()
+            : departure === 'new-other' ? commands.newSession('two')
+              : departure === 'open' ? commands.open('one', OLD_SESSION) : commands.closeTab(selected);
+        try {
+          await waiting;
+          expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
+          expect(tabs.snapshot().selectedTabId).toBe(selected);
+          expect(transcript.clearTranscript).not.toHaveBeenCalled();
+          release();
+          await leaving;
+          expect(manager.getActiveSessionId()).toBe(kind !== 'applied' ? ONE_FIRST_SESSION
+            : departure === 'connect' || departure === 'new-other' ? TWO_FIRST_SESSION
+              : departure === 'new-same' ? ONE_SECOND_SESSION : departure === 'open' ? OLD_SESSION : null);
+          if (kind !== 'applied') {
+            expect(transcript.clearTranscript).not.toHaveBeenCalled();
+            expect(tabs.snapshot().selectedTabId).toBe(selected);
+          }
+          expect(review.paths).toEqual(['/w/a.ts']);
+        } finally { release(); await leaving; }
+      }
+    });
+
+    it.each(['blocked', 'stale', 'failed'] as const)('does not switch after a %s Keep All outcome', async (kind) => {
+      const { manager, review, user, commands, transcript } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+      await manager.connectToAgent('one');
+      review.paths = ['/w/a.ts'];
+      vi.spyOn(review, 'keepAll').mockResolvedValue(kind === 'failed'
+        ? { kind, reason: 'Cannot save', applied: ['/w/a.ts'], unsaved: ['/w/a.ts'] }
+        : { kind, reason: 'Not current' });
+      user.answer('Keep All and Switch');
+      await commands.connect('two');
+      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
+      expect(transcript.clearTranscript).not.toHaveBeenCalled();
+      expect(review.paths).toEqual(['/w/a.ts']);
+    });
+
+    it('freezes departure Keep All before the picker can receive newer files', async () => {
+      const { manager, review, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+      await manager.connectToAgent('one');
+      review.paths = ['/w/a.ts'];
+      const pick = user.showQuickPick.bind(user);
+      vi.spyOn(user, 'showQuickPick').mockImplementation((items, options) => {
+        review.paths.push('/w/newer.ts');
+        return pick(items, options);
+      });
+      user.answer('Keep All and Switch');
+      await commands.connect('two');
+      expect(review.paths).toEqual(['/w/newer.ts']);
+      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
+    });
+
+    it('keeps ordinary departure available but omits Keep All while workspace resolution is blocked', async () => {
+      const { manager, review, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+      await manager.connectToAgent('one');
+      review.paths = ['/w/a.ts'];
+      review.blockResolution();
+      user.answer('Switch Agent');
+      await commands.connect('two');
+      const choices = user.take().find((call) => call.call === 'showQuickPick');
+      expect(choices?.call === 'showQuickPick' ? choices.items : []).toEqual([
+        { label: 'Switch Agent', detail: '1 file is still under review, kept until this session is opened again in this window.' },
+        { label: 'Cancel' },
+      ]);
+      expect(review.paths).toEqual(['/w/a.ts']);
+      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
     });
 
     it('does not ask when connecting the agent that already has the active session', async () => {

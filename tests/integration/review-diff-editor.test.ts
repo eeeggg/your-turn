@@ -8,7 +8,6 @@ import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
-import { Takeovers } from '@/core/review/Takeovers';
 import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { createReviewEditors, ReviewPresenters } from '@/adapters/review/ReviewPresenters';
 import { ReviewSourceControl } from '@/adapters/review/ReviewSourceControl';
@@ -48,6 +47,14 @@ suite('Native review diff', () => {
   const ownedTabs = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) =>
     tab.input instanceof vscode.TabInputTextDiff && tab.input.original.scheme === 'your-turn-review-diff');
 
+  const refresh = async (target: string, text: string | null) => {
+    await reviews.handleSessionUpdate(evidence(selected.sessionId, {
+      kind: 'toolCall', toolCallId: `refresh-${target}-${String(text)}`, status: 'completed',
+      content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: target,
+        oldText: reviews.shown()?.file(target)?.baseline ?? null, newText: text ?? '' } }],
+    }));
+  };
+
   setup(async () => {
     owned = {};
     folder = '';
@@ -56,13 +63,16 @@ suite('Native review diff', () => {
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-native-review-'));
     file = path.join(folder, 'file.txt');
     fs.writeFileSync(file, after);
-    owned.reviews = reviews = new Reviews(workspaceFiles);
+    owned.reviews = reviews = new Reviews(workspaceFiles, {
+      resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+    });
     openDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args);
     closeTabs = (tabs) => vscode.window.tabGroups.close(tabs, true);
     owned.presentation = presentation = new DiffReviewPresentation(reviews, (...args) => openDiff(...args), (tabs) => closeTabs(tabs));
     controls = new ReviewControls(reviews, presentation);
     presentation.attach(controls);
-    owned.takeovers = new ReviewTakeovers(new Takeovers(reviews), controls);
+    owned.takeovers = new ReviewTakeovers(reviews, controls);
     const session = `native-${path.basename(folder)}`;
     selected = registration(session);
     reviews.activeSessionChanged(selected);
@@ -166,7 +176,7 @@ suite('Native review diff', () => {
     const original = ownedTabs()[0]?.input;
     assert.ok(original instanceof vscode.TabInputTextDiff);
     fs.unlinkSync(file);
-    reviews.shown()?.read(file, null);
+    await refresh(file, null);
     await presentation.settled();
     const deleted = ownedTabs()[0]?.input;
     assert.ok(deleted instanceof vscode.TabInputTextDiff);
@@ -175,7 +185,7 @@ suite('Native review diff', () => {
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, other);
     assert.equal(presentation.pathOf(original.original), undefined);
     fs.writeFileSync(file, 'recreated\n');
-    reviews.shown()?.read(file, 'recreated\n');
+    await refresh(file, 'recreated\n');
     await presentation.settled();
     const recreated = ownedTabs()[0]?.input;
     assert.ok(recreated instanceof vscode.TabInputTextDiff);
@@ -197,7 +207,7 @@ suite('Native review diff', () => {
     assert.equal(await vscode.workspace.applyEdit(edit), true);
     assert.equal(document.isDirty, true);
     fs.unlinkSync(file);
-    reviews.shown()?.read(file, null);
+    await refresh(file, null);
     await presentation.settled();
     assert.equal(document.isDirty, true);
     assert.equal(document.getText(), `UNSAVED\n${after}`);
@@ -218,7 +228,7 @@ suite('Native review diff', () => {
     }));
     await presentation.open(created);
     fs.unlinkSync(created);
-    reviews.shown()?.read(created, null);
+    await refresh(created, null);
     await presentation.settled();
     assert.equal(controls.baseline(created), undefined);
     assert.equal(ownedTabs().some(({ input }) => input instanceof vscode.TabInputTextDiff && input.modified.fsPath === created), false);
@@ -251,7 +261,7 @@ suite('Native review diff', () => {
     assert.equal(diff.modified.scheme, 'your-turn-review-diff');
     assert.equal(fs.existsSync(deleted), false);
     fs.writeFileSync(deleted, 'recreated\n');
-    reviews.shown()?.read(deleted, 'recreated\n');
+    await refresh(deleted, 'recreated\n');
     await presentation.settled();
     assert.equal(ownedTabs().some(({ input }) => input instanceof vscode.TabInputTextDiff && input.modified.fsPath === deleted), false);
     assert.equal(vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
@@ -360,7 +370,7 @@ suite('Native review diff', () => {
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
     fs.writeFileSync(deleted, 'recreated\n');
-    reviews.shown()?.read(deleted, 'recreated\n');
+    await refresh(deleted, 'recreated\n');
     assert.equal(presentation.pathOf(diff.original), undefined);
     assert.equal(presentation.pathOf(diff.modified), undefined);
     assert.equal(fs.readFileSync(deleted, 'utf8'), 'recreated\n');
@@ -458,6 +468,50 @@ suite('Native review diff', () => {
     assert.equal(document.isDirty, true);
     assert.equal(ownedTabs().length, 1);
     assert.equal(document.getText(), 'one\nNEW\nthree\nfour\nfive\nsix\nSEVEN\n');
+  });
+
+  test('rejects a malformed lens argument instead of using the selected change', async () => {
+    const baseline = controls.baseline(file);
+    await presentation.decide('keep', { index: 0 });
+    assert.equal(controls.baseline(file), baseline);
+    assert.equal(controls.changes(file).length, 2);
+  });
+
+  test('rejects a lens after an edit and undo restore identical text', async () => {
+    const keep = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
+    assert.ok(keep);
+    const document = await vscode.workspace.openTextDocument(file);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(1, 0, 1, 3), 'NEW');
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    await vscode.commands.executeCommand('undo');
+    assert.equal(document.getText(), after);
+    const baseline = controls.baseline(file);
+    await presentation.decide('keep', keep.command?.arguments?.[0]);
+    assert.equal(controls.baseline(file), baseline);
+    assert.equal(controls.changes(file).length, 2);
+  });
+
+  test('a freshly published lens works once after edit, undo and save while the old lens stays stale', async () => {
+    const old = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
+    assert.ok(old);
+    const document = await vscode.workspace.openTextDocument(file);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(document.uri, new vscode.Position(6, 5), ' manual');
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    assert.equal(await document.save(), true);
+    await vscode.commands.executeCommand('undo');
+    assert.equal(await document.save(), true);
+    assert.equal(document.getText(), after);
+    await presentation.decide('keep', old.command?.arguments?.[0]);
+    assert.equal(controls.changes(file).length, 2);
+    const fresh = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
+    assert.ok(fresh);
+    await presentation.decide('keep', fresh.command?.arguments?.[0]);
+    assert.equal(controls.changes(file).length, 1);
+    assert.equal(controls.baseline(file), 'one\nTWO\nthree\nfour\nfive\nsix\nseven\n');
+    assert.equal(document.isDirty, false);
+    assert.equal(fs.readFileSync(file, 'utf8'), after);
   });
 
   test('disposal drains a retired tab closure and reports its failure after a sibling closes', async () => {

@@ -1,9 +1,8 @@
 import { basename } from 'node:path';
 import { lineChanges, splitLines } from '@/core/diff/LineChanges';
-import { messageOf } from '@/core/Log';
-import { keptChange, undoneChange, type Change, type TextEdit } from '@/core/review/Hunks';
+import type { Change } from '@/core/review/Hunks';
 import type { FileContent } from '@/core/review/Review';
-import type { Reviews } from '@/core/review/Reviews';
+import type { Reviews, ReviewDecision, ReviewDecisionResult } from '@/core/review/Reviews';
 import type { SessionRegistration } from '@/core/SessionUpdateHandler';
 
 /** The editors the review's controls act on, by a file's path. */
@@ -13,7 +12,7 @@ export interface ReviewEditors {
   activePath(): string | undefined;
   /** Whether this file's review presentation is open in an editor. */
   isOpen(path: string): boolean;
-  open(path: string): Promise<void>;
+  open(path: string, stillCurrent?: () => boolean): Promise<void>;
   /** Opens the file with quick diff's view showing the change after the cursor, once VS Code has diffed it. */
   showChange(path: string, stillCurrent?: () => boolean): Promise<void>;
   /** Opens the file with quick diff's view showing `changes[index]`, once VS Code's diff of it is `changes`. */
@@ -23,17 +22,6 @@ export interface ReviewEditors {
   showError(message: string): void;
   /** The text of the file's open document, its unsaved edits included; undefined when it is not open. */
   text(path: string): string | undefined;
-  /** Applies `edit` to the file's open document as an edit the user can undo; false when it was not applied. */
-  applyEdit(path: string, edit: TextEdit): Promise<boolean>;
-  /** Saves the file's open document when it has unsaved edits; rejects when it could not. */
-  save(path: string): Promise<void>;
-}
-
-/** A change quick diff showed, as it still is between a file's baseline and its document. */
-interface ShownChange {
-  readonly baseline: string;
-  readonly document: string;
-  readonly change: Change;
 }
 
 /**
@@ -99,74 +87,54 @@ export class ReviewControls {
    * change is no longer the document's, as the agent wrote the file since VS Code diffed it; its view shows the new one.
    * The view then shows the next change, as `showNextChange` says.
    */
-  async keepChange(path: string, change: Change): Promise<void> {
-    const shown = this.shownChange(path, change);
-    if (!shown) { return; }
-    const paths = this.reviewedPaths();
-    const active = this.editors.activePath() === path;
-    await this.editors.closeChange(path);
-    this.reviews.shown()?.setBaseline(path, keptChange(shown.baseline, shown.document, shown.change));
-    const saved = await this.save(path, 'kept');
-    await this.showNextChange(path, shown.change);
-    await this.advanceAfterResolution(path, paths, active, saved && this.changes(path).length === 0);
+  async keepChange(path: string, change: Change, captured?: ReviewDecision): Promise<void> {
+    await this.decideChange('keep-change', path, change, captured);
   }
 
   /** Undoes one change quick diff showed: the document takes the baseline's lines, and the file is saved; then as Keep. */
-  async undoChange(path: string, change: Change): Promise<void> {
-    const shown = this.shownChange(path, change);
-    if (!shown) { return; }
-    const paths = this.reviewedPaths();
-    const active = this.editors.activePath() === path;
-    await this.editors.closeChange(path);
-    if (!(await this.editors.applyEdit(path, undoneChange(shown.baseline, shown.document, shown.change)))) {
-      this.editors.showError(`${basename(path)}: the change could not be undone`);
-      return;
-    }
-    const saved = await this.save(path, 'undone');
-    await this.showNextChange(path, shown.change);
-    await this.advanceAfterResolution(path, paths, active, saved && this.changes(path).length === 0);
+  async undoChange(path: string, change: Change, captured?: ReviewDecision): Promise<void> {
+    await this.decideChange('undo-change', path, change, captured);
   }
 
   async keepFile(path = this.editors.activePath()): Promise<void> {
     if (path === undefined) { return; }
-    const review = this.reviews.shown();
-    const file = review?.file(path);
-    if (!review || !file) { return; }
-    if (file.current === null) {
-      try {
-        if (!(await this.reviews.deletionCurrent(file))) { return; }
-      } catch (e) {
-        this.editors.showError(`${basename(path)} could not be kept: ${messageOf(e)}`);
-        return;
-      }
-    }
+    const decision = this.reviews.captureDecision({ action: 'keep-file', path });
+    if (!decision) { return; }
     const paths = this.reviewedPaths();
     const active = this.editors.activePath() === path;
-    review.keepFile(path);
-    await this.advanceAfterResolution(path, paths, active);
+    const current = this.capturePresentation();
+    const result = await this.reviews.decide(decision);
+    if (!this.presentResult(result, path, 'kept') || !current()) { return; }
+    await this.advanceAfterResolution(path, paths, active, false, current);
   }
 
-  keepAll(): void {
-    this.reviews.shown()?.keepAll();
+  captureKeepAll(): ReviewDecision | undefined {
+    return this.reviews.captureDecision({ action: 'keep-all' });
+  }
+
+  resolutionBlocked(): boolean { return this.reviews.resolutionBlocked(); }
+
+  async keepAll(decision = this.captureKeepAll()): Promise<ReviewDecisionResult> {
+    if (!decision) { return { kind: 'stale', reason: 'There are no captured files to keep.' }; }
+    const result = await this.reviews.decide(decision);
+    this.presentResult(result, 'Review', 'kept');
+    return result;
   }
 
   /** A deleted file written back is opened again, as its editor still says it was not found. */
   async undoFile(path = this.editors.activePath()): Promise<void> {
-    const review = this.reviews.shown();
-    const file = path === undefined ? undefined : review?.file(path);
-    if (!review || !file) { return; }
+    if (path === undefined) { return; }
+    const file = this.reviews.shown()?.file(path);
+    const decision = this.reviews.captureDecision({ action: 'undo-file', path });
+    if (!file || !decision) { return; }
     const paths = this.reviewedPaths();
     const active = this.editors.activePath() === file.path;
-    try {
-      if (file.current === null && !(await this.reviews.deletionCurrent(file))) { return; }
-      await review.undoFile(file.path);
-    } catch (e) {
-      this.editors.showError(`${basename(file.path)} could not be undone: ${messageOf(e)}`);
-      return;
-    }
+    const current = this.capturePresentation();
+    const result = await this.reviews.decide(decision);
+    if (!this.presentResult(result, path, 'undone') || !current()) { return; }
     const next = active ? this.nextUnresolved(file.path, paths) : undefined;
-    if (file.current === null && next === undefined) { await this.editors.open(file.path); }
-    await this.advanceAfterResolution(file.path, paths, active);
+    if (file.current === null && next === undefined) { await this.editors.open(file.path, current); }
+    await this.advanceAfterResolution(file.path, paths, active, false, current);
   }
 
   next(path = this.editors.activePath()): Promise<void> {
@@ -211,35 +179,47 @@ export class ReviewControls {
    * Quick diff's view on the change after one just kept or undone, which now starts where that one did or after, or on
    * the first from the last; none once the file has no change left.
    */
-  private async showNextChange(path: string, done: Change): Promise<void> {
+  private async showNextChange(path: string, done: Change, current: () => boolean): Promise<void> {
     const baseline = this.baseline(path);
     const document = this.editors.text(path);
     if (baseline === undefined || document === undefined) { return; }
     const changes = this.changes(path);
     if (changes.length === 0) { return; }
     const after = changes.findIndex(({ modified }) => modified.start >= done.modified.start);
-    await this.editors.showChangeOf(path, changes, after < 0 ? 0 : after);
+    await this.editors.showChangeOf(path, changes, after < 0 ? 0 : after, current);
   }
 
-  private shownChange(path: string, change: Change): ShownChange | undefined {
-    const baseline = this.baseline(path);
-    const document = this.editors.text(path);
-    if (baseline === undefined || document === undefined) { return undefined; }
-    const text = baseline ?? '';
-    const still = this.changes(path).some(({ original, modified }) =>
-      original.start === change.original.start && original.end === change.original.end
-      && modified.start === change.modified.start && modified.end === change.modified.end);
-    return still ? { baseline: text, document, change } : undefined;
-  }
-
-  private async save(path: string, done: 'kept' | 'undone'): Promise<boolean> {
-    try {
-      await this.editors.save(path);
-      return true;
-    } catch (e) {
-      this.editors.showError(`${basename(path)}: the change was ${done} but the file could not be saved: ${messageOf(e)}`);
-      return false;
+  private async decideChange(action: 'keep-change' | 'undo-change', path: string, change: Change, captured?: ReviewDecision): Promise<void> {
+    const decision = captured ?? this.reviews.captureDecision({ action, path, change });
+    if (!decision) { return; }
+    const paths = this.reviewedPaths();
+    const active = this.editors.activePath() === path;
+    const current = this.capturePresentation();
+    await this.editors.closeChange(path);
+    const result = await this.reviews.decide(decision);
+    if (result.kind === 'failed' && result.reason === 'The change could not be undone.') {
+      this.editors.showError(`${basename(path)}: the change could not be undone`);
+      return;
     }
+    if (!this.presentResult(result, path, action === 'keep-change' ? 'kept' : 'undone') || !current()) { return; }
+    await this.showNextChange(path, change, current);
+    if (current()) { await this.advanceAfterResolution(path, paths, active, this.changes(path).length === 0, current); }
+  }
+
+  private capturePresentation(): () => boolean {
+    const selected = this.reviews.captureSelection();
+    const navigation = this.editors.captureNavigation();
+    return () => selected() && navigation();
+  }
+
+  private presentResult(result: ReviewDecisionResult, path: string, done: 'kept' | 'undone'): boolean {
+    if (result.kind === 'applied') { return true; }
+    if (result.kind === 'failed') {
+      this.editors.showError(result.unsaved.length > 0
+        ? `${basename(path)}: the change was ${done} but the file could not be saved: ${result.reason}`
+        : `${basename(path)} could not be ${done}: ${result.reason}`);
+    } else if (result.kind === 'blocked') { this.editors.showError(result.reason); }
+    return false;
   }
 
   /** From a file not under review, the first or the last. */
@@ -258,12 +238,13 @@ export class ReviewControls {
     before: readonly string[],
     wasActive: boolean,
     resolvedByAction = false,
+    current: () => boolean = () => true,
   ): Promise<void> {
     if (!wasActive || (!resolvedByAction && this.reviews.shown()?.file(path))) { return; }
     const index = before.indexOf(path);
     if (index < 0) { return; }
     const candidate = this.nextUnresolved(path, before);
-    if (candidate !== undefined) { await this.editors.open(candidate); }
+    if (candidate !== undefined) { await this.editors.open(candidate, current); }
   }
 
   private nextUnresolved(path: string, before: readonly string[]): string | undefined {

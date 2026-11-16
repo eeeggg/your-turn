@@ -32,6 +32,7 @@ const lineChanged = (line: number) => ({ original: { start: line, end: line + 1 
 async function controls({ deleted = false, changes = false } = {}) {
   const disk: Record<string, FileContent> = { '/w/a.ts': 'A\n', '/w/b.ts': 'B\n', '/w/c.ts': 'C\n', '/w/gone.ts': null, '/w/m.ts': twoChanges.after };
   const documents = new Map<string, string>(Object.entries(disk).flatMap(([path, text]) => text === null ? [] : [[path, text]]));
+  const versions = new Map<string, number>();
   const restored: [string, FileContent][] = [];
   const opened: string[] = [];
   const shown: string[] = [];
@@ -43,6 +44,8 @@ async function controls({ deleted = false, changes = false } = {}) {
   let applies = true;
   let active: string | undefined;
   let navigation = 0;
+  let blocked = false;
+  let followUp: ((current?: () => boolean) => void) | undefined;
   let read = async (path: string): Promise<FileContent> => disk[path] ?? null;
   const reviews = new Reviews({
     read: (path) => read(path),
@@ -52,6 +55,30 @@ async function controls({ deleted = false, changes = false } = {}) {
       disk[path] = content;
     },
     watch: () => ({ dispose: () => {} }),
+    snapshot: (path) => {
+      const text = documents.get(path);
+      return text === undefined ? undefined : { instance: documents, version: versions.get(path) ?? 1, dirty: false, text };
+    },
+    applyEdit: async (path, { start, end, text }, current) => {
+      const document = documents.get(path);
+      if (!current() || !applies || document === undefined) { return false; }
+      documents.set(path, document.slice(0, start) + text + document.slice(end));
+      versions.set(path, (versions.get(path) ?? 1) + 1);
+      return true;
+    },
+    save: async (path) => {
+      if (failSave) { throw new Error('disk full'); }
+      saved.push(path);
+      const text = documents.get(path);
+      if (text !== undefined) {
+        disk[path] = text;
+        const file = reviews.shown()?.file(path);
+        if (file) { await reviews.handleSessionUpdate(input(edited(`save-${path}-${text}`, path, file.baseline ?? '', text))); }
+      }
+    },
+  }, {
+    resolutionBlocked: () => blocked, onChanged: () => () => {},
+    runDecision: async (action) => blocked ? { kind: 'blocked' } : { kind: 'completed', value: await action(() => true) },
   });
   onTestFinished(async () => { await reviews.dispose(); });
   reviews.activeSessionChanged(SESSION_ID);
@@ -64,7 +91,7 @@ async function controls({ deleted = false, changes = false } = {}) {
     captureNavigation: () => { const captured = navigation; return () => navigation === captured; },
     activePath: () => active,
     isOpen: (path) => active === path || opened.includes(path) || shown.includes(path),
-    open: async (path) => { opened.push(path); },
+    open: async (path, current) => { followUp?.(current); if (!current || current()) { opened.push(path); } },
     showChange: async (path) => { shown.push(path); },
     showChangeOf: async (path, changes, index) => {
       views.push(`show ${path} at ${String(changes[index]?.modified.start)} of ${changes.map(({ modified }) => modified.start).join()}`);
@@ -72,21 +99,6 @@ async function controls({ deleted = false, changes = false } = {}) {
     closeChange: async (path) => { views.push(`close ${path} with ${documents.get(path) === twoChanges.after ? 'both' : 'one'}`); },
     showError: (message) => errors.push(message),
     text: (path) => documents.get(path),
-    applyEdit: async (path, { start, end, text }) => {
-      const document = documents.get(path);
-      if (!applies || document === undefined) { return false; }
-      documents.set(path, document.slice(0, start) + text + document.slice(end));
-      return true;
-    },
-    save: async (path) => {
-      if (failSave) { throw new Error('disk full'); }
-      saved.push(path);
-      const text = documents.get(path);
-      if (text !== undefined) {
-        disk[path] = text;
-        reviews.shown()?.read(path, text);
-      }
-    },
   });
   return {
     controls: subject,
@@ -104,13 +116,40 @@ async function controls({ deleted = false, changes = false } = {}) {
     fail: () => { failing = true; },
     failSaves: () => { failSave = true; },
     refuseEdits: () => { applies = false; },
+    block: () => { blocked = true; },
+    beforeFollowUp: (action: (current?: () => boolean) => void) => { followUp = action; },
   };
 }
 
 describe('ReviewControls', () => {
+  it('guards final advancement against a session switch inside editor preparation', async () => {
+    const { controls: subject, reviews, opened, activate, beforeFollowUp } = await controls();
+    activate('/w/a.ts');
+    beforeFollowUp(() => reviews.activeSessionChanged(OTHER_SESSION_ID));
+    await subject.keepFile();
+    expect(opened).toEqual([]);
+  });
+  it.each(['keep-file', 'undo-file', 'keep-all', 'keep-change', 'undo-change'] as const)('blocks %s through authority without effects or advancement', async (action) => {
+    const { controls: subject, block, opened, saved, restored, activate, documents } = await controls({ changes: true });
+    activate('/w/m.ts');
+    block();
+    switch (action) {
+      case 'keep-file': await subject.keepFile('/w/m.ts'); break;
+      case 'undo-file': await subject.undoFile('/w/m.ts'); break;
+      case 'keep-all': await subject.keepAll(); break;
+      case 'keep-change': await subject.keepChange('/w/m.ts', lineChanged(1)); break;
+      case 'undo-change': await subject.undoChange('/w/m.ts', lineChanged(1)); break;
+    }
+    expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/b.ts', '/w/c.ts', '/w/m.ts']);
+    expect(documents.get('/w/m.ts')).toBe(twoChanges.after);
+    expect(opened).toEqual([]);
+    expect(saved).toEqual([]);
+    expect(restored).toEqual([]);
+  });
+
   it('does not cancel selected A presentation when sibling B emits output and ends its turn', async () => {
     const { controls: subject, shown, reviews, setRead } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     let release: (text: FileContent) => void = () => {};
     setRead(() => new Promise((resolve) => { release = resolve; }));
     const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
@@ -126,7 +165,7 @@ describe('ReviewControls', () => {
 
   it('does not open after editor navigation away and back during evidence settlement', async () => {
     const { controls: subject, shown, reviews, setRead, activate } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     let release: (text: FileContent) => void = () => {};
     setRead(() => new Promise((resolve) => { release = resolve; }));
     const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
@@ -141,7 +180,7 @@ describe('ReviewControls', () => {
 
   it.each(['switch', 'away-back', 'remove', 'retire'] as const)('does not present a settled turn after registration invalidation by %s', async (change) => {
     const { controls: subject, shown, reviews, setRead } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     let release: (text: FileContent) => void = () => {};
     setRead(() => new Promise((resolve) => { release = resolve; }));
     const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
@@ -237,7 +276,7 @@ describe('ReviewControls', () => {
 
   it('places every file as 0 of 0 with nothing under review, a session with no review yet among them', async () => {
     const { controls: subject, reviews } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     expect(subject.position('/w/a.ts')).toBe('0 of 0');
     reviews.activeSessionChanged(OTHER_SESSION_ID);
     expect(subject.sessionShown()).toBe(true);
@@ -259,7 +298,7 @@ describe('ReviewControls', () => {
     activate('/w/c.ts');
     await subject.keepFile();
     expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
-    subject.keepAll();
+    await subject.keepAll();
     expect(subject.reviewedPaths()).toEqual([]);
   });
 
@@ -478,7 +517,7 @@ describe('ReviewControls', () => {
     await subject.openReview();
     await subject.keepFile('/w/a.ts');
     await subject.openReview();
-    subject.keepAll();
+    await subject.keepAll();
     await subject.openReview();
     reviews.activeSessionChanged(null);
     await subject.openReview();
@@ -491,6 +530,12 @@ describe('ReviewControls', () => {
       read: async (path) => path === '/w/b.ts' ? 'B\n' : null,
       restore: async () => {},
       watch: () => ({ dispose: () => {} }),
+      snapshot: () => undefined,
+      applyEdit: async () => { throw new Error('Unexpected edit'); },
+      save: async () => { throw new Error('Unexpected save'); },
+    }, {
+      resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
     });
     onTestFinished(async () => { await reviews.dispose(); });
     reviews.activeSessionChanged(SESSION_ID);
@@ -506,12 +551,10 @@ describe('ReviewControls', () => {
       closeChange: async () => {},
       showError: () => {},
       text: () => undefined,
-      applyEdit: async () => false,
-      save: async () => {},
     });
     await subject.openReview();
     expect(shown).toEqual(['/w/gone.ts']);
-    reviews.shown()?.keepFile('/w/b.ts');
+    await subject.keepFile('/w/b.ts');
     await subject.openReview();
     expect(shown).toEqual(['/w/gone.ts', '/w/gone.ts']);
   });
@@ -537,18 +580,18 @@ describe('ReviewControls', () => {
 
   it('shows a change once the files the turn\'s edits name were read, as the turn can end before', async () => {
     const { controls: subject, shown, reviews } = await controls();
-    reviews.shown()?.keepAll();
+    await subject.keepAll();
     void reviews.handleSessionUpdate(input(edited('t6', '/w/b.ts', 'b\n', 'B\n')));
     await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual(['/w/b.ts']);
   });
 
   it('shows existing and deleted files on entry, but not unreviewed or resolved files', async () => {
-    const { controls: subject, shown, reviews } = await controls({ deleted: true });
+    const { controls: subject, shown } = await controls({ deleted: true });
     await subject.entered('/w/b.ts');
     await subject.entered('/w/other.ts');
     await subject.entered('/w/gone.ts');
-    reviews.shown()?.keepFile('/w/a.ts');
+    await subject.keepFile('/w/a.ts');
     await subject.entered('/w/a.ts');
     expect(shown).toEqual(['/w/b.ts', '/w/gone.ts']);
   });
@@ -562,7 +605,7 @@ describe('ReviewControls', () => {
     { names: [], want: [] },
   ])('includes every existence change in entry and wraparound: $names', async ({ names, want }) => {
     const { controls: subject, reviews, disk, opened, shown } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     for (const name of names) {
       const path = `/w/${name}.ts`;
       disk[path] = name === 'live' ? 'changed\n' : null;
@@ -585,9 +628,9 @@ describe('ReviewControls', () => {
   });
 
   it.each(['keep', 'undo'] as const)('advances from live to deleted after %s, and resolves an all-deleted review', async (action) => {
-    const { controls: subject, reviews, opened, activate } = await controls({ deleted: true });
-    reviews.shown()?.keepFile('/w/a.ts');
-    reviews.shown()?.keepFile('/w/b.ts');
+    const { controls: subject, opened, activate } = await controls({ deleted: true });
+    await subject.keepFile('/w/a.ts');
+    await subject.keepFile('/w/b.ts');
     activate('/w/c.ts');
     if (action === 'keep') { await subject.keepFile(); } else { await subject.undoFile(); }
     expect(opened).toEqual(['/w/gone.ts']);

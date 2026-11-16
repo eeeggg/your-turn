@@ -42,10 +42,8 @@ export type ChatSessions = Pick<
   | 'setMode'
   | 'setConfigOption'
   | 'recordTurnEnded'
-  | 'beginPrompt'
-  | 'endPrompt'
-  | 'clearActivity'
   | 'hasForegroundWork'
+  | 'onChanged'
 >;
 
 /** Text arriving within this many milliseconds reaches the webview as one message, so it renders about once a frame at most. */
@@ -217,6 +215,8 @@ export class ChatViewController {
   private readonly turnListeners = new Set<TurnListener>();
   private disposed = false;
   private disposal: Promise<void> | undefined;
+  private readonly promptPresentations = new Set<{ registration: SessionInfo | undefined }>();
+  private readonly stopActivity: () => void;
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -228,6 +228,19 @@ export class ChatViewController {
     tabs = new SessionTabs(),
   ) {
     this.tabs = tabs;
+    this.stopActivity = sessions.onChanged((retiredSource) => {
+      const activeId = sessions.getActiveSessionId();
+      const registration = activeId !== null ? sessions.getSession(activeId) : undefined;
+      // The local prompt path reports errors before completion and owns its prompt boundaries.
+      const retired = activeId !== null && retiredSource !== undefined && sessions.getSession(activeId)?.agentId === retiredSource;
+      if (!retired && registration && [...this.promptPresentations].some((prompt) => prompt.registration === registration)) { return; }
+      const running = this.hasRunningTurn;
+      if (running !== this.reportedRunning) {
+        this.setTurnInProgress(running);
+        if (!retired) { this.post({ type: 'foregroundActivity', running }); }
+      }
+      this.sendTabs();
+    });
     this.commandOutput = new CommandOutputFeed(terminals, {
       toolCallContent: (sessionId, toolCallId, content) => {
         if (!this.disposed && sessionId === this.sessions.getActiveSessionId()) {
@@ -452,7 +465,6 @@ export class ChatViewController {
       for (const read of this.markdownReads.values()) { read.abort(); }
       this.markdownReads.clear();
     }
-    this.sessions.clearActivity(sessionId);
     this.sendTabs();
     this.commandOutput.forgetSession(sessionId);
     this.diffs.forgetSession(sessionId);
@@ -463,7 +475,6 @@ export class ChatViewController {
    * view keeps the transcript and shows why.
    */
   notifySessionEnded(sessionId: string, reason: string): void {
-    this.sessions.clearActivity(sessionId);
     this.sendTabs();
     if (sessionId === this.shownSessionId) {
       this.shownSessionEnded = true;
@@ -517,6 +528,7 @@ export class ChatViewController {
   dispose(): Promise<void> {
     if (this.disposal) { return this.disposal; }
     this.disposed = true;
+    this.stopActivity();
     if (this.pendingText) { clearTimeout(this.pendingText.timer); }
     this.pendingText = null;
     this.imageBytes.clear();
@@ -537,24 +549,26 @@ export class ChatViewController {
       return;
     }
 
-    const submission = this.sessions.beginPrompt(activeId);
-    this.sendTabs();
-    this.post({ type: 'promptStart' });
-    this.setTurnInProgress(true);
-
+    const presentation = { registration: this.sessions.getSession(activeId) };
     try {
-      await this.sessions.sendPrompt(activeId, text);
-      this.sessions.recordTurnEnded(activeId);
+      this.promptPresentations.add(presentation);
+      const turn = this.sessions.sendPrompt(activeId, text);
+      this.sendTabs();
+      this.post({ type: 'promptStart' });
+      this.setTurnInProgress(true);
+      await turn;
+      if (this.sessions.getSession(activeId) === presentation.registration) { this.sessions.recordTurnEnded(activeId); }
     } catch (e) {
       logError('Prompt failed', e);
-      if (activeId === this.sessions.getActiveSessionId()) {
+      if (activeId === this.sessions.getActiveSessionId() && this.sessions.getSession(activeId) === presentation.registration) {
         this.post({ type: 'error', message: messageOf(e) || 'Prompt failed' });
       }
     }
-    const wasRunning = this.isRunning(activeId);
-    this.sessions.endPrompt(activeId, submission);
+    const wasRunning = this.reportedRunning;
+    this.promptPresentations.delete(presentation);
     this.sendTabs();
-    if (activeId !== this.sessions.getActiveSessionId()) { return; }
+    if (activeId !== this.sessions.getActiveSessionId() || this.sessions.getSession(activeId) !== presentation.registration
+      || [...this.promptPresentations].some((prompt) => prompt.registration === presentation.registration)) { return; }
     if (wasRunning && !this.isRunning(activeId)) { this.endTurn(activeId); }
   }
 

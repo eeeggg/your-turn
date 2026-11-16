@@ -362,6 +362,7 @@ describe('ChatViewController', () => {
     await turn;
     expect(controller.hasRunningTurn).toBe(true);
     expect(environment.take().some((message) => message.type === 'promptEnd')).toBe(false);
+    sessions.retireSession(SESSION_ID);
     controller.notifySessionRemoved(SESSION_ID);
     const removed = environment.take();
     expect(removed).toEqual([initial]);

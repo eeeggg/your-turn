@@ -1,7 +1,7 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import { Reviews } from '@/core/review/Reviews';
-import { Takeovers, type DocumentEdit } from '@/core/review/Takeovers';
+import type { DocumentEdit, EditSource } from '@/core/review/Takeovers';
 
 const SESSION_ID = { sessionId: '5e738b94-4f62-47ca-b153-c82d906aef01', agentName: 'fake', agentId: 'source' };
 const origin = { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' };
@@ -21,7 +21,12 @@ function lineEdited(before: string, line: number, replacement: string): { after:
 
 /** Takeovers over the shown session's review, with `/w/a.ts` changed by the agent from `baseline` to `agents`. */
 async function takeovers() {
-  const reviews = new Reviews({ read: async () => agents, restore: async () => {}, watch: () => ({ dispose: () => {} }) });
+  const reviews = new Reviews({ read: async () => agents, restore: async () => {}, watch: () => ({ dispose: () => {} }), snapshot: () => undefined,
+    applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
+  }, {
+    resolutionBlocked: () => false, onChanged: () => () => {},
+    runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+  });
   onTestFinished(async () => { await reviews.dispose(); });
   reviews.activeSessionChanged(SESSION_ID);
   const update: SessionUpdate = {
@@ -31,7 +36,8 @@ async function takeovers() {
     content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/a.ts', oldText: baseline, newText: agents } }],
   };
   await reviews.handleSessionUpdate({ origin, update, schema: 'v1' });
-  return { subject: new Takeovers(reviews), reviews, baselineOf: () => reviews.shown()?.file('/w/a.ts')?.baseline };
+  return { subject: { edited: (path: string, source: EditSource, before: string, after: string, edits: readonly DocumentEdit[]) =>
+    reviews.observeDocument({ path, source, before, after, edits }) }, reviews, baselineOf: () => reviews.shown()?.file('/w/a.ts')?.baseline };
 }
 
 describe('Takeovers', () => {
@@ -84,7 +90,9 @@ describe('Takeovers', () => {
     const { subject, reviews, baselineOf } = await takeovers();
     const typed = lineEdited(agents, 0, 'ONE');
     subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
-    reviews.shown()?.keepFile('/w/a.ts');
+    const keep = reviews.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+    if (!keep) { throw new Error('Missing decision'); }
+    await reviews.decide(keep);
     expect(baselineOf()).toBeUndefined();
     await reviews.handleSessionUpdate({ origin, update: {
       kind: 'toolCall',

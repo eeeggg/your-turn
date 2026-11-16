@@ -1,17 +1,17 @@
 import { basename, dirname } from 'node:path';
 import * as vscode from 'vscode';
 import type { ReviewFiles } from '@/core/review/Reviews';
-import { applyReviewEdit } from '@/adapters/review/ReviewTakeovers';
+import { applyReviewEdit, saveForReview } from '@/adapters/review/ReviewTakeovers';
 
 const notFound = (e: unknown) => e instanceof vscode.FileSystemError && e.code === 'FileNotFound';
 
 /**
- * The encoding VS Code detected for the file, which keeps a byte-order mark it had, as `encode` given only a URI
- * uses the encoding configured for the path; `undefined` when the file is not there or not text.
+ * The document VS Code opened to detect encoding, preserving a byte-order mark instead of using configured encoding.
+ * Return its identity so a guarded restore can recognize its own preparation.
  */
-async function encodingOf(uri: vscode.Uri): Promise<string | undefined> {
+async function encodingOf(uri: vscode.Uri): Promise<vscode.TextDocument | undefined> {
   try {
-    return (await vscode.workspace.openTextDocument(uri)).encoding;
+    return await vscode.workspace.openTextDocument(uri);
   } catch {
     return undefined;
   }
@@ -24,6 +24,22 @@ export function createWorkspaceFiles(
   createWatcher: WatcherFactory = (pattern) => vscode.workspace.createFileSystemWatcher(pattern),
 ): ReviewFiles {
   return {
+    async applyEdit(path, { start, end, text }, stillCurrent) {
+      const document = vscode.workspace.textDocuments.find((open) => open.uri.scheme === 'file' && open.uri.fsPath === path);
+      if (!document || !stillCurrent()) { return false; }
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(end)), text);
+      const before = document.getText();
+      return applyReviewEdit(path, edit, { before, after: before.slice(0, start) + text + before.slice(end) });
+    },
+    async save(path) {
+      const document = vscode.workspace.textDocuments.find((open) => open.uri.scheme === 'file' && open.uri.fsPath === path);
+      if (document?.isDirty && !(await saveForReview(path, document))) { throw new Error('VS Code did not save it'); }
+    },
+    snapshot(path) {
+      const document = vscode.workspace.textDocuments.find((open) => open.uri.scheme === 'file' && open.uri.fsPath === path);
+      return document && { instance: document, version: document.version, dirty: document.isDirty, text: document.getText() };
+    },
     /** Its text as VS Code decodes it, or `null` when nothing is there; rejects for a binary file. */
     async read(path) {
       const uri = vscode.Uri.file(path);
@@ -54,18 +70,21 @@ export function createWorkspaceFiles(
      * otherwise, as an edit to a document not open would land in a hidden one. Deleting leaves an open document's
      * unsaved edits in its editor.
      */
-    async restore(path, content) {
+    async restore(path, content, stillCurrent = () => true) {
+      if (!stillCurrent()) { throw new Error('The review decision is no longer current.'); }
       const uri = vscode.Uri.file(path);
       const document = vscode.workspace.textDocuments.find((open) => open.uri.toString() === uri.toString());
       if (content !== null && document?.isDirty) {
         const edit = new vscode.WorkspaceEdit();
         edit.replace(uri, new vscode.Range(0, 0, document.lineCount, 0), content);
-        if (!(await applyReviewEdit(path, edit))) { throw new Error(`${path} could not be restored in its editor`); }
+        if (!(await applyReviewEdit(path, edit, { before: document.getText(), after: content }))) { throw new Error(`${path} could not be restored in its editor`); }
       } else if (content !== null) {
-        const encoding = await encodingOf(uri);
+        const prepared = await encodingOf(uri);
+        const encoding = prepared?.encoding;
         const bytes = await (encoding === undefined
           ? vscode.workspace.encode(content, { uri })
           : vscode.workspace.encode(content, { encoding }));
+        if (!stillCurrent(prepared)) { throw new Error('The review decision is no longer current.'); }
         await vscode.workspace.fs.writeFile(uri, bytes);
       } else {
         try {

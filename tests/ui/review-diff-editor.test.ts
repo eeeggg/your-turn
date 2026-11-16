@@ -124,11 +124,15 @@ test('modified review text keeps normal typing, save and undo history after hunk
     .replace('l15\n', 'l15\nAGENT added\n').replace('l28\n', '');
   expect(await readFile(join(workspace, 'm.ts'), 'utf8')).toBe(agentText.replace('l30\n', 'l30 MANUAL\n'));
 
+  const previousLens = await reviewLens(window, 'Keep Change').last().getAttribute('id');
+  if (!previousLens) { throw new Error('Missing rendered CodeLens identity'); }
   await window.keyboard.press('Control+Z');
   await saveFile(window);
   await expect(modifiedReviewEditor(window)).not.toContainText('MANUAL');
   expect(await readFile(join(workspace, 'm.ts'), 'utf8')).toBe(agentText);
   await expect(reviewLens(window, 'Keep Change')).toHaveCount(3);
+  // The same count and text can still belong to commands rendered before the edit.
+  await expect(reviewLens(window, 'Keep Change').last()).not.toHaveAttribute('id', previousLens);
 
   await reviewLens(window, 'Keep Change').last().click();
   await expect(reviewLens(window, 'Keep Change')).toHaveCount(2);
@@ -179,7 +183,7 @@ test('review navigation stays available during turns without stealing focus from
   await expect(plainFileEditor(window)).toContainText('AGENT changed');
   for (const action of actions) { await expect(reviewTitleAction(window, action)).toHaveCount(0); }
   await expect(reviewTitleAction(window, 'Open Review')).toBeVisible();
-  await expect(reviewTitleAction(window, 'Open Review')).toBeDisabled();
+  await expect(reviewTitleAction(window, 'Open Review')).toBeEnabled();
   await quickInputRow(window, 'Allow').click();
   await expect(prompt).toBeEnabled();
   await expect(plainFileEditor(window)).toBeVisible();

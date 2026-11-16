@@ -12,7 +12,7 @@ export interface ReviewedFile {
 export type ReadFile = (path: string) => Promise<FileContent>;
 
 /** Puts `content` at `path`, `null` deleting what is there; rejects when it could not. */
-export type RestoreFile = (path: string, content: FileContent) => Promise<void>;
+export type RestoreFile = (path: string, content: FileContent, stillCurrent?: (preparedDocument?: object) => boolean) => Promise<void>;
 
 /** A file came under review, changed, or left it. */
 export type ReviewListener = (path: string) => void;

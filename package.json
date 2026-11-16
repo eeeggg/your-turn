@@ -240,7 +240,7 @@
         "command": "your-turn.openReview",
         "title": "Open Review",
         "icon": "$(diff)",
-        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles"
       },
       {
         "command": "your-turn.previousReviewFile",
@@ -258,43 +258,43 @@
         "command": "your-turn.undoFile",
         "title": "Undo File",
         "icon": "$(discard)",
-        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepFile",
         "title": "Keep File",
         "icon": "$(check)",
-        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepAllFiles",
         "title": "Keep All",
         "icon": "$(check-all)",
-        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.undoDiffChange",
         "title": "Undo Change",
         "icon": "$(discard)",
-        "enablement": "your-turn.reviewDiffChange && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewDiffChange && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepDiffChange",
         "title": "Keep Change",
         "icon": "$(check)",
-        "enablement": "your-turn.reviewDiffChange && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewDiffChange && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.undoChange",
         "title": "Undo Change",
         "icon": "$(discard)",
-        "enablement": "!your-turn.turnInProgress"
+        "enablement": "!your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepChange",
         "title": "Keep Change",
         "icon": "$(check)",
-        "enablement": "!your-turn.turnInProgress"
+        "enablement": "!your-turn.reviewResolutionBlocked"
       }
     ],
     "menus": {

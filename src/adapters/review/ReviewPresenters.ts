@@ -5,7 +5,6 @@ import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
 import { BASELINE_SCHEME } from '@/adapters/review/ReviewSourceControl';
-import { applyReviewEdit, saveForReview } from '@/adapters/review/ReviewTakeovers';
 
 /** VS Code diffs a file some time after it opens or the agent writes it; quick diff's view has nothing to show before. */
 const VIEW_ATTEMPTS = 20;
@@ -153,7 +152,9 @@ export function createReviewEditors(
       && input.modified.scheme === 'file'
       && input.modified.fsPath === path)),
     /** `vscode.open`, as it opens a tab for a file not there too, which a text document cannot. */
-    open: (path) => accepted(async () => { await execute('vscode.open', vscode.Uri.file(path)); }),
+    open: (path, stillCurrent) => accepted(async () => {
+      if (!stillCurrent || stillCurrent()) { await execute('vscode.open', vscode.Uri.file(path)); }
+    }),
     showChange: (path, stillCurrent) => accepted(() => show(path, undefined, stillCurrent)),
     /**
      * A view opened before VS Code diffs the file again would be moved on by it, so the cursor goes to the change only
@@ -179,17 +180,6 @@ export function createReviewEditors(
     }),
     showError: (message) => { void vscode.window.showErrorMessage(message); },
     text: (path) => openDocument(path)?.getText(),
-    applyEdit: async (path, { start, end, text }) => {
-      const document = openDocument(path);
-      if (!document) { return false; }
-      const edit = new vscode.WorkspaceEdit();
-      edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(end)), text);
-      return applyReviewEdit(path, edit);
-    },
-    save: async (path) => {
-      const document = openDocument(path);
-      if (document?.isDirty && !(await saveForReview(path, document))) { throw new Error('VS Code did not save it'); }
-    },
     dispose: () => {
       if (disposal) { return disposal; }
       disposed = true;

@@ -148,6 +148,7 @@ for (const version of [1]) {
       const document = await vscode.workspace.openTextDocument(modified);
       const left = observed(api.reviewChanges, () => (!api.reviewedFiles().includes(modified) ? true : undefined));
       await vscode.commands.executeCommand('your-turn.undoChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
+      assert.strictEqual(document.getText(), 'one\ntwo\n');
       await left;
 
       assert.strictEqual(document.getText(), 'one\ntwo\n');
@@ -163,6 +164,23 @@ for (const version of [1]) {
 
       assert.strictEqual(document.getText(), 'one\nTWO\n');
       assert.strictEqual((await baselineDocument(modified)).getText(), 'one\ntwo\n');
+      assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
+    });
+
+    test('Malformed explicit file arguments never resolve the active file instead', async () => {
+      await vscode.window.showTextDocument(vscode.Uri.file(modified));
+      await vscode.commands.executeCommand('your-turn.keepFile', { path: modified });
+      await vscode.commands.executeCommand('your-turn.undoFile', null);
+      assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
+      assert.strictEqual(fs.readFileSync(modified, 'utf8'), 'one\nTWO\n');
+    });
+
+    test('Quick-diff decisions reject malformed sibling ranges in the supplied comparison', async () => {
+      await vscode.workspace.openTextDocument(modified);
+      await baselineDocument(modified);
+      await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(modified), [
+        quickDiffChange([2, 2], [2, 2]), quickDiffChange([Number.NaN, 2], [2, 2]),
+      ], 0);
       assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
     });
   });

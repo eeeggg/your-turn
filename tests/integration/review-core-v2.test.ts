@@ -148,6 +148,7 @@ for (const version of [2]) {
       const document = await vscode.workspace.openTextDocument(modified);
       const left = observed(api.reviewChanges, () => (!api.reviewedFiles().includes(modified) ? true : undefined));
       await vscode.commands.executeCommand('your-turn.undoChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
+      assert.strictEqual(document.getText(), 'one\ntwo\n');
       await left;
 
       assert.strictEqual(document.getText(), 'one\ntwo\n');

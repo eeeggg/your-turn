@@ -7,6 +7,7 @@ import * as vscode from 'vscode';
 import { createWorkspaceFiles, workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { observed } from '@tests/integration/observed';
 import { cleanup } from '@tests/integration/cleanup';
+import { Reviews } from '@/core/review/Reviews';
 
 suite('Workspace files', () => {
   let folder: string;
@@ -43,6 +44,29 @@ suite('Workspace files', () => {
     fs.writeFileSync(file, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('agent\n')]));
     await workspaceFiles.restore(file, 'baseline\n');
     assert.deepStrictEqual(fs.readFileSync(file), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('baseline\n')]));
+  });
+
+  test('restores a captured closed file without rejecting its own encoding preparation', async () => {
+    const file = path.join(folder, 'closed.txt');
+    const bom = Buffer.from([0xef, 0xbb, 0xbf]);
+    fs.writeFileSync(file, Buffer.concat([bom, Buffer.from('agent\n')]));
+    const reviews = new Reviews(workspaceFiles, {
+      resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+    });
+    try {
+      const registration = { agentName: 'workspace-files', sessionId: path.basename(folder), agentId: 'source' };
+      reviews.activeSessionChanged(registration);
+      await reviews.handleSessionUpdate({ origin: { identity: { configuredName: registration.agentName, sessionId: registration.sessionId }, sourceId: 'source' }, schema: 'v1', update: {
+        kind: 'toolCall', toolCallId: 'edit', status: 'completed',
+        content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: file, oldText: 'baseline\n', newText: 'agent\n' } }],
+      } });
+      assert.equal(workspaceFiles.snapshot(file), undefined);
+      const decision = reviews.captureDecision({ action: 'undo-file', path: file });
+      assert.ok(decision);
+      assert.equal((await reviews.decide(decision)).kind, 'applied');
+      assert.deepEqual(fs.readFileSync(file), Buffer.concat([bom, Buffer.from('baseline\n')]));
+    } finally { await reviews.dispose(); }
   });
 
   test('writes back a deleted file, making its folders', async () => {

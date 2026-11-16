@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { savedOver, takenOver, type TextEdit, type UserEdit } from '@/core/review/Hunks';
-import type { FileContent } from '@/core/review/Review';
-import type { Reviews } from '@/core/review/Reviews';
+import type { FileContent, Review } from '@/core/review/Review';
 
 /**
  * Who changed a document under review, as the adapter tells them apart: the user, the review itself (Undo Change, Undo
@@ -29,7 +28,7 @@ const hashOf = (text: string) => createHash('sha1').update(text).digest('base64'
 export class Takeovers {
   private readonly histories = new Map<string, Map<string, FileContent>>();
 
-  constructor(private readonly reviews: Reviews) {
+  constructor(private readonly reviews: { shown(): Review | undefined; addListener(listener: () => void): void }) {
     reviews.addListener(() => this.forgetLeft());
   }
 
