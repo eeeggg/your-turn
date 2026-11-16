@@ -154,7 +154,7 @@ export class ReviewTakeovers implements vscode.Disposable {
     if (before === undefined) { return; }
     const source = this.sourceOf(path, reason, before, after, wasDirty);
     if ((source === 'user' || source === 'undo') && this.controls.baseline(path) !== undefined) { this.closeView(path, document); }
-    this.reviews.observeDocument({ path, source, before, after, edits: contentChanges.map(editOf) });
+    this.track(this.reviews.observeDocument({ path, source, before, after, edits: contentChanges.map(editOf) }), 'Observing the review document failed');
   }
 
   /** VS Code reloads only a document with no unsaved edits, so the disk's text over unsaved edits is a revert. */
@@ -179,12 +179,12 @@ export class ReviewTakeovers implements vscode.Disposable {
     this.track(this.handOver(active, this.editors.get(path)));
   }
 
-  private track(running: Promise<unknown>): void {
+  private track(running: Promise<unknown>, failure = 'Closing the review view failed'): void {
     const completion = running.then(() => {});
     this.pending.add(completion);
     void completion.then(() => this.pending.delete(completion), (error: unknown) => {
       this.pending.delete(completion);
-      logError('Closing the review view failed', error);
+      logError(failure, error);
     });
   }
 

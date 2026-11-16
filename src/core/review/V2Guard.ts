@@ -1,9 +1,9 @@
 import { isAbsolute } from 'node:path';
 import { parsePatch, type StructuredPatch } from 'diff';
 import type { FileChange, FileDiff, SessionUpdate, ToolCallStatus } from '@/core/acp/AcpDriver';
-import { logWarning, messageOf } from '@/core/Log';
+import { logWarning } from '@/core/Log';
 import { changeSides } from '@/core/ReportedFiles';
-import type { FileContent, ReadFile, Review } from '@/core/review/Review';
+import type { ExamineEvidence, FileContent } from '@/core/review/Review';
 
 type Changes = Extract<FileDiff, { kind: 'changes' }>;
 type Hunks = StructuredPatch['hunks'];
@@ -12,6 +12,7 @@ type Hunks = StructuredPatch['hunks'];
 interface ToolCallSeen {
   status: ToolCallStatus | null;
   diffs: Changes[];
+  candidates: Map<string, { revision: string; consumed: Set<string>; pending: Map<string, Promise<void>> }>;
 }
 
 /** A change with its patch's lines for it, or why it is left out. */
@@ -25,44 +26,51 @@ type Matched = { change: FileChange; hunks: Hunks } | { change: FileChange; left
 export class V2Guard {
   private readonly toolCalls = new Map<string, ToolCallSeen>();
 
-  constructor(
-    private readonly review: Review,
-    private readonly readFile: ReadFile,
-  ) {}
+  constructor(private readonly examine: ExamineEvidence) {}
 
   /** Settles once the files its evidence names were read. */
   async handleSessionUpdate(update: SessionUpdate): Promise<void> {
     if (update.kind !== 'toolCall') { return; }
-    const seen = this.toolCalls.get(update.toolCallId) ?? { status: null, diffs: [] };
+    const seen: ToolCallSeen = this.toolCalls.get(update.toolCallId) ?? { status: null, diffs: [], candidates: new Map() };
     this.toolCalls.set(update.toolCallId, seen);
     if (update.status !== undefined) { seen.status = update.status; }
     if (update.content !== undefined) { seen.diffs = update.content.flatMap((item) => (item.kind === 'diff' && item.diff.kind === 'changes' ? [item.diff] : [])); }
-    if (seen.status !== 'completed' || (update.status === undefined && update.content === undefined)) { return; }
-    const read = await Promise.all(seen.diffs.flatMap(matched).map(async (match) => ({ match, content: 'hunks' in match ? await this.read(match.change.path) : undefined })));
-    for (const { match, content } of read) {
-      if ('leftOut' in match) {
-        leftOut(match.change, match.leftOut);
-      } else if (content !== undefined) {
-        this.take(match.change, match.hunks, content);
+    const matches = seen.diffs.flatMap(matched);
+    if (update.content !== undefined) {
+      const paths = new Set(matches.map((match) => match.change.path));
+      for (const path of seen.candidates.keys()) { if (!paths.has(path)) { seen.candidates.delete(path); } }
+      for (const path of paths) {
+        const revision = JSON.stringify(matches.filter((match) => match.change.path === path));
+        if (seen.candidates.get(path)?.revision !== revision) {
+          seen.candidates.set(path, { revision, consumed: new Set(), pending: new Map() });
+        }
       }
     }
-  }
-
-  private take(change: FileChange, hunks: Hunks, content: FileContent): void {
-    const before = heldBefore(change.operation, hunks, content);
-    if (typeof before === 'object' && before !== null) { leftOut(change, before.leftOut); return; }
-    this.review.changed(change.path, before, content);
-  }
-
-  /** `undefined` for a file that could not be read. */
-  private async read(path: string): Promise<FileContent | undefined> {
-    try {
-      return await this.readFile(path);
-    } catch (e) {
-      logWarning('Review change not examined because file could not be read', { path, reason: messageOf(e) });
-      return undefined;
+    if (seen.status !== 'completed' || (update.status === undefined && update.content === undefined)) { return; }
+    const reads: Promise<void>[] = [];
+    for (const match of matches) {
+      if ('leftOut' in match) {
+        leftOut(match.change, match.leftOut);
+        continue;
+      }
+      const candidate = seen.candidates.get(match.change.path);
+      const key = JSON.stringify(match);
+      if (!candidate || candidate.consumed.has(key)) { continue; }
+      const pending = candidate.pending.get(key);
+      if (pending) { reads.push(pending); continue; }
+      const reading = this.examine(match.change.path, (content) => {
+        const before = heldBefore(match.change.operation, match.hunks, content);
+        if (typeof before === 'object' && before !== null) { leftOut(match.change, before.leftOut); return undefined; }
+        return { before };
+      }).then((admitted) => {
+        if (admitted) { candidate.consumed.add(key); }
+      }).finally(() => candidate.pending.delete(key));
+      candidate.pending.set(key, reading);
+      reads.push(reading);
     }
+    await Promise.all(reads);
   }
+
 }
 
 /**

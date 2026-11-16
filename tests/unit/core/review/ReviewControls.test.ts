@@ -33,6 +33,7 @@ async function controls({ deleted = false, changes = false } = {}) {
   const disk: Record<string, FileContent> = { '/w/a.ts': 'A\n', '/w/b.ts': 'B\n', '/w/c.ts': 'C\n', '/w/gone.ts': null, '/w/m.ts': twoChanges.after };
   const documents = new Map<string, string>(Object.entries(disk).flatMap(([path, text]) => text === null ? [] : [[path, text]]));
   const versions = new Map<string, number>();
+  const watchers = new Map<string, () => void>();
   const restored: [string, FileContent][] = [];
   const opened: string[] = [];
   const shown: string[] = [];
@@ -54,7 +55,7 @@ async function controls({ deleted = false, changes = false } = {}) {
       restored.push([path, content]);
       disk[path] = content;
     },
-    watch: () => ({ dispose: () => {} }),
+    watch: (path, changed) => { watchers.set(path, changed); return { dispose: () => { watchers.delete(path); } }; },
     snapshot: (path) => {
       const text = documents.get(path);
       return text === undefined ? undefined : { instance: documents, version: versions.get(path) ?? 1, dirty: false, text };
@@ -72,8 +73,7 @@ async function controls({ deleted = false, changes = false } = {}) {
       const text = documents.get(path);
       if (text !== undefined) {
         disk[path] = text;
-        const file = reviews.shown()?.file(path);
-        if (file) { await reviews.handleSessionUpdate(input(edited(`save-${path}-${text}`, path, file.baseline ?? '', text))); }
+        watchers.get(path)?.();
       }
     },
   }, {

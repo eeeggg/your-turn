@@ -1,18 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import type { SessionUpdate, ToolCallContent, ToolCallStatus } from '@/core/acp/AcpDriver';
-import { Review, type FileContent } from '@/core/review/Review';
-import { V1Guard } from '@/core/review/V1Guard';
+import type { FileContent, ReadFile } from '@/core/review/Review';
+import { Reviews } from '@/core/review/Reviews';
 
 const diff = (path: string, oldText: string | null, newText: string): ToolCallContent =>
   ({ kind: 'diff', diff: { kind: 'wholeFile', path, oldText, newText } });
 const toolCall = (toolCallId: string, status?: ToolCallStatus, content?: ToolCallContent[]): SessionUpdate =>
   ({ kind: 'toolCall', toolCallId, ...(status && { status }), ...(content && { content }) });
 
+function examining(read: ReadFile) {
+  const reviews = new Reviews({ read, restore: async () => {}, watch: () => ({ dispose() {} }), snapshot: () => undefined,
+    applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
+  }, { resolutionBlocked: () => false, onChanged: () => () => {}, runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }) });
+  reviews.activeSessionChanged({ agentName: 'fake', agentId: 'source', sessionId: 'session' });
+  onTestFinished(() => reviews.dispose());
+  const guard = { handleSessionUpdate: (update: SessionUpdate) => reviews.handleSessionUpdate({
+    origin: { identity: { configuredName: 'fake', sessionId: 'session' }, sourceId: 'source' }, update, schema: 'v1',
+  }) };
+  return { guard, review: { files: () => reviews.shown()?.files() ?? [] } };
+}
+
 /** A guard over a review, reading files from `disk`, where a missing path holds nothing and an `Error` fails to read. */
 function guarded(disk: Record<string, string | Error>) {
-  const review = new Review(async () => {});
   const reads: string[] = [];
-  const guard = new V1Guard(review, async (path): Promise<FileContent> => {
+  const { review, guard } = examining(async (path): Promise<FileContent> => {
     reads.push(path);
     const content = disk[path];
     if (content instanceof Error) { throw content; }
@@ -98,11 +109,10 @@ describe('V1Guard', () => {
   });
 
   it("puts a tool call's files under review in the order reported, however their reads land", async () => {
-    const review = new Review(async () => {});
     let readA: (content: string) => void = () => {};
     const a = new Promise<string>((resolve) => { readA = resolve; });
     const reads: string[] = [];
-    const guard = new V1Guard(review, async (path) => {
+    const { review, guard } = examining(async (path) => {
       reads.push(path);
       return path === '/w/a.ts' ? a : 'B';
     });

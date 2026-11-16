@@ -163,10 +163,47 @@ suite('Native review diff', () => {
     assert.equal(presentation.provideFileDecoration(diff.modified), undefined);
     await click(resource.command);
     assert.equal(ownedTabs().length, 0, 'a stale entry cannot open the newly shown review');
-    assert.equal(controls.baseline(deleted), 'other baseline\n');
+    assert.equal(controls.baseline(deleted), 'removed\n', 'associated sessions share the first pending baseline');
     owned.sourceControl.dispose();
     delete owned.sourceControl;
     assert.equal((await vscode.commands.getCommands(false)).includes(live.command), false, 'disposing SCM unregisters its callback');
+  });
+
+  test('shared dirty Undo resolves both sessions without saving and remains editor-undoable', async () => {
+    const a = reviews.shown();
+    const sibling = `sibling-${path.basename(folder)}`;
+    await reviews.handleSessionUpdate(evidence(sibling, {
+      kind: 'toolCall', toolCallId: 'shared', status: 'completed',
+      content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: file, oldText: 'not a second baseline\n', newText: after } }],
+    }));
+    reviews.activeSessionChanged(registration(sibling));
+    const b = reviews.shown();
+    assert.ok(a);
+    assert.ok(b);
+    assert.equal(a.file(file), b.file(file));
+    assert.equal(b.file(file)?.baseline, before);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.window.showTextDocument(document);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(document.uri, new vscode.Position(document.lineCount, 0), 'typed\n');
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    assert.equal(document.isDirty, true);
+    const dirty = document.getText();
+    // Dispose presentation before resolution so closing its diff cannot change the undo target.
+    await presentation.dispose();
+    const decision = reviews.captureDecision({ action: 'undo-file', path: file });
+    assert.ok(decision);
+    assert.deepEqual(await reviews.decide(decision), { kind: 'applied', saved: false, resolved: [file] });
+    assert.equal(document.getText(), before + 'typed\n');
+    assert.equal(document.isDirty, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), after);
+    assert.deepEqual(a.files(), []);
+    assert.deepEqual(b.files(), []);
+    await vscode.window.showTextDocument(document);
+    await vscode.commands.executeCommand('undo');
+    assert.equal(document.getText(), dirty);
+    assert.deepEqual(a.files(), []);
+    assert.deepEqual(b.files(), []);
   });
 
   test('replaces an open review on live deletion and recreation without taking unrelated focus', async () => {

@@ -44,52 +44,52 @@ describe('Takeovers', () => {
   it("takes over the change the user's edit touched", async () => {
     const { subject, baselineOf } = await takeovers();
     const { after, edits } = lineEdited(agents, 1, 'TWO!');
-    subject.edited('/w/a.ts', 'user', agents, after, edits);
+    await subject.edited('/w/a.ts', 'user', agents, after, edits);
     expect(baselineOf()).toBe(after);
   });
 
   it("leaves the baseline alone for the review's own edit and for a reload", async () => {
     const { subject, baselineOf } = await takeovers();
     const { after, edits } = lineEdited(agents, 1, 'two');
-    subject.edited('/w/a.ts', 'review', agents, after, edits);
-    subject.edited('/w/a.ts', 'reload', after, text('one', 'TWO', 'three', 'four'), []);
+    await subject.edited('/w/a.ts', 'review', agents, after, edits);
+    await subject.edited('/w/a.ts', 'reload', after, text('one', 'TWO', 'three', 'four'), []);
     expect(baselineOf()).toBe(baseline);
   });
 
   it("takes a save's edit touching no change into the baseline, and leaves a change it touches under review", async () => {
     const { subject, baselineOf } = await takeovers();
     const outside = lineEdited(agents, 2, 'THREE');
-    subject.edited('/w/a.ts', 'save', agents, outside.after, outside.edits);
+    await subject.edited('/w/a.ts', 'save', agents, outside.after, outside.edits);
     const inside = lineEdited(outside.after, 1, 'TWO;');
-    subject.edited('/w/a.ts', 'save', outside.after, inside.after, inside.edits);
+    await subject.edited('/w/a.ts', 'save', outside.after, inside.after, inside.edits);
     expect(baselineOf()).toBe(text('one', 'two', 'THREE'));
   });
 
   it('brings back the baseline a text had when an undo or a revert brings the text back', async () => {
     const { subject, baselineOf } = await takeovers();
     const typed = lineEdited(agents, 1, 'TWO!');
-    subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
-    subject.edited('/w/a.ts', 'undo', typed.after, agents, lineEdited(typed.after, 1, 'TWO').edits);
+    await subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
+    await subject.edited('/w/a.ts', 'undo', typed.after, agents, lineEdited(typed.after, 1, 'TWO').edits);
     expect(baselineOf()).toBe(baseline);
 
-    subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
-    subject.edited('/w/a.ts', 'revert', typed.after, agents, lineEdited(typed.after, 1, 'TWO').edits);
+    await subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
+    await subject.edited('/w/a.ts', 'revert', typed.after, agents, lineEdited(typed.after, 1, 'TWO').edits);
     expect(baselineOf()).toBe(baseline);
   });
 
   it('leaves the baseline alone when the agent writes a text the document had, as a reload is the disk\'s new text', async () => {
     const { subject, baselineOf } = await takeovers();
     const typed = lineEdited(agents, 0, 'ONE');
-    subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
+    await subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
     expect(baselineOf()).toBe(text('ONE', 'two', 'three'));
-    subject.edited('/w/a.ts', 'reload', typed.after, agents, lineEdited(typed.after, 0, 'one').edits);
+    await subject.edited('/w/a.ts', 'reload', typed.after, agents, lineEdited(typed.after, 0, 'one').edits);
     expect(baselineOf()).toBe(text('ONE', 'two', 'three'));
   });
 
   it('forgets a file\'s history once it leaves the review, so a later round brings back no baseline of an earlier one', async () => {
     const { subject, reviews, baselineOf } = await takeovers();
     const typed = lineEdited(agents, 0, 'ONE');
-    subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
+    await subject.edited('/w/a.ts', 'user', agents, typed.after, typed.edits);
     const keep = reviews.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
     if (!keep) { throw new Error('Missing decision'); }
     await reviews.decide(keep);
@@ -101,30 +101,30 @@ describe('Takeovers', () => {
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/a.ts', oldText: typed.after, newText: agents } }],
     }, schema: 'v1' });
     expect(baselineOf()).toBe(typed.after);
-    subject.edited('/w/a.ts', 'undo', typed.after, agents, lineEdited(typed.after, 0, 'one').edits);
+    await subject.edited('/w/a.ts', 'undo', typed.after, agents, lineEdited(typed.after, 0, 'one').edits);
     expect(baselineOf()).toBeUndefined();
   });
 
   it("brings a change back for review on Ctrl+Z after the review's Undo", async () => {
     const { subject, baselineOf } = await takeovers();
     const undone = lineEdited(agents, 1, 'two');
-    subject.edited('/w/a.ts', 'review', agents, undone.after, undone.edits);
+    await subject.edited('/w/a.ts', 'review', agents, undone.after, undone.edits);
     const redone = lineEdited(undone.after, 1, 'TWO');
-    subject.edited('/w/a.ts', 'undo', undone.after, redone.after, redone.edits);
+    await subject.edited('/w/a.ts', 'undo', undone.after, redone.after, redone.edits);
     expect(baselineOf()).toBe(baseline);
   });
 
   it('takes an undo to a text never seen as the user\'s edit', async () => {
     const { subject, baselineOf } = await takeovers();
     const { after, edits } = lineEdited(agents, 1, 'TWO?');
-    subject.edited('/w/a.ts', 'undo', agents, after, edits);
+    await subject.edited('/w/a.ts', 'undo', agents, after, edits);
     expect(baselineOf()).toBe(after);
   });
 
   it('does nothing for a file not under review', async () => {
     const { subject, baselineOf } = await takeovers();
     const { after, edits } = lineEdited(agents, 1, 'TWO!');
-    subject.edited('/w/b.ts', 'user', agents, after, edits);
+    await subject.edited('/w/b.ts', 'user', agents, after, edits);
     expect(baselineOf()).toBe(baseline);
   });
 });

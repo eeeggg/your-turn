@@ -1,17 +1,50 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished } from 'vitest';
 import { Review, type FileContent } from '@/core/review/Review';
+import { Reviews } from '@/core/review/Reviews';
 
-/** A review whose restores are recorded and succeed, or fail with `failure`, with the paths its listener heard. */
-function review({ failure }: { failure?: Error } = {}) {
-  const restored: [string, FileContent][] = [];
-  const subject = new Review(async (path, content) => {
-    if (failure) { throw failure; }
-    restored.push([path, content]);
-  });
+/** A shared file store with the paths its listener heard. */
+function review() {
+  const subject = new Review();
   const heard: string[] = [];
   subject.addListener((path) => heard.push(path));
   const files = () => subject.files().map((file): [string, FileContent, FileContent] => [file.path, file.baseline, file.current]);
-  return { review: subject, restored, heard, files };
+  return { review: subject, heard, files };
+}
+
+/** Decision scenarios use the authority, not the mutable file store. */
+function authority(restore?: (path: string, content: FileContent) => Promise<void>) {
+  const disk = new Map<string, FileContent>();
+  const restored: [string, FileContent][] = [];
+  const subject = new Reviews({
+    read: async (path) => disk.get(path) ?? null,
+    restore: async (path, content) => {
+      if (restore) { await restore(path, content); }
+      restored.push([path, content]);
+      disk.set(path, content);
+    },
+    watch: () => ({ dispose() {} }), snapshot: () => undefined,
+    applyEdit: async () => { throw new Error('Unexpected edit'); },
+    save: async () => { throw new Error('Unexpected save'); },
+  }, { resolutionBlocked: () => false, onChanged: () => () => {},
+    runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+  });
+  onTestFinished(() => subject.dispose());
+  subject.activeSessionChanged({ agentName: 'fake', agentId: 'source', sessionId: 'session' });
+  let sequence = 0;
+  const changed = async (path: string, before: FileContent, after: FileContent) => {
+    disk.set(path, after);
+    await subject.handleSessionUpdate({ origin: { identity: { configuredName: 'fake', sessionId: 'session' }, sourceId: 'source' },
+      schema: 'v1', update: { kind: 'toolCall', toolCallId: String(++sequence), status: 'completed',
+        content: [{ kind: 'diff', diff: { kind: 'wholeFile', path, oldText: before, newText: after ?? '' } }],
+      },
+    });
+  };
+  const decide = async (action: 'keep-file' | 'keep-all' | 'undo-file', path?: string) => {
+    const captured = subject.captureDecision({ action, ...(path === undefined ? {} : { path }) });
+    return captured ? subject.decide(captured) : undefined;
+  };
+  const files = () => (subject.shown()?.files() ?? []).map((file) => [file.path, file.baseline, file.current]);
+  return { changed, decide, files, restored, subject };
 }
 
 describe('Review', () => {
@@ -39,13 +72,13 @@ describe('Review', () => {
   });
 
   it('preserves a created file baseline across edits and restoration of its initial content, so undo deletes it', async () => {
-    const { review: subject, files, restored } = review();
-    subject.changed('/w/new.ts', null, 'made');
-    subject.changed('/w/new.ts', 'made', 'modified');
+    const { changed, decide, files, restored } = authority();
+    await changed('/w/new.ts', null, 'made');
+    await changed('/w/new.ts', 'made', 'modified');
     expect(files()).toEqual([['/w/new.ts', null, 'modified']]);
-    subject.changed('/w/new.ts', 'modified', 'made');
+    await changed('/w/new.ts', 'modified', 'made');
     expect(files()).toEqual([['/w/new.ts', null, 'made']]);
-    await subject.undoFile('/w/new.ts');
+    expect(await decide('undo-file', '/w/new.ts')).toEqual({ kind: 'applied', saved: true, resolved: ['/w/new.ts'] });
     expect(restored).toEqual([['/w/new.ts', null]]);
     expect(files()).toEqual([]);
   });
@@ -103,44 +136,56 @@ describe('Review', () => {
     expect(files()).toEqual([['/w/a.ts', 'two', 'three']]);
   });
 
-  it('keeps a file by letting it go, and all files at once', () => {
-    const { review: subject, files, heard } = review();
-    subject.changed('/w/a.ts', 'a', 'A');
-    subject.changed('/w/b.ts', 'b', 'B');
-    subject.changed('/w/c.ts', 'c', 'C');
-    subject.keepFile('/w/b.ts');
+  it('keeps a file by letting it go, and all files at once', async () => {
+    const { changed, decide, files, subject } = authority();
+    await changed('/w/a.ts', 'a', 'A');
+    await changed('/w/b.ts', 'b', 'B');
+    await changed('/w/c.ts', 'c', 'C');
+    const heard: unknown[] = [];
+    subject.addListener(() => heard.push(files()));
+    await decide('keep-file', '/w/b.ts');
     expect(files().map(([path]) => path)).toEqual(['/w/a.ts', '/w/c.ts']);
-    subject.keepAll();
+    await decide('keep-all');
     expect(files()).toEqual([]);
-    expect(heard.slice(3)).toEqual(['/w/b.ts', '/w/a.ts', '/w/c.ts']);
+    expect(heard).toEqual([
+      [['/w/a.ts', 'a', 'A'], ['/w/c.ts', 'c', 'C']],
+      [['/w/c.ts', 'c', 'C']],
+      [],
+    ]);
   });
 
   it('undoes a file by restoring its baseline, then lets it go', async () => {
-    const { review: subject, files, restored } = review();
-    subject.changed('/w/a.ts', 'one', 'two');
-    subject.changed('/w/new.ts', null, 'made');
-    subject.changed('/w/old.ts', 'gone', null);
-    await subject.undoFile('/w/a.ts');
-    await subject.undoFile('/w/new.ts');
-    await subject.undoFile('/w/old.ts');
+    const { changed, decide, files, restored } = authority();
+    await changed('/w/a.ts', 'one', 'two');
+    await changed('/w/new.ts', null, 'made');
+    await changed('/w/old.ts', 'gone', null);
+    for (const path of ['/w/a.ts', '/w/new.ts', '/w/old.ts']) {
+      expect(await decide('undo-file', path)).toEqual({ kind: 'applied', saved: true, resolved: [path] });
+    }
     expect(restored).toEqual([['/w/a.ts', 'one'], ['/w/new.ts', null], ['/w/old.ts', 'gone']]);
     expect(files()).toEqual([]);
   });
 
   it('keeps a file under review until its restore is done', async () => {
-    const { review: subject, files } = review();
-    subject.changed('/w/a.ts', 'one', 'two');
-    const undone = subject.undoFile('/w/a.ts');
-    expect(files()).toEqual([['/w/a.ts', 'one', 'two']]);
-    await undone;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let started = () => {};
+    const restoring = new Promise<void>((resolve) => { started = resolve; });
+    const { changed, decide, files } = authority(async () => { started(); await gate; });
+    await changed('/w/a.ts', 'one', 'two');
+    const undone = decide('undo-file', '/w/a.ts');
+    try {
+      await restoring;
+      expect(files()).toEqual([['/w/a.ts', 'one', 'two']]);
+    } finally { release(); await undone; }
     expect(files()).toEqual([]);
   });
 
   it('keeps a file under review when its restore fails', async () => {
     const failure = new Error('EACCES');
-    const { review: subject, files } = review({ failure });
-    subject.changed('/w/a.ts', 'one', 'two');
-    await expect(subject.undoFile('/w/a.ts')).rejects.toBe(failure);
+    const { changed, decide, files } = authority(async () => { throw failure; });
+    await changed('/w/a.ts', 'one', 'two');
+    expect(await decide('undo-file', '/w/a.ts')).toEqual({ kind: 'failed', reason: 'EACCES', applied: [], unsaved: [] });
     expect(files()).toEqual([['/w/a.ts', 'one', 'two']]);
   });
 
@@ -171,9 +216,9 @@ describe('Review', () => {
   });
 
   it('restores nothing for a file not under review', async () => {
-    const { review: subject, restored } = review();
-    await subject.undoFile('/w/a.ts');
-    subject.keepFile('/w/a.ts');
+    const { decide, restored } = authority();
+    expect(await decide('undo-file', '/w/a.ts')).toBeUndefined();
+    expect(await decide('keep-file', '/w/a.ts')).toBeUndefined();
     expect(restored).toEqual([]);
   });
 });

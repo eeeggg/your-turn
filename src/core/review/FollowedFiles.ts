@@ -6,9 +6,8 @@ export type WatchFile = (path: string, changed: () => void) => { dispose(): void
 
 interface Followed {
   readonly watcher: { dispose(): void };
-  reading: boolean;
-  /** How often its watcher heard it may have changed. */
-  changes: number;
+  queued: boolean;
+  tail: Promise<void> | undefined;
 }
 
 /**
@@ -26,6 +25,7 @@ export class FollowedFiles {
     private readonly review: Review,
     private readonly readFile: ReadFile,
     private readonly watchFile: WatchFile,
+    private readonly schedule: (path: string, read: () => Promise<void>, previous: Promise<void> | undefined) => Promise<void>,
   ) {
     review.addListener(this.reviewListener);
   }
@@ -58,7 +58,7 @@ export class FollowedFiles {
     const file = this.followed.get(path);
     const underReview = this.review.file(path) !== undefined;
     if (underReview && !file) {
-      const watched: Followed = { watcher: this.watchFile(path, () => this.changed(path, watched)), reading: false, changes: 0 };
+      const watched: Followed = { watcher: this.watchFile(path, () => this.changed(path, watched)), queued: false, tail: undefined };
       this.followed.set(path, watched);
     } else if (!underReview && file) {
       file.watcher.dispose();
@@ -68,7 +68,14 @@ export class FollowedFiles {
 
   private changed(path: string, file: Followed): void {
     if (this.disposed || this.followed.get(path) !== file) { return; }
-    const reading = this.readAgain(path, file);
+    if (file.queued) { return; }
+    file.queued = true;
+    const reading = this.schedule(path, async () => {
+      file.queued = false;
+      if (this.disposed || this.followed.get(path) !== file) { return; }
+      await this.readAgain(path, file);
+    }, file.tail);
+    file.tail = reading;
     this.pending.add(reading);
     void reading.then(
       () => this.pending.delete(reading),
@@ -77,19 +84,11 @@ export class FollowedFiles {
   }
 
   private async readAgain(path: string, file: Followed): Promise<void> {
-    file.changes++;
-    if (file.reading) { return; }
-    file.reading = true;
-    let read = 0;
-    while (read < file.changes && this.followed.get(path) === file) {
-      read = file.changes;
-      try {
-        const content = await this.readFile(path);
-        if (this.followed.get(path) === file) { this.review.read(path, content); }
-      } catch (e) {
-        logWarning('Review file could not be read after it changed', { path, reason: messageOf(e) });
-      }
+    try {
+      const content = await this.readFile(path);
+      if (this.followed.get(path) === file) { this.review.read(path, content); }
+    } catch (e) {
+      logWarning('Review file could not be read after it changed', { path, reason: messageOf(e) });
     }
-    file.reading = false;
   }
 }

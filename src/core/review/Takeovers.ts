@@ -18,7 +18,7 @@ const HISTORY_LENGTH = 200;
 const hashOf = (text: string) => createHash('sha1').update(text).digest('base64');
 
 /**
- * Keeps the shown review's baselines following the edits to the files' documents. The user's edits take over the
+ * Keeps shared baselines following the edits to the files' documents. The user's edits take over the
  * changes they touch; a save's go into the baseline where they touch none. Each file's history keeps the baseline it
  * had at each text its document had while under review, so an undo, a redo or a revert bringing a text back brings
  * its baseline back: Ctrl+Z after Undo Change brings the change back for review, and Ctrl+Z of a takeover the change it
@@ -28,14 +28,14 @@ const hashOf = (text: string) => createHash('sha1').update(text).digest('base64'
 export class Takeovers {
   private readonly histories = new Map<string, Map<string, FileContent>>();
 
-  constructor(private readonly reviews: { shown(): Review | undefined; addListener(listener: () => void): void }) {
-    reviews.addListener(() => this.forgetLeft());
+  constructor(private readonly review: Review) {
+    review.addListener(() => this.forgetLeft());
   }
 
   edited(path: string, source: EditSource, before: string, after: string, edits: readonly DocumentEdit[]): void {
-    const review = this.reviews.shown();
-    const file = review?.file(path);
-    if (!review || !file) {
+    const review = this.review;
+    const file = review.file(path);
+    if (!file) {
       this.histories.delete(path);
       return;
     }
@@ -65,11 +65,11 @@ export class Takeovers {
     }
   }
 
-  /** A file out of the shown review forgets its history, so a round of review after it starts with none. */
+  /** A resolved file forgets its history, so a later round starts with none. */
   private forgetLeft(): void {
-    const review = this.reviews.shown();
+    const review = this.review;
     for (const path of [...this.histories.keys()]) {
-      if (!review?.file(path)) { this.histories.delete(path); }
+      if (!review.file(path)) { this.histories.delete(path); }
     }
   }
 

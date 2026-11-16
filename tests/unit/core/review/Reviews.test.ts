@@ -68,6 +68,529 @@ function reviews(files: Partial<ReviewFiles> = {}, admission: ReviewAdmission = 
 }
 
 describe('Reviews', () => {
+  it('drains an admitted restore before authority disposal completes', async () => {
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let started = () => {};
+    const restoring = new Promise<void>((resolve) => { started = resolve; });
+    let restored = false;
+    const { reviews: subject } = reviews({ restore: async () => { started(); await gate; restored = true; } });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const captured = subject.captureDecision({ action: 'undo-file', path: '/w/a.ts' });
+    if (!captured) { throw new Error('Missing decision'); }
+    const deciding = subject.decide(captured);
+    try {
+      await restoring;
+      const disposed = subject.dispose();
+      let decisionFinished = false;
+      void deciding.then(() => { decisionFinished = true; });
+      const effectAtDisposal = disposed.then(() => ({ restored, decisionFinished }));
+      release();
+      expect(await effectAtDisposal).toEqual({ restored: true, decisionFinished: true });
+      await disposed;
+    } finally { release(); await deciding; }
+  });
+
+  it('reports the applied effect without advancing when newer evidence arrives during save', async () => {
+    const document = { instance: {}, version: 1, dirty: false, text: 'A\nb\nC\n' };
+    let disk = document.text;
+    const { reviews: subject } = reviews({ read: async () => disk, snapshot: () => document,
+      save: async () => {
+        disk = 'newer';
+        await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('new', '/w/a.ts', document.text, disk), 'v1'));
+      },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a\nb\nc\n', document.text), 'v1'));
+    const captured = subject.captureDecision({ action: 'keep-change', path: '/w/a.ts',
+      change: { original: { start: 0, end: 1 }, modified: { start: 0, end: 1 } },
+    });
+    if (!captured) { throw new Error('Missing decision'); }
+    expect(await subject.decide(captured)).toMatchObject({ kind: 'failed', applied: ['/w/a.ts'], unsaved: [] });
+    expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'A\nb\nc\n', current: 'newer' });
+  });
+
+  it('prevents a staged edit when new target evidence is received but has not finished reading', async () => {
+    const document = { instance: {}, version: 1, dirty: false, text: 'A' };
+    let held = false;
+    let release: (content: FileContent) => void = () => {};
+    let receiving: Promise<void> | undefined;
+    let allowed: boolean | undefined;
+    const { reviews: subject } = reviews({ snapshot: () => document,
+      read: () => held ? new Promise((resolve) => { release = resolve; }) : Promise.resolve('A'),
+      applyEdit: async (_path, _edit, current) => {
+        held = true;
+        receiving = subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('new', '/w/a.ts', 'A', 'newer'), 'v1'));
+        allowed = current();
+        return false;
+      },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const captured = subject.captureDecision({ action: 'undo-change', path: '/w/a.ts',
+      change: { original: { start: 0, end: 1 }, modified: { start: 0, end: 1 } },
+    });
+    if (!captured) { throw new Error('Missing decision'); }
+    try {
+      expect(await subject.decide(captured)).toMatchObject({ kind: 'stale' });
+      expect(allowed).toBe(false);
+    } finally { release('newer'); await receiving; }
+    expect(subject.shown()?.file('/w/a.ts')?.current).toBe('newer');
+  });
+
+  it('settles target observations after an issued restore without saving the dirty document', async () => {
+    let document = { instance: {}, version: 1, dirty: true, text: 'A' };
+    let observed: Promise<void> | undefined;
+    const { reviews: subject } = reviews({ snapshot: () => document,
+      restore: async () => {
+        document = { ...document, version: 2, text: 'a' };
+        observed = subject.observeDocument({ path: '/w/a.ts', source: 'review', before: 'A', after: 'a',
+          edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: 'a' }],
+        });
+      },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const captured = subject.captureDecision({ action: 'undo-file', path: '/w/a.ts' });
+    if (!captured) { throw new Error('Missing decision'); }
+    expect(await subject.decide(captured)).toEqual({ kind: 'applied', saved: false, resolved: ['/w/a.ts'] });
+    await observed;
+    expect(subject.shown()?.files()).toEqual([]);
+  });
+
+  it('settles a received watcher read before Keep instead of letting it restore resolved work', async () => {
+    let refresh = () => {};
+    let held = false;
+    let release: (content: FileContent) => void = () => {};
+    const { reviews: subject } = reviews({
+      read: () => held ? new Promise((resolve) => { release = resolve; }) : Promise.resolve('A'),
+      watch: (_path, changed) => { refresh = changed; return { dispose() {} }; },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const captured = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+    if (!captured) { throw new Error('Missing decision'); }
+    held = true;
+    refresh();
+    const deciding = subject.decide(captured);
+    release('newer');
+    expect(await deciding).toMatchObject({ kind: 'stale' });
+    expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'a', current: 'newer' });
+  });
+
+  it('reserves a coalesced watcher refresh before evidence received while an older read runs', async () => {
+    let refresh = () => {};
+    let held = false;
+    let release: (content: FileContent) => void = () => {};
+    let reads = 0;
+    const { reviews: subject } = reviews({
+      read: () => {
+        reads++;
+        return held && reads === 2 ? new Promise((resolve) => { release = resolve; }) : Promise.resolve(reads === 1 ? 'A' : 'B');
+      },
+      watch: (_path, changed) => { refresh = changed; return { dispose() {} }; },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    held = true;
+    refresh();
+    refresh();
+    refresh();
+    const receiving = subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('second', '/w/a.ts', 'A', 'B'), 'v1'));
+    const readsBeforeRelease = reads;
+    held = false;
+    release('older');
+    await receiving;
+    expect(readsBeforeRelease).toBe(2);
+    expect(reads).toBe(4);
+    expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'a', current: 'B' });
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    expect(subject.shown()?.file('/w/a.ts')?.current).toBe('B');
+  });
+
+  it('settles received sibling evidence and document observations on shared paths before turn-end presentation', async () => {
+    let held = false;
+    let release: (content: FileContent) => void = () => {};
+    const { reviews: subject } = reviews({ read: () => held
+      ? new Promise((resolve) => { release = resolve; }) : Promise.resolve('A'),
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    held = true;
+    const receiving = subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('sibling', '/w/a.ts', 'A', 'newer'), 'v1'));
+    const observing = subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'newer', after: 'typed',
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 5, text: 'typed' }],
+    });
+    const presented: unknown[] = [];
+    const presenting = subject.afterShownTurn(SESSION_ID, async (view, current) => {
+      presented.push({ files: view.files(), current: current() });
+    });
+    release('newer');
+    await Promise.all([receiving, observing, presenting]);
+    expect(presented).toEqual([{ files: [{ path: '/w/a.ts', baseline: 'typed', current: 'newer' }], current: true }]);
+  });
+
+  it('does not wait for unrelated sibling evidence at turn-end presentation', async () => {
+    let release: (content: FileContent) => void = () => {};
+    const { reviews: subject } = reviews({ read: (path) => path === '/w/b.ts'
+      ? new Promise((resolve) => { release = resolve; }) : Promise.resolve('A'),
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const receiving = subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('other', '/w/b.ts', 'b', 'B'), 'v1'));
+    const presented: unknown[] = [];
+    try {
+      await subject.afterShownTurn(SESSION_ID, async (view) => { presented.push(view.files()); });
+      expect(presented).toEqual([[{ path: '/w/a.ts', baseline: 'a', current: 'A' }]]);
+    } finally { release('B'); await receiving; }
+  });
+
+  it('applies a document observation after earlier evidence establishes its pending file', async () => {
+    let release: (content: FileContent) => void = () => {};
+    const { reviews: subject } = reviews({ read: () => new Promise((resolve) => { release = resolve; }) });
+    subject.activeSessionChanged(SESSION_ID);
+    const receiving = subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const observing = subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'typed',
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: 'typed' }],
+    });
+    release('A');
+    await Promise.all([receiving, observing]);
+    expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'typed', current: 'A' });
+  });
+
+  it('does not apply an old queued document observation to a replacement pending lifetime', async () => {
+    let release: (content: FileContent) => void = () => {};
+    let held = false;
+    const { reviews: subject } = reviews({ read: () => held
+      ? new Promise((resolve) => { release = resolve; }) : Promise.resolve('A'),
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    held = true;
+    const crossing = subject.handleSessionUpdate(input(SESSION_ID, edited('back', '/w/a.ts', 'A', 'a'), 'v1'));
+    held = false;
+    const fresh = subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('fresh', '/w/a.ts', 'fresh baseline', 'A'), 'v1'));
+    const observing = subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'old edit',
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: 'old edit' }],
+    });
+    release('a');
+    await Promise.all([crossing, fresh, observing]);
+    expect(subject.shown()?.files()).toEqual([]);
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'fresh baseline', current: 'A' });
+  });
+
+  it('does not attach an observation received before initial evidence to work after a queued baseline crossing', async () => {
+    let release: (content: FileContent) => void = () => {};
+    const contents = ['a', 'fresh'];
+    let reads = 0;
+    const { reviews: subject } = reviews({ read: () => ++reads === 1
+      ? new Promise((resolve) => { release = resolve; }) : Promise.resolve(contents.shift() ?? null),
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    const first = subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    const crossing = subject.handleSessionUpdate(input(SESSION_ID, edited('back', '/w/a.ts', 'A', 'a'), 'v1'));
+    const fresh = subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('fresh', '/w/a.ts', 'a', 'fresh'), 'v1'));
+    const observing = subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'fresh', after: 'old observation',
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 5, text: 'old observation' }],
+    });
+    release('A');
+    await Promise.all([first, crossing, fresh, observing]);
+    expect(subject.shown()?.files()).toEqual([]);
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    expect(subject.shown()?.files()).toEqual([{ path: '/w/a.ts', baseline: 'a', current: 'fresh' }]);
+  });
+
+  describe.each([
+    ['v1', edited],
+    ['v2', patched],
+  ] as const)('%s shared pending files', (schema, report) => {
+    it.each([
+      ['unchanged', 'A', 'applied'],
+      ['changed', 'newer', 'stale'],
+    ] as const)('settles received %s evidence before deciding a captured file', async (_name, content, outcome) => {
+      let release: (content: FileContent) => void = () => {};
+      let held = false;
+      const { reviews: subject } = reviews({ read: () => held
+        ? new Promise<FileContent>((resolve) => { release = resolve; }) : Promise.resolve('A'),
+      });
+      subject.activeSessionChanged(SESSION_ID);
+      await subject.handleSessionUpdate(input(SESSION_ID, report('first', '/w/a.ts', 'a', 'A'), schema));
+      const captured = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+      if (!captured) { throw new Error('Missing decision'); }
+      held = true;
+      const receiving = subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('received', '/w/a.ts', 'A', content), schema));
+      const deciding = subject.decide(captured);
+      release(content);
+      await receiving;
+      expect(await deciding).toMatchObject({ kind: outcome });
+      expect(subject.shown()?.files()).toEqual(outcome === 'applied' ? [] : [{ path: '/w/a.ts', baseline: 'a', current: 'newer' }]);
+      subject.activeSessionChanged(OTHER_SESSION_ID);
+      expect(subject.shown()?.files()).toEqual(outcome === 'applied' ? [] : [{ path: '/w/a.ts', baseline: 'a', current: 'newer' }]);
+    });
+
+    it('does not wait for evidence reads of unrelated files before deciding', async () => {
+      let release: (content: FileContent) => void = () => {};
+      const { reviews: subject } = reviews({ read: (path) => path === '/w/b.ts'
+        ? new Promise<FileContent>((resolve) => { release = resolve; }) : Promise.resolve('A'),
+      });
+      subject.activeSessionChanged(SESSION_ID);
+      await subject.handleSessionUpdate(input(SESSION_ID, report('first', '/w/a.ts', 'a', 'A'), schema));
+      const captured = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+      if (!captured) { throw new Error('Missing decision'); }
+      const receiving = subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('other', '/w/b.ts', 'b', 'B'), schema));
+      try {
+        expect(await subject.decide(captured)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+        expect(subject.shown()?.files()).toEqual([]);
+      } finally { release('B'); await receiving; }
+      subject.activeSessionChanged(OTHER_SESSION_ID);
+      expect(subject.shown()?.files()).toEqual([{ path: '/w/b.ts', baseline: 'b', current: 'B' }]);
+    });
+
+    it('shares the first baseline, current comparison and one watcher across sessions', async () => {
+      let disk = 'timeout';
+      const { reviews: subject, watched } = reviews({ read: async () => disk });
+      subject.activeSessionChanged(SESSION_ID);
+      await subject.handleSessionUpdate(input(SESSION_ID, report('a', '/w/a.ts', 'original', 'timeout'), schema));
+      const a = subject.shown();
+      disk = 'timeout and retries';
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('b', '/w/a.ts', 'timeout', disk), schema));
+      subject.activeSessionChanged(OTHER_SESSION_ID);
+      expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'original', current: 'timeout and retries' });
+      expect(subject.shown()?.file('/w/a.ts')).toBe(a?.file('/w/a.ts'));
+      expect(watched).toEqual(['/w/a.ts']);
+    });
+
+    it('keeps a shared file everywhere without resolving another session\'s disjoint file', async () => {
+      const { reviews: subject, watched } = reviews();
+      subject.activeSessionChanged(SESSION_ID);
+      await subject.handleSessionUpdate(input(SESSION_ID, report('a', '/w/a.ts', 'a', 'A'), schema));
+      const a = subject.shown();
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('a', '/w/a.ts', 'a', 'A'), schema));
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('b', '/w/b.ts', 'b', 'B'), schema));
+      subject.activeSessionChanged(OTHER_SESSION_ID);
+      const b = subject.shown();
+      subject.activeSessionChanged(SESSION_ID);
+      const keep = subject.captureDecision({ action: 'keep-all' });
+      if (!keep) { throw new Error('Missing decision'); }
+      expect(await subject.decide(keep)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+      expect(a?.files()).toEqual([]);
+      expect(b?.files()).toEqual([{ path: '/w/b.ts', baseline: 'b', current: 'B' }]);
+      expect(watched).toEqual(['/w/b.ts']);
+    });
+
+    it('retires every old association at baseline and admits fresh associations only', async () => {
+      let disk = 'A';
+      const { reviews: subject, watched } = reviews({ read: async () => disk });
+      subject.activeSessionChanged(SESSION_ID);
+      await subject.handleSessionUpdate(input(SESSION_ID, report('a', '/w/a.ts', 'a', 'A'), schema));
+      const a = subject.shown();
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('b', '/w/a.ts', 'A', 'A'), schema));
+      disk = 'a';
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('back', '/w/a.ts', 'A', 'a'), schema));
+      expect(a?.files()).toEqual([]);
+      expect(watched).toEqual([]);
+      disk = 'fresh';
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('fresh', '/w/a.ts', 'a', 'fresh'), schema));
+      expect(a?.files()).toEqual([]);
+      subject.activeSessionChanged(OTHER_SESSION_ID);
+      expect(subject.shown()?.files()).toEqual([{ path: '/w/a.ts', baseline: 'a', current: 'fresh' }]);
+      expect(watched).toEqual(['/w/a.ts']);
+    });
+
+    it('publishes association-only changes coherently without invalidating an unchanged capture', async () => {
+      const { reviews: subject } = reviews();
+      subject.activeSessionChanged(SESSION_ID);
+      await subject.handleSessionUpdate(input(SESSION_ID, report('a', '/w/a.ts', 'a', 'A'), schema));
+      const a = subject.shown();
+      // Create a stable empty B view without associating the file.
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, { kind: 'commands', commands: [] }, schema));
+      subject.activeSessionChanged(OTHER_SESSION_ID);
+      const b = subject.shown();
+      const published: unknown[] = [];
+      subject.addListener(() => published.push({ a: a?.files(), b: b?.files() }));
+      await subject.handleSessionUpdate(input(OTHER_SESSION_ID, report('b', '/w/a.ts', 'A', 'A'), schema));
+      expect(published).toEqual([{
+        a: [{ path: '/w/a.ts', baseline: 'a', current: 'A' }],
+        b: [{ path: '/w/a.ts', baseline: 'a', current: 'A' }],
+      }]);
+      // Selection invalidates captures, so check association stability with A selected.
+      subject.activeSessionChanged(SESSION_ID);
+      const current = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+      if (!current) { throw new Error('Missing decision'); }
+      await subject.handleSessionUpdate(input({ ...OTHER_SESSION_ID, sessionId: 'third' }, report('join', '/w/a.ts', 'A', 'A'), schema));
+      expect(await subject.decide(current)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+      expect(a?.files()).toEqual([]);
+      expect(b?.files()).toEqual([]);
+    });
+  });
+
+  it('updates shared takeover history when no associated session is selected', async () => {
+    const { reviews: subject } = reviews();
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'different baseline', 'A'), 'v1'));
+    subject.activeSessionChanged(SESSION_ID);
+    const a = subject.shown();
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    const b = subject.shown();
+    subject.activeSessionChanged(null);
+    await subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'typed',
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: 'typed' }],
+    });
+    expect(a?.file('/w/a.ts')?.baseline).toBe('typed');
+    expect(b?.file('/w/a.ts')?.baseline).toBe('typed');
+    await subject.observeDocument({ path: '/w/a.ts', source: 'undo', before: 'typed', after: 'A',
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 5, text: 'A' }],
+    });
+    expect(a?.file('/w/a.ts')?.baseline).toBe('a');
+    expect(b?.file('/w/a.ts')).toBe(a?.file('/w/a.ts'));
+  });
+
+  it('keeps one change through B and leaves the shared remainder in both sessions', async () => {
+    const document = { instance: {}, version: 1, dirty: false, text: 'A\nb\nC\n' };
+    const saved: string[] = [];
+    const { reviews: subject } = reviews({ read: async () => document.text, snapshot: () => document,
+      save: async (path) => { saved.push(path); },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a\nb\nc\n', document.text), 'v1'));
+    const a = subject.shown();
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'A\nb\nc\n', document.text), 'v1'));
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    const b = subject.shown();
+    const keep = subject.captureDecision({ action: 'keep-change', path: '/w/a.ts',
+      change: { original: { start: 2, end: 3 }, modified: { start: 2, end: 3 } },
+    });
+    if (!keep) { throw new Error('Missing decision'); }
+    expect(await subject.decide(keep)).toEqual({ kind: 'applied', saved: true, resolved: [] });
+    expect(a?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'a\nb\nC\n', current: document.text });
+    expect(b?.file('/w/a.ts')).toBe(a?.file('/w/a.ts'));
+    expect(saved).toEqual(['/w/a.ts']);
+  });
+
+  it('undoes the shared first baseline once and removes the file from every session', async () => {
+    let disk = 'A';
+    const restored: [string, FileContent][] = [];
+    const { reviews: subject, watched } = reviews({ read: async () => disk,
+      restore: async (path, content, current) => {
+        if (!current?.()) { throw new Error('Stale restore'); }
+        restored.push([path, content]);
+        disk = content ?? '';
+      },
+    });
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
+    const a = subject.shown();
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'other', 'A'), 'v1'));
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    const b = subject.shown();
+    const undo = subject.captureDecision({ action: 'undo-file', path: '/w/a.ts' });
+    if (!undo) { throw new Error('Missing decision'); }
+    expect(await subject.decide(undo)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+    expect(restored).toEqual([['/w/a.ts', 'a']]);
+    expect(disk).toBe('a');
+    expect(a?.files()).toEqual([]);
+    expect(b?.files()).toEqual([]);
+    expect(watched).toEqual([]);
+  });
+
+  it('retains independent association order when sessions report shared files in opposite orders', async () => {
+    const { reviews: subject } = reviews();
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('b', '/w/b.ts', 'b', 'B'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/b.ts', 'b', 'B'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
+    subject.activeSessionChanged(SESSION_ID);
+    expect(subject.shown()?.files().map((file) => file.path)).toEqual(['/w/a.ts', '/w/b.ts']);
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    expect(subject.shown()?.files().map((file) => file.path)).toEqual(['/w/b.ts', '/w/a.ts']);
+  });
+
+  describe.each([
+    ['v1', edited],
+    ['v2', patched],
+  ] as const)('%s completed evidence delivery', (schema, report) => {
+    it('publishes a ready path without waiting for another path in the same report', async () => {
+      let release: (content: FileContent) => void = () => {};
+      const a = new Promise<FileContent>((resolve) => { release = resolve; });
+      const { reviews: subject } = reviews({ read: async (path) => path === '/w/a.ts' ? a : 'B' });
+      subject.activeSessionChanged(SESSION_ID);
+      const first = subject.handleSessionUpdate(input(SESSION_ID, {
+        ...report('first', '/w/a.ts', 'a', 'A'),
+        content: [...report('first', '/w/a.ts', 'a', 'A').content ?? [], ...report('first', '/w/b.ts', 'b', 'B').content ?? []],
+      }, schema));
+      try {
+        await subject.handleSessionUpdate(input(SESSION_ID, report('second', '/w/b.ts', 'different baseline', 'B'), schema));
+        expect(subject.shown()?.file('/w/b.ts')).toEqual({ path: '/w/b.ts', baseline: 'b', current: 'B' });
+        expect(subject.shown()?.files().map((file) => file.path)).toEqual(['/w/b.ts']);
+      } finally { release('A'); await first; }
+      expect(subject.shown()?.files().map((file) => file.path)).toEqual(['/w/a.ts', '/w/b.ts']);
+    });
+
+    it('starts a later read for the same path only after earlier evidence settles', async () => {
+      let release: (content: FileContent) => void = () => {};
+      const firstRead = new Promise<FileContent>((resolve) => { release = resolve; });
+      let reads = 0;
+      const { reviews: subject } = reviews({ read: () => ++reads === 1 ? firstRead : Promise.resolve('B') });
+      subject.activeSessionChanged(SESSION_ID);
+      const first = subject.handleSessionUpdate(input(SESSION_ID, report('first', '/w/a.ts', 'a', 'A'), schema));
+      const second = subject.handleSessionUpdate(input(SESSION_ID, report('second', '/w/a.ts', 'A', 'B'), schema));
+      try { expect(reads).toBe(1); }
+      finally { release('A'); await Promise.all([first, second]); }
+      expect(reads).toBe(2);
+      expect(subject.shown()?.files()).toEqual([{ path: '/w/a.ts', baseline: 'a', current: 'B' }]);
+    });
+
+    it('does not reopen resolved review for a successful duplicate completion', async () => {
+      const { reviews: subject, watched } = reviews();
+      subject.activeSessionChanged(SESSION_ID);
+      const update = report('a', '/w/a.ts', 'a', 'A');
+      await subject.handleSessionUpdate(input(SESSION_ID, update, schema));
+      const decision = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+      if (!decision) { throw new Error('Missing decision'); }
+      expect(await subject.decide(decision)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+
+      await subject.handleSessionUpdate(input(SESSION_ID, update, schema));
+      await subject.handleSessionUpdate(input(SESSION_ID, { kind: 'toolCall', toolCallId: 'a', status: 'completed' }, schema));
+
+      expect(subject.shown()?.files()).toEqual([]);
+      expect(watched).toEqual([]);
+    });
+
+    it('admits the same candidate when an earlier validation failed', async () => {
+      let disk = 'not the reported content';
+      const { reviews: subject } = reviews({ read: async () => disk });
+      subject.activeSessionChanged(SESSION_ID);
+      const update = report('a', '/w/a.ts', 'a', 'A');
+      await subject.handleSessionUpdate(input(SESSION_ID, update, schema));
+      expect(subject.shown()?.files()).toEqual([]);
+
+      disk = 'A';
+      await subject.handleSessionUpdate(input(SESSION_ID, update, schema));
+
+      expect(subject.shown()?.files()).toEqual([{ path: '/w/a.ts', baseline: 'a', current: 'A' }]);
+    });
+
+    it('admits a fresh revision that returns to previously consumed content', async () => {
+      let disk = 'A';
+      const { reviews: subject } = reviews({ read: async () => disk });
+      subject.activeSessionChanged(SESSION_ID);
+      const original = report('a', '/w/a.ts', 'a', 'A');
+      await subject.handleSessionUpdate(input(SESSION_ID, original, schema));
+      const decision = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+      if (!decision) { throw new Error('Missing decision'); }
+      expect(await subject.decide(decision)).toEqual({ kind: 'applied', saved: true, resolved: ['/w/a.ts'] });
+
+      disk = 'B';
+      await subject.handleSessionUpdate(input(SESSION_ID, { ...report('a', '/w/a.ts', 'A', 'B'), status: 'running' }, schema));
+      disk = 'A';
+      await subject.handleSessionUpdate(input(SESSION_ID, original, schema));
+
+      expect(subject.shown()?.files()).toEqual([{ path: '/w/a.ts', baseline: 'a', current: 'A' }]);
+    });
+  });
+
   it('does not save an issued hunk edit over evidence that settles before it returns', async () => {
     let document = { instance: {}, version: 1, dirty: false, text: 'A' };
     let disk = 'A';
@@ -99,41 +622,45 @@ describe('Reviews', () => {
     expect(Object.keys(view ?? {}).sort()).toEqual(['file', 'files']);
     expect(view?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'a', current: 'A' });
   });
-  it('routes a save observation to its captured owner after selection changes', async () => {
-    let document = { instance: {}, version: 1, dirty: false, text: 'A\nb\n' };
-    const { reviews: subject } = reviews({ read: async () => 'A\nb\n', snapshot: () => document,
+  it('applies a save observation to shared pending work after selection changes', async () => {
+    let document = { instance: {}, version: 1, dirty: false, text: 'A\nb\nC\n' };
+    const { reviews: subject } = reviews({ read: async () => 'A\nb\nC\n', snapshot: () => document,
       save: async () => {
         subject.activeSessionChanged(OTHER_SESSION_ID);
-        document = { ...document, version: 2, dirty: true, text: 'A\nB\n' };
-        subject.observeDocument({ path: '/w/a.ts', source: 'save', before: 'A\nb\n', after: document.text,
+        document = { ...document, version: 2, dirty: true, text: 'A\nB\nC\n' };
+        await subject.observeDocument({ path: '/w/a.ts', source: 'save', before: 'A\nb\nC\n', after: document.text,
           edits: [{ first: 1, last: 1, addedLines: 0, start: 2, end: 3, text: 'B' }],
         });
       },
     });
     subject.activeSessionChanged(SESSION_ID);
-    await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a\nb\n', 'A\nb\n'), 'v1'));
-    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'other\nb\n', 'A\nb\n'), 'v1'));
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a\nb\nc\n', 'A\nb\nC\n'), 'v1'));
+    const a = subject.shown();
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'other\nb\nc\n', 'A\nb\nC\n'), 'v1'));
     const captured = subject.captureDecision({ action: 'keep-change', path: '/w/a.ts',
       change: { original: { start: 0, end: 1 }, modified: { start: 0, end: 1 } },
     });
     if (!captured) { throw new Error('Missing decision'); }
     await subject.decide(captured);
-    expect(subject.shown()?.file('/w/a.ts')?.baseline).toBe('other\nb\n');
+    expect(subject.shown()?.file('/w/a.ts')?.baseline).toBe('A\nB\nc\n');
+    expect(a?.file('/w/a.ts')).toBe(subject.shown()?.file('/w/a.ts'));
   });
-  it('keeps takeover history with its session when another session reviews the same path', async () => {
+  it('shares takeover history when another session associates with the same path', async () => {
     const { reviews: subject } = reviews();
     const observe = (source: 'user' | 'undo', before: string, after: string) => subject.observeDocument({
       path: '/w/a.ts', source, before, after, edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: before.length, text: after }],
     });
     subject.activeSessionChanged(SESSION_ID);
     await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
-    observe('user', 'A', 'typed A');
+    await observe('user', 'A', 'typed A');
     subject.activeSessionChanged(OTHER_SESSION_ID);
     await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'b', 'A'), 'v1'));
-    observe('user', 'A', 'typed B');
+    expect(subject.shown()?.file('/w/a.ts')?.baseline).toBe('typed A');
+    const b = subject.shown();
     subject.activeSessionChanged(SESSION_ID);
-    observe('undo', 'typed A', 'A');
+    await observe('undo', 'typed A', 'A');
     expect(subject.shown()?.file('/w/a.ts')?.baseline).toBe('a');
+    expect(b?.file('/w/a.ts')).toBe(subject.shown()?.file('/w/a.ts'));
   });
   it('does not save unrelated edits made before a review edit settles', async () => {
     let document = { instance: {}, version: 1, dirty: false, text: 'A' };
@@ -192,9 +719,9 @@ describe('Reviews', () => {
     await subject.dispose();
     expect(detached).toBe(true);
   });
-  it('leaves a dirty whole-file Undo pending until its document is saved', async () => {
+  it('resolves shared dirty whole-file Undo without saving or admitting editor undo as evidence', async () => {
     let document = { instance: {}, version: 1, dirty: true, text: 'my edits' };
-    const { reviews: subject } = reviews({
+    const { reviews: subject, watched } = reviews({
       snapshot: () => document,
       restore: async (_path, content, current) => {
         if (!current?.()) { throw new Error('Stale restore'); }
@@ -203,11 +730,24 @@ describe('Reviews', () => {
     });
     subject.activeSessionChanged(SESSION_ID);
     await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
+    const a = subject.shown();
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('b', '/w/a.ts', 'other', 'A'), 'v1'));
+    subject.activeSessionChanged(OTHER_SESSION_ID);
+    const b = subject.shown();
     const captured = subject.captureDecision({ action: 'undo-file', path: '/w/a.ts' });
     if (!captured) { throw new Error('Missing decision'); }
-    expect(await subject.decide(captured)).toEqual({ kind: 'applied', saved: false, resolved: [] });
+    expect(await subject.decide(captured)).toEqual({ kind: 'applied', saved: false, resolved: ['/w/a.ts'] });
     expect(document.text).toBe('a');
-    expect(subject.shown()?.file('/w/a.ts')).toEqual({ path: '/w/a.ts', baseline: 'a', current: 'A' });
+    expect(document.dirty).toBe(true);
+    expect(a?.files()).toEqual([]);
+    expect(b?.files()).toEqual([]);
+    expect(watched).toEqual([]);
+    document = { ...document, version: 3, text: 'my edits' };
+    await subject.observeDocument({ path: '/w/a.ts', source: 'undo', before: 'a', after: document.text,
+      edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: document.text }],
+    });
+    expect(a?.files()).toEqual([]);
+    expect(b?.files()).toEqual([]);
   });
 
   it('does not save an issued hunk edit after independent activity invalidates admission', async () => {
@@ -267,7 +807,7 @@ describe('Reviews', () => {
     });
     subject.activeSessionChanged(SESSION_ID);
     await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
-    subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'Typed',
+    await subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'Typed',
       edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: 'Typed' }],
     });
     expect(subject.shown()?.file('/w/a.ts')?.baseline).toBe('Typed');
@@ -279,7 +819,7 @@ describe('Reviews', () => {
     await subject.handleSessionUpdate(input(SESSION_ID, edited('a', '/w/a.ts', 'a', 'A'), 'v1'));
     const retained = subject.shown();
     await subject.dispose();
-    subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'Typed',
+    await subject.observeDocument({ path: '/w/a.ts', source: 'user', before: 'A', after: 'Typed',
       edits: [{ first: 0, last: 0, addedLines: 0, start: 0, end: 1, text: 'Typed' }],
     });
     expect(retained?.file('/w/a.ts')?.baseline).toBe('a');

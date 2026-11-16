@@ -11,6 +11,12 @@ export interface ReviewedFile {
 /** What is at a path now: its text, or `null` when nothing is there; rejects when it cannot be read as text. */
 export type ReadFile = (path: string) => Promise<FileContent>;
 
+/** Reserves a path before reading it, then admits only evidence validated against that read. */
+export type ExamineEvidence = (
+  path: string,
+  validate: (current: FileContent) => { readonly before: FileContent } | undefined,
+) => Promise<boolean>;
+
 /** Puts `content` at `path`, `null` deleting what is there; rejects when it could not. */
 export type RestoreFile = (path: string, content: FileContent, stillCurrent?: (preparedDocument?: object) => boolean) => Promise<void>;
 
@@ -18,15 +24,13 @@ export type RestoreFile = (path: string, content: FileContent, stillCurrent?: (p
 export type ReviewListener = (path: string) => void;
 
 /**
- * One session's review: each file's net change from its baseline, whoever made it, in the order the files came under
+ * Shared pending files: each file's net change from its baseline, whoever made it, in the order the files came under
  * review. Only a change reported as evidence puts a file under review; a file back at its
  * baseline leaves it, and is forgotten, so a later change starts a new baseline.
  */
 export class Review {
   private readonly reviewed = new Map<string, ReviewedFile>();
   private readonly listeners = new Set<ReviewListener>();
-
-  constructor(private readonly restore: RestoreFile) {}
 
   addListener(listener: ReviewListener): void {
     this.listeners.add(listener);
@@ -68,18 +72,6 @@ export class Review {
   keepFile(path: string): void {
     const file = this.reviewed.get(path);
     if (file) { this.set(path, file.current, file.current); }
-  }
-
-  keepAll(): void {
-    for (const path of [...this.reviewed.keys()]) { this.keepFile(path); }
-  }
-
-  /** Restores the file's baseline; the file leaves the review only once that is done, and stays when it fails. */
-  async undoFile(path: string): Promise<void> {
-    const file = this.reviewed.get(path);
-    if (!file) { return; }
-    await this.restore(path, file.baseline);
-    this.set(path, file.baseline, file.baseline);
   }
 
   private set(path: string, baseline: FileContent, current: FileContent): void {

@@ -13,9 +13,10 @@ interface PendingRead {
 
 /** A review's files followed, with the reads asked for, the watchers by path, and a change heard by a path's watcher. */
 function followed() {
-  const review = new Review(async () => {});
+  const review = new Review();
   const reads: PendingRead[] = [];
   const pending = new Set<PendingRead>();
+  const started = new Set<() => void>();
   const watchers = new Map<string, () => void>();
   const subject = new FollowedFiles(
     review,
@@ -25,6 +26,7 @@ function followed() {
         read = { path, finished: false, give: resolve, fail: reject };
         reads.push(read);
         pending.add(read);
+        for (const listener of started) { listener(); }
       });
       return reading.finally(() => { read.finished = true; pending.delete(read); });
     },
@@ -32,6 +34,7 @@ function followed() {
       watchers.set(path, changed);
       return { dispose: () => watchers.delete(path) };
     },
+    (_path, read, previous) => previous ? previous.then(read) : read(),
   );
   onTestFinished(async () => {
     const disposed = subject.dispose();
@@ -40,7 +43,11 @@ function followed() {
   });
   const change = (path: string) => watchers.get(path)?.();
   const current = (path: string) => review.file(path)?.current;
-  return { review, subject, reads, watchers, change, current };
+  const reading = (count: number) => reads.length >= count ? Promise.resolve() : new Promise<void>((resolve) => {
+    const listener = () => { if (reads.length >= count) { started.delete(listener); resolve(); } };
+    started.add(listener);
+  });
+  return { review, subject, reads, watchers, change, current, reading };
 }
 
 /** Settles on the first review change after which `condition` holds. */
@@ -57,7 +64,7 @@ afterEach(() => { setLogSink(undefined); });
 
 describe('FollowedFiles', () => {
   it('reports a watcher disposal failure only after detaching sibling watchers and draining their reads', async () => {
-    const review = new Review(async () => {});
+    const review = new Review();
     const watchers = new Map<string, () => void>();
     const reads: { give: (content: FileContent) => void }[] = [];
     const failure = new Error('watcher disposal failed');
@@ -73,6 +80,7 @@ describe('FollowedFiles', () => {
           },
         };
       },
+      (_path, read, previous) => previous ? previous.then(read) : read(),
     );
     onTestFinished(async () => {
       let disposed: Promise<void> | undefined;
@@ -169,7 +177,7 @@ describe('FollowedFiles', () => {
   });
 
   it('reads one at a time, reading once more after changes heard meanwhile, so the latest read lands last', async () => {
-    const { review, reads, change, current } = followed();
+    const { review, reads, change, current, reading } = followed();
     review.changed('/w/a.ts', 'one', 'two');
     change('/w/a.ts');
     change('/w/a.ts');
@@ -178,6 +186,7 @@ describe('FollowedFiles', () => {
     const older = reviewChanged(review, () => current('/w/a.ts') === 'older');
     reads[0]?.give('older');
     await older;
+    await reading(2);
     expect(reads).toHaveLength(2);
     const newer = reviewChanged(review, () => current('/w/a.ts') === 'newer');
     reads[1]?.give('newer');
@@ -187,7 +196,7 @@ describe('FollowedFiles', () => {
   });
 
   it('keeps following after a read fails', async () => {
-    const { review, reads, change, current } = followed();
+    const { review, reads, change, current, reading } = followed();
     review.changed('/w/a.ts', 'one', 'two');
     change('/w/a.ts');
     const failed = new Promise<void>((resolve) => {
@@ -197,6 +206,7 @@ describe('FollowedFiles', () => {
     await failed;
     expect(current('/w/a.ts')).toBe('two');
     change('/w/a.ts');
+    await reading(2);
     expect(reads).toHaveLength(2);
     const changed = reviewChanged(review, () => current('/w/a.ts') === 'three');
     reads[1]?.give('three');

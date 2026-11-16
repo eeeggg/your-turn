@@ -3,7 +3,7 @@ import { applyReviewEdit, ReviewTakeovers } from '@/adapters/review/ReviewTakeov
 import * as vscode from 'vscode';
 import { ReviewSourceControl } from '@/adapters/review/ReviewSourceControl';
 import { ReviewControls } from '@/core/review/ReviewControls';
-import { Reviews } from '@/core/review/Reviews';
+import { Reviews, type ReviewFiles } from '@/core/review/Reviews';
 
 const SESSION_ID = { sessionId: '67d942be-3e51-4d08-8a62-f910b53c74e6', agentName: 'fake', agentId: 'source' };
 const OTHER_SESSION_ID = { ...SESSION_ID, sessionId: 'ba43f621-805d-49e2-a376-0fd65ec9814b' };
@@ -75,11 +75,11 @@ afterEach(async () => {
   if (failures.length) { throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to clean up review adapters'); }
 });
 
-async function setup(blocked = false, save: () => Promise<void> = async () => { throw new Error('Unexpected save'); }) {
+async function setup(blocked = false, save: () => Promise<void> = async () => { throw new Error('Unexpected save'); }, read: ReviewFiles['read'] = async () => 'after\n') {
   vi.useFakeTimers();
   let text = 'after\n';
   host.document.getText = () => text;
-  const reviews = new Reviews({ read: async () => 'after\n', restore: async () => {}, watch: () => ({ dispose() {} }),
+  const reviews = new Reviews({ read, restore: async () => {}, watch: () => ({ dispose() {} }),
     snapshot: () => ({ instance: host.document, version: 1, dirty: true, text: host.document.getText() }),
     applyEdit: async () => { throw new Error('Unexpected edit'); }, save,
   }, {
@@ -113,6 +113,27 @@ async function setup(blocked = false, save: () => Promise<void> = async () => { 
 }
 
 describe('Review adapter shutdown', () => {
+  it('drains document ingestion queued behind an evidence read before disposal completes', async () => {
+    let held = false;
+    let release: (content: string) => void = () => {};
+    const { reviews, adapter, change } = await setup(false, undefined, () => held
+      ? new Promise<string>((resolve) => { release = resolve; }) : Promise.resolve('after\n'));
+    host.window.activeTextEditor = { ...host.editor, document: { ...host.document } };
+    held = true;
+    const receiving = reviews.handleSessionUpdate({
+      origin: { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' },
+      schema: 'v1', update: { kind: 'toolCall', toolCallId: 'later', status: 'completed', content: [
+        { kind: 'diff', diff: { kind: 'wholeFile', path: host.document.uri.fsPath, oldText: 'before\n', newText: 'after\n' } },
+      ] },
+    });
+    change();
+    const disposed = adapter.dispose();
+    const baselineAtDisposal = disposed.then(() => reviews.shown()?.file(host.document.uri.fsPath)?.baseline);
+    release('after\n');
+    expect(await baselineAtDisposal).toBe('before\ntyped\n');
+    await receiving;
+  });
+
   it('retires quick-diff captures when the shown session changes and after disposal', async () => {
     const { reviews, controls } = await setup();
     const sourceControl = new ReviewSourceControl(controls, reviews);

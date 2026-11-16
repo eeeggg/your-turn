@@ -203,15 +203,15 @@ The extension's Source Control entry for the shown session's review. Its Files U
 _Avoid_: staging area, index, changeset
 
 **Review**:
-A session's files whose net change the user has yet to keep or undo, each from its baseline to what it holds now, whoever changed it since. Only evidence of an agent's change puts a file under review.
+A session's associated files whose net change the user has yet to keep or undo. Sessions associated with the same file share one baseline and current comparison, whoever changed it since. Only evidence of an agent's change puts a file under review. Full resolution removes the file from every associated session.
 _Avoid_: diff (a tool call's, which is history), changeset, pending changes
 
 **Baseline**:
-What a file under review held when the review first saw it change; nothing, for a file the agent created. A file back at its baseline leaves the review.
+What a file under review held when the extension first admitted evidence of its pending change; nothing, for a file the agent created. All associated sessions share that baseline. A file back at its baseline leaves every associated session's review.
 _Avoid_: original, before
 
 **Evidence**:
-A report, trusted by a guard, that a path held one content and now holds another.
+A report, trusted by a guard, that a path held one content and now holds another. Admitted evidence associates its session with the pending file; it does not establish exclusive authorship.
 _Avoid_: event, edit
 
 **Keep**:

@@ -1,7 +1,8 @@
 import type { AcpSchema } from '@/core/acp/AcpDriver';
+import { logWarning, messageOf } from '@/core/Log';
 import type { QualifiedSessionUpdate, SessionIdentity, SessionRegistration, SessionLoad } from '@/core/SessionUpdateHandler';
 import { FollowedFiles, type WatchFile } from '@/core/review/FollowedFiles';
-import { Review, type ReadFile, type RestoreFile, type ReviewedFile } from '@/core/review/Review';
+import { Review, type ExamineEvidence, type ReadFile, type RestoreFile, type ReviewedFile } from '@/core/review/Review';
 import { V1Guard } from '@/core/review/V1Guard';
 import { V2Guard } from '@/core/review/V2Guard';
 import { keptChange, undoneChange, type Change, type TextEdit } from '@/core/review/Hunks';
@@ -61,11 +62,9 @@ export type ReviewDecisionResult =
 
 interface SessionReview {
   identity: SessionIdentity;
-  readonly review: Review;
   readonly view: ReviewView;
   readonly guards: Map<string, { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard }>;
-  readonly followed: FollowedFiles;
-  readonly takeovers: Takeovers;
+  readonly order: Map<string, number>;
 }
 
 interface ReviewView {
@@ -90,9 +89,9 @@ const keyOf = ({ configuredName, sessionId }: SessionIdentity): string => JSON.s
 const identityOf = ({ agentName, sessionId }: SessionRegistration): SessionIdentity => ({ configuredName: agentName, sessionId });
 
 /**
- * Retains each configuration/session's review independently of registration. Each source has its own guards;
+ * Retains shared pending files and each configuration/session's associations independently of registration. Each source has its own guards;
  * load attempts suppress only that source/session's replay. Removal preserves admitted evidence and does not retire
- * the source. The selected registration projects its retained review.
+ * the source. The selected registration projects its associated shared files.
  */
 export class Reviews {
   private readonly sessions = new Map<string, SessionReview>();
@@ -101,15 +100,41 @@ export class Reviews {
   /** Each session's updates so far, settled once all were taken. */
   private readonly taken = new Map<string, Promise<unknown>>();
   private readonly pending = new Set<Promise<void>>();
+  private readonly decisions = new Set<Promise<ReviewDecisionResult>>();
   private shownSessionId: string | null = null;
   private selected: SessionRegistration | null = null;
   private selectionRevision = 0;
   private disposed = false;
   private disposal: Promise<void> | undefined;
   private readonly detachAdmission: () => void;
-  private effect: CapturedDecision | undefined;
+  private readonly review: Review;
+  private readonly followed: FollowedFiles;
+  private readonly takeovers: Takeovers;
+  private readonly ingress = new Map<string, Promise<boolean>>();
+  private readonly lifetimes = new Map<string, { evidence: number }>();
+  private readonly observations = new Map<string, Set<{ lifetime: object | undefined; retired: boolean }>>();
+  private receipt = 0;
 
   constructor(private readonly files: ReviewFiles, private readonly admission: ReviewAdmission) {
+    this.review = new Review();
+    this.takeovers = new Takeovers(this.review);
+    this.followed = new FollowedFiles(this.review, files.read, files.watch,
+      (path, read) => this.enqueue(path, async () => { await read(); return true; }).then(() => {}));
+    this.review.addListener((path) => {
+      const shown = this.shownSessionId !== null && this.sessions.get(this.shownSessionId)?.order.has(path);
+      if (!this.review.file(path)) {
+        for (const observation of this.observations.get(path) ?? []) { observation.retired = true; }
+        this.lifetimes.delete(path);
+        for (const session of this.sessions.values()) { session.order.delete(path); }
+      } else if (!this.lifetimes.has(path)) {
+        const lifetime = { evidence: 0 };
+        this.lifetimes.set(path, lifetime);
+        for (const observation of this.observations.get(path) ?? []) {
+          if (observation.lifetime === undefined && !observation.retired) { observation.lifetime = lifetime; }
+        }
+      }
+      if (shown) { this.changed(); }
+    });
     this.detachAdmission = admission.onChanged(() => this.changed());
   }
 
@@ -121,21 +146,31 @@ export class Reviews {
     return () => !this.disposed && this.selected === registration && this.selectionRevision === revision;
   }
 
-  observeDocument({ path, source, before, after, edits }: ReviewDocumentObservation): void {
-    if (this.disposed) { return; }
-    if ((source === 'review' || source === 'save') && this.effect?.files.some((file) => file.path === path)) {
-      this.effect.entry.takeovers.edited(path, source, before, after, edits);
-      return;
-    }
-    if (this.shownSessionId !== null) { this.sessions.get(this.shownSessionId)?.takeovers.edited(path, source, before, after, edits); }
+  observeDocument({ path, source, before, after, edits }: ReviewDocumentObservation): Promise<void> {
+    if (this.disposed) { return Promise.resolve(); }
+    const observation = { lifetime: this.lifetimes.get(path), retired: false };
+    const observations = this.observations.get(path) ?? new Set();
+    this.observations.set(path, observations);
+    observations.add(observation);
+    const observing = this.enqueue(path, () => {
+      if (this.disposed || observation.retired || this.lifetimes.get(path) !== observation.lifetime) { return Promise.resolve(false); }
+      this.takeovers.edited(path, source, before, after, edits);
+      return Promise.resolve(true);
+    }).then(() => {}).finally(() => {
+      observations.delete(observation);
+      if (observations.size === 0) { this.observations.delete(path); }
+    });
+    this.pending.add(observing);
+    void observing.then(() => this.pending.delete(observing), () => this.pending.delete(observing));
+    return observing;
   }
 
   captureDecision(request: ReviewDecisionRequest): ReviewDecision | undefined {
     const registration = this.selected;
     const entry = this.shownSessionId === null ? undefined : this.sessions.get(this.shownSessionId);
     if (this.disposed || !registration || !entry) { return undefined; }
-    const files = request.action === 'keep-all' ? entry.review.files()
-      : request.path === undefined ? [] : [entry.review.file(request.path)].filter((file) => file !== undefined);
+    const files = request.action === 'keep-all' ? entry.view.files()
+      : request.path === undefined ? [] : [entry.view.file(request.path)].filter((file) => file !== undefined);
     if (files.length === 0) { return undefined; }
     const documents = files.map((file) => this.files.snapshot(file.path));
     if (request.action === 'keep-change' || request.action === 'undo-change') {
@@ -151,11 +186,21 @@ export class Reviews {
       documents, request.change && { original: { ...request.change.original }, modified: { ...request.change.modified } });
   }
 
-  async decide(decision: ReviewDecision): Promise<ReviewDecisionResult> {
+  decide(decision: ReviewDecision): Promise<ReviewDecisionResult> {
+    const deciding = this.applyDecision(decision);
+    this.decisions.add(deciding);
+    void deciding.then(() => this.decisions.delete(deciding), () => this.decisions.delete(deciding));
+    return deciding;
+  }
+
+  private async applyDecision(decision: ReviewDecision): Promise<ReviewDecisionResult> {
     const stale = (): ReviewDecisionResult => ({ kind: 'stale', reason: 'The review decision is no longer current.' });
     const blocked = (): ReviewDecisionResult => ({ kind: 'blocked', reason: 'Workspace activity blocks review resolution.' });
     if (!(decision instanceof CapturedDecision) || decision.owner !== this) { return stale(); }
     const admitted = await this.admission.runDecision(async (stillAdmitted): Promise<ReviewDecisionResult> => {
+      if (!stillAdmitted()) { return blocked(); }
+      const received = decision.files.flatMap((file) => this.ingress.get(file.path) ?? []);
+      if (received.length > 0) { await Promise.all(received); }
       if (!stillAdmitted()) { return blocked(); }
       if (!this.decisionCurrent(decision)) { return stale(); }
       if (decision.action === 'keep-change' || decision.action === 'undo-change') {
@@ -164,11 +209,11 @@ export class Reviews {
         const change = decision.change;
         if (!file || !document || !change) { return stale(); }
         let applied = false;
+        let saved = false;
         try {
-          this.effect = decision;
           const edit = decision.action === 'undo-change' ? undoneChange(file.baseline ?? '', document.text, change) : undefined;
           if (decision.action === 'keep-change') {
-            decision.entry.review.setBaseline(file.path, keptChange(file.baseline ?? '', document.text, change));
+            this.review.setBaseline(file.path, keptChange(file.baseline ?? '', document.text, change));
           } else if (edit && !(await this.files.applyEdit(file.path, edit,
             () => stillAdmitted() && this.decisionCurrent(decision)))) {
             if (!stillAdmitted()) { return blocked(); }
@@ -176,23 +221,30 @@ export class Reviews {
             throw new Error('The change could not be undone.');
           }
           applied = true;
+          await this.settle(file.path);
           if (!stillAdmitted()) { throw new Error('Workspace activity interrupted review resolution after the change was applied.'); }
           const actual = this.files.snapshot(file.path);
           const expected = edit ? document.text.slice(0, edit.start) + edit.text + document.text.slice(edit.end) : document.text;
-          const pending = decision.entry.review.file(file.path);
+          const pending = this.review.file(file.path);
           if (!this.decisionOwnerCurrent(decision) || actual?.instance !== document.instance
             || actual.text !== expected || actual.version !== document.version + (edit ? 1 : 0)
             || (edit && pending !== file)) {
             throw new Error('The review target changed after the change was applied.');
           }
+          const lifetime = this.lifetimes.get(file.path);
+          const evidence = lifetime?.evidence;
           await this.files.save(file.path);
+          saved = true;
+          await this.settle(file.path);
+          if (!this.decisionOwnerCurrent(decision) || !stillAdmitted()
+            || (this.lifetimes.has(file.path) && this.lifetimes.get(file.path) !== lifetime) || lifetime?.evidence !== evidence) {
+            throw new Error('The review target changed while the file was saved.');
+          }
           return { kind: 'applied', saved: true,
-            resolved: decision.entry.review.file(file.path) ? [] : [file.path] };
+            resolved: this.review.file(file.path) ? [] : [file.path] };
         } catch (error) {
           return { kind: 'failed', reason: error instanceof Error ? error.message : String(error),
-            applied: applied ? [file.path] : [], unsaved: applied ? [file.path] : [] };
-        } finally {
-          this.effect = undefined;
+            applied: applied ? [file.path] : [], unsaved: applied && !saved ? [file.path] : [] };
         }
       }
       try {
@@ -211,25 +263,23 @@ export class Reviews {
           if (await this.files.read(file.path) !== file.current) { return stale(); }
           if (!stillAdmitted()) { return blocked(); }
           if (!this.decisionCurrent(decision)) { return stale(); }
-          this.effect = decision;
           await this.files.restore(file.path, file.baseline, (preparedDocument) =>
             stillAdmitted() && this.decisionCurrent(decision, preparedDocument));
+          await this.settle(file.path);
           const saved = !decision.documents[0]?.dirty || file.baseline === null;
-          const remaining = decision.entry.review.file(file.path);
+          const remaining = this.review.file(file.path);
           if (remaining && remaining !== file) {
             return { kind: 'failed', reason: 'The review target changed after the file was restored.', applied: [file.path], unsaved: [] };
           }
-          if (saved && remaining === file) { decision.entry.review.read(file.path, file.baseline); }
-          return { kind: 'applied', saved, resolved: saved ? [file.path] : [] };
+          if (remaining === file) { this.review.read(file.path, file.baseline); }
+          return { kind: 'applied', saved, resolved: [file.path] };
         } catch (error) {
           if (!stillAdmitted()) { return blocked(); }
           if (!this.decisionCurrent(decision)) { return stale(); }
           return { kind: 'failed', reason: error instanceof Error ? error.message : String(error), applied: [], unsaved: [] };
-        } finally {
-          this.effect = undefined;
         }
       }
-      for (const file of decision.files) { decision.entry.review.keepFile(file.path); }
+      for (const file of decision.files) { this.review.keepFile(file.path); }
       return { kind: 'applied', saved: true, resolved: decision.files.map((file) => file.path) };
     });
     return admitted.kind === 'blocked' ? blocked() : admitted.value;
@@ -240,7 +290,7 @@ export class Reviews {
       && decision.files.every((file, index) => {
         const captured = decision.documents[index];
         const document = this.files.snapshot(file.path);
-        return decision.entry.review.file(file.path) === file
+        return !this.ingress.has(file.path) && decision.entry.view.file(file.path) === file
           && ((!captured && preparedDocument !== undefined && document?.instance === preparedDocument
             && !document.dirty && document.text === file.current)
             || (captured?.instance === document?.instance && captured?.version === document?.version
@@ -301,7 +351,7 @@ export class Reviews {
     const session = this.session(origin.identity);
     let guard = session.guards.get(origin.sourceId);
     if (guard?.schema !== schema) {
-      guard = this.guard(schema, session.review);
+      guard = this.guard(schema, session);
       session.guards.set(origin.sourceId, guard);
     }
     const handled = guard.guard.handleSessionUpdate(update);
@@ -321,9 +371,13 @@ export class Reviews {
     if (!entry) { return; }
     const revision = this.selectionRevision;
     const taken = this.taken.get(keyOf(entry.identity));
+    const received = entry.view.files().flatMap((file) => this.ingress.get(file.path) ?? []);
     const current = () => !this.disposed && this.selected === registration && this.selectionRevision === revision
       && this.sessions.get(keyOf(entry.identity)) === entry;
     await taken;
+    if (!current()) { return; }
+    const established = entry.view.files().flatMap((file) => this.ingress.get(file.path) ?? []);
+    await Promise.all([...received, ...established]);
     if (current()) { await present(entry.view, current); }
   }
 
@@ -362,11 +416,11 @@ export class Reviews {
     this.listeners.clear();
     this.shownSessionId = null;
     this.selected = null;
-    const followed = [...this.sessions.values()].map((session) => session.followed.dispose());
+    const followed = this.followed.dispose();
     this.sessions.clear();
     this.loading.clear();
     this.taken.clear();
-    this.disposal = Promise.allSettled([...this.pending, ...followed]).then((results) => {
+    this.disposal = Promise.allSettled([...this.pending, ...this.decisions, followed]).then((results) => {
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to dispose reviews');
@@ -379,20 +433,57 @@ export class Reviews {
     const sessionId = keyOf(identity);
     let session = this.sessions.get(sessionId);
     if (!session) {
-      const review = new Review(this.files.restore);
-      review.addListener(() => {
-        if (session && keyOf(session.identity) === this.shownSessionId) { this.changed(); }
+      const order = new Map<string, number>();
+      const file = (path: string) => order.has(path) ? this.review.file(path) : undefined;
+      const view: ReviewView = Object.freeze({
+        files: () => [...order].sort((a, b) => a[1] - b[1]).flatMap(([path]) => file(path) ?? []),
+        file,
       });
-      const takeovers = new Takeovers({ shown: () => review, addListener: (listener) => review.addListener(listener) });
-      const view: ReviewView = Object.freeze({ files: () => review.files(), file: (path: string) => review.file(path) });
-      session = { identity, review, view, guards: new Map(), followed: new FollowedFiles(review, this.files.read, this.files.watch), takeovers };
+      session = { identity, view, guards: new Map(), order };
       this.sessions.set(sessionId, session);
     }
     return session;
   }
 
-  private guard(schema: AcpSchema, review: Review): { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard } {
-    return { schema, guard: schema === 'v1' ? new V1Guard(review, this.files.read) : new V2Guard(review, this.files.read) };
+  private guard(schema: AcpSchema, session: SessionReview): { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard } {
+    const examine: ExamineEvidence = (path, validate) => {
+      const receipt = ++this.receipt;
+      const take = async (): Promise<boolean> => {
+        let content;
+        try { content = await this.files.read(path); }
+        catch (error) {
+          logWarning('Review change not examined because file could not be read', { path, reason: messageOf(error) });
+          return false;
+        }
+        if (this.disposed) { return false; }
+        const evidence = validate(content);
+        if (!evidence) { return false; }
+        const before = this.review.file(path);
+        const associated = !session.order.has(path) && (before ? before.baseline !== content : evidence.before !== content);
+        if (associated) { session.order.set(path, receipt); }
+        this.review.changed(path, evidence.before, content);
+        const lifetime = this.lifetimes.get(path);
+        if (lifetime) { lifetime.evidence++; }
+        if (associated && this.review.file(path) === before && keyOf(session.identity) === this.shownSessionId) { this.changed(); }
+        return true;
+      };
+      return this.enqueue(path, take);
+    };
+    return { schema, guard: schema === 'v1' ? new V1Guard(examine) : new V2Guard(examine) };
+  }
+
+  private enqueue(path: string, take: () => Promise<boolean>): Promise<boolean> {
+    const previous = this.ingress.get(path);
+    const taken = previous ? previous.then(take, take) : take();
+    this.ingress.set(path, taken);
+    const finished = () => { if (this.ingress.get(path) === taken) { this.ingress.delete(path); } };
+    void taken.then(finished, finished);
+    return taken;
+  }
+
+  private async settle(path: string): Promise<void> {
+    const received = this.ingress.get(path);
+    if (received) { await received; }
   }
 
   private changed(): void {
