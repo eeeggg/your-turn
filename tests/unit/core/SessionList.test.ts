@@ -361,7 +361,7 @@ describe('SessionList', () => {
         await listed(list, 'fake');
         await manager.connectToAgent('fake');
 
-        manager.applySessionInfoUpdate(CREATED_SESSION_ID, { title: 'Named' });
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: CREATED_SESSION_ID }, { title: 'Named' });
 
         const sessions = await list.sessionsOf('fake');
         expect(sessions.kind === 'listed' && sessions.rows.map((row) => row.label)).toEqual(['Named']);
@@ -612,10 +612,10 @@ describe('SessionList', () => {
         await listed(list, 'fake');
         await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
-        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'Reported before' });
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: 'Reported before' });
 
         const refreshing = list.refresh('fake');
-        manager.recordTurnEnded(FIRST_SESSION_ID);
+        manager.recordTurnEnded({ configuredName: 'fake', sessionId: FIRST_SESSION_ID });
         await refreshing;
         await list.settled();
 
@@ -623,7 +623,7 @@ describe('SessionList', () => {
         expect(sessions.kind === 'listed' && sessions.rows.map(({ label, age }) => ({ label, age }))).toEqual([{ label: 'Relisted', age: 'now' }]);
 
         const again = list.refresh('fake');
-        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'Reported meanwhile' });
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: 'Reported meanwhile' });
         await again;
         expect(await shownNow(list)).toEqual({ rows: ['Reported meanwhile'], more: 'none' });
       });
@@ -636,12 +636,12 @@ describe('SessionList', () => {
         await list.settled();
         expect(fake.requests).toEqual([undefined]);
 
-        manager.recordTurnEnded(CREATED_SESSION_ID);
+        manager.recordTurnEnded({ configuredName: 'fake', sessionId: CREATED_SESSION_ID });
         await list.settled();
         expect(fake.requests).toEqual([undefined, undefined]);
         expect(await shownNow(list)).toEqual({ rows: ['created'], more: 'none' });
 
-        manager.recordTurnEnded(CREATED_SESSION_ID);
+        manager.recordTurnEnded({ configuredName: 'fake', sessionId: CREATED_SESSION_ID });
         await list.settled();
         expect(fake.requests).toEqual([undefined, undefined]);
       });
@@ -676,13 +676,13 @@ describe('SessionList', () => {
         await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
 
-        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'New' });
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: 'New' });
         expect(await shown(list)).toEqual([{ label: 'New', age: '3 hours ago' }, { label: 'Other', age: undefined }]);
 
-        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { updatedAt: '2026-10-18T11:00:00Z' });
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { updatedAt: '2026-10-18T11:00:00Z' });
         expect(await shown(list)).toEqual([{ label: 'New', age: '1 hour ago' }, { label: 'Other', age: undefined }]);
 
-        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: null });
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: null });
         expect(await shown(list)).toEqual([{ label: 'Untitled', age: '1 hour ago' }, { label: 'Other', age: undefined }]);
         expect(fake.requests).toEqual([undefined, undefined]);
       });
@@ -696,7 +696,7 @@ describe('SessionList', () => {
         const changes = vi.fn();
         list.on('changed', changes);
 
-        manager.recordTurnEnded(FIRST_SESSION_ID);
+        manager.recordTurnEnded({ configuredName: 'fake', sessionId: FIRST_SESSION_ID });
 
         expect(changes).toHaveBeenCalled();
         const sessions = await listed(list, 'fake');
@@ -712,8 +712,8 @@ describe('SessionList', () => {
         await listed(list, 'fake');
         await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
-        manager.applySessionInfoUpdate(FIRST_SESSION_ID, { title: 'Reported' });
-        manager.recordTurnEnded(FIRST_SESSION_ID);
+        manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: 'Reported' });
+        manager.recordTurnEnded({ configuredName: 'fake', sessionId: FIRST_SESSION_ID });
 
         list.invalidate('fake');
 

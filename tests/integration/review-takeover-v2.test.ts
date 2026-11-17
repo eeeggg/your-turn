@@ -6,7 +6,7 @@ import { setup, suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { observed } from '@tests/integration/observed';
+import { observed, promptTarget } from '@tests/integration/observed';
 import { cleanup } from '@tests/integration/cleanup';
 
 
@@ -61,7 +61,7 @@ for (const version of [2]) {
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
       const reviewed = observed(api.reviewChanges, () => (api.reviewedFiles().length === 3 ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `review ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `review ${folder}` });
       await Promise.all([promptEnded, reviewed]);
       await api.turnEndShown();
     });

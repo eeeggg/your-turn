@@ -165,7 +165,7 @@ export class V2Driver implements AcpDriver {
   }
 
   /** The agent answers once it has taken the prompt in, and reports the end of the turn it starts as the session going idle. */
-  async prompt(sessionId: string, prompt: PromptPart[]): Promise<void> {
+  async prompt(sessionId: string, prompt: PromptPart[]): Promise<{ stopReason: string | null }> {
     const turn = this.foreground.begin(sessionId);
     try {
       const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.prompt, {
@@ -179,6 +179,7 @@ export class V2Driver implements AcpDriver {
         throw turnFailure(idle.error);
       }
       logInfo('Prompt turn ended', { stopReason: idle.stopReason ?? 'none' });
+      return { stopReason: idle.stopReason ?? null };
     } finally {
       this.foreground.remove(sessionId, turn);
     }

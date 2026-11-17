@@ -24,8 +24,11 @@ function chatView() {
   return {
     session: (): ActiveSession | null => store.getSnapshot().activeSession,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
-    connect: (session: Partial<SessionSnapshot> = {}) =>
-      store.dispatch({ type: 'state', activeSessionId: session.sessionId ?? SESSION_ID, session: snapshot(session) }),
+    connect: (session: Partial<SessionSnapshot> = {}) => {
+      store.dispatch({ type: 'state', activeSessionId: session.sessionId ?? SESSION_ID, session: snapshot(session) });
+      store.dispatch({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { configuredName: session.agentName ?? 'Fake Agent', sessionId: session.sessionId ?? SESSION_ID, generation: 1, projection: 1 },
+        revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+    },
     notified: () => notified,
   };
 }
@@ -194,7 +197,8 @@ describe('slash commands', () => {
 
     view.connect({ commands: [init] });
     const before = view.session();
-    view.send({ type: 'pickers', pickers: [] }, { type: 'agentText', messageId: null, text: 'hi' });
+    view.send({ type: 'pickers', pickers: [] }, { type: 'contentPatch', target: { configuredName: 'Fake Agent', sessionId: SESSION_ID, generation: 1, projection: 1 }, base: 0, revision: 1, currentTurn: 1, nextId: 2, usage: null,
+      patches: [{ kind: 'insert', index: 0, entries: [{ kind: 'turn', id: 1, parts: [{ kind: 'message', messageId: null, text: 'hi' }] }] }] });
     expect(view.session()).toBe(before);
   });
 });

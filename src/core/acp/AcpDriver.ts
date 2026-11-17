@@ -412,7 +412,7 @@ export interface AcpDriver {
   loadSession(sessionId: string, roots: SessionRoots): Promise<SessionState>;
   resumeSession(sessionId: string, roots: SessionRoots): Promise<SessionState>;
   /** Resolves when the turn ends. */
-  prompt(sessionId: string, prompt: PromptPart[]): Promise<void>;
+  prompt(sessionId: string, prompt: PromptPart[]): Promise<{ stopReason: string | null }>;
   cancel(sessionId: string): Promise<void>;
   setMode(sessionId: string, modeId: string): Promise<void>;
   /** The session's full set of config options after the change, or null when the agent returned none. */

@@ -133,8 +133,8 @@ test('queued controls preserve inline focus, composer drafts and queue order acr
   await prompt.press('ArrowUp');
   await expect(prompt).toHaveValue('noted edited head');
   await prompt.press('ArrowUp');
-  await expect(prompt).toHaveValue('noted duplicate');
+  await expect(prompt).toHaveValue(`question-hidden ${workspace}`);
   await prompt.press('ArrowUp');
-  await expect(prompt).toHaveValue('noted duplicate');
+  await expect(prompt).toHaveValue(`question-hidden ${workspace}`);
   await expect(chatUserMessages(window)).toHaveCount(2);
 });

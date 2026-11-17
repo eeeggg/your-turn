@@ -1,6 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import type { DiffFile, ToolCallContent } from '@/shared/WebviewMessages';
-import type { Action } from '@/webview/state/RootState';
+import type { FixtureAction as Action } from '@tests/ContentProjection';
 import {
   shownContent,
   statusGlyph,
@@ -190,11 +190,14 @@ describe("a tool call's files", () => {
     const view = chatView();
     view.connect();
     view.toolCall('t1', { title: 'Edit', content: [edited, ...texts('done'), twoFiles] });
+    const target = { configuredName: 'fake', sessionId: 'diff-session', generation: 1, projection: 2 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: view.transcript().entries,
+      currentTurn: view.transcript().currentTurn, nextId: view.transcript().nextId, usage: null, terminals: [] });
     const before = view.transcript();
 
     view.send({ type: 'diffFileClicked', toolCallId: 't1', file: 2 });
 
-    expect(view.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 2 }]);
+    expect(view.takePosted()).toEqual([{ type: 'openFile', target, toolCallId: 't1', file: 2 }]);
     expect(view.transcript()).toBe(before);
   });
 

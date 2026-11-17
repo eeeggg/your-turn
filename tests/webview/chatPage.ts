@@ -5,7 +5,10 @@ import { expect, onTestFinished } from 'vitest';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
 import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
-import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PlanStep, PresentationTarget, SessionSnapshot, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import { setup as retainedSession, sessionInfo } from '@tests/unit/core/ChatViewControllerTestSupport';
+import { ContentProjection, isContentReport, type ContentReport, type FixtureMessage } from '@tests/ContentProjection';
+import { initialState, update } from '@/webview/state/RootState';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
@@ -22,10 +25,12 @@ export interface ChatPage {
   readonly errors: string[];
   /** Messages posted to the extension since the last call. */
   takePosted(): WebviewToExtensionMessage[];
+  takeComposerEdits(): Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[];
   /** The value most recently passed to `setState`. */
   savedState(): unknown;
+  target(): PresentationTarget;
   /** Deliver a message from the extension. */
-  send(message: ExtensionToWebviewMessage): void;
+  send(message: FixtureMessage): void;
   byId<T extends HTMLElement = HTMLElement>(id: string): T;
   typePrompt(text: string): void;
   /** Press a key in the prompt box; false when the page prevented what the textarea itself would do. */
@@ -64,7 +69,11 @@ function readBundle(): string {
  * `renderChatHtml`, with the compiled bundle inlined where the webview would
  * load it, and a fake `acquireVsCodeApi`.
  */
-export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
+export function loadChatPage(options: { savedState?: unknown; retained?: boolean } = {}): ChatPage {
+  const runtime = options.retained ? retainedSession(undefined, (sessions) => { for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); } }) : undefined;
+  const submissions: WebviewToExtensionMessage[] = [];
+  const content = new ContentProjection();
+  let projection = initialState;
   const scriptTag = `<script nonce="${nonce}" src="${scriptUri}"></script>`;
   const html = renderChatHtml({ cspSource: 'test-csp', nonce, styleUri: 'chat.css', scriptUri });
   if (!html.includes(scriptTag)) {
@@ -76,9 +85,19 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   // VS Code serializes everything crossing the webview boundary; cloning keeps
   // the page and the test from sharing objects.
   let posted: WebviewToExtensionMessage[] = [];
+  const composerEdits: Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[] = [];
   let state = structuredClone(options.savedState);
   const api: WebviewApi<unknown> = {
-    postMessage: (message) => posted.push(structuredClone(message as WebviewToExtensionMessage)),
+    postMessage: (message) => {
+      const input = structuredClone(message as WebviewToExtensionMessage);
+      if (input.type === 'composerEdited') {
+        composerEdits.push(input);
+        if (runtime) { runtime.sessions.editComposer(input.target, input.target.generation, input.revision, input.text); }
+        return;
+      }
+      posted.push(input);
+      if (input.type === 'sendPrompt' || input.type === 'queueChanged') { submissions.push(input); }
+    },
     getState: () => structuredClone(state),
     setState: (next) => {
       state = structuredClone(next);
@@ -115,7 +134,54 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   const { document } = window;
 
   const deliver = (message: ExtensionToWebviewMessage): void => {
+    projection = update(projection, message, Date.now()).state;
     window.dispatchEvent(new window.MessageEvent('message', { data: structuredClone(message) }));
+  };
+  if (runtime) {
+    const post = runtime.environment.post.bind(runtime.environment);
+    runtime.environment.post = (message) => {
+      post(message);
+      if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot' || message.type === 'contentPatch') { deliver(message); }
+    };
+  }
+  const accept = () => {
+    if (!runtime?.sessions.session) { return; }
+    for (const message of submissions.splice(0)) {
+      void runtime.controller.handleMessage(message);
+    }
+  };
+  let target: PresentationTarget | undefined;
+  const send = (message: FixtureMessage) => {
+    if (message.type === 'contentSnapshot') { target = message.target; }
+    if (message.type === 'viewSnapshot' && message.content) { target = message.content.target; }
+    if (runtime) {
+      if (message.type === 'state' && message.session) {
+        runtime.sessions.activeId = message.session.sessionId;
+        runtime.sessions.session = sessionInfo({ sessionId: message.session.sessionId, agentName: message.session.agentName, availableCommands: message.session.commands });
+        runtime.sessions.retained.attach(runtime.sessions.session);
+      }
+      if (message.type === 'loadSessionStart') { runtime.controller.notifyLoadSessionStart(runtime.sessions.activeId ?? ''); }
+      if (message.type === 'loadSessionEnd') { runtime.controller.notifyLoadSessionEnd(message.ok); }
+      if (message.type === 'promptStart') { runtime.sessions.applyForegroundState(runtime.sessions.activeId ?? '', 'running'); }
+      if (message.type === 'promptEnd' && runtime.sessions.session) { runtime.sessions.finishProjectedTurn(Date.now()); }
+      if (message.type === 'promptMessage') {
+        runtime.controller.handleSessionUpdate(runtime.sessions.activeId ?? '', { kind: 'promptMessage', messageId: message.messageId, text: message.text });
+        return;
+      }
+      if (message.type === 'agentText' || message.type === 'promptText') {
+        runtime.controller.handleSessionUpdate(runtime.sessions.activeId ?? '', { kind: message.type, messageId: message.messageId, text: message.text });
+        runtime.controller.notifyActiveSessionChanged();
+        return;
+      }
+    }
+    const projected = !runtime ? content.project(message, projection.transcript, window.Date.now(), projection.activeSession?.turnRunning, projection.activeSession?.loading) : undefined;
+    if (projected) { deliver(projected); }
+    if (!isContentReport(message)) { deliver(message); }
+    if (runtime && message.type === 'state' && message.session) {
+      runtime.controller.notifyActiveSessionChanged();
+      target = runtime.environment.transcript().projection?.target;
+    }
+    accept();
   };
 
   const byId = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -131,12 +197,19 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     document,
     errors,
     takePosted() {
+      accept();
       const taken = posted;
       posted = [];
       return taken;
     },
+    takeComposerEdits: () => composerEdits.splice(0),
     savedState: () => state,
-    send: deliver,
+    target: () => {
+      const issued = runtime?.environment.transcript().projection?.target ?? target;
+      if (!issued) { throw new Error('Missing issued projection'); }
+      return issued;
+    },
+    send,
     byId,
     typePrompt(text) {
       const input = byId<HTMLTextAreaElement>('promptInput');
@@ -146,9 +219,11 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     },
     pressKey(key, init = {}) {
-      return byId('promptInput').dispatchEvent(
+      const unhandled = byId('promptInput').dispatchEvent(
         new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }),
       );
+      accept();
+      return unhandled;
     },
     close: () => window.close(),
   };
@@ -187,7 +262,7 @@ export function replayed(page: ChatPage, text: string, messageId: string | null 
   page.send({ type: 'promptText', messageId, text });
 }
 
-export function toolCall(page: ChatPage, report: Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>): void {
+export function toolCall(page: ChatPage, report: Omit<Extract<ContentReport, { type: 'toolCall' }>, 'type'>): void {
   page.send({ type: 'toolCall', ...report });
 }
 

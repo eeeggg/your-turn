@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { methods } from '@agentclientprotocol/sdk';
+import { agent, methods } from '@agentclientprotocol/sdk';
 import type { AgentContext } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
+import { PermissionRequests } from '@/core/PermissionRequests';
 import { connectedDriver, fakeAgent, InProcessAgents } from '@tests/unit/core/InProcessAgents';
 
 const SESSION_ID = '8b22e365-3d6d-4aa5-ad43-162c3f3b6299';
@@ -28,6 +29,46 @@ async function connectWith(work: (client: AgentContext) => Promise<void>) {
 }
 
 describe('ConnectionManager', () => {
+  it.each([false, true])('attaches observation before initialization and releases it on closure (initialization fails: %s)', async (fails) => {
+    const seen: string[] = [];
+    let detached = 0;
+    const permissions = new PermissionRequests({ autoApprove: () => 'allowAll', choose: async () => undefined });
+    let released!: () => void;
+    const closed = new Promise<void>((resolve) => { released = resolve; });
+    const agents = new InProcessAgents({ fake: () => agent({ name: 'fake' }).onRequest(methods.agent.initialize, () => {
+      seen.push('initialize');
+      if (fails) { throw new Error('Initialization refused'); }
+      return { protocolVersion: 1, agentInfo: { name: 'fake', version: 'test' } };
+    }).onRequest(methods.agent.session.new, async ({ client }) => {
+      const response = await client.request(methods.client.session.requestPermission, {
+        sessionId: SESSION_ID, toolCall: { toolCallId: 'opening' }, options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      });
+      expect(response).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+      return { sessionId: SESSION_ID };
+    }) });
+    const manager = new ConnectionManager('0.0.0-test', () => ({ permissions, permissionInteractions: permissions }));
+    const process = agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} });
+    const connecting = manager.connect('fake', process, process.id, { handleUpdate() {} }, undefined, {
+      observeRequests: ({ agentName, agentId, permissions, elicitations }) => {
+        expect([agentName, agentId]).toEqual(['fake', process.id]);
+        expect(elicitations.snapshot()).toEqual([]);
+        seen.push('attached');
+        const stop = permissions?.subscribe(() => { seen.push(`permissions:${permissions.snapshot().length}`); });
+        return () => { stop?.(); detached++; released(); };
+      },
+    });
+    if (fails) { await expect(connecting).rejects.toThrow(); }
+    else {
+      const driver = await connecting;
+      await driver.newSession({ cwd: '/work', additionalDirectories: [] });
+      await agents.launched[0]?.crash();
+    }
+    expect(seen[0]).toBe('attached');
+    await closed;
+    expect(seen).toEqual(['attached', 'initialize', 'initialize', ...(fails ? [] : ['permissions:1', 'permissions:0'])]);
+    expect(detached).toBe(1);
+  });
+
   it('answers file and terminal requests as unknown methods', async () => {
     const answers: unknown[] = [];
     const { prompt } = await connectWith(async (client) => {

@@ -1,4 +1,4 @@
-import type { SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { PresentationTarget, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { canPrompt, type ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
@@ -14,6 +14,7 @@ interface Recall {
 
 /** What the user is writing, and the slash command popup over it. */
 export interface PromptBoxState {
+  readonly revision: number;
   readonly text: string;
   /** Position of the highlighted command among the matching ones. */
   readonly highlighted: number;
@@ -34,7 +35,13 @@ export type PromptBoxAction =
   | { type: 'slashPopupDismissed' }
   | { type: 'historyMoved'; to: 'older' | 'newer' };
 
-export const initialPromptBox: PromptBoxState = { text: '', highlighted: 0, dismissed: false, recall: null, announcement: '' };
+export const initialPromptBox: PromptBoxState = { revision: 0, text: '', highlighted: 0, dismissed: false, recall: null, announcement: '' };
+
+export function projectedComposer(box: PromptBoxState, composer: { readonly text: string; readonly revision: number }, sameSession: boolean): PromptBoxState {
+  if (sameSession && composer.revision < box.revision) { return box; }
+  return sameSession && composer.text === box.text && composer.revision === box.revision
+    ? box : { ...initialPromptBox, text: composer.text, revision: composer.revision };
+}
 
 /** The commands whose names start with what follows the `/`; none while the popup is closed. */
 export function matchingCommands(box: PromptBoxState, session: ActiveSession | null): readonly SlashCommand[] {
@@ -64,9 +71,9 @@ export function updatePromptBox(
   const box = withRecallKept(previous, action, session);
   switch (action.type) {
     case 'promptEdited':
-      return stateOnly({ text: action.text, highlighted: 0, dismissed: false, recall: box.recall, announcement: '' });
+      return stateOnly({ ...box, text: action.text, highlighted: 0, dismissed: false, recall: box.recall, announcement: '' });
     case 'promptSent':
-      return send(box, box.text, session);
+      return send(box, box.text, session, transcript.projection?.target);
     case 'slashCommandHighlighted':
       return stateOnly(action.index === box.highlighted ? box : { ...box, highlighted: action.index });
     case 'slashHighlightMoved': {
@@ -81,7 +88,7 @@ export function updatePromptBox(
       }
       return command.takesInput
         ? stateOnly({ ...initialPromptBox, text: `/${command.name} ` })
-        : send(box, `/${command.name}`, session);
+        : send(box, `/${command.name}`, session, transcript.projection?.target);
     }
     case 'slashPopupDismissed':
       return stateOnly(box.dismissed ? box : { ...box, dismissed: true });
@@ -122,6 +129,7 @@ function moved(box: PromptBoxState, to: 'older' | 'newer', session: ActiveSessio
     return { ...initialPromptBox, announcement: 'Empty prompt' };
   }
   return {
+    revision: box.revision,
     text: history[history.length - 1 - next] ?? '',
     highlighted: 0,
     dismissed: true,
@@ -134,12 +142,13 @@ function send(
   box: PromptBoxState,
   text: string,
   session: ActiveSession | null,
+  target: PresentationTarget | undefined,
 ): Transition<PromptBoxState, WebviewToExtensionMessage> {
   const prompt = text.trim();
-  if (!prompt || !canPrompt(session)) {
+  if (!prompt || !canPrompt(session) || !target) {
     return stateOnly(box);
   }
-  return { state: initialPromptBox, outgoing: [{ type: 'sendPrompt', text: prompt }] };
+  return { state: { ...initialPromptBox, revision: box.revision }, outgoing: [{ type: 'sendPrompt', target, text: prompt }] };
 }
 
 function stateOnly(box: PromptBoxState): Transition<PromptBoxState, WebviewToExtensionMessage> {

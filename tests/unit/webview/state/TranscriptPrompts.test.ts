@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { promptHistory } from '@/webview/state/Transcript';
-import { chatView, promptEnd, queuedPrompts, TRANSCRIPT_SESSION_ID, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { retainedChatView as chatView, promptEnd, TRANSCRIPT_SESSION_ID, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
 describe('prompts', () => {
@@ -94,17 +94,22 @@ describe('the queue', () => {
     view.send({ type: 'steerNowChosen', id: tail });
     expect(view.takePosted()).toEqual([]);
     view.send({ type: 'queuedPromptEditStarted', id: head }, { type: 'steerNowChosen', id: head });
-    expect(view.takePosted()).toEqual([]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.transcript().projection?.target, change: { kind: 'editStarted', id: head, revision: 1 } }]);
     expect(view.transcript().currentTurn).not.toBeNull();
+    const headTarget = view.transcript().projection?.target;
     view.send({ type: 'queuedPromptEditDiscarded', id: head }, { type: 'steerNowChosen', id: head });
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'head' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([
+      { type: 'queueChanged', target: headTarget, change: { kind: 'editDiscarded', id: head, revision: 2 } },
+      { type: 'queueChanged', target: headTarget, change: { kind: 'steer', id: head } },
+    ]);
     view.send({ type: 'steerNowChosen', id: head });
     expect(view.takePosted()).toEqual([]);
     view.answer('after');
     expect(view.summary()).toEqual(['prompt: first', 'turn: before', 'prompt: head', 'turn: after']);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['tail']);
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'tail' }, queuedPrompts(0)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['first', 'head', 'tail']);
   });
 
   it('queues prompts during autonomous work without creating an empty turn and releases one on foreground idle', () => {
@@ -113,9 +118,12 @@ describe('the queue', () => {
     view.send({ type: 'foregroundActivity', running: true });
     expect(view.transcript().currentTurn).toBeNull();
     view.prompt('next');
-    expect(view.takePosted()).toEqual([queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target: view.transcript().projection?.target, text: 'next' }]);
+    const target = view.transcript().projection?.target;
     view.send({ type: 'foregroundActivity', running: false });
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'next' }, queuedPrompts(0)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['next']);
+    expect(view.transcript().projection?.target).toEqual(target);
   });
 
   it('holds a prompt sent during a turn instead of sending it, out of the transcript while the turn grows', () => {
@@ -129,7 +137,7 @@ describe('the queue', () => {
     view.prompt('also this');
     view.answer(' still');
 
-    expect(view.takePosted()).toEqual([queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target: view.transcript().projection?.target, text: 'also this' }]);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['also this']);
     expect(view.summary()).toEqual(['prompt: first', 'turn: working still']);
   });
@@ -137,11 +145,13 @@ describe('the queue', () => {
   it('holds a second prompt sent before the extension reports that the first one started', () => {
     const view = chatView();
     view.connect();
+    const target = view.transcript().projection?.target;
 
     view.prompt('first');
     view.prompt('second');
 
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'first' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'first' }, { type: 'sendPrompt', target, text: 'second' }]);
+    expect(view.sentPrompts()).toEqual(['first']);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['second']);
   });
 
@@ -156,14 +166,17 @@ describe('the queue', () => {
     view.takePosted();
 
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['first', 'second']);
+    expect(promptHistory(view.transcript())).toEqual(['first', 'second']);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['third']);
     expect(view.store.getSnapshot().activeSession?.turnRunning).toBe(true);
 
     view.send({ type: 'promptStart' });
     view.answer('two');
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'third' }, queuedPrompts(0)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['first', 'second', 'third']);
     expect(view.transcript().queued).toEqual([]);
 
     view.send({ type: 'promptStart' }, promptEnd);
@@ -183,12 +196,14 @@ describe('the queue', () => {
     const id = view.transcript().queued[0]?.id ?? -1;
     view.send({ type: 'sendNowChosen', id }, { type: 'sendNowChosen', id });
 
-    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }, { type: 'cancelTurn' }]);
+    const target = view.transcript().projection?.target;
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target, change: { kind: 'stop', id } }, { type: 'queueChanged', target, change: { kind: 'stop', id } }]);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['second', 'third']);
     expect(view.transcript().followRequests).toBe(before + 2);
 
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['first', 'second']);
   });
 
   it('does not cancel the turn to send now when nothing is queued', () => {
@@ -221,23 +236,27 @@ describe('the queue', () => {
       view.send(promptEnd);
 
       expect(view.transcript().queued, name).toEqual([]);
-      expect(view.takePosted(), name).toEqual([queuedPrompts(0)]);
+      expect(view.takePosted(), name).toEqual([]);
     }
   });
 
-  it('tells the extension how many prompts are queued each time that changes, so a switch can say what it discards', () => {
+  it('projects the retained queue after each submission without reporting a second queue count', () => {
     const view = chatView();
     view.connect();
+    const firstTarget = view.transcript().projection?.target;
     view.prompt('first');
     view.prompt('second');
     view.prompt('third');
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'first' }, queuedPrompts(1), queuedPrompts(2)]);
+    expect(view.takePosted()).toEqual(['first', 'second', 'third'].map((text) => ({ type: 'sendPrompt', target: firstTarget, text })));
+    expect(view.transcript().queued.map((entry) => entry.text)).toEqual(['second', 'third']);
 
     view.answer('working');
     expect(view.takePosted()).toEqual([]);
 
     view.send({ type: 'promptStart' }, promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.transcript().queued.map((entry) => entry.text)).toEqual(['third']);
+    expect(view.sentPrompts()).toEqual(['first', 'second']);
   });
 
   it('keeps duplicate entries independently owned through removal and ignores all stale actions', () => {
@@ -252,7 +271,7 @@ describe('the queue', () => {
     view.send({ type: 'queuedPromptToggled', id: second }, { type: 'queuedPromptEditStarted', id: second },
       { type: 'queuedPromptEdited', id: second, text: 'second edit' }, { type: 'queuedPromptCancelled', id: first });
     const survivor = view.transcript().queued[0];
-    expect(survivor).toEqual({ id: second, text: 'duplicate', open: true, draft: 'second edit' });
+    expect(survivor).toEqual({ id: second, text: 'duplicate', open: true, draft: 'second edit', revision: 2 });
     view.takePosted();
     const before = view.transcript();
     view.send({ type: 'queuedPromptCancelled', id: first }, { type: 'queuedPromptEditStarted', id: first },
@@ -260,7 +279,7 @@ describe('the queue', () => {
       { type: 'queuedPromptEditDiscarded', id: first }, { type: 'queuedPromptToggled', id: first }, { type: 'sendNowChosen', id: first });
     expect(view.transcript()).toBe(before);
     expect(view.takePosted()).toEqual([]);
-    expect(promptHistory(view.transcript())).toEqual(['running', 'duplicate']);
+    expect(promptHistory(view.transcript())).toEqual(['running']);
   });
 
   it.each(['save', 'escape', 'cancel'] as const)('holds an edited head after idle and resumes in order on %s', (finish) => {
@@ -277,10 +296,15 @@ describe('the queue', () => {
     expect(view.takePosted()).toEqual([]);
     // A new composer submission must not overtake the held head either.
     view.prompt('new tail');
-    expect(view.takePosted()).toEqual([queuedPrompts(3)]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target: view.transcript().projection?.target, text: 'new tail' }]);
+    const target = view.transcript().projection?.target;
     view.send({ type: finish === 'save' ? 'queuedPromptEditSaved' : finish === 'escape' ? 'queuedPromptEditDiscarded' : 'queuedPromptCancelled', id });
     const sent = finish === 'save' ? 'changed head' : finish === 'escape' ? 'head' : 'tail';
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: sent }, queuedPrompts(finish === 'cancel' ? 1 : 2)]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target, change: {
+      kind: finish === 'save' ? 'editSaved' : finish === 'escape' ? 'editDiscarded' : 'cancelled', id,
+      ...(finish === 'cancel' ? {} : { revision: 3 }),
+    } }]);
+    expect(view.sentPrompts()).toEqual(['running', sent]);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(finish === 'cancel' ? ['new tail'] : ['tail', 'new tail']);
     expect(view.store.getSnapshot().activeSession?.turnRunning).toBe(true);
     expect(view.summary()).toEqual(['prompt: running', `prompt: ${sent}`]);
@@ -297,7 +321,8 @@ describe('the queue', () => {
     view.send({ type: 'queuedPromptEditStarted', id });
     view.takePosted();
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'head' }, queuedPrompts(2)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['running', 'head']);
     view.send(promptEnd);
     expect(view.takePosted()).toEqual([]);
     expect(view.transcript().queued.map((prompt) => prompt.text)).toEqual(['edited tail', 'last']);
@@ -307,18 +332,25 @@ describe('the queue', () => {
   it('honors Send now interruption but still holds an edited head until editing ends', () => {
     const view = chatView();
     view.connect();
+    const runningTarget = view.transcript().projection?.target;
     view.prompt('running');
     view.prompt('head');
     view.prompt('tail');
     const id = view.transcript().queued[0]?.id ?? -1;
     view.send({ type: 'sendNowChosen', id }, { type: 'queuedPromptEditStarted', id });
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'running' }, queuedPrompts(1), queuedPrompts(2), { type: 'cancelTurn' }]);
+    expect(view.takePosted()).toEqual([
+      ...['running', 'head', 'tail'].map((text) => ({ type: 'sendPrompt', target: runningTarget, text })),
+      { type: 'queueChanged', target: runningTarget, change: { kind: 'stop', id } },
+      { type: 'queueChanged', target: runningTarget, change: { kind: 'editStarted', id, revision: 1 } },
+    ]);
     view.send(promptEnd);
     expect(view.takePosted()).toEqual([]);
     view.send({ type: 'sendNowChosen', id });
     expect(view.takePosted()).toEqual([]);
+    const headTarget = view.transcript().projection?.target;
     view.send({ type: 'queuedPromptEditDiscarded', id });
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'head' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: headTarget, change: { kind: 'editDiscarded', id, revision: 2 } }]);
+    expect(view.sentPrompts()).toEqual(['running', 'head']);
     const before = view.transcript();
     view.send({ type: 'queuedPromptEditStarted', id }, { type: 'queuedPromptCancelled', id }, { type: 'sendNowChosen', id });
     expect(view.transcript()).toBe(before);
@@ -334,14 +366,18 @@ describe('the queue', () => {
     const id = view.transcript().queued[0]?.id ?? -1;
     view.takePosted();
     view.send({ type: 'sendNowChosen', id }, { type: 'queuedPromptCancelled', id });
-    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }, queuedPrompts(1)]);
+    expect(view.takePosted()).toEqual([
+      { type: 'queueChanged', target: view.transcript().projection?.target, change: { kind: 'stop', id } },
+      { type: 'queueChanged', target: view.transcript().projection?.target, change: { kind: 'cancelled', id } },
+    ]);
     view.send(promptEnd);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'tail' }, queuedPrompts(0)]);
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['running', 'tail']);
     expect(view.summary()).toEqual(['prompt: running', 'prompt: tail']);
-    expect(promptHistory(view.transcript())).toEqual(['running', 'head', 'tail']);
+    expect(promptHistory(view.transcript())).toEqual(['running', 'tail']);
   });
 
-  it('retains saved edits on cancellation and orders cancelled recall entries with later sent prompts', () => {
+  it('excludes cancelled queued prompts and their saved edits from recall before and after later sends', () => {
     const view = chatView();
     view.connect();
     view.prompt('running');
@@ -352,18 +388,18 @@ describe('the queue', () => {
     view.send({ type: 'queuedPromptEditStarted', id: head }, { type: 'queuedPromptEdited', id: head, text: 'saved head' },
       { type: 'queuedPromptEditSaved', id: head }, { type: 'queuedPromptCancelled', id: tail }, { type: 'queuedPromptCancelled', id: head });
     expect(view.store.getSnapshot().promptBox.text).toBe('');
-    expect(promptHistory(view.transcript())).toEqual(['running', 'tail', 'saved head']);
+    expect(promptHistory(view.transcript())).toEqual(['running']);
     view.send({ type: 'historyMoved', to: 'older' });
-    expect(view.store.getSnapshot().promptBox.text).toBe('saved head');
+    expect(view.store.getSnapshot().promptBox.text).toBe('running');
     view.send({ type: 'historyMoved', to: 'older' });
-    expect(view.store.getSnapshot().promptBox.text).toBe('tail');
+    expect(view.store.getSnapshot().promptBox.text).toBe('running');
     view.send(promptEnd);
     view.prompt('later sent');
-    expect(promptHistory(view.transcript())).toEqual(['running', 'tail', 'saved head', 'later sent']);
+    expect(promptHistory(view.transcript())).toEqual(['running', 'later sent']);
     expect(view.summary()).toEqual(['prompt: running', 'prompt: later sent']);
   });
 
-  it('does not reuse ownership or cancelled recall across session replacement, loading or clearing', () => {
+  it('does not reuse cancelled queue ownership across session replacement, loading or clearing', () => {
     const view = chatView();
     const oldIds: number[] = [];
     for (const clear of [() => view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID }), () => view.send({ type: 'loadSessionStart' }), () => view.send({ type: 'clearTranscript' })]) {
@@ -408,6 +444,7 @@ describe('the prompt history', () => {
     view.send({ type: 'loadSessionStart' });
     view.replayed('q1', 'u1');
     view.replayed(' \n', 'u2');
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(promptHistory(view.transcript())).toEqual(['q1']);
   });
@@ -460,7 +497,8 @@ describe('following stream', () => {
 
     view.send(promptEnd);
 
-    expect(view.takePosted()).toContainEqual({ type: 'sendPrompt', text: 'queued' });
+    expect(view.takePosted()).toEqual([]);
+    expect(view.sentPrompts()).toEqual(['first', 'queued']);
     expect(view.transcript().followRequests).toBe(before);
   });
 

@@ -1,4 +1,8 @@
 import { Terminal, type IBuffer } from '@xterm/headless';
+import type { ToolCallContent } from '@/core/acp/AcpDriver';
+
+/** Retained tool content after command text is cleaned for presentation. */
+export type ShownContent = ToolCallContent | { kind: 'commandOutput'; output: ShownOutput };
 
 /** How much of a command's output the chat view shows: its last lines, up to a number of characters. */
 const SHOWN_LINES = 2_000;

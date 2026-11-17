@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, loadChatPage, texts, toolCall, type ChatPage } from '@tests/webview/chatPage';
+import { connect, DEFAULT_SESSION_ID, loadChatPage, texts, toolCall, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 
@@ -132,6 +132,8 @@ describe('tool calls', () => {
   });
 
   it("shows a command's terminal in its tool call, spinning while it runs, and how it failed once it ends", () => {
+    page.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { configuredName: 'configured-fake', sessionId: DEFAULT_SESSION_ID, generation: 0, projection: 1 }, revision: 0,
+      entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     toolCall(page, { toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
     page.send({ type: 'terminal', terminalId: 'term', text: 'running', truncated: false, exitStatus: null });
     expect(shown('t1').querySelector('summary .tc-running')).not.toBeNull();
@@ -177,6 +179,8 @@ describe('tool calls', () => {
   });
 
   it("answers a click on a diff's path by asking the extension to open the file, by its place across the tool call's diffs", () => {
+    const target = { configuredName: 'fake', sessionId: 'diff-session', generation: 1, projection: 1 };
+    page.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     toolCall(page, { toolCallId: 't1', title: 'Edit', status: 'failed', content: [{ kind: 'diff', files: [{
       operation: 'modify',
       path: 'a.ts',
@@ -191,7 +195,7 @@ describe('tool calls', () => {
 
     shown('t1').querySelector<HTMLElement>('.tc-diff-link')?.click();
 
-    expect(page.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 0 }]);
+    expect(page.takePosted()).toEqual([{ type: 'openFile', target, toolCallId: 't1', file: 0 }]);
   });
 
   it('collapses more than three tool calls when the turn ends, and toggles on click', () => {

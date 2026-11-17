@@ -13,7 +13,7 @@ import ArrowDown from 'lucide-react/icons/arrow-down';
 import Check from 'lucide-react/icons/check';
 import Copy from 'lucide-react/icons/copy';
 import { useStickToBottom } from 'use-stick-to-bottom';
-import type { QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
+import type { PresentationTarget, QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
 import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
 import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
@@ -472,7 +472,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
   const dispatch = useDispatch();
   const terminals = useSelector((state) => state.transcript.terminals);
   const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
-  const sessionId = useSelector((state) => state.transcript.sessionId);
+  const identity = useSelector((state) => state.transcript.projection?.target);
   const title = call.title || 'Tool Call';
   const { blocks, truncated, running } = useMemo(
     () => shownContent(call.content, { terminals, sessionEnded }, call.open),
@@ -491,7 +491,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
     >
       <summary
         className="tc-summary flex cursor-pointer items-center gap-1.5 select-none"
-        data-vscode-context={command && commandOutputContext(command, sessionId, call.toolCallId, title)}
+        data-vscode-context={command && commandOutputContext(command, identity, call.toolCallId, title)}
       >
         <span className={`tc-icon ${call.status} w-3.5 flex-none text-center ${statusColor[call.status]}`}>
           {statusGlyph(call.status)}
@@ -518,7 +518,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
                 case 'image':
                   return <AgentImageView key={index} src={block.src} alt="Image in tool output" reference={block.reference} fallback={block.fallback} />;
                 case 'command':
-                  return <CommandOutputView key={index} block={block} sessionId={sessionId} toolCallId={call.toolCallId} title={title} />;
+                  return <CommandOutputView key={index} block={block} identity={identity} toolCallId={call.toolCallId} title={title} />;
                 case 'diff':
                   return <ToolCallDiffView key={index} files={block.files} toolCallId={call.toolCallId} firstFile={block.firstFile} />;
               }
@@ -537,22 +537,22 @@ type CommandBlock = Extract<ShownBlock, { kind: 'command' }>;
  * What Open in Terminal reads, which `package.json` contributes to `webview/context` for a right-click on the command's
  * output or its tool call's title; VS Code's own items stay, so the output can be copied.
  */
-function commandOutputContext(block: CommandBlock, sessionId: string | null, toolCallId: string, title: string): string | undefined {
-  if (sessionId === null) {
+function commandOutputContext(block: CommandBlock, identity: PresentationTarget | undefined, toolCallId: string, title: string): string | undefined {
+  if (!identity) {
     return undefined;
   }
   const source = block.terminalId !== null ? { yourTurnTerminalId: block.terminalId } : { yourTurnToolCallId: toolCallId };
-  return JSON.stringify({ webviewSection: 'commandOutput', yourTurnSessionId: sessionId, yourTurnTitle: title, ...source });
+  return JSON.stringify({ webviewSection: 'commandOutput', yourTurnTarget: identity, yourTurnTitle: title, ...source });
 }
 
-function CommandOutputView({ block, sessionId, toolCallId, title }: {
+function CommandOutputView({ block, identity, toolCallId, title }: {
   block: CommandBlock;
-  sessionId: string | null;
+  identity: PresentationTarget | undefined;
   toolCallId: string;
   title: string;
 }) {
   return (
-    <div className="tc-command mb-1 last:mb-0" data-vscode-context={commandOutputContext(block, sessionId, toolCallId, title)}>
+    <div className="tc-command mb-1 last:mb-0" data-vscode-context={commandOutputContext(block, identity, toolCallId, title)}>
       {block.truncated && <div className="tc-command-cut mb-1 text-muted-foreground italic">Earlier output not shown</div>}
       {block.text && <div className={`tc-command-text ${plainText}`}>{block.text}</div>}
       {block.status === 'disconnected' && (

@@ -11,7 +11,7 @@ import { SessionReferences, StartupRequests, WorkspaceState } from '@/core/Persi
 import { SessionList, type AgentSessions } from '@/core/SessionList';
 import { SessionTabs } from '@/core/SessionTabs';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
+import type { CommandSource } from '@/core/AgentTerminals';
 import type { Change } from '@/core/review/Hunks';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
@@ -43,7 +43,7 @@ import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentConfigs, getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel } from '@/adapters/OutputChannels';
 import { registerTrafficAdapter } from '@/adapters/Traffic';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PresentationTarget, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 let shutdown: (() => Promise<void>) | undefined;
 
@@ -117,12 +117,12 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const agentManager = new AgentManager();
   const connectionManager: ConnectionManager = new ConnectionManager(
     (context.extension.packageJSON as { version: string }).version,
-    ({ agentName, agentId, elicitations }) => {
-      const detachForms = chatViewController.attachElicitations(agentName, elicitations, agentId);
+    ({ agentName, elicitations }) => {
       const detachUrls = attachUrlElicitations(agentName, elicitations, urlElicitationQuickPick);
+      const permissions = new PermissionRequests(permissionQuickPick);
       return {
-        permissions: new PermissionRequests(permissionQuickPick),
-        close: () => { detachForms(); void detachUrls(); },
+        permissions, permissionInteractions: permissions,
+        close: () => { void detachUrls(); },
       };
     },
   );
@@ -136,6 +136,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     workspaceEnvironment,
     authMethodPicker,
     sessionUpdateHandler,
+    pseudoterminalDisplays,
   );
   sessionManager.setPersistedState(sessionReferences, workspaceState);
 
@@ -200,9 +201,8 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
 
   const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, (webview) => workspaceEnvironment.useWebview(webview));
   const reportedFileEditor = new ReportedFileEditor();
-  const agentTerminals = new AgentTerminals(pseudoterminalDisplays);
   const chatViewController = new ChatViewController(
-    sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals, workspaceEnvironment, undefined, sessionTabs,
+    sessionManager, chatWebviewProvider, reportedFileEditor, workspaceEnvironment, undefined, sessionTabs,
   );
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
@@ -216,7 +216,6 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     });
   });
   sessionUpdateHandler.addListener((delivery) => chatViewController.handleSessionUpdate(delivery));
-  sessionUpdateHandler.addListener(({ input }) => agentTerminals.handleSessionUpdate(input.origin.identity.sessionId, input.update));
   const reviews = new Reviews(workspaceFiles, sessionManager);
   const showReviewAdmission = () => {
     void vscode.commands.executeCommand('setContext', 'your-turn.reviewResolutionBlocked', reviews.resolutionBlocked());
@@ -231,7 +230,6 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     sessionUpdateHandler.dispose();
     chatMessageSubscription.dispose();
     const output = chatViewController.dispose();
-    const terminals = agentTerminals.dispose();
     reviewSourceControl.dispose();
     const takeovers = reviewTakeovers.dispose();
     const presenters = reviewPresenters.dispose();
@@ -239,7 +237,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     const review = reviews.dispose();
     const tabState = sessionTabs.dispose();
     const sessions = sessionManager.dispose();
-    disposal = Promise.allSettled([output, terminals, takeovers, presenters, diffs, review, tabState, sessions, turnEndShown]).then((results) => {
+    disposal = Promise.allSettled([output, takeovers, presenters, diffs, review, tabState, sessions, turnEndShown]).then((results) => {
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down Your Turn');
@@ -261,7 +259,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const reviewTakeovers = new ReviewTakeovers(reviews, reviewControls);
   sessionManager.on('session-removed', (registration) => {
     const { sessionId } = registration;
-    agentTerminals.endSession(sessionId);
+    sessionManager.endSessionOutput(registration);
     reviews.sessionRemoved(registration);
     chatViewController.notifySessionRemoved(sessionId);
   });
@@ -277,8 +275,8 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     reviews.activeSessionChanged(registration);
     chatViewController.notifyActiveSessionChanged();
   });
-  sessionManager.on('session-opened', ({ sessionId }) => {
-    chatViewController.notifySessionOpened(sessionId);
+  sessionManager.on('session-opened', ({ sessionId, agentName }) => {
+    chatViewController.notifySessionOpened({ configuredName: agentName, sessionId });
   });
   sessionManager.on('session-ended', ({ sessionId }, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
@@ -294,9 +292,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     chatViewController.notifyPickersChanged();
   });
   sessionManager.on('session-load-start', (load) => {
-    const { sessionId } = load.registration;
-    // The load replays the terminals' updates, which would add their chunks to what is kept again.
-    agentTerminals.forgetSession(sessionId);
+    // The runtime stages replacement output until the replay commits.
     reviews.loadStarted(load);
     chatViewController.notifyLoadSessionStart(load);
   });
@@ -404,7 +400,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     vscode.commands.registerCommand('your-turn.openToolCallChanges', (arg?: unknown) => chooseDiffFile(arg, 'changes')),
     vscode.commands.registerCommand('your-turn.openCommandOutput', (arg?: unknown) => {
       const output = commandOutputOf(arg);
-      if (output && !agentTerminals.open(output.sessionId, output.source, output.name)) {
+      if (output && !chatViewController.openCommandOutput(output.target, output.source, output.name)) {
         logWarning('Command output is no longer retained', { outputName: output.name });
       }
     }),
@@ -502,10 +498,22 @@ function agentNameOf(arg: unknown): string | undefined {
 
 /** The context menu on a diff's file passes the `data-vscode-context` the chat view gave it. */
 function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileChoice | undefined {
-  const context = arg as { yourTurnToolCallId?: unknown; yourTurnDiffFile?: unknown } | undefined;
+  const context = arg as { yourTurnTarget?: unknown; yourTurnToolCallId?: unknown; yourTurnDiffFile?: unknown } | undefined;
+  const target = presentationTargetOf(context?.yourTurnTarget);
   const toolCallId = context?.yourTurnToolCallId;
   const file = context?.yourTurnDiffFile;
-  return typeof toolCallId === 'string' && typeof file === 'number' ? { toolCallId, file, open } : undefined;
+  return target && typeof toolCallId === 'string' && typeof file === 'number' && Number.isSafeInteger(file) && file >= 0
+    ? { target, toolCallId, file, open } : undefined;
+}
+
+function presentationTargetOf(value: unknown): PresentationTarget | undefined {
+  if (!value || typeof value !== 'object') { return undefined; }
+  const target = value as Partial<PresentationTarget>;
+  return typeof target.configuredName === 'string' && typeof target.sessionId === 'string'
+    && typeof target.generation === 'number' && Number.isSafeInteger(target.generation) && target.generation > 0
+    && typeof target.projection === 'number' && Number.isSafeInteger(target.projection) && target.projection > 0
+    ? { configuredName: target.configuredName, sessionId: target.sessionId, generation: target.generation, projection: target.projection }
+    : undefined;
 }
 
 /** The title area passes its editor's URI; the status bar passes nothing, and so means the active editor's file. */
@@ -540,10 +548,11 @@ function quickDiffChangeOf([uri, changes, index]: unknown[]): { path: string; ch
 }
 
 /** The context menu on a command's output passes the `data-vscode-context` the chat view gave it. */
-function commandOutputOf(arg: unknown): { sessionId: string; source: CommandSource; name: string } | undefined {
-  const context = arg as { yourTurnSessionId?: unknown; yourTurnToolCallId?: unknown; yourTurnTerminalId?: unknown; yourTurnTitle?: unknown } | undefined;
-  const { yourTurnSessionId: sessionId, yourTurnToolCallId: toolCallId, yourTurnTerminalId: terminalId, yourTurnTitle: name } = context ?? {};
-  if (typeof sessionId !== 'string' || typeof name !== 'string') { return undefined; }
-  if (typeof terminalId === 'string') { return { sessionId, source: { kind: 'terminal', terminalId }, name }; }
-  return typeof toolCallId === 'string' ? { sessionId, source: { kind: 'toolCall', toolCallId }, name } : undefined;
+function commandOutputOf(arg: unknown): { target: PresentationTarget; source: CommandSource; name: string } | undefined {
+  const context = arg as { yourTurnTarget?: unknown; yourTurnToolCallId?: unknown; yourTurnTerminalId?: unknown; yourTurnTitle?: unknown } | undefined;
+  const { yourTurnToolCallId: toolCallId, yourTurnTerminalId: terminalId, yourTurnTitle: name } = context ?? {};
+  const target = presentationTargetOf(context?.yourTurnTarget);
+  if (!target || typeof name !== 'string') { return undefined; }
+  if (typeof terminalId === 'string') { return { target, source: { kind: 'terminal', terminalId }, name }; }
+  return typeof toolCallId === 'string' ? { target, source: { kind: 'toolCall', toolCallId }, name } : undefined;
 }

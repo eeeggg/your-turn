@@ -113,8 +113,8 @@ function setup(scripts: Record<string, AgentScript>, persistedTabs = false) {
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
   const tabs = new SessionTabs(persistedTabs ? { workspace, references, environment } : undefined);
-  manager.on('session-opened', ({ sessionId }) => {
-    const session = manager.getSession(sessionId);
+  manager.on('session-opened', ({ sessionId, agentName }) => {
+    const session = manager.getSession({ configuredName: agentName, sessionId });
     if (session) { tabs.open(session); }
   });
   const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn(), sessionTabs: tabs, notifyTabsChanged: vi.fn() };
@@ -233,6 +233,36 @@ describe('SessionCommands', () => {
     expect(user.take()).toEqual([focusChatView]);
   });
 
+  it.each(['selected', 'unselected'] as const)('releases retained content only when its %s tab closes', async (selection) => {
+    const one = sessionAgent('one');
+    const two = sessionAgent('two');
+    const { commands, manager, tabs } = setup({ one: one.script, two: two.script });
+    onTestFinished(() => manager.dispose());
+    await commands.connect('one');
+    const closing = tabs.snapshot().selectedTabId;
+    if (!closing) { throw new Error('Missing tab'); }
+    const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+    const retained = manager.sessionState(identity);
+    expect(retained).toBeDefined();
+    if (selection === 'unselected') {
+      await commands.connect('two');
+    } else {
+      await manager.disconnectAgent('one');
+    }
+    expect(manager.sessionState(identity)).toBe(retained);
+    const other = manager.sessionState({ configuredName: 'two', sessionId: TWO_FIRST_SESSION });
+
+    await commands.closeTab(closing);
+
+    expect(manager.sessionState(identity)).toBeUndefined();
+    expect(tabs.snapshot().tabs.some((tab) => tab.tabId === closing)).toBe(false);
+    if (selection === 'unselected') {
+      expect(manager.sessionState({ configuredName: 'two', sessionId: TWO_FIRST_SESSION })).toBe(other);
+      expect(manager.getActiveAgentName()).toBe('two');
+      expect(manager.isConnected('two')).toBe(true);
+    }
+  });
+
   it('confirms closing a renamed live tab and disconnects its actual running agent only after acceptance', async () => {
     const { commands, manager, tabs, transcript, environment, user } = setup({ one: sessionAgent('one').script }, true);
     onTestFinished(() => manager.dispose());
@@ -243,6 +273,9 @@ describe('SessionCommands', () => {
     manager.agentsChanged(before, after);
     tabs.agentsChanged(before, after);
     const snapshot = tabs.snapshot();
+    const identity = { configuredName: 'renamed', sessionId: ONE_FIRST_SESSION };
+    const retained = manager.sessionState(identity);
+    expect(retained).toBeDefined();
     if (!snapshot.selectedTabId) { throw new Error('missing active tab'); }
     transcript.hasRunningTurn = true;
     user.take();
@@ -251,6 +284,7 @@ describe('SessionCommands', () => {
     await commands.closeTab(snapshot.selectedTabId);
 
     expect(tabs.snapshot()).toEqual(snapshot);
+    expect(manager.sessionState(identity)).toBe(retained);
     expect(manager.isConnected('renamed')).toBe(true);
     expect(manager.isConnected('one')).toBe(false);
     expect(user.take()).toEqual([asked('Close this session tab?', 'This stops the turn in progress.', 'Close Tab')]);
@@ -260,6 +294,7 @@ describe('SessionCommands', () => {
     expect(manager.isConnected('renamed')).toBe(false);
     expect(manager.isConnected('one')).toBe(false);
     expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
+    expect(manager.sessionState(identity)).toBeUndefined();
   });
 
   it('returns to an already active renamed MRU tab without replaying it', async () => {
@@ -999,6 +1034,28 @@ describe('SessionCommands', () => {
   });
 
   describe('turns and session controls', () => {
+    it.each(['mode', 'model'] as const)('does not apply an entered %s to a replacement registration with the same session ID', async (control) => {
+      const requests: unknown[] = [];
+      const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true } })
+        .onRequest(methods.agent.session.new, () => ({ sessionId: OLD_SESSION }))
+        .onRequest(methods.agent.session.load, () => ({}))
+        .onRequest(methods.agent.session.setMode, ({ params }) => { requests.push(params); return {}; });
+      const { manager, user, commands } = setup({ one: script });
+      const original = await manager.connectToAgent('one');
+      let answer: (value: string) => void = () => {};
+      const input = new Promise<string>((resolve) => { answer = resolve; });
+      vi.spyOn(user, 'showInputBox').mockReturnValueOnce(input);
+      const setting = control === 'mode' ? commands.setMode() : commands.setModel();
+      try {
+        const replacement = await manager.loadSession('one', OLD_SESSION);
+        expect(replacement).not.toBe(original);
+      } finally { answer('plan'); }
+      await setting;
+
+      expect(requests).toEqual([]);
+      expect(user.take()).toEqual([]);
+    });
+
     it("cancels the active session's turn", async () => {
       const one = sessionAgent('one');
       const { manager, commands } = setup({ one: one.script });

@@ -19,7 +19,11 @@ import {
   sessionInfo,
   setup,
   sendPrompt,
+  issuedTarget,
+  contentSnapshots,
+  questionSnapshots,
   type FakeEnvironment,
+  type FakeSessions,
 } from '@tests/unit/core/ChatViewControllerTestSupport';
 
 /** {@link modelOption} as the webview gets it. */
@@ -52,23 +56,27 @@ const toolCall: SessionUpdate = { kind: 'toolCall', toolCallId: 't1', title: 'Re
 describe('ChatViewController', () => {
   const rasterUri = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
-  async function imageContext(controller: ChatViewController, environment: FakeEnvironment): Promise<number> {
-    await controller.handleMessage({ type: 'markdownImageContext', sessionId: SESSION_ID });
+  async function imageContext(controller: ChatViewController, environment: FakeEnvironment, sessions: FakeSessions): Promise<number> {
+    if (sessions.session) { sessions.retained.attach(sessions.session); }
+    await controller.handleMessage({ type: 'ready' });
+    const target = contentSnapshots(environment.take()).at(-1)?.target;
+    if (!target) { throw new Error('Missing Markdown projection'); }
+    await controller.handleMessage({ type: 'markdownImageContext', target });
     const response = environment.take().find((message) => message.type === 'markdownImageContext');
     if (response?.type !== 'markdownImageContext') { throw new Error('No Markdown image context'); }
     return response.context;
   }
 
   it('validates Markdown raster data URIs in the displayed session', async () => {
-    const { controller, environment } = setup();
-    const context = await imageContext(controller, environment);
+    const { controller, environment, sessions } = setup();
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
     expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: rasterUri }]);
   });
 
   it('never downloads HTTPS before occurrence consent, retries only explicitly, and validates MIME bytes', async () => {
     let requests = 0;
-    const { controller, environment } = setup({
+    const { controller, environment, sessions } = setup({
       lookup: async () => [{ address: '93.184.216.34', family: 4 }],
       request: async () => {
         requests++;
@@ -76,7 +84,7 @@ describe('ChatViewController', () => {
           body: Readable.from([Buffer.from(rasterUri.split(',')[1] ?? '', 'base64')]) };
       },
     });
-    const context = await imageContext(controller, environment);
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'https://images.example/a?secret=token' });
     expect(requests).toBe(0);
     expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: null, status: 'consent' }]);
@@ -107,7 +115,7 @@ describe('ChatViewController', () => {
       lookup: async () => [{ address: '93.184.216.34', family: 4 }],
       request: (_url, _address, signal) => { started.resolve(signal); return reply.promise; },
     });
-    const context = await imageContext(controller, environment);
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'https://images.example/a' });
     const loading = controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
     const signal = await started.promise;
@@ -128,14 +136,14 @@ describe('ChatViewController', () => {
     const header = Buffer.from(rasterUri.split(',')[1] ?? '', 'base64');
     const bytes = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]);
     const data = bytes.toString('base64');
-    const { controller, environment } = setup({
+    const { controller, environment, sessions } = setup({
       lookup: async () => [{ address: '93.184.216.34', family: 4 }],
       request: async (url) => {
         if (url.pathname === '/first') { started.resolve(undefined); return first.promise; }
         return { status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([bytes]) };
       },
     });
-    const context = await imageContext(controller, environment);
+    const context = await imageContext(controller, environment, sessions);
     for (let index = 0; index < 4; index++) {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
     }
@@ -165,7 +173,7 @@ describe('ChatViewController', () => {
     await writeFile(join(directory, 'outside.gif'), bytes);
     const state = setup();
     state.sessions.session = sessionInfo({ cwd: root });
-    const context = await imageContext(state.controller, state.environment);
+    const context = await imageContext(state.controller, state.environment, state.sessions);
     return { ...state, root, directory, bytes, context };
   }
 
@@ -216,15 +224,15 @@ describe('ChatViewController', () => {
     ['data:image/gif,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'Invalid image data URI'],
     ['http://example.invalid/image.png', 'Image source not supported'],
   ])('rejects unsupported or invalid Markdown source %s', async (source, fallback) => {
-    const { controller, environment } = setup();
-    const context = await imageContext(controller, environment);
+    const { controller, environment, sessions } = setup();
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
     expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: null, fallback }]);
   });
 
   it('binds each Markdown occurrence to its source until released', async () => {
-    const { controller, environment } = setup();
-    const context = await imageContext(controller, environment);
+    const { controller, environment, sessions } = setup();
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
     environment.take();
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'data:image/gif;base64,AAAA' });
@@ -238,7 +246,7 @@ describe('ChatViewController', () => {
     const { controller, environment, sessions } = setup();
     controller.notifyActiveSessionChanged();
     environment.take();
-    const context = await imageContext(controller, environment);
+    const context = await imageContext(controller, environment, sessions);
     if (change === 'clear') { controller.clearTranscript(); }
     else if (change === 'replay') { controller.notifyLoadSessionStart(SESSION_ID); }
     else {
@@ -252,7 +260,7 @@ describe('ChatViewController', () => {
     environment.take();
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
     expect(environment.take()).toEqual([]);
-    const fresh = await imageContext(controller, environment);
+    const fresh = await imageContext(controller, environment, sessions);
     expect(fresh).not.toBe(context);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context: fresh, occurrence: 1, source: rasterUri });
     expect(environment.take()).toEqual([{ type: 'markdownImage', context: fresh, occurrence: 1, src: rasterUri }]);
@@ -260,35 +268,48 @@ describe('ChatViewController', () => {
 
   it('does not give a background session a Markdown image context', async () => {
     const { controller, environment } = setup();
-    await controller.handleMessage({ type: 'markdownImageContext', sessionId: 'other' });
+    await controller.handleMessage({ type: 'markdownImageContext', target: { configuredName: 'fake', sessionId: 'other', generation: 1, projection: 1 } });
     expect(environment.take()).toEqual([]);
   });
 
+  it('rejects a Markdown context request captured before page recreation', async () => {
+    const parts = setup();
+    const target = await issuedTarget(parts);
+    await parts.controller.handleMessage({ type: 'ready' });
+    parts.environment.take();
+    const request = { type: 'markdownImageContext' as const, target };
+
+    await parts.controller.handleMessage(request);
+
+    expect(parts.environment.take()).toEqual([]);
+  });
+
   it('starts a new consent lifetime when the webview is recreated', async () => {
-    const { controller, environment } = setup();
-    const context = await imageContext(controller, environment);
+    const { controller, environment, sessions } = setup();
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: rasterUri });
     await controller.handleMessage({ type: 'ready' });
     environment.take();
-    const fresh = await imageContext(controller, environment);
+    const fresh = await imageContext(controller, environment, sessions);
     expect(fresh).not.toBe(context);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context: fresh, occurrence: 1, source: rasterUri });
     expect(environment.take()).toEqual([{ type: 'markdownImage', context: fresh, occurrence: 1, src: rasterUri }]);
   });
 
   it('shares native and Markdown budgets without charging an unchanged occurrence twice', async () => {
-    const { controller, environment } = setup();
+    const { controller, environment, sessions } = setup();
     const header = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
     const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
     const source = `data:image/gif;base64,${data}`;
-    const context = await imageContext(controller, environment);
+    const context = await imageContext(controller, environment, sessions);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
     expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 1, src: source }]);
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source });
     expect(environment.take()).toEqual([]);
     for (let index = 0; index < 4; index++) {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `native-${index}`, data, mimeType: 'image/gif' });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: `native-${index}`, src: source }]);
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: `native-${index}`, src: source });
+      environment.take();
     }
     await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: rasterUri });
     expect(environment.take()).toEqual([{ type: 'markdownImage', context, occurrence: 2, src: null, fallback: 'Session image budget exceeded' }]);
@@ -313,7 +334,7 @@ describe('ChatViewController', () => {
     const { controller, sessions, environment } = setup();
     controller.notifyActiveSessionChanged();
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
-    controller.notifySessionOpened(SESSION_ID);
+    controller.notifySessionOpened({ configuredName: 'fake', sessionId: SESSION_ID });
     const first = environment.take();
     const snapshot = first.find((message) => message.type === 'sessionTabs');
     expect(snapshot).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-1', tabs: [
@@ -328,21 +349,23 @@ describe('ChatViewController', () => {
     controller.notifyLoadSessionEnd(false);
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([snapshot]);
+    const ready = environment.take();
+    expect(ready.map((message) => message.type)).toEqual(['viewSnapshot']);
+    expect(ready[0]?.type === 'viewSnapshot' && ready[0].tabs).toEqual({ selectedTabId: snapshot.selectedTabId, tabs: snapshot.tabs });
 
-    controller.notifySessionOpened(OTHER_SESSION_ID);
+    controller.notifySessionOpened({ configuredName: 'fake', sessionId: OTHER_SESSION_ID });
     const second = environment.take().find((message) => message.type === 'sessionTabs');
     expect(second?.type === 'sessionTabs' && second.tabs).toEqual([
       snapshot.tabs[0],
       { tabId: 'tab-2', title: 'Second', agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
     ]);
-    controller.notifySessionOpened(OTHER_SESSION_ID);
+    controller.notifySessionOpened({ configuredName: 'fake', sessionId: OTHER_SESSION_ID });
     expect(environment.take()).toEqual([second]);
   });
 
   it('updates tab labels and foreground indicators without creating content or prompt boundaries', async () => {
     const { controller, sessions, environment } = setup();
-    controller.notifySessionOpened(SESSION_ID);
+    controller.notifySessionOpened({ configuredName: 'fake', sessionId: SESSION_ID });
     const initial = environment.take().find((message) => message.type === 'sessionTabs');
     if (initial?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
     const tab = initial.tabs[0];
@@ -357,9 +380,19 @@ describe('ChatViewController', () => {
       { ...initial, tabs: [{ ...tab, running: true }] },
     ]);
     const turn = sendPrompt(controller, sessions, 'steering');
+    const registration = sessions.session;
+    if (!registration) { throw new Error('Missing registration'); }
+    const identity = { configuredName: registration.agentName, sessionId: SESSION_ID };
+    const state = sessions.sessionState(identity);
+    const head = state?.queue[0];
+    if (!head) { throw new Error('Missing steering head'); }
+    sessions.changeQueuedPrompt(identity, state.generation, { kind: 'steer', id: head.id });
     environment.take();
     sessions.fail(new Error('Rejected'));
     await turn;
+    const result = sessions.sendPrompt.mock.results.at(-1);
+    if (result?.type !== 'return') { throw new Error('Missing steering result'); }
+    await result.value.catch(() => {});
     expect(controller.hasRunningTurn).toBe(true);
     expect(environment.take().some((message) => message.type === 'promptEnd')).toBe(false);
     sessions.retireSession(SESSION_ID);
@@ -369,9 +402,11 @@ describe('ChatViewController', () => {
   });
 
   it('keeps the running indicator attached to a live tab after its configuration is renamed', () => {
-    const { controller, environment } = setup();
-    controller.notifySessionOpened(SESSION_ID);
+    const { controller, environment, sessions } = setup();
+    controller.notifySessionOpened({ configuredName: 'fake', sessionId: SESSION_ID });
     controller.sessionTabs.agentsChanged({ fake: { command: 'agent' } }, { renamed: { command: 'agent' } });
+    if (!sessions.session) { throw new Error('Missing session'); }
+    sessions.session.agentName = 'renamed';
     environment.take();
     controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'running' });
     const snapshot = environment.take().find((message) => message.type === 'sessionTabs');
@@ -379,21 +414,23 @@ describe('ChatViewController', () => {
   });
 
   it('rejects stale controls after reconnect and rechecks connection ownership after native reveal', async () => {
-    const { controller, environment, sessions } = setup();
+    const parts = setup();
+    const { controller, environment, sessions } = parts;
+    let target = await issuedTarget(parts);
     environment.visible = false;
     const old = new ElicitationRequests();
-    const detachOld = controller.attachElicitations('Agent', old, 'fake');
+    const detachOld = sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: old, permissions: undefined });
     const withdrawn = old.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Old', requestedSchema: {} });
     const rejected = expect(withdrawn).rejects.toMatchObject({ kind: 'closed' });
     const oldId = old.snapshot()[0]?.interactionId ?? '';
     old.close(); detachOld(); await rejected;
     const replacement = new ElicitationRequests();
-    const detach = controller.attachElicitations('Agent', replacement, 'replacement');
+    const detach = sessions.interactions.observe({ agentName: 'fake', agentId: 'replacement', elicitations: replacement, permissions: undefined });
     sessions.session = sessionInfo({ agentId: 'replacement' });
     const answer = replacement.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'New', requestedSchema: {} });
     const id = replacement.snapshot()[0]?.interactionId ?? '';
-    await controller.handleMessage({ type: 'questionResponse', interactionId: oldId, action: 'accept', content: {} });
-    await controller.handleMessage({ type: 'questionDraft', interactionId: oldId, draft: { injected: 'stale' } });
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: oldId, action: 'accept', content: {} });
+    await controller.handleMessage({ type: 'questionDraft', target, interactionId: oldId, draft: { injected: 'stale' } });
     expect(replacement.snapshot()).toHaveLength(1);
     environment.notifications[0]?.reply.resolve('Open');
     await environment.notifications[0]?.reply.promise;
@@ -410,22 +447,49 @@ describe('ChatViewController', () => {
     expect(environment.take()).toEqual([]);
     sessions.session = sessionInfo({ agentId: 'replacement' });
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, draft: null })] });
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'decline' });
+    expect(questionSnapshots(environment.take())).toEqual([{ questions: [expect.objectContaining({ interactionId: id, draft: null })] }]);
+    target = await issuedTarget(parts);
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, action: 'decline' });
     expect(await answer).toEqual({ action: 'decline' });
     detach(); replacement.close();
   });
 
+  it.each(['draft', 'response'] as const)('rejects a session question %s captured before page recreation', async (action) => {
+    const parts = setup();
+    const target = await issuedTarget(parts);
+    const requests = new ElicitationRequests();
+    const detach = parts.sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: requests, permissions: undefined });
+    const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Pending?', requestedSchema: {} });
+    const id = requests.snapshot()[0]?.interactionId ?? '';
+    try {
+      await parts.controller.handleMessage({ type: 'ready' });
+      parts.environment.take();
+      const message = action === 'draft'
+        ? { type: 'questionDraft' as const, target, interactionId: id, draft: { injected: 'obsolete' } }
+        : { type: 'questionResponse' as const, target, interactionId: id, action: 'decline' as const };
+      await parts.controller.handleMessage(message);
+      expect(requests.snapshot()).toHaveLength(1);
+      await parts.controller.handleMessage({ type: 'ready' });
+      expect(questionSnapshots(parts.environment.take()).at(-1)?.questions)
+        .toEqual([expect.objectContaining({ interactionId: id, draft: null })]);
+    } finally {
+      requests.respond(id, { action: 'cancel' });
+      await answer;
+      detach();
+      requests.close();
+    }
+  });
+
   it('keeps questions from multiple connections in arrival order', async () => {
-    const { controller, environment } = setup();
+    const { controller, environment, sessions } = setup();
     const a = new ElicitationRequests();
     const b = new ElicitationRequests();
-    const detachA = controller.attachElicitations('A', a, 'a');
-    const detachB = controller.attachElicitations('B', b, 'b');
+    const detachA = sessions.interactions.observe({ agentName: 'A', agentId: 'a', elicitations: a, permissions: undefined });
+    const detachB = sessions.interactions.observe({ agentName: 'B', agentId: 'b', elicitations: b, permissions: undefined });
     const first = b.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth-b' }, message: 'First', requestedSchema: {} });
     const second = a.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth-a' }, message: 'Second', requestedSchema: {} });
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take().filter((message) => message.type === 'questions').at(-1)?.questions.map((question) => question.message)).toEqual(['First', 'Second']);
+    expect(questionSnapshots(environment.take()).at(-1)?.questions.map((question) => question.message)).toEqual(['First', 'Second']);
     a.respond(a.snapshot()[0]?.interactionId ?? '', { action: 'cancel' });
     b.respond(b.snapshot()[0]?.interactionId ?? '', { action: 'decline' });
     await Promise.all([first, second]);
@@ -437,13 +501,14 @@ describe('ChatViewController', () => {
     sessions.session = sessionInfo({ agentId: 'other-connection', agentName: 'other' });
     environment.visible = false;
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: requests, permissions: undefined });
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Foreign?', requestedSchema: {} });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     expect(environment.take()).toEqual([{ type: 'questions', questions: [] }, { type: 'questions', questions: [] }]);
     expect(environment.notifications).toEqual([]);
-    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { answer: 'forged' } });
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: {} });
+    const target = { configuredName: 'other', sessionId: SESSION_ID, generation: 1, projection: 1 };
+    await controller.handleMessage({ type: 'questionDraft', target, interactionId: id, draft: { answer: 'forged' } });
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, action: 'accept', content: {} });
     expect(requests.snapshot()).toHaveLength(1);
     requests.respond(id, { action: 'decline' });
     expect(await answer).toEqual({ action: 'decline' });
@@ -457,13 +522,13 @@ describe('ChatViewController', () => {
     sessions.session = sessionInfo({ title: 'Work session' });
     environment.visible = false;
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: requests, permissions: undefined });
     const first = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'First?', requestedSchema: {} });
     const second = requests.create({ mode: 'form', rpcId: 2, scope: { sessionId: SESSION_ID }, message: 'Second?', requestedSchema: {} });
     const id = requests.snapshot()[1]?.interactionId ?? '';
     expect(environment.notifications.map(({ message, items }) => ({ message, items }))).toEqual([
-      { message: 'Agent has a question for Work session.', items: ['Open'] },
-      { message: 'Agent has a question for Work session.', items: ['Open'] },
+      { message: 'fake has a question for Work session.', items: ['Open'] },
+      { message: 'fake has a question for Work session.', items: ['Open'] },
     ]);
     expect(environment.reveal).not.toHaveBeenCalled();
     expect(requests.snapshot()).toHaveLength(2);
@@ -483,10 +548,10 @@ describe('ChatViewController', () => {
   });
 
   it('does not reveal a stale notification or navigate to a different active session', async () => {
-    const { controller, environment, sessions } = setup();
+    const { environment, sessions } = setup();
     environment.visible = false;
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: requests, permissions: undefined });
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Pending?', requestedSchema: {} });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     sessions.activeId = 'other';
@@ -500,11 +565,11 @@ describe('ChatViewController', () => {
   });
 
   it('announces outside-session questions without inventing a session and ignores withdrawn notification actions', async () => {
-    const { controller, environment, sessions } = setup();
+    const { environment, sessions } = setup();
     sessions.activeId = null;
     environment.visible = false;
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Setup Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'Setup Agent', agentId: 'fake', elicitations: requests, permissions: undefined });
     const abort = new AbortController();
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth' }, message: 'Setup?', requestedSchema: {} }, abort.signal);
     const rejected = expect(answer).rejects.toMatchObject({ kind: 'cancelled' });
@@ -519,38 +584,43 @@ describe('ChatViewController', () => {
     requests.close();
   });
   it.each(['accept', 'decline', 'cancel'] as const)('records only core-confirmed session form response %s, once', async (action) => {
-    const { controller, environment } = setup();
+    const parts = setup();
+    const { controller, environment, sessions } = parts;
+    const target = await issuedTarget(parts);
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: requests, permissions: undefined });
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Count?', requestedSchema: { title: 'Settings', properties: { count: { type: 'integer', default: 0 } }, required: ['count'] } });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     environment.take();
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 0.5 } });
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, action: 'accept', content: { count: 0.5 } });
     expect(environment.take()).toEqual([{ type: 'questionErrors', interactionId: id, errors: { count: 'Invalid value' } }]);
     const response = action === 'accept' ? { action, content: { count: 0 } } : { action };
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, ...response });
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, ...response });
     expect(await answer).toEqual(response);
     const messages = environment.take();
-    expect(messages).toEqual([
-      { type: 'questionSettled', record: { interactionId: id, sessionId: SESSION_ID, agentName: 'Agent', message: 'Count?', title: 'Settings', description: null, fields: [expect.objectContaining({ name: 'count', kind: 'integer', default: 0 })], response } },
-      { type: 'questions', questions: [] },
+    expect(messages.map((message) => message.type)).toEqual(['contentPatch', 'questions']);
+    expect(messages.at(-1)).toEqual({ type: 'questions', questions: [] });
+    expect(environment.transcript().entries).toMatchObject([
+      { kind: 'question', record: { interactionId: id, sessionId: SESSION_ID, agentName: 'fake', message: 'Count?', title: 'Settings', description: null,
+        fields: [{ name: 'count', kind: 'integer', default: 0 }], response } },
     ]);
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, ...response });
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, ...response });
     expect(environment.take()).toEqual([]);
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take().filter((message) => message.type === 'questionSettled')).toEqual([]);
+    expect(environment.take().map((message) => message.type)).toEqual(['viewSnapshot']);
+    expect(environment.transcript().entries.filter((entry) => entry.kind === 'question')).toHaveLength(1);
     detach();
     requests.close();
   });
 
   it('does not record outside-session responses or request withdrawal as session answers', async () => {
-    const { controller, environment } = setup();
+    const { controller, environment, sessions } = setup();
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Setup Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'Setup Agent', agentId: 'fake', elicitations: requests, permissions: undefined });
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth' }, message: 'Setup?', requestedSchema: {} });
     const id = requests.snapshot()[0]?.interactionId ?? '';
     environment.take();
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: {} });
+    await controller.handleMessage({ type: 'questionResponse', target: null, interactionId: id, action: 'accept', content: {} });
     expect(await answer).toEqual({ action: 'accept', content: {} });
     expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
     const abort = new AbortController();
@@ -567,46 +637,50 @@ describe('ChatViewController', () => {
     const { controller, environment, sessions } = setup();
     sessions.activeId = null;
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Setup Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'Setup Agent', agentId: 'fake', elicitations: requests, permissions: undefined });
     const abort = new AbortController();
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { requestId: 'auth' }, message: 'Setup?', requestedSchema: {} }, abort.signal);
     const rejected = expect(answer).rejects.toMatchObject({ kind: 'cancelled' });
     const id = requests.snapshot()[0]?.interactionId ?? '';
-    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { text: 'draft' } });
+    await controller.handleMessage({ type: 'questionDraft', target: null, interactionId: id, draft: { text: 'draft' } });
     expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, sessionId: null, agentName: 'Setup Agent' })] });
     abort.abort();
     await rejected;
     expect(environment.take()).toEqual([{ type: 'questions', questions: [] }]);
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: {} });
+    await controller.handleMessage({ type: 'questionResponse', target: null, interactionId: id, action: 'accept', content: {} });
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
+    expect(questionSnapshots(environment.take())).toEqual([{ questions: [] }]);
     detach();
     requests.close();
   });
 
   it('resynchronizes pending forms and raw drafts without answering or exposing another session', async () => {
-    const { controller, environment, sessions } = setup();
+    const parts = setup();
+    const { controller, environment, sessions } = parts;
+    let target = await issuedTarget(parts);
     const requests = new ElicitationRequests();
-    const detach = controller.attachElicitations('Agent', requests, 'fake');
+    const detach = sessions.interactions.observe({ agentName: 'fake', agentId: 'fake', elicitations: requests, permissions: undefined });
     const answer = requests.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Count?', requestedSchema: { properties: { count: { type: 'integer', default: 0 } } } });
     const id = requests.snapshot()[0]?.interactionId ?? '';
-    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, agentName: 'Agent', message: 'Count?', draft: null, fields: [expect.objectContaining({ kind: 'integer', default: 0 })] })] });
-    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: { count: '-' } });
+    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ interactionId: id, agentName: 'fake', message: 'Count?', draft: null, fields: [expect.objectContaining({ kind: 'integer', default: 0 })] })] });
+    await controller.handleMessage({ type: 'questionDraft', target, interactionId: id, draft: { count: '-' } });
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ draft: { count: '-' } })] });
-    await controller.handleMessage({ type: 'questionDraft', interactionId: id, draft: {} });
+    expect(questionSnapshots(environment.take())).toEqual([{ questions: [expect.objectContaining({ draft: { count: '-' } })] }]);
+    target = await issuedTarget(parts);
+    await controller.handleMessage({ type: 'questionDraft', target, interactionId: id, draft: {} });
     await controller.handleMessage({ type: 'ready' });
-    expect(environment.take()).toContainEqual({ type: 'questions', questions: [expect.objectContaining({ draft: {} })] });
+    expect(questionSnapshots(environment.take())).toEqual([{ questions: [expect.objectContaining({ draft: {} })] }]);
     sessions.activeId = 'other';
     controller.notifyActiveSessionChanged();
-    expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 3 } });
+    expect(questionSnapshots(environment.take())).toEqual([{ questions: [] }]);
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, action: 'accept', content: { count: 3 } });
     expect(requests.snapshot()).toHaveLength(1);
     sessions.activeId = SESSION_ID;
     controller.notifyActiveSessionChanged();
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 1.5 } });
+    target = await issuedTarget(parts);
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, action: 'accept', content: { count: 1.5 } });
     expect(environment.take()).toContainEqual({ type: 'questionErrors', interactionId: id, errors: { count: 'Invalid value' } });
-    await controller.handleMessage({ type: 'questionResponse', interactionId: id, action: 'accept', content: { count: 3 } });
+    await controller.handleMessage({ type: 'questionResponse', target, interactionId: id, action: 'accept', content: { count: 3 } });
     expect(await answer).toEqual({ action: 'accept', content: { count: 3 } });
     expect(environment.take()).toContainEqual({ type: 'questions', questions: [] });
     detach();
@@ -616,7 +690,8 @@ describe('ChatViewController', () => {
   it('stops posting and accepting updates while its command output drains on disposal', async () => {
     vi.useFakeTimers();
     onTestFinished(() => { vi.useRealTimers(); });
-    const { controller, terminals, environment, sessions } = setup();
+    const parts = setup();
+    const { controller, environment, sessions } = parts;
     let outputReleased = false;
     const dispose = Cleaner.prototype.dispose;
     const release = vi.spyOn(Cleaner.prototype, 'dispose').mockImplementation(function (this: Cleaner) {
@@ -625,15 +700,18 @@ describe('ChatViewController', () => {
     onTestFinished(() => { release.mockRestore(); });
     controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'pending' }] });
     controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: null, text: 'pending text' });
-    terminals.handleSessionUpdate(SESSION_ID, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('pending terminal') });
+    controller.handleSessionUpdate(SESSION_ID, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('pending terminal') });
+    const target = await issuedTarget(parts);
     environment.take();
     const disposed = controller.dispose();
-    const releasedAtDisposal = disposed.then(() => outputReleased);
+    const retainedDisposal = sessions.retained.dispose();
+    const releasedAtDisposal = retainedDisposal.then(() => outputReleased);
     expect(controller.dispose()).toBe(disposed);
     controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: null, text: 'late' });
-    await controller.handleMessage({ type: 'sendPrompt', text: 'late' });
+    await controller.handleMessage({ type: 'sendPrompt', target, text: 'late' });
     await vi.runAllTimersAsync();
     await disposed;
+    await retainedDisposal;
 
     expect(await releasedAtDisposal).toBe(true);
     expect(environment.take()).toEqual([]);
@@ -676,7 +754,7 @@ describe('ChatViewController', () => {
       await controller.handleMessage({ type: 'ready' });
 
       expect(environment.take()).toEqual([{
-        type: 'state',
+        type: 'viewSnapshot', state: {
         activeSessionId: SESSION_ID,
         session: {
           sessionId: SESSION_ID,
@@ -689,7 +767,7 @@ describe('ChatViewController', () => {
             { name: 'review', description: 'Review', takesInput: true, hint: 'what to review' },
           ],
         },
-      }, { type: 'sessionTabs', tabs: [], selectedTabId: null }]);
+      }, tabs: { tabs: [], selectedTabId: null }, running: false, loading: false, questions: [], content: null }]);
     });
 
     it('leaves the title out when the session has none', () => {
@@ -698,8 +776,8 @@ describe('ChatViewController', () => {
       controller.notifyActiveSessionChanged();
 
       const [state] = environment.take();
-      expect(state).toMatchObject({ type: 'state', session: { sessionId: SESSION_ID } });
-      expect(state?.type === 'state' ? state.session : undefined).not.toHaveProperty('title');
+      expect(state).toMatchObject({ type: 'viewSnapshot', state: { session: { sessionId: SESSION_ID } } });
+      expect(state?.type === 'viewSnapshot' ? state.state.session : undefined).not.toHaveProperty('title');
     });
 
     it('reports no session when none is active', async () => {
@@ -708,7 +786,21 @@ describe('ChatViewController', () => {
 
       await controller.handleMessage({ type: 'ready' });
 
-      expect(environment.take()).toEqual([{ type: 'state', activeSessionId: null, session: null }, { type: 'sessionTabs', tabs: [], selectedTabId: null }]);
+      expect(environment.take()).toEqual([{ type: 'viewSnapshot', state: { activeSessionId: null, session: null }, tabs: { tabs: [], selectedTabId: null }, running: false, loading: false, questions: [], content: null }]);
+    });
+
+    it.each([false, true])('keeps loading active until the committed transcript is delivered (success: %s)', async (ok) => {
+      const parts = setup();
+      const { environment, controller } = parts;
+      await issuedTarget(parts);
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'old', text: 'Committed answer' });
+      controller.notifyLoadSessionStart(SESSION_ID);
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'replay', text: 'Replayed answer' });
+      environment.take();
+      controller.notifyLoadSessionEnd(ok);
+      const messages = environment.take();
+      expect(messages.map((message) => message.type)).toEqual(['contentSnapshot', 'loadSessionEnd']);
+      expect(contentSnapshots(messages)[0]?.entries).toMatchObject([{ kind: 'turn', parts: [{ text: ok ? 'Replayed answer' : 'Committed answer' }] }]);
     });
 
     it('passes on replays and changes to the pickers', () => {
@@ -833,9 +925,36 @@ describe('ChatViewController', () => {
   });
 
   describe('session controls', () => {
+    it('rejects Stop captured before a new page projection', async () => {
+      const parts = setup();
+      const target = await issuedTarget(parts);
+      await parts.controller.handleMessage({ type: 'ready' });
+      const stop = { type: 'cancelTurn' as const, target };
+
+      await parts.controller.handleMessage(stop);
+
+      expect(parts.sessions.cancelTurn).not.toHaveBeenCalled();
+    });
+
+    it('rejects a picker choice captured before a new page projection', async () => {
+      const { sessions, environment, controller } = setup();
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'commands', commands: [] });
+      await controller.handleMessage({ type: 'ready' });
+      const snapshot = contentSnapshots(environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing projection'); }
+      await controller.handleMessage({ type: 'ready' });
+      const choice = { type: 'pickerValueChosen' as const, target: snapshot.target, pickerId: 'model', value: 'b' };
+
+      await controller.handleMessage(choice);
+
+      expect(sessions.setConfigOption).not.toHaveBeenCalled();
+    });
+
     it('logs a changed picker selection at debug with its picker ID and value', async () => {
-      const { sessions, controller } = setup();
+      const parts = setup();
+      const { sessions, controller } = parts;
       sessions.session = sessionInfo({ configOptions: null, modes });
+      const target = await issuedTarget(parts);
       const calls: unknown[][] = [];
       setLogSink({
         trace() {},
@@ -846,48 +965,56 @@ describe('ChatViewController', () => {
       });
       onTestFinished(() => { setLogSink(undefined); });
 
-      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' });
+      await controller.handleMessage({ type: 'pickerValueChosen', target, pickerId: 'mode', value: 'code' });
 
       expect(calls).toEqual([['debug', 'Picker value selected', { pickerId: 'mode', value: 'code' }]]);
     });
 
     it('cancels the active turn', async () => {
-      const { sessions, controller } = setup();
+      const parts = setup();
+      const { sessions, controller } = parts;
+      const target = await issuedTarget(parts);
 
-      await controller.handleMessage({ type: 'cancelTurn' });
+      await controller.handleMessage({ type: 'cancelTurn', target });
 
-      expect(sessions.cancelTurn).toHaveBeenCalledExactlyOnceWith(SESSION_ID);
+      expect(sessions.cancelTurn).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: SESSION_ID });
     });
 
     it('ignores cancel when no session is active and keeps quiet when cancel fails', async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
+      const target = await issuedTarget(parts);
       sessions.activeId = null;
-      await controller.handleMessage({ type: 'cancelTurn' });
+      await controller.handleMessage({ type: 'cancelTurn', target });
       expect(sessions.cancelTurn).not.toHaveBeenCalled();
 
       sessions.activeId = SESSION_ID;
       sessions.cancelTurn.mockRejectedValueOnce(new Error('gone'));
-      await controller.handleMessage({ type: 'cancelTurn' });
+      await controller.handleMessage({ type: 'cancelTurn', target });
       expect(environment.take()).toEqual([]);
     });
 
     it("sets the mode when the session's picker stands for its modes, leaving the pickers to the session's report", async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
       sessions.session = sessionInfo({ configOptions: null, modes });
+      const target = await issuedTarget(parts);
 
-      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' });
+      await controller.handleMessage({ type: 'pickerValueChosen', target, pickerId: 'mode', value: 'code' });
 
-      expect(sessions.setMode).toHaveBeenCalledExactlyOnceWith(SESSION_ID, 'code');
+      expect(sessions.setMode).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: SESSION_ID }, 'code');
       expect(sessions.setConfigOption).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([]);
     });
 
     it('reports a mode that cannot be set, and rolls the picker back', async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
       sessions.session = sessionInfo({ configOptions: null, modes });
+      const target = await issuedTarget(parts);
       sessions.setMode.mockRejectedValueOnce(new Error('unknown mode'));
 
-      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'mode', value: 'nope' });
+      await controller.handleMessage({ type: 'pickerValueChosen', target, pickerId: 'mode', value: 'nope' });
 
       expect(environment.take()).toEqual([
         { type: 'error', message: 'Failed to set mode: unknown mode' },
@@ -896,25 +1023,29 @@ describe('ChatViewController', () => {
     });
 
     it('sets a config option, then re-sends the pickers from every option the agent returns', async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
+      const target = await issuedTarget(parts);
       sessions.setConfigOption.mockImplementationOnce(async (sessionId, _configId, _value) => {
         const returned: ConfigOption[] = [{ ...modelOption, current: 'b' }];
         sessions.applyConfigOptions(sessionId, returned);
         return returned;
       });
 
-      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'model', value: 'b' });
+      await controller.handleMessage({ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' });
 
-      expect(sessions.setConfigOption).toHaveBeenCalledExactlyOnceWith(SESSION_ID, 'model', 'b');
+      expect(sessions.setConfigOption).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: SESSION_ID }, 'model', 'b');
       expect(sessions.setMode).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([{ type: 'pickers', pickers: [{ ...modelPicker, current: 'b' }] }]);
     });
 
     it("rolls the picker back to the session's options when setting one fails", async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
+      const target = await issuedTarget(parts);
       sessions.setConfigOption.mockRejectedValueOnce(new Error('rejected'));
 
-      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'model', value: 'b' });
+      await controller.handleMessage({ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' });
 
       expect(environment.take()).toEqual([
         { type: 'error', message: 'Failed to set model: rejected' },
@@ -923,10 +1054,12 @@ describe('ChatViewController', () => {
     });
 
     it('ignores a choice when no session is active', async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
+      const target = await issuedTarget(parts);
       sessions.activeId = null;
 
-      await controller.handleMessage({ type: 'pickerValueChosen', pickerId: 'model', value: 'b' });
+      await controller.handleMessage({ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' });
 
       expect(sessions.setConfigOption).not.toHaveBeenCalled();
       expect(environment.take()).toEqual([]);
@@ -950,9 +1083,9 @@ describe('ChatViewController', () => {
       for (let index = 0; index < 5; index++) {
         controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
-      const received = environment.take();
-      expect(received.filter((message) => message.type === 'agentImage').map((message) => message.src !== null)).toEqual([true, true, true, true, true]);
-      expect(received.filter((message) => message.type === 'toolCall' && message.content !== undefined)).toEqual([]);
+      const received = environment.parts();
+      expect(received.filter((part) => part.kind === 'image').map((part) => part.src !== null)).toEqual([true, true, true, true, true]);
+      expect(received.filter((part) => part.kind === 'toolCalls')).toEqual([]);
     });
 
     it.each([
@@ -963,7 +1096,7 @@ describe('ChatViewController', () => {
       const { environment, controller } = setup();
       const data = Buffer.from(hex, 'hex').toString('base64');
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: `data:${mimeType};base64,${data}` }]);
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', src: `data:${mimeType};base64,${data}` }]);
     });
 
     it.each([
@@ -976,7 +1109,7 @@ describe('ChatViewController', () => {
       header.writeUInt32BE(height, 20);
       const data = header.toString('base64');
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', ...(accepted
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', ...(accepted
         ? { src: `data:image/png;base64,${data}` }
         : { src: null, fallback: width === 0 ? 'Invalid image dimensions' : 'Image exceeds dimension or pixel limit' }) }]);
     });
@@ -986,7 +1119,7 @@ describe('ChatViewController', () => {
       const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
       const data = Buffer.concat([header, Buffer.alloc(length - header.length)]).toString('base64');
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', ...(length === 10 * 1024 * 1024
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', ...(length === 10 * 1024 * 1024
         ? { src: `data:image/png;base64,${data}` }
         : { src: null, fallback: 'Image exceeds 10 MiB payload limit' }) }]);
     });
@@ -994,7 +1127,7 @@ describe('ChatViewController', () => {
     it.each(['', 'A===', 'AAAA=', 'AA A', 'AB==', 'data:image/png;base64,AAAA'])('rejects noncanonical base64 %j', (data) => {
       const { environment, controller } = setup();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType: 'image/png' });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback: 'Invalid image data' }]);
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', src: null, fallback: 'Invalid image data' }]);
     });
 
     it.each(['agent', 'thought', 'prompt', 'tool'] as const)('releases %s images on content clearing without evicting other images', (surface) => {
@@ -1009,14 +1142,36 @@ describe('ChatViewController', () => {
         ? { kind: 'toolCall', toolCallId: 'replace', content }
         : { kind: surface === 'agent' ? 'agentRichMessage' : surface === 'thought' ? 'thoughtRichMessage' : 'promptRichMessage', messageId: 'replace', content });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'blocked', data, mimeType: 'image/png' });
-      expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'blocked', src: null, fallback: 'Session image budget exceeded' });
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'blocked', src: null, fallback: 'Session image budget exceeded' });
       controller.handleSessionUpdate(SESSION_ID, surface === 'tool'
         ? { kind: 'toolCall', toolCallId: 'replace', content: [] }
         : { kind: surface === 'agent' ? 'agentMessage' : surface === 'thought' ? 'thoughtMessage' : 'promptMessage', messageId: 'replace', text: '' });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'fits', data, mimeType: 'image/png' });
-      expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'fits', src: `data:image/png;base64,${data}` });
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'fits', src: `data:image/png;base64,${data}` });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'stillBlocked', data: header.toString('base64'), mimeType: 'image/png' });
-      expect(environment.take().at(-1)).toEqual({ type: 'agentImage', messageId: 'stillBlocked', src: null, fallback: 'Session image budget exceeded' });
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'stillBlocked', src: null, fallback: 'Session image budget exceeded' });
+    });
+
+    it('reconstructs image accounting when returning to retained content', () => {
+      const { environment, controller, sessions } = setup();
+      const first = sessions.session;
+      if (!first) { throw new Error('Missing session'); }
+      const header = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=', 'base64');
+      const data = Buffer.concat([header, Buffer.alloc(10 * 1024 * 1024 - header.length)]).toString('base64');
+      for (let index = 0; index < 5; index++) {
+        controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
+      }
+      sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID });
+      sessions.activeId = OTHER_SESSION_ID;
+      controller.notifyActiveSessionChanged();
+      sessions.session = first;
+      sessions.activeId = SESSION_ID;
+      controller.notifyActiveSessionChanged();
+
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'late', data: header.toString('base64'), mimeType: 'image/png' });
+
+      expect(environment.parts().slice(0, 5)).toEqual(Array.from({ length: 5 }, (_, index) => ({ kind: 'image', messageId: `m${index}`, src: `data:image/png;base64,${data}` })));
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'late', src: null, fallback: 'Session image budget exceeded' });
     });
 
     it.each(['clear', 'replay', 'switch'] as const)('starts a fresh displayed image budget after %s', (operation) => {
@@ -1027,12 +1182,17 @@ describe('ChatViewController', () => {
       for (let index = 0; index < 5; index++) {
         controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
-      if (operation === 'clear') { controller.clearTranscript(); }
+      if (operation === 'clear') {
+        controller.clearTranscript();
+        sessions.activeId = OTHER_SESSION_ID;
+        sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID });
+      }
       else if (operation === 'replay') { controller.notifyLoadSessionStart(SESSION_ID); }
       else { sessions.activeId = OTHER_SESSION_ID; sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID }); controller.notifyActiveSessionChanged(); }
       environment.take();
       controller.handleSessionUpdate(sessions.activeId ?? '', { kind: 'agentImage', messageId: 'fresh', data, mimeType: 'image/png' });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'fresh', src: `data:image/png;base64,${data}` }]);
+      if (operation === 'replay') { controller.notifyLoadSessionEnd(true); }
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'fresh', src: `data:image/png;base64,${data}` });
     });
 
     it.each([
@@ -1042,7 +1202,7 @@ describe('ChatViewController', () => {
     ])('explains rejected %s content', (mimeType, data, fallback) => {
       const { environment, controller } = setup();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback }]);
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', src: null, fallback }]);
     });
 
     it('does not reset the displayed image budget when a background replay starts', () => {
@@ -1055,7 +1215,7 @@ describe('ChatViewController', () => {
       environment.take();
       controller.notifyLoadSessionStart('background');
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'late', data: header.toString('base64'), mimeType: 'image/png' });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'late', src: null, fallback: 'Session image budget exceeded' }]);
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'late', src: null, fallback: 'Session image budget exceeded' });
     });
 
     it.each(['thoughtRichMessage', 'promptRichMessage'] as const)('translates %s in content order', (kind) => {
@@ -1065,9 +1225,15 @@ describe('ChatViewController', () => {
         { kind: 'image', data: '', mimeType: 'image/png', reference: true },
         { kind: 'text', text: 'after' },
       ] });
-      expect(environment.take()).toEqual([{ type: kind, messageId: 'm1', content: [
-        { kind: 'text', text: 'before' }, { kind: 'image', src: null, reference: true }, { kind: 'text', text: 'after' },
-      ] }]);
+      expect(kind === 'thoughtRichMessage' ? environment.parts() : environment.transcript().entries).toEqual(kind === 'thoughtRichMessage' ? [
+        { kind: 'thought', messageId: 'm1', text: 'before', startedAt: expect.any(Number) as number, endedAt: expect.any(Number) as number, open: false },
+        { kind: 'thought', messageId: 'm1', text: '', imageSrc: null, imageReference: true, startedAt: expect.any(Number) as number, endedAt: expect.any(Number) as number, open: false },
+        { kind: 'thought', messageId: 'm1', text: 'after', startedAt: expect.any(Number) as number, endedAt: null, open: true },
+      ] : [
+        { kind: 'prompt', id: 1, messageId: 'm1', text: 'before' },
+        { kind: 'promptImage', id: 2, messageId: 'm1', text: '', src: null, reference: true },
+        { kind: 'prompt', id: 3, messageId: 'm1', text: 'after' },
+      ]);
     });
 
     it('validates an image before delivering it after buffered text', () => {
@@ -1075,9 +1241,9 @@ describe('ChatViewController', () => {
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'm1', text: 'Before' });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data: png, mimeType: 'image/png' });
-      expect(environment.take()).toEqual([
-        { type: 'agentText', messageId: 'm1', text: 'Before' },
-        { type: 'agentImage', messageId: 'm1', src: `data:image/png;base64,${png}` },
+      expect(environment.parts()).toEqual([
+        { kind: 'message', messageId: 'm1', text: 'Before' },
+        { kind: 'image', messageId: 'm1', src: `data:image/png;base64,${png}` },
       ]);
     });
 
@@ -1087,9 +1253,11 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentRichMessage', messageId: 'm1', content: [
         { kind: 'text', text: 'before' }, { kind: 'image', mimeType: 'image/png', data: png }, { kind: 'text', text: 'after' },
       ] });
-      expect(environment.take()).toEqual([{ type: 'agentRichMessage', messageId: 'm1', content: [
-        { kind: 'text', text: 'before' }, { kind: 'image', src: `data:image/png;base64,${png}` }, { kind: 'text', text: 'after' },
-      ] }]);
+      expect(environment.parts()).toEqual([
+        { kind: 'message', messageId: 'm1', text: 'before' },
+        { kind: 'image', messageId: 'm1', src: `data:image/png;base64,${png}` },
+        { kind: 'message', messageId: 'm1', text: 'after' },
+      ]);
     });
 
     it('delivers validated images in thoughts and replayed prompts', () => {
@@ -1097,16 +1265,17 @@ describe('ChatViewController', () => {
       const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
       controller.handleSessionUpdate(SESSION_ID, { kind: 'thoughtImage', messageId: 't1', data: png, mimeType: 'image/png' });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'promptImage', messageId: 'u1', data: png, mimeType: 'image/png' });
-      expect(environment.take()).toEqual([
-        { type: 'thoughtImage', messageId: 't1', src: `data:image/png;base64,${png}` },
-        { type: 'promptImage', messageId: 'u1', src: `data:image/png;base64,${png}` },
+      expect(environment.transcript().entries).toEqual([
+        { kind: 'turn', id: 1, parts: [{ kind: 'thought', messageId: 't1', text: '', imageSrc: `data:image/png;base64,${png}`,
+          startedAt: expect.any(Number) as number, endedAt: expect.any(Number) as number, open: false }] },
+        { kind: 'promptImage', id: 2, messageId: 'u1', text: '', src: `data:image/png;base64,${png}` },
       ]);
     });
 
     it('labels an image resource link as a reference without loading its URI', () => {
       const { environment, controller } = setup();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data: '', mimeType: 'image/png', reference: true });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, reference: true }]);
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', src: null, reference: true }]);
     });
 
     it('delivers validated tool-call images in content order', () => {
@@ -1115,9 +1284,9 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 't1', content: [
         { kind: 'text', text: 'before' }, { kind: 'image', data: png, mimeType: 'image/png' }, { kind: 'text', text: 'after' },
       ] });
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [
+      expect(environment.parts()).toEqual([{ kind: 'toolCalls', collapsed: false, toolCalls: [{ toolCallId: 't1', title: '', status: 'pending', open: false, content: [
         { kind: 'text', text: 'before' }, { kind: 'image', src: `data:image/png;base64,${png}` }, { kind: 'text', text: 'after' },
-      ] }]);
+      ] }] }]);
     });
 
     it.each([
@@ -1128,7 +1297,7 @@ describe('ChatViewController', () => {
     ])('reports a fallback for %s', (_reason, data, mimeType, fallback) => {
       const { environment, controller } = setup();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm1', data, mimeType });
-      expect(environment.take()).toEqual([{ type: 'agentImage', messageId: 'm1', src: null, fallback }]);
+      expect(environment.parts()).toEqual([{ kind: 'image', messageId: 'm1', src: null, fallback }]);
     });
 
     function translated(update: SessionUpdate, session: SessionInfo = sessionInfo()): ExtensionToWebviewMessage[] {
@@ -1150,7 +1319,9 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, toolCall);
       controller.handleSessionUpdate('other', toolCall);
 
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', title: 'Read' }]);
+      expect(environment.parts()).toEqual([{ kind: 'toolCalls', collapsed: false, toolCalls: [
+        { toolCallId: 't1', title: 'Read', status: 'pending', content: [], open: false },
+      ] }]);
     });
 
     it('delivers reported usage immediately in the webview contract without changing its values', () => {
@@ -1160,10 +1331,10 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 15000, size: 100000, cost: null });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } });
 
-      expect(environment.take()).toEqual([
-        { type: 'usage', usage: { used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } } },
-        { type: 'usage', usage: { used: 15000, size: 100000, cost: null } },
-        { type: 'usage', usage: { used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } } },
+      expect(environment.take().map((message) => 'usage' in message ? message.usage : undefined)).toEqual([
+        { used: 123456, size: 200001, cost: { amount: 0.123456789, currency: 'EUR' } },
+        { used: 15000, size: 100000, cost: null },
+        { used: 0, size: 0, cost: { amount: 0, currency: 'JPY' } },
       ]);
     });
 
@@ -1174,12 +1345,11 @@ describe('ChatViewController', () => {
       for (let index = 0; index < 6; index++) {
         controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: `m${index}`, data, mimeType: 'image/png' });
       }
-      const received = environment.take().filter((message) => message.type === 'agentImage');
-      expect(received.map((message) => message.src !== null)).toEqual([true, true, true, true, true, false]);
+      const received = environment.parts().filter((part) => part.kind === 'image');
+      expect(received.map((part) => part.src !== null)).toEqual([true, true, true, true, true, false]);
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'm0', text: '' });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentImage', messageId: 'm6', data, mimeType: 'image/png' });
-      const after = environment.take().filter((message) => message.type === 'agentImage');
-      expect(after.map((message) => message.src !== null)).toEqual([true]);
+      expect(environment.parts().at(-1)).toEqual({ kind: 'image', messageId: 'm6', src: `data:image/png;base64,${data}` });
     });
 
     it('delivers compaction patches and chunks in order between buffered text messages', () => {
@@ -1189,18 +1359,22 @@ describe('ChatViewController', () => {
         kind: 'compactionUpdate', compactionId: 'c1', status: '_paused',
         summary: { present: false }, error: { present: false },
       });
+      expect(environment.parts()).toMatchObject([{ text: 'Before' }, { kind: 'compaction', compactionId: 'c1', status: '_paused', summary: [], error: null }]);
       controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionSummaryChunk', compactionId: 'c1',
         content: { type: 'resource_link', uri: 'file:///summary', name: 'summary', _meta: { nested: [null, true, 3] } },
       });
+      expect(environment.parts()[1]).toMatchObject({ summary: [{ type: 'resource_link', uri: 'file:///summary', name: 'summary', _meta: { nested: [null, true, 3] } }] });
       controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
         summary: { present: true, value: [{ type: 'text', text: 'Summary' }] }, error: { present: true, value: '' },
       });
+      expect(environment.parts()[1]).toMatchObject({ status: 'completed', summary: [{ type: 'text', text: 'Summary' }], error: '', open: false });
       controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
         summary: { present: true, value: null }, error: { present: true, value: null },
       });
+      expect(environment.parts()[1]).toMatchObject({ summary: [], error: null });
       controller.handleSessionUpdate(SESSION_ID, {
         kind: 'compactionUpdate', compactionId: 'c1', status: 'completed',
         summary: { present: true, value: [] }, error: { present: false },
@@ -1208,28 +1382,13 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'm2', text: 'After' });
       controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 10, size: 100, cost: null });
 
-      expect(environment.take()).toEqual([
-        { type: 'agentText', messageId: 'm1', text: 'Before' },
-        { type: 'compactionUpdate', compactionId: 'c1', status: '_paused', summary: { present: false }, error: { present: false } },
-        {
-          type: 'compactionSummaryChunk', compactionId: 'c1',
-          content: { type: 'resource_link', uri: 'file:///summary', name: 'summary', _meta: { nested: [null, true, 3] } },
-        },
-        {
-          type: 'compactionUpdate', compactionId: 'c1', status: 'completed',
-          summary: { present: true, value: [{ type: 'text', text: 'Summary' }] }, error: { present: true, value: '' },
-        },
-        {
-          type: 'compactionUpdate', compactionId: 'c1', status: 'completed',
-          summary: { present: true, value: null }, error: { present: true, value: null },
-        },
-        {
-          type: 'compactionUpdate', compactionId: 'c1', status: 'completed',
-          summary: { present: true, value: [] }, error: { present: false },
-        },
-        { type: 'agentText', messageId: 'm2', text: 'After' },
-        { type: 'usage', usage: { used: 10, size: 100, cost: null } },
+      expect(environment.parts()).toEqual([
+        { kind: 'message', messageId: 'm1', text: 'Before' },
+        { kind: 'compaction', compactionId: 'c1', status: 'completed', summary: [], error: null,
+          open: false, startedAt: null, endedAt: null, timingAllowed: false },
+        { kind: 'message', messageId: 'm2', text: 'After' },
       ]);
+      expect(environment.transcript().usage).toEqual({ used: 10, size: 100, cost: null });
     });
 
     it('drops both compaction variants for other sessions or without an active session', () => {
@@ -1255,46 +1414,51 @@ describe('ChatViewController', () => {
       sessions.activeId = null;
       controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 2000, size: 200000, cost: null });
 
-      expect(environment.take()).toEqual([{ type: 'usage', usage: { used: 1000, size: 200000, cost: null } }]);
+      expect(environment.take()).toHaveLength(1);
+      expect(environment.transcript().usage).toEqual({ used: 1000, size: 200000, cost: null });
     });
 
-    it('delivers fresh usage during load replay without replaying a cached snapshot', () => {
+    it('replaces prior usage only when replay commits and clears absent replay usage', () => {
       const { environment, controller } = setup();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 90000, size: 200000, cost: { amount: 1.25, currency: 'USD' } });
       environment.take();
 
       controller.notifyLoadSessionStart(SESSION_ID);
       controller.notifyLoadSessionEnd(true);
-      expect(environment.take()).toEqual([{ type: 'loadSessionStart' }, { type: 'loadSessionEnd', ok: true }]);
+      expect(environment.take().map((message) => message.type)).toEqual(['loadSessionStart', 'contentSnapshot', 'loadSessionEnd']);
+      expect(environment.transcript().usage).toBeNull();
 
       controller.notifyLoadSessionStart(SESSION_ID);
       controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 15000, size: 100000, cost: null });
+      expect(environment.transcript().usage).toBeNull();
       controller.notifyLoadSessionEnd(true);
-      expect(environment.take()).toEqual([
-        { type: 'loadSessionStart' },
-        { type: 'usage', usage: { used: 15000, size: 100000, cost: null } },
-        { type: 'loadSessionEnd', ok: true },
-      ]);
+      expect(environment.transcript().usage).toEqual({ used: 15000, size: 100000, cost: null });
     });
 
     it("passes on text, tool calls, the plan and slash commands in the webview's terms", () => {
-      expect(translated({ kind: 'agentText', messageId: 'm1', text: 'Hi' })).toEqual([{ type: 'agentText', messageId: 'm1', text: 'Hi' }]);
-      expect(translated({ kind: 'thoughtText', messageId: null, text: 'Hm' })).toEqual([{ type: 'thoughtText', messageId: null, text: 'Hm' }]);
-      expect(translated({ kind: 'promptText', messageId: 'u1', text: 'Fix it' })).toEqual([{ type: 'promptText', messageId: 'u1', text: 'Fix it' }]);
-      expect(translated({ kind: 'agentMessage', messageId: 'm1', text: 'Hi all' })).toEqual([{ type: 'agentMessage', messageId: 'm1', text: 'Hi all' }]);
-      expect(translated({ kind: 'thoughtMessage', messageId: 'r1', text: 'Hmm' })).toEqual([{ type: 'thoughtMessage', messageId: 'r1', text: 'Hmm' }]);
-      expect(translated({ kind: 'promptMessage', messageId: 'u1', text: 'Fix' })).toEqual([{ type: 'promptMessage', messageId: 'u1', text: 'Fix' }]);
-      expect(translated({ kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', content: [
+      const projected = (input: SessionUpdate) => {
+        const { controller, environment } = setup();
+        controller.handleSessionUpdate(SESSION_ID, input);
+        return environment;
+      };
+      expect(projected({ kind: 'agentText', messageId: 'm1', text: 'Hi' }).parts()).toEqual([{ kind: 'message', messageId: 'm1', text: 'Hi' }]);
+      expect(projected({ kind: 'thoughtText', messageId: null, text: 'Hm' }).parts()).toMatchObject([{ kind: 'thought', messageId: null, text: 'Hm', open: true }]);
+      expect(projected({ kind: 'promptText', messageId: 'u1', text: 'Fix it' }).transcript().entries).toEqual([{ kind: 'prompt', id: 1, messageId: 'u1', text: 'Fix it' }]);
+      expect(projected({ kind: 'agentMessage', messageId: 'm1', text: 'Hi all' }).parts()).toEqual([{ kind: 'message', messageId: 'm1', text: 'Hi all' }]);
+      expect(projected({ kind: 'thoughtMessage', messageId: 'r1', text: 'Hmm' }).parts()).toMatchObject([{ kind: 'thought', messageId: 'r1', text: 'Hmm', open: true }]);
+      expect(projected({ kind: 'promptMessage', messageId: 'u1', text: 'Fix' }).transcript().entries).toEqual([{ kind: 'prompt', id: 1, messageId: 'u1', text: 'Fix' }]);
+      expect(projected({ kind: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', content: [
         { kind: 'text', text: 'ok' },
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/a.ts', oldText: 'a', newText: 'b' } },
         { kind: 'text', text: 'done' },
-      ] })).toEqual([
-        { type: 'toolCall', toolCallId: 't1', title: 'Run tests', status: 'running', content: [{ kind: 'text', text: 'ok' }, { kind: 'text', text: 'done' }] },
+      ] }).parts()).toEqual([
+        { kind: 'toolCalls', collapsed: false, toolCalls: [{ toolCallId: 't1', title: 'Run tests', status: 'running', open: false, content: [{ kind: 'text', text: 'ok' }, { kind: 'text', text: 'done' }] }] },
       ]);
-      expect(translated({ kind: 'toolCall', toolCallId: 't1', content: [] })).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [] }]);
-      expect(translated({ kind: 'toolCall', toolCallId: 't1' })).toEqual([{ type: 'toolCall', toolCallId: 't1' }]);
-      expect(translated({ kind: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] })).toEqual([
-        { type: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] },
+      for (const input of [{ kind: 'toolCall', toolCallId: 't1', content: [] }, { kind: 'toolCall', toolCallId: 't1' }] satisfies SessionUpdate[]) {
+        expect(projected(input).parts()).toEqual([{ kind: 'toolCalls', collapsed: false, toolCalls: [{ toolCallId: 't1', title: '', status: 'pending', open: false, content: [] }] }]);
+      }
+      expect(projected({ kind: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] }).parts()).toEqual([
+        { kind: 'plan', steps: [{ text: 'Read', status: 'completed' }, { text: 'Edit', status: 'running' }] },
       ]);
       expect(translated({ kind: 'commands', commands: [{ name: 'review', description: 'Review', takesInput: true, hint: 'what' }] })).toEqual([
         { type: 'commands', commands: [{ name: 'review', description: 'Review', takesInput: true, hint: 'what' }] },
@@ -1321,7 +1485,7 @@ describe('ChatViewController', () => {
       ] });
 
       const file = { oldPath: null, added: 0, removed: 0, hunks: [], note: null, opens: 'file' } as const;
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 't1', content: [
+      expect(environment.parts()).toEqual([{ kind: 'toolCalls', collapsed: false, toolCalls: [{ toolCallId: 't1', title: '', status: 'pending', open: false, content: [
         { kind: 'diff', files: [{
           ...file,
           operation: 'add',
@@ -1336,7 +1500,7 @@ describe('ChatViewController', () => {
           { ...file, operation: 'delete', path: '/work/old.bin', note: 'binary' },
         ] },
         { kind: 'diff', files: [{ ...file, operation: 'add', path: 'dir', note: 'noPatch', opens: null }] },
-      ] }]);
+      ] }] }]);
     });
 
     it('reads your-turn.showToolCallDiffs for each tool call update', () => {
@@ -1348,38 +1512,26 @@ describe('ChatViewController', () => {
       ] };
 
       controller.handleSessionUpdate(SESSION_ID, edited);
+      expect(environment.parts()).toMatchObject([{ toolCalls: [{ content: [{ kind: 'text', text: 'edited' }] }] }]);
       environment.showsDiffs = true;
       controller.handleSessionUpdate(SESSION_ID, edited);
+      expect(environment.parts()).toMatchObject([{ toolCalls: [{ content: [
+        { kind: 'text', text: 'edited' },
+        { kind: 'diff', files: [{ operation: 'modify', path: '/work/a.ts', oldPath: null, added: 1, removed: 1,
+          hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }], note: null, opens: 'fileAndChanges' }] },
+      ] }] }]);
       environment.showsDiffs = false;
       controller.handleSessionUpdate(SESSION_ID, edited);
-
-      expect(environment.take()).toEqual([
-        { type: 'toolCall', toolCallId: 't1', content: [{ kind: 'text', text: 'edited' }] },
-        { type: 'toolCall', toolCallId: 't1', content: [
-          { kind: 'text', text: 'edited' },
-          { kind: 'diff', files: [{
-            operation: 'modify',
-            path: '/work/a.ts',
-            oldPath: null,
-            added: 1,
-            removed: 1,
-            hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }],
-            note: null,
-            opens: 'fileAndChanges',
-          }] },
-        ] },
-        { type: 'toolCall', toolCallId: 't1', content: [{ kind: 'text', text: 'edited' }] },
-      ]);
+      expect(environment.parts()).toMatchObject([{ toolCalls: [{ content: [{ kind: 'text', text: 'edited' }] }] }]);
     });
 
     it("passes on a tool call's terminals by ID, and tells the webview of each terminal once its changes settle, for the active session only", async () => {
       vi.useFakeTimers();
       onTestFinished(() => { vi.useRealTimers(); });
-      const { sessions, environment, terminals, controller } = setup();
+      const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
       const feed = (sessionId: string, update: SessionUpdate) => {
         controller.handleSessionUpdate(sessionId, update);
-        terminals.handleSessionUpdate(sessionId, update);
       };
 
       feed(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'terminal', terminalId: 'term' }] });
@@ -1389,10 +1541,12 @@ describe('ChatViewController', () => {
       feed(SESSION_ID, { kind: 'terminal', terminalId: 'term', exitStatus: { exitCode: 1, signal: null } });
       await vi.runAllTimersAsync();
 
-      expect(environment.take()).toEqual([
-        { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'terminal', terminalId: 'term' }] },
-        { type: 'terminal', terminalId: 'term', text: 'failed', truncated: false, exitStatus: { exitCode: 1, signal: null } },
-      ]);
+      expect(environment.parts()).toEqual([{ kind: 'toolCalls', collapsed: false, toolCalls: [
+        { toolCallId: 'c1', title: '', status: 'pending', toolKind: 'execute', open: false, content: [{ kind: 'terminal', terminalId: 'term' }] },
+      ] }]);
+      expect(environment.transcript().terminals).toEqual(new Map([
+        ['term', { text: 'failed', truncated: false, exitStatus: { exitCode: 1, signal: null } }],
+      ]));
     });
 
     it("posts an execute tool call's title and status at once, and its text once cleaned, as command output", async () => {
@@ -1404,12 +1558,12 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', title: 'npm test', toolKind: 'execute', status: 'running', content: [
         { kind: 'text', text: 'Downloading 5%\rDownloading done\n' },
       ] });
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', title: 'npm test', status: 'running' }]);
+      expect(environment.parts()).toMatchObject([{ toolCalls: [{ toolCallId: 'c1', title: 'npm test', status: 'running', content: [] }] }]);
       await vi.runAllTimersAsync();
 
-      expect(environment.take()).toEqual([
-        { type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }] },
-      ]);
+      expect(environment.parts()).toMatchObject([{ toolCalls: [{ toolCallId: 'c1', title: 'npm test', status: 'running',
+        content: [{ kind: 'commandOutput', text: 'Downloading done', truncated: false }],
+      }] }]);
     });
 
     it("drops an execute tool call's cleaned text once its session is no longer shown", async () => {
@@ -1419,71 +1573,88 @@ describe('ChatViewController', () => {
       sessions.session = sessionInfo();
 
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute', content: [{ kind: 'text', text: 'ran' }] });
+      expect(environment.parts()).toMatchObject([{ toolCalls: [{ toolCallId: 'c1', content: [] }] }]);
+      environment.take();
       sessions.activeId = null;
       await vi.runAllTimersAsync();
 
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1' }]);
+      expect(environment.take()).toEqual([]);
+      expect(sessions.sessionState({ configuredName: 'fake', sessionId: SESSION_ID })?.content.entries).toMatchObject([
+        { parts: [{ toolCalls: [{ toolCallId: 'c1', content: [{ kind: 'commandOutput', output: { text: 'ran', truncated: false } }] }] }] },
+      ]);
     });
 
-    describe("the output of a session that ended, which goes once the chat view clears the session's transcript", () => {
+    describe('retained output belongs to the open tab, not the controller', () => {
       function shown() {
-        const { sessions, terminals, controller } = setup();
+        const { sessions, controller } = setup();
         for (const sessionId of [SESSION_ID, OTHER_SESSION_ID]) {
-          terminals.handleSessionUpdate(sessionId, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('out') });
+          const registration = { agentName: 'fake', agentId: 'source', sessionId };
+          sessions.retained.attach(registration);
+          sessions.retained.accept(registration, { kind: 'terminalOutput', terminalId: 't1', data: new TextEncoder().encode('out') }, 0);
         }
         controller.notifyActiveSessionChanged();
         /** The session is removed, as the session manager removes it, and no session is shown. */
         const removed = (sessionId: string) => {
-          terminals.endSession(sessionId);
+          sessions.retained.retireSource('source');
+          controller.notifySessionRemoved(sessionId);
           sessions.activeId = null;
           controller.notifyActiveSessionChanged();
         };
-        return { sessions, terminals, controller, removed };
+        const retained = (sessionId: string) => sessions.retained.openCommandOutput({ configuredName: 'fake', sessionId }, { kind: 'terminal', terminalId: 't1' }, 'Output');
+        return { sessions, retained, controller, removed };
       }
 
-      it('stays while the chat view keeps the transcript of a session whose agent exited, and goes once it shows another', () => {
-        const { sessions, terminals, controller, removed } = shown();
+      it('stays after exit and selection changes until its tab closes', () => {
+        const { sessions, retained, controller, removed } = shown();
 
         controller.notifySessionEnded(SESSION_ID, 'Fake exited unexpectedly (code 1).');
         removed(SESSION_ID);
-        expect(terminals.info(SESSION_ID, 't1')).toBeDefined();
+        expect(retained(SESSION_ID)).toBe(true);
 
         sessions.activeId = OTHER_SESSION_ID;
         controller.notifyActiveSessionChanged();
-        expect(terminals.info(SESSION_ID, 't1')).toBeUndefined();
-        expect(terminals.info(OTHER_SESSION_ID, 't1')).toBeDefined();
+        expect(retained(SESSION_ID)).toBe(true);
+        sessions.retained.release({ configuredName: 'fake', sessionId: SESSION_ID });
+        expect(retained(SESSION_ID)).toBe(false);
+        expect(retained(OTHER_SESSION_ID)).toBe(true);
       });
 
-      it('goes when the user disconnects, as the chat view then shows nothing', () => {
-        const { terminals, removed } = shown();
+      it('stays after disconnect until its tab closes without releasing another tab', () => {
+        const { sessions, retained, removed } = shown();
 
         removed(SESSION_ID);
 
-        expect(terminals.info(SESSION_ID, 't1')).toBeUndefined();
-        expect(terminals.info(OTHER_SESSION_ID, 't1')).toBeDefined();
+        expect(retained(SESSION_ID)).toBe(true);
+        sessions.retained.release({ configuredName: 'fake', sessionId: SESSION_ID });
+        expect(retained(SESSION_ID)).toBe(false);
+        expect(retained(OTHER_SESSION_ID)).toBe(true);
       });
 
-      it('goes when the transcript is cleared', () => {
-        const { terminals, controller, removed } = shown();
+      it('does not release retained output when the presentation is cleared', () => {
+        const { retained, controller, removed } = shown();
         controller.notifySessionEnded(SESSION_ID, 'Fake exited unexpectedly (code 1).');
         removed(SESSION_ID);
 
         controller.clearTranscript();
 
-        expect(terminals.info(SESSION_ID, 't1')).toBeUndefined();
+        expect(retained(SESSION_ID)).toBe(true);
       });
     });
 
-    it("forgets a removed session's commands", () => {
+    it("replaces a removed session's command kind when the agent loads replacement content", () => {
       const { sessions, environment, controller } = setup();
       sessions.session = sessionInfo();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute' });
 
       controller.notifySessionRemoved(SESSION_ID);
+      controller.notifyLoadSessionStart(SESSION_ID);
       environment.take();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] });
+      controller.notifyLoadSessionEnd(true);
 
-      expect(environment.take()).toEqual([{ type: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] }]);
+      expect(environment.parts()).toEqual([{ kind: 'toolCalls', collapsed: false, toolCalls: [
+        { toolCallId: 'c1', title: '', status: 'pending', open: false, content: [{ kind: 'text', text: 'ran' }] },
+      ] }]);
     });
 
     it('reports pickers from the session once it has applied the change', () => {
@@ -1509,10 +1680,10 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'currentMode', modeId: 'code' });
       controller.handleSessionUpdate(OTHER_SESSION_ID, { kind: 'sessionInfo', title: 'Title' });
 
-      expect(sessions.applyAvailableCommands).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, commands);
-      expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, [modelOption]);
-      expect(sessions.applyCurrentMode).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, 'code');
-      expect(sessions.applySessionInfoUpdate).toHaveBeenCalledExactlyOnceWith(OTHER_SESSION_ID, expect.objectContaining({ title: 'Title' }));
+      expect(sessions.applyAvailableCommands).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: OTHER_SESSION_ID }, commands);
+      expect(sessions.applyConfigOptions).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: OTHER_SESSION_ID }, [modelOption]);
+      expect(sessions.applyCurrentMode).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: OTHER_SESSION_ID }, 'code');
+      expect(sessions.applySessionInfoUpdate).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: OTHER_SESSION_ID }, expect.objectContaining({ title: 'Title' }));
       expect(environment.take()).toEqual([]);
     });
   });
@@ -1523,11 +1694,12 @@ describe('ChatViewController', () => {
       onTestFinished(() => { vi.useRealTimers(); });
     });
 
-    const answer = (text: string, messageId: string | null = null): ExtensionToWebviewMessage => ({ type: 'agentText', messageId, text });
     const answerChunk = (text: string, messageId: string | null = null): SessionUpdate => ({ kind: 'agentText', messageId, text });
 
     it('joins the text of a frame into one message', () => {
       const { environment, controller } = setup();
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'usage', used: 0, size: 100, cost: null });
+      environment.take();
 
       for (const text of ['Hel', 'lo', ' world']) {
         controller.handleSessionUpdate(SESSION_ID, answerChunk(text));
@@ -1536,11 +1708,14 @@ describe('ChatViewController', () => {
       expect(environment.take()).toEqual([]);
 
       vi.advanceTimersByTime(1);
-      expect(environment.take()).toEqual([answer('Hello world')]);
+      expect(environment.take()).toMatchObject([{ type: 'contentPatch', patches: [{ kind: 'insert', entries: [
+        { kind: 'turn', parts: [{ kind: 'message', messageId: null, text: 'Hello world' }] },
+      ] }] }]);
 
       controller.handleSessionUpdate(SESSION_ID, answerChunk('!'));
       vi.advanceTimersByTime(16);
-      expect(environment.take()).toEqual([answer('!')]);
+      expect(environment.take()).toMatchObject([{ type: 'contentPatch', patches: [{ kind: 'appendText', text: '!' }] }]);
+      expect(environment.parts()).toEqual([{ kind: 'message', messageId: null, text: 'Hello world!' }]);
     });
 
     it('sends the text before anything that follows it, without waiting', async () => {
@@ -1550,16 +1725,16 @@ describe('ChatViewController', () => {
 
       controller.handleSessionUpdate(SESSION_ID, answerChunk('reading'));
       controller.handleSessionUpdate(SESSION_ID, toolCall);
+      expect(environment.parts()).toEqual([
+        { kind: 'message', messageId: null, text: 'reading' },
+        { kind: 'toolCalls', collapsed: false, toolCalls: [{ toolCallId: 't1', title: 'Read', status: 'pending', content: [], open: false }] },
+      ]);
       controller.handleSessionUpdate(SESSION_ID, answerChunk('done'));
       sessions.answer();
       await turn;
 
-      expect(environment.take()).toEqual([
-        answer('reading'),
-        { type: 'toolCall', toolCallId: 't1', title: 'Read' },
-        answer('done'),
-        { type: 'promptEnd' },
-      ]);
+      expect(environment.parts().at(-1)).toEqual({ kind: 'message', messageId: null, text: 'done' });
+      expect(environment.take().at(-1)).toEqual({ type: 'promptEnd' });
       vi.advanceTimersByTime(16);
       expect(environment.take()).toEqual([]);
     });
@@ -1568,12 +1743,16 @@ describe('ChatViewController', () => {
       const { environment, controller } = setup();
 
       controller.handleSessionUpdate(SESSION_ID, answerChunk('Hel', 'm1'));
+      expect(environment.parts()).toEqual([{ kind: 'message', messageId: 'm1', text: 'Hel' }]);
       controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'm1', text: 'Hello' });
+      expect(environment.parts()).toEqual([{ kind: 'message', messageId: 'm1', text: 'Hello', markdownRevision: 1 }]);
+      environment.take();
       controller.handleSessionUpdate(SESSION_ID, answerChunk('!', 'm1'));
 
-      expect(environment.take()).toEqual([answer('Hel', 'm1'), { type: 'agentMessage', messageId: 'm1', text: 'Hello' }]);
+      expect(environment.take()).toEqual([]);
       vi.advanceTimersByTime(16);
-      expect(environment.take()).toEqual([answer('!', 'm1')]);
+      expect(environment.take()).toMatchObject([{ type: 'contentPatch', patches: [{ kind: 'appendText', text: '!' }] }]);
+      expect(environment.parts()).toEqual([{ kind: 'message', messageId: 'm1', text: 'Hello!', markdownRevision: 1 }]);
     });
 
     it('keeps text of different kinds or messages apart', () => {
@@ -1587,12 +1766,14 @@ describe('ChatViewController', () => {
       controller.handleSessionUpdate(SESSION_ID, answerChunk('b', 'm2'));
       vi.advanceTimersByTime(16);
 
-      expect(environment.take()).toEqual([
-        { type: 'promptText', messageId: 'u1', text: 'q' },
-        { type: 'promptText', messageId: 'u2', text: 'r' },
-        { type: 'thoughtText', messageId: null, text: 'hmm' },
-        answer('a', 'm1'),
-        answer('b', 'm2'),
+      expect(environment.transcript().entries).toEqual([
+        { kind: 'prompt', id: 1, messageId: 'u1', text: 'q' },
+        { kind: 'prompt', id: 2, messageId: 'u2', text: 'r' },
+        { kind: 'turn', id: 3, parts: [
+          { kind: 'thought', messageId: null, text: 'hmm', startedAt: expect.any(Number) as number, endedAt: expect.any(Number) as number, open: false },
+          { kind: 'message', messageId: 'm1', text: 'a' },
+          { kind: 'message', messageId: 'm2', text: 'b' },
+        ] },
       ]);
     });
   });
@@ -1613,75 +1794,149 @@ describe('ChatViewController', () => {
           patch: { format: 'git_patch', text: '--- /work/c.ts\n+++ /work/c.ts\n@@ -1 +1 @@\n-a\n+c\n' },
         } },
       ] });
-      parts.environment.take();
-      return parts;
+      const snapshot = contentSnapshots(parts.environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing diff projection'); }
+      return { ...parts, target: snapshot.target };
     }
 
     it("opens the file the webview names by its place across the tool call's diffs, and its changes in the diff editor", async () => {
-      const { editor, controller } = withFiles();
+      const { editor, controller, target } = withFiles();
 
-      await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
-      await controller.handleMessage({ type: 'openChanges', toolCallId: 't1', file: 0 });
+      await controller.handleMessage({ type: 'openFile', target, toolCallId: 't1', file: 0 });
+      await controller.handleMessage({ type: 'openChanges', target, toolCallId: 't1', file: 0 });
 
       expect(editor.open.mock.calls).toEqual([['/work/a.ts']]);
       expect(editor.showChanges.mock.calls).toEqual([['/work/a.ts', 'a\n', 'b\n']]);
     });
 
     it("undoes a patch's hunks as the agent sent them on the file as it is now", async () => {
-      const { editor, controller } = withFiles();
+      const { editor, controller, target } = withFiles();
       editor.readText.mockResolvedValueOnce('c\n');
 
-      await controller.handleMessage({ type: 'openChanges', toolCallId: 't1', file: 2 });
+      await controller.handleMessage({ type: 'openChanges', target, toolCallId: 't1', file: 2 });
 
       expect(editor.showChanges.mock.calls).toEqual([['/work/c.ts', 'a\n', 'c\n']]);
     });
 
     it('opens a file without lines but shows no changes of it, and opens nothing it was not shown', async () => {
-      const { sessions, editor, controller } = withFiles();
+      const { sessions, editor, controller, target } = withFiles();
 
-      await controller.handleMessage({ type: 'openChanges', toolCallId: 't1', file: 1 });
-      await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 3 });
-      await controller.handleMessage({ type: 'openFile', toolCallId: 'unknown', file: 0 });
+      await controller.handleMessage({ type: 'openChanges', target, toolCallId: 't1', file: 1 });
+      await controller.handleMessage({ type: 'openFile', target, toolCallId: 't1', file: 3 });
+      await controller.handleMessage({ type: 'openFile', target, toolCallId: 'unknown', file: 0 });
       sessions.activeId = OTHER_SESSION_ID;
-      await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
+      await controller.handleMessage({ type: 'openFile', target, toolCallId: 't1', file: 0 });
       sessions.activeId = SESSION_ID;
-      await controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 1 });
+      await controller.handleMessage({ type: 'openFile', target, toolCallId: 't1', file: 1 });
 
       expect(editor.open.mock.calls).toEqual([['/work/b.bin']]);
       expect(editor.showChanges).not.toHaveBeenCalled();
     });
 
+    it('rejects a native diff command from a superseded projection of the same session', async () => {
+      const { environment, editor, controller } = withFiles();
+      await controller.handleMessage({ type: 'ready' });
+      const snapshot = contentSnapshots(environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing projection'); }
+      const captured = { toolCallId: 't1', file: 0, open: 'changes' as const, target: snapshot.target };
+      await controller.handleMessage({ type: 'ready' });
+      environment.take();
+
+      await controller.chooseDiffFile(captured);
+
+      expect(editor.showChanges).not.toHaveBeenCalled();
+      expect(editor.open).not.toHaveBeenCalled();
+    });
+
+    it('rejects a webview diff click from a superseded projection', async () => {
+      const { environment, editor, controller } = withFiles();
+      await controller.handleMessage({ type: 'ready' });
+      const snapshot = contentSnapshots(environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing projection'); }
+      await controller.handleMessage({ type: 'ready' });
+      const click = { type: 'openFile' as const, target: snapshot.target, toolCallId: 't1', file: 0 };
+
+      await controller.handleMessage(click);
+
+      expect(editor.open).not.toHaveBeenCalled();
+    });
+
+    it('rejects a webview diff click captured before selection moves away and back', async () => {
+      const { editor, controller, sessions, target } = withFiles();
+      const original = sessions.session;
+      sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID });
+      sessions.activeId = OTHER_SESSION_ID;
+      controller.notifyActiveSessionChanged();
+      sessions.session = original;
+      sessions.activeId = SESSION_ID;
+      controller.notifyActiveSessionChanged();
+
+      await controller.handleMessage({ type: 'openFile', target, toolCallId: 't1', file: 0 });
+
+      expect(editor.open).not.toHaveBeenCalled();
+    });
+
+    it.each(['configuredName', 'sessionId', 'generation', 'projection'] as const)('rejects a native diff command with a different %s', async (field) => {
+      const { environment, editor, controller } = withFiles();
+      await controller.handleMessage({ type: 'ready' });
+      const snapshot = contentSnapshots(environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing projection'); }
+      const target = { ...snapshot.target, [field]: typeof snapshot.target[field] === 'number' ? 999 : 'other' };
+
+      await controller.chooseDiffFile({ target, toolCallId: 't1', file: 0, open: 'changes' });
+
+      expect(editor.showChanges).not.toHaveBeenCalled();
+      expect(editor.open).not.toHaveBeenCalled();
+    });
+
+    it('rejects a native diff command after controller disposal', async () => {
+      const { environment, editor, controller } = withFiles();
+      await controller.handleMessage({ type: 'ready' });
+      const snapshot = contentSnapshots(environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing projection'); }
+      await controller.dispose();
+
+      await controller.chooseDiffFile({ target: snapshot.target, toolCallId: 't1', file: 0, open: 'changes' });
+
+      expect(editor.showChanges).not.toHaveBeenCalled();
+      expect(editor.open).not.toHaveBeenCalled();
+    });
+
     it('opens the file chosen from the context menu itself, telling the webview nothing', async () => {
       const { environment, editor, controller } = withFiles();
+      await controller.handleMessage({ type: 'ready' });
+      const snapshot = contentSnapshots(environment.take()).at(-1);
+      if (!snapshot) { throw new Error('Missing projection'); }
 
-      await controller.chooseDiffFile({ toolCallId: 't1', file: 0, open: 'changes' });
+      await controller.chooseDiffFile({ target: snapshot.target, toolCallId: 't1', file: 0, open: 'changes' });
 
       expect(editor.showChanges.mock.calls).toEqual([['/work/a.ts', 'a\n', 'b\n']]);
       expect(environment.take()).toEqual([]);
     });
 
-    it("forgets a session's files when the session goes, and when a load is about to report them again", async () => {
+    it("retains a removed session's files and replaces them after successful load", async () => {
       const removed = withFiles();
       removed.controller.notifySessionRemoved(SESSION_ID);
-      await removed.controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
+      await removed.controller.handleMessage({ type: 'openFile', target: removed.target, toolCallId: 't1', file: 0 });
 
       const reloaded = withFiles();
       reloaded.controller.notifyLoadSessionStart(SESSION_ID);
-      await reloaded.controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 });
+      reloaded.controller.notifyLoadSessionEnd(true);
+      await reloaded.controller.handleMessage({ type: 'openFile', target: reloaded.target, toolCallId: 't1', file: 0 });
 
-      expect(removed.editor.open).not.toHaveBeenCalled();
+      expect(removed.editor.open).toHaveBeenCalledExactlyOnceWith('/work/a.ts');
       expect(reloaded.editor.open).not.toHaveBeenCalled();
     });
 
     it('logs a file the editor fails to open, as nothing else is waiting on it', async () => {
-      const { editor, controller } = withFiles();
+      const { editor, controller, target } = withFiles();
       const failure = new Error('no editor');
       editor.open.mockRejectedValueOnce(failure);
       const errors: unknown[][] = [];
       setLogSink({ trace() {}, debug() {}, info() {}, warn() {}, error: (...args) => errors.push(args) });
 
       try {
-        await expect(controller.handleMessage({ type: 'openFile', toolCallId: 't1', file: 0 })).resolves.toBeUndefined();
+        await expect(controller.handleMessage({ type: 'openFile', target, toolCallId: 't1', file: 0 })).resolves.toBeUndefined();
       } finally {
         setLogSink(undefined);
       }

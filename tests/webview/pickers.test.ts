@@ -87,11 +87,13 @@ describe('pickers', () => {
     page = loadChatPage();
     connect(page, { pickers: [modePicker, modelPicker] });
     page.takePosted();
+    const target = { configuredName: 'fake', sessionId: 'picker-session', generation: 1, projection: 1 };
+    page.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     picker('mode').querySelector<HTMLElement>('.picker-btn')?.click();
 
     item(picker('mode'), 'code').click();
 
-    expect(page.takePosted()).toEqual([{ type: 'pickerValueChosen', pickerId: 'mode', value: 'code' }]);
+    expect(page.takePosted()).toEqual([{ type: 'pickerValueChosen', target, pickerId: 'mode', value: 'code' }]);
     expect(label(picker('mode'))).toBe('Code');
     expect(item(picker('mode'), 'code').classList.contains('selected')).toBe(true);
     expect(picker('mode').querySelector('.picker-dropdown')?.classList.contains('open')).toBe(false);

@@ -22,7 +22,7 @@ describe('question state', () => {
     expect(update(state, { type: 'questionEmptyConfirmed', interactionId: 'q1' }, 0).outgoing).toEqual([]);
     state = update(state, { type: 'questions', questions: [{ ...question, interactionId: 'q2' }] }, 0).state;
     expect(update(state, { type: 'questionEmptyConfirmed', interactionId: 'q1' }, 0).outgoing).toEqual([]);
-    expect(update(state, { type: 'questionSubmitted', interactionId: 'q2' }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q2', action: 'accept', content: { count: 0, enabled: false } }]);
+    expect(update(state, { type: 'questionSubmitted', interactionId: 'q2' }, 0).outgoing).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q2', action: 'accept', content: { count: 0, enabled: false } }]);
   });
 
   it.each([
@@ -55,7 +55,7 @@ describe('question state', () => {
     const first = question.fields[0];
     if (!first) { throw new Error('Missing fixture field'); }
     const state = update(initialState, { type: 'questions', questions: [{ ...question, fields: [{ ...first, kind: 'text', format }], draft: { count: value } }] }, 0).state;
-    expect(update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { count: value } }]);
+    expect(update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0).outgoing).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: { count: value } }]);
   });
 
   it('initializes defaults without submitting and retains edited raw input when another request appends', () => {
@@ -63,7 +63,7 @@ describe('question state', () => {
     expect(received.outgoing).toEqual([]);
     expect(received.state.questions.items[0]?.draft).toEqual({ count: 0, enabled: false });
     const edited = update(received.state, { type: 'questionFieldEdited', interactionId: 'q1', name: 'count', value: '-' }, 0);
-    expect(edited.outgoing).toEqual([{ type: 'questionDraft', interactionId: 'q1', draft: { count: '-', enabled: false } }]);
+    expect(edited.outgoing).toEqual([{ type: 'questionDraft', target: null, interactionId: 'q1', draft: { count: '-', enabled: false } }]);
     const appended = update(edited.state, { type: 'questions', questions: [question, { ...question, interactionId: 'q2' }] }, 0);
     expect(appended.state.questions.items.map((item) => item.draft)).toEqual([{ count: '-', enabled: false }, { count: 0, enabled: false }]);
   });
@@ -76,7 +76,7 @@ describe('question state', () => {
     expect(invalid.state.questions.items[0]?.errors).toEqual({ count: 'Enter a whole number' });
     state = update(invalid.state, { type: 'questionFieldEdited', interactionId: 'q1', name: 'count', value: '2' }, 0).state;
     const sent = update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0);
-    expect(sent.outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { count: 2, enabled: false } }]);
+    expect(sent.outgoing).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: { count: 2, enabled: false } }]);
     expect(sent.state.questions.items).toHaveLength(1);
     expect(sent.state.questions.items[0]?.submitting).toBe(true);
     expect(update(sent.state, { type: 'questionSubmitted', interactionId: 'q1' }, 0).outgoing).toEqual([]);
@@ -88,11 +88,11 @@ describe('question state', () => {
   it('clears optional defaults without restoring them and keeps decline and dismissal distinct', () => {
     let state = update(initialState, { type: 'questions', questions: [question] }, 0).state;
     const cleared = update(state, { type: 'questionFieldCleared', interactionId: 'q1', name: 'enabled' }, 0);
-    expect(cleared.outgoing).toEqual([{ type: 'questionDraft', interactionId: 'q1', draft: { count: 0 } }]);
+    expect(cleared.outgoing).toEqual([{ type: 'questionDraft', target: null, interactionId: 'q1', draft: { count: 0 } }]);
     state = update(cleared.state, { type: 'questions', questions: [question] }, 0).state;
-    expect(update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { count: 0 } }]);
+    expect(update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0).outgoing).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: { count: 0 } }]);
     for (const action of ['decline', 'cancel'] as const) {
-      expect(update(state, { type: 'questionDismissed', interactionId: 'q1', action }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q1', action }]);
+      expect(update(state, { type: 'questionDismissed', interactionId: 'q1', action }, 0).outgoing).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action }]);
     }
   });
 
@@ -111,7 +111,7 @@ describe('question state', () => {
     ] as const) {
       expect(update(state, action, 0)).toEqual({ state, outgoing: [] });
     }
-    expect(update(state, { type: 'questionSubmitted', interactionId: 'q2' }, 0).outgoing).toEqual([{ type: 'questionResponse', interactionId: 'q2', action: 'accept', content: { count: 0, enabled: false } }]);
+    expect(update(state, { type: 'questionSubmitted', interactionId: 'q2' }, 0).outgoing).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q2', action: 'accept', content: { count: 0, enabled: false } }]);
     state = update(state, { type: 'questions', questions: [] }, 0).state;
     expect(update(state, { type: 'questionSubmitted', interactionId: 'q1' }, 0)).toEqual({ state, outgoing: [] });
     expect(update(state, { type: 'questionErrors', interactionId: 'q1', errors: { count: 'Invalid' } }, 0)).toEqual({ state, outgoing: [] });

@@ -1,7 +1,7 @@
 import { memo, useMemo } from 'react';
 import { Diff, Hunk, type ChangeData, type DiffType, type HunkData } from 'react-diff-view';
 import type { DiffFile, DiffHunk, DiffNote } from '@/shared/WebviewMessages';
-import { useDispatch } from '@/webview/views/StoreContext';
+import { useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 const operationLabel: Record<DiffFile['operation'], string> = {
   add: 'Added',
@@ -74,7 +74,8 @@ const FileSection = memo(function FileSection({ file, toolCallId, index }: { fil
  */
 function FileLink({ path, toolCallId, index, hasLines }: { path: string; toolCallId: string; index: number; hasLines: boolean }) {
   const dispatch = useDispatch();
-  const context = { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: toolCallId, yourTurnDiffFile: index, yourTurnDiffFileHasLines: hasLines, preventDefaultContextMenuItems: true };
+  const target = useSelector((state) => state.transcript.projection?.target);
+  const context = { webviewSection: 'toolCallDiffFile', yourTurnTarget: target, yourTurnToolCallId: toolCallId, yourTurnDiffFile: index, yourTurnDiffFileHasLines: hasLines, preventDefaultContextMenuItems: true };
   return (
     <button
       type="button"

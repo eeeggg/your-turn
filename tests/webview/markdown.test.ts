@@ -3,10 +3,16 @@ import { answer as agentText, connect, DEFAULT_SESSION_ID, loadChatPage, type Ch
 
 let page: ChatPage;
 const OTHER_SESSION_ID = 'f9e339f1-8507-4ed8-92ae-394cd34502a2';
+const target = { configuredName: 'Fake Agent', sessionId: DEFAULT_SESSION_ID, generation: 1, projection: 1 };
+
+function project(): void {
+  page.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+}
 
 beforeEach(() => {
   page = loadChatPage();
   connect(page);
+  project();
   page.takePosted();
 });
 
@@ -33,7 +39,7 @@ describe('markdown while it streams', () => {
   const rasterUri = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
 
   function resolveDataImage(): Extract<ReturnType<ChatPage['takePosted']>[number], { type: 'resolveMarkdownImage' }> {
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 42 });
     const requests = page.takePosted();
     expect(requests).toHaveLength(1);
@@ -75,7 +81,7 @@ describe('markdown while it streams', () => {
 
   it('shows the alt text and core failure without creating an image', () => {
     answer(`![Broken picture](data:image/png;base64,AAAA)`);
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 42 });
     const request = page.takePosted()[0];
     if (request?.type !== 'resolveMarkdownImage') { throw new Error('No image validation request'); }
@@ -87,7 +93,7 @@ describe('markdown while it streams', () => {
 
   it('allocates separate slots for duplicate images in different Markdown blocks', () => {
     answer(`![First](${rasterUri})\n\n![Second](${rasterUri})`);
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 42 });
     const requests = page.takePosted();
     expect(requests).toHaveLength(2);
@@ -110,8 +116,9 @@ describe('markdown while it streams', () => {
       connect(page);
     }
     page.takePosted();
+    project();
     answer(`![Tiny picture](${rasterUri})`);
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImage', context: 42, occurrence: original.occurrence, src: rasterUri });
     expect(message().querySelector('img')).toBeNull();
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 43 });
@@ -178,7 +185,7 @@ describe('markdown while it streams', () => {
   it.each(['local extension host', 'remote extension host (ssh-remote)'])('asks per-occurrence HTTPS consent and explains the %s origin', (origin) => {
     const source = 'https://images.example/picture.gif?token=secret';
     answer(`Before ![Remote picture](${source}) after`);
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 42, origin });
     const request = page.takePosted()[0];
     if (request?.type !== 'resolveMarkdownImage') { throw new Error('No image occurrence'); }
@@ -203,7 +210,7 @@ describe('markdown while it streams', () => {
 
   it('automatically requests local images, retains validated bytes, and offers an explicit retry after failure', () => {
     answer('Before ![Local picture](./tiny.gif) after');
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 42 });
     const request = page.takePosted()[0];
     if (request?.type !== 'resolveMarkdownImage') { throw new Error('No local image request'); }
@@ -228,7 +235,7 @@ describe('markdown while it streams', () => {
     };
     send();
     if (surface === 'toolCall') { page.byId('tc-image-tool').querySelector('summary')?.click(); }
-    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID }]);
+    expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', sessionId: DEFAULT_SESSION_ID, context: 42 });
     const first = page.takePosted()[0];
     if (first?.type !== 'resolveMarkdownImage') { throw new Error('No first image occurrence'); }
@@ -297,6 +304,7 @@ describe('markdown while it streams', () => {
     page.send({ type, messageId: 'm1', content: [
       { kind: 'text', text: 'before' }, { kind: 'image', src }, { kind: 'text', text: 'after' },
     ] });
+    expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
     page.send({ type: chunk, messageId: 'm1', text: ' appended' });
     const messages = page.document.querySelector('#messages');
     expect(messages?.querySelectorAll('img')).toHaveLength(1);

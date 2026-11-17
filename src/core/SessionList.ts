@@ -108,26 +108,28 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
   /** Raised each time an agent's list starts over, so what was asked for before is not applied. */
   private readonly generations = new Map<string, number>();
   /** Sessions created here whose first turn has not ended. */
-  private readonly awaitingFirstTurn = new Set<string>();
+  private readonly awaitingFirstTurn = new Set<SessionRegistration>();
   private readonly announce = () => this.emit('changed');
   private readonly infoChanged = ({ identity }: SessionOrigin, update: Reported) => {
     this.learn(identity.configuredName, identity.sessionId, update);
   };
-  private readonly turnEnded = ({ sessionId, agentName }: SessionRegistration) => {
+  private readonly turnEnded = (registration: SessionRegistration) => {
+    const { sessionId, agentName } = registration;
     this.learn(agentName, sessionId, { updatedAt: new Date(this.now()).toISOString() });
-    if (this.awaitingFirstTurn.delete(sessionId)) {
+    if (this.awaitingFirstTurn.delete(registration)) {
       void this.refresh(agentName);
     }
   };
-  private readonly opened = ({ sessionId, agentName }: SessionRegistration, how: SessionOpening) => {
+  private readonly opened = (registration: SessionRegistration, how: SessionOpening) => {
+    const { agentName } = registration;
     if (how === 'created') {
-      this.awaitingFirstTurn.add(sessionId);
+      this.awaitingFirstTurn.add(registration);
     } else {
       void this.refresh(agentName);
     }
   };
-  private readonly removed = ({ sessionId }: SessionRegistration) => {
-    this.awaitingFirstTurn.delete(sessionId);
+  private readonly removed = (registration: SessionRegistration) => {
+    this.awaitingFirstTurn.delete(registration);
     this.announce();
   };
 

@@ -18,6 +18,12 @@ const OTHER_SESSION_ID = '7e29b541-c830-46f9-a2d6-3510be8479ac';
 const LISTED_SESSION_ID = 'b0a745d9-3f28-41c6-95e2-8d6107ace439';
 const OTHER_LISTED_SESSION_ID = '4c95e7a1-862d-4b30-b9f8-12a063de574c';
 
+it.each(['end_turn', 'cancelled'] as const)('preserves the prompt stop reason %s for runtime completion', async (stopReason) => {
+  const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, () => ({ stopReason })));
+
+  expect(await driver.prompt(SESSION_ID, [{ kind: 'text', text: 'go' }])).toEqual({ stopReason });
+});
+
 /** The session updates the driver passes up for those an agent sends during a prompt. */
 async function translated(...updates: Acp.SessionUpdate[]): Promise<SessionUpdate[]> {
   const { driver, updates: received } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.prompt, async ({ client }) => {

@@ -6,8 +6,6 @@
 
 export type ToolCallStatus = 'pending' | 'running' | 'completed' | 'failed';
 
-type MessageContent = { kind: 'text'; text: string } | ({ kind: 'image' } & ImagePresentation);
-
 export interface ImagePresentation {
   src: string | null;
   reference?: true;
@@ -148,12 +146,83 @@ export interface SessionTabsSnapshot {
 /** Reported summary content retained for presentation, including blocks the view does not yet support. */
 type CompactionContent = null | boolean | number | string | CompactionContent[] | { [key: string]: CompactionContent };
 
+export interface PresentationTarget {
+  readonly configuredName: string;
+  readonly sessionId: string;
+  readonly generation: number;
+  readonly projection: number;
+}
+
+interface PresentedCompaction {
+  readonly kind: 'compaction';
+  readonly compactionId: string;
+  readonly status: string;
+  readonly summary: readonly CompactionContent[];
+  readonly error: string | null;
+  readonly open: boolean;
+  readonly startedAt: number | null;
+  readonly endedAt: number | null;
+  readonly timingAllowed: boolean;
+}
+
+interface PresentedToolCall {
+  readonly toolCallId: string;
+  readonly title: string;
+  readonly status: ToolCallStatus;
+  readonly content: readonly ToolCallContent[];
+  readonly open: boolean;
+  readonly markdownRevision?: number;
+}
+
+type PresentedPart =
+  | { readonly kind: 'message'; readonly messageId: string | null; readonly text: string; readonly markdownRevision?: number }
+  | ({ readonly kind: 'image'; readonly messageId: string | null } & Readonly<ImagePresentation>)
+  | { readonly kind: 'thought'; readonly messageId: string | null; readonly text: string; readonly startedAt: number; readonly endedAt: number | null;
+    readonly open: boolean; readonly markdownRevision?: number; readonly imageSrc?: string | null; readonly imageReference?: true; readonly imageFallback?: string }
+  | { readonly kind: 'toolCalls'; readonly toolCalls: readonly PresentedToolCall[]; readonly collapsed: boolean }
+  | { readonly kind: 'plan'; readonly steps: readonly PlanStep[] }
+  | PresentedCompaction
+  | { readonly kind: 'question'; readonly record: QuestionRecord; readonly open: boolean };
+
+type PresentedEntry =
+  | { readonly kind: 'prompt'; readonly id: number; readonly messageId?: string; readonly text: string }
+  | ({ readonly kind: 'promptImage'; readonly id: number; readonly messageId: string | null; readonly text: '' } & Readonly<ImagePresentation>)
+  | { readonly kind: 'turn'; readonly id: number; readonly parts: readonly PresentedPart[] }
+  | { readonly kind: 'error'; readonly id: number; readonly text: string }
+  | ((PresentedCompaction | Extract<PresentedPart, { kind: 'question' }>) & { readonly id: number });
+
+type ContentPatch =
+  | { readonly kind: 'spliceEntries'; readonly index: number; readonly remove: number; readonly entries: readonly PresentedEntry[] }
+  | { readonly kind: 'insert'; readonly index: number; readonly entries: readonly PresentedEntry[] }
+  | { readonly kind: 'replace'; readonly id: number; readonly entry: PresentedEntry }
+  | { readonly kind: 'spliceParts'; readonly turnId: number; readonly index: number; readonly remove: number; readonly parts: readonly PresentedPart[] }
+  | { readonly kind: 'appendText'; readonly turnId: number; readonly part: number; readonly text: string }
+  | { readonly kind: 'toolCall'; readonly turnId: number; readonly part: number; readonly call: PresentedToolCall }
+  | { readonly kind: 'terminal'; readonly terminalId: string; readonly text: string; readonly truncated: boolean; readonly exitStatus: ExitStatus | null };
+
+interface ContentSnapshot {
+  readonly queue: readonly { readonly id: number; readonly text: string; readonly draft: string | null; readonly revision?: number }[];
+  readonly composer: { readonly text: string; readonly revision: number };
+  readonly target: PresentationTarget;
+  readonly revision: number;
+  readonly entries: readonly PresentedEntry[];
+  readonly currentTurn: number | null;
+  readonly nextId: number;
+  readonly usage: SessionUsage | null;
+  readonly terminals: readonly { readonly terminalId: string; readonly text: string; readonly truncated: boolean; readonly exitStatus: ExitStatus | null }[];
+}
+
 export type ExtensionToWebviewMessage =
+  | { type: 'viewSnapshot'; state: { activeSessionId: string | null; session: SessionSnapshot | null };
+    tabs: SessionTabsSnapshot; running: boolean; loading: boolean; questions: Question[]; content: ContentSnapshot | null }
+  | ({ type: 'contentSnapshot' } & ContentSnapshot)
+  | { type: 'contentPatch'; target: PresentationTarget; base: number; revision: number; patches: readonly ContentPatch[];
+    currentTurn: number | null; nextId: number; usage: SessionUsage | null; composer?: { readonly text: string; readonly revision: number };
+    queue?: ContentSnapshot['queue'] }
   | { type: 'markdownImageContext'; sessionId: string; context: number; origin?: string }
   | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)
   | ({ type: 'sessionTabs' } & SessionTabsSnapshot)
   | { type: 'questionOpen'; interactionId: string }
-  | { type: 'questionSettled'; record: QuestionRecord }
   | { type: 'questions'; questions: Question[] }
   | { type: 'questionErrors'; interactionId: string; errors: Readonly<Record<string, string>> }
   | { type: 'state'; activeSessionId: string | null; session: SessionSnapshot | null }
@@ -164,70 +233,36 @@ export type ExtensionToWebviewMessage =
   | { type: 'error'; message: string }
   /** The shown session's agent exited on its own; the message says so. A sessionless `state` follows. */
   | { type: 'sessionEnded'; message: string }
-  /** More of the agent's answer; text with another `messageId` is another message. */
-  | { type: 'agentText'; messageId: string | null; text: string }
-  | ({ type: 'agentImage'; messageId: string | null } & ImagePresentation)
-  | ({ type: 'thoughtImage'; messageId: string | null } & ImagePresentation)
-  | ({ type: 'promptImage'; messageId: string | null } & ImagePresentation)
-  /** More of the agent's thinking, as for `agentText`. */
-  | { type: 'thoughtText'; messageId: string | null; text: string }
-  /** More of a prompt that a load replays, as for `agentText`. */
-  | { type: 'promptText'; messageId: string | null; text: string }
-  /** The whole text of the agent's answer with this `messageId`, replacing what the latest one had; without one, a new answer. */
-  | { type: 'agentMessage'; messageId: string; text: string }
-  | { type: 'agentRichMessage'; messageId: string; content: MessageContent[] }
-  | { type: 'thoughtRichMessage'; messageId: string; content: MessageContent[] }
-  | { type: 'promptRichMessage'; messageId: string; content: MessageContent[] }
-  /** The whole text of the agent's thinking, as for `agentMessage`. */
-  | { type: 'thoughtMessage'; messageId: string; text: string }
-  /** The whole text of a prompt that a load replays, as for `agentMessage`. */
-  | { type: 'promptMessage'; messageId: string; text: string }
-  /** A tool call, new or changed; what it leaves out stays as it was. */
-  | { type: 'toolCall'; toolCallId: string; title?: string; status?: ToolCallStatus; content?: ToolCallContent[] }
-  /**
-   * An agent's terminal, new or changed, whole: the end of its output, cleaned as a terminal shows it, `truncated` when
-   * earlier output is not in it; its command runs while `exitStatus` is null.
-   */
-  | { type: 'terminal'; terminalId: string; text: string; truncated: boolean; exitStatus: ExitStatus | null }
-  /** The agent's plan, replacing the turn's earlier one. */
-  | { type: 'plan'; steps: PlanStep[] }
   | { type: 'commands'; commands: SlashCommand[] }
   | { type: 'pickers'; pickers: Picker[] }
-  | { type: 'usage'; usage: SessionUsage }
-  /** Omitted patches retain stored values; null and an empty summary clear them. Status is an open string. */
-  | {
-    type: 'compactionUpdate';
-    compactionId: string;
-    status: string;
-    summary: { present: false } | { present: true; value: CompactionContent[] | null };
-    error: { present: false } | { present: true; value: string | null };
-  }
-  /** Append this content to the summary at the compaction's original timeline position. */
-  | { type: 'compactionSummaryChunk'; compactionId: string; content: CompactionContent }
   /** The active session's title, null when it has none. */
   | { type: 'sessionInfoUpdate'; title: string | null }
   | { type: 'loadSessionStart' }
   | { type: 'loadSessionEnd'; ok: boolean };
 
 export type WebviewToExtensionMessage =
-  | { type: 'markdownImageContext'; sessionId: string }
+  | { type: 'queueChanged'; target: PresentationTarget; change:
+    | { kind: 'cancelled' | 'steer' | 'stop'; id: number }
+    | { kind: 'editStarted' | 'editSaved' | 'editDiscarded'; id: number; revision: number }
+    | { kind: 'edited'; id: number; text: string; revision: number } }
+  | { type: 'composerEdited'; target: PresentationTarget; revision: number; text: string }
+  | { type: 'contentSnapshotRequested'; target: PresentationTarget }
+  | { type: 'markdownImageContext'; target: PresentationTarget }
   | { type: 'resolveMarkdownImage'; context: number; occurrence: number; source: string }
   | { type: 'loadMarkdownImage'; context: number; occurrence: number }
   | { type: 'releaseMarkdownImage'; context: number; occurrence: number }
   | { type: 'selectSessionTab'; tabId: string }
   | { type: 'closeSessionTab'; tabId: string }
-  | { type: 'questionDraft'; interactionId: string; draft: Readonly<Record<string, QuestionValue>> }
-  | { type: 'questionResponse'; interactionId: string; action: 'accept' | 'decline' | 'cancel'; content?: Readonly<Record<string, QuestionValue>> }
+  | { type: 'questionDraft'; target: PresentationTarget | null; interactionId: string; draft: Readonly<Record<string, QuestionValue>> }
+  | { type: 'questionResponse'; target: PresentationTarget | null; interactionId: string; action: 'accept' | 'decline' | 'cancel'; content?: Readonly<Record<string, QuestionValue>> }
   | { type: 'ready' }
-  | { type: 'sendPrompt'; text: string }
-  | { type: 'cancelTurn' }
-  /** How many prompts the chat view holds until the turn ends, each time that changes; only the chat view holds them. */
-  | { type: 'queuedPrompts'; count: number }
-  | { type: 'pickerValueChosen'; pickerId: string; value: string }
+  | { type: 'sendPrompt'; target: PresentationTarget; text: string }
+  | { type: 'cancelTurn'; target: PresentationTarget }
+  | { type: 'pickerValueChosen'; target: PresentationTarget; pickerId: string; value: string }
   /** The `file`th file across the tool call's diffs in the shown session, as their `diff` contents list them. */
-  | { type: 'openFile'; toolCallId: string; file: number }
+  | { type: 'openFile'; target: PresentationTarget; toolCallId: string; file: number }
   /** As for `openFile`; only for a file the agent reported lines of. */
-  | { type: 'openChanges'; toolCallId: string; file: number };
+  | { type: 'openChanges'; target: PresentationTarget; toolCallId: string; file: number };
 
 type QuestionValue = string | number | boolean | readonly string[];
 

@@ -287,10 +287,10 @@ class AgentTerminal {
     return true;
   }
 
-  async shown(): Promise<ShownOutput> {
+  shown(): Promise<ShownOutput> {
     const dropped = this.output.dropped;
-    const shown = await (this.cleaner?.shown() ?? this.last);
-    return dropped ? { ...shown, truncated: true } : shown;
+    const shown = this.cleaner?.shown() ?? this.last;
+    return shown.then((output) => dropped ? { ...output, truncated: true } : output);
   }
 
   written(): string {

@@ -11,6 +11,7 @@ import {
 import { createStore } from '@/webview/state/Store';
 const SESSION_ID = '52068c99-3a94-44bd-9016-174fe795ecbb';
 const OTHER_SESSION_ID = 'e05a5881-4ea2-46b0-9cd3-b40f6dbfb78b';
+const target = { configuredName: 'fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
 
 const model: Picker = {
   id: 'model',
@@ -43,8 +44,10 @@ function chatView() {
   return {
     pickers: (): PickersState => store.getSnapshot().pickers,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
-    connect: (pickers: Picker[], sessionId = SESSION_ID) =>
-      store.dispatch({ type: 'state', activeSessionId: sessionId, session: snapshot({ pickers, sessionId }) }),
+    connect: (pickers: Picker[], sessionId = SESSION_ID) => {
+      store.dispatch({ type: 'state', activeSessionId: sessionId, session: snapshot({ pickers, sessionId }) });
+      store.dispatch({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { ...target, sessionId }, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+    },
     takePosted: () => posted.splice(0),
   };
 }
@@ -90,7 +93,8 @@ describe('which pickers are shown', () => {
     view.connect([model]);
     const before = view.pickers();
 
-    view.send({ type: 'promptStart' }, { type: 'error', message: 'x' }, { type: 'agentText', messageId: null, text: 'hi' });
+    view.send({ type: 'promptStart' }, { type: 'error', message: 'x' }, { type: 'contentPatch', target, base: 0, revision: 1, currentTurn: 1, nextId: 2, usage: null,
+      patches: [{ kind: 'insert', index: 0, entries: [{ kind: 'turn', id: 1, parts: [{ kind: 'message', messageId: null, text: 'hi' }] }] }] });
 
     expect(view.pickers()).toBe(before);
   });
@@ -154,7 +158,7 @@ describe('choosing a value', () => {
 
     view.send({ type: 'pickerValueChosen', pickerId: 'model', value: 'b' });
 
-    expect(view.takePosted()).toEqual([{ type: 'pickerValueChosen', pickerId: 'model', value: 'b' }]);
+    expect(view.takePosted()).toEqual([{ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' }]);
     expect(view.pickers().pickers).toEqual([{ ...model, current: 'b' }, effort]);
     expect(view.pickers().open).toBeNull();
 

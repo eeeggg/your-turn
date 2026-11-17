@@ -7,7 +7,7 @@ import * as vscode from 'vscode';
 import { WorkspaceState } from '@/core/PersistedState';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { observed } from '@tests/integration/observed';
+import { observed, promptTarget } from '@tests/integration/observed';
 import { cleanup } from '@tests/integration/cleanup';
 
 const activeFile = () => vscode.window.activeTextEditor?.document.uri.fsPath;
@@ -82,7 +82,7 @@ for (const version of [2]) {
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
       const reviewed = observed(api.reviewChanges, () => (api.reviewedFiles().length === 3 ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `review ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `review ${folder}` });
       await Promise.all([promptEnded, reviewed]);
       await api.turnEndShown();
     });
@@ -121,7 +121,7 @@ for (const version of [2]) {
       try {
         const ended = posts.filter((post) => post.type === 'promptEnd').length;
         const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-        await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
+        await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hello' });
         await promptEnded;
         await api.turnEndShown();
       } finally {
@@ -162,7 +162,7 @@ for (const version of [2]) {
       assert.deepStrictEqual(api.reviewedFiles(), []);
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `again ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `again ${folder}` });
       await promptEnded;
       await api.turnEndShown();
 
@@ -182,7 +182,7 @@ for (const version of [2]) {
       try {
         const ended = posts.filter((post) => post.type === 'promptEnd').length;
         const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-        await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
+        await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hello' });
         await promptEnded;
         await api.turnEndShown();
         await api.reviewPresentationSettled();
@@ -204,7 +204,7 @@ for (const version of [2]) {
       });
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
+      const turn = api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hold the turn' });
       try {
         await asked;
         await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
@@ -241,7 +241,7 @@ for (const version of [2]) {
       });
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
+      const turn = api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hold the turn' });
       try {
         await asked;
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(mismatched));
@@ -270,7 +270,7 @@ for (const version of [2]) {
       fs.writeFileSync(three, `${lines.join('\n')}\n`);
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `three ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `three ${folder}` });
       await promptEnded;
       await api.turnEndShown();
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(three));

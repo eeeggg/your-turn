@@ -60,7 +60,7 @@ function reportState(client: V2.AgentContext, update: V2.StateUpdate): Promise<v
 }
 
 /** Resolves with 'ended' or the error once `prompt` settles, so a test can tell a turn still running from one that ended. */
-function outcomeOf(prompt: Promise<void>): Promise<unknown> {
+function outcomeOf(prompt: Promise<unknown>): Promise<unknown> {
   return prompt.then(() => 'ended', (e: unknown) => e);
 }
 
@@ -522,6 +522,14 @@ describe('V2Driver', () => {
 
       await agent.report(idle);
       expect(await outcome).toBe('ended');
+    });
+
+    it.each(['end_turn', 'cancelled'] as const)('preserves the idle stop reason %s for runtime completion', async (stopReason) => {
+      const agent = await turnAgent();
+      const result = agent.driver.prompt(SESSION_ID, go);
+      await agent.report(running, stopReason === 'end_turn' ? { state: 'idle', stopReason: 'end_turn' } : { state: 'idle', stopReason: 'cancelled' });
+
+      expect(await result).toEqual({ stopReason });
     });
 
     it('ends nothing with an idle report while the session is already idle', async () => {

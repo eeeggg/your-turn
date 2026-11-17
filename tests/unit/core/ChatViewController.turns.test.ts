@@ -6,31 +6,87 @@ import {
   OTHER_SESSION_ID,
   setup,
   sendPrompt,
+  issuedTarget,
+  FakeEnvironment,
   type FakeSessions,
 } from '@tests/unit/core/ChatViewControllerTestSupport';
 
 describe('ChatViewController', () => {
+  it('projects settlement through a replacement controller without effects from the disposed controller', async () => {
+    const { controller, sessions, environment, editor } = setup();
+    const turn = sendPrompt(controller, sessions, 'retained submission');
+    await controller.dispose();
+    const replacementEnvironment = new FakeEnvironment();
+    const replacement = new ChatViewController(sessions, replacementEnvironment, editor);
+    onTestFinished(() => replacement.dispose());
+    await replacement.handleMessage({ type: 'ready' });
+    replacementEnvironment.take();
+    environment.executeCommand.mockClear();
+    replacementEnvironment.executeCommand.mockClear();
+    const retiredEffects: boolean[] = [];
+    controller.addTurnListener((running) => retiredEffects.push(running));
+    sessions.fail(new Error('Refused after recreation'));
+    await turn;
+    expect(replacementEnvironment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 2, text: 'Refused after recreation' });
+    expect(replacementEnvironment.take()).toEqual([expect.objectContaining({ type: 'contentPatch' }), { type: 'promptEnd' }]);
+    expect(replacementEnvironment.executeCommand.mock.calls).toEqual([['setContext', 'your-turn.turnInProgress', false]]);
+    expect(environment.executeCommand.mock.calls).toEqual([]);
+    expect(retiredEffects).toEqual([]);
+  });
+
+  function steer(controller: ChatViewController, sessions: FakeSessions, text: string): Promise<void> {
+    void sendPrompt(controller, sessions, text);
+    const registration = sessions.getActiveSession();
+    if (!registration) { throw new Error('Missing registration'); }
+    const identity = { configuredName: registration.agentName, sessionId: registration.sessionId };
+    const state = sessions.sessionState(identity);
+    const head = state?.queue[0];
+    if (!head) { throw new Error('Missing steering head'); }
+    sessions.changeQueuedPrompt(identity, state.generation, { kind: 'steer', id: head.id });
+    const result = sessions.sendPrompt.mock.results.at(-1);
+    if (result?.type !== 'return') { throw new Error('Missing steering submission'); }
+    return result.value.catch(() => {});
+  }
+
+  it('rejects a prompt captured before page recreation without submitting or retaining it', async () => {
+    const parts = setup();
+    const target = await issuedTarget(parts);
+    await parts.controller.handleMessage({ type: 'ready' });
+    parts.environment.take();
+    const request = { type: 'sendPrompt' as const, target, text: 'obsolete' };
+    const turn = parts.controller.handleMessage(request);
+    try {
+      expect(parts.sessions.retained.view(target)?.content.entries).toEqual([]);
+      expect(parts.environment.take()).toEqual([]);
+    } finally {
+      for (const prompt of parts.sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); }
+      await turn;
+    }
+  });
+
   it('reports overlapping errors before one completion when submissions settle together', async () => {
     const { controller, sessions, environment } = setup();
     const first = sendPrompt(controller, sessions, 'first');
-    const second = sendPrompt(controller, sessions, 'steer');
+    const second = steer(controller, sessions, 'steer');
     environment.take();
     sessions.answer();
     sessions.fail(new Error('Refused'));
     await Promise.all([first, second]);
-    expect(environment.take()).toEqual([{ type: 'error', message: 'Refused' }, { type: 'promptEnd' }]);
+    expect(environment.take().map((message) => message.type)).toEqual(['contentPatch', 'promptEnd']);
+    expect(environment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 3, text: 'Refused' });
   });
 
   it('reports the final overlapping prompt error before releasing queued prompts', async () => {
     const { controller, sessions, environment } = setup();
     const first = sendPrompt(controller, sessions, 'first');
-    const second = sendPrompt(controller, sessions, 'second');
+    const second = steer(controller, sessions, 'second');
     sessions.answer();
     await first;
     environment.take();
     sessions.fail(new Error('Refused'));
     await second;
-    expect(environment.take()).toEqual([{ type: 'error', message: 'Refused' }, { type: 'promptEnd' }]);
+    expect(environment.take()).toEqual([expect.objectContaining({ type: 'contentPatch' }), { type: 'promptEnd' }]);
+    expect(environment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 3, text: 'Refused' });
   });
 
   it('keeps the next submission active when autonomous idle releases the queue synchronously', async () => {
@@ -71,7 +127,7 @@ describe('ChatViewController', () => {
   it.each(['resolve', 'reject'] as const)('does not end older outstanding work when a newer submission settles by %s', async (settle) => {
     const { controller, sessions, environment } = setup();
     const first = sendPrompt(controller, sessions, 'first');
-    const second = sendPrompt(controller, sessions, 'steer');
+    const second = steer(controller, sessions, 'steer');
     environment.take();
     const newer = sessions.prompts.pop();
     if (!newer) { throw new Error('missing steering submission'); }
@@ -87,26 +143,36 @@ describe('ChatViewController', () => {
   });
 
   describe('turns', () => {
+    it('records completion against the captured registration after its configuration is renamed', async () => {
+      const { sessions, controller } = setup();
+      const turn = sendPrompt(controller, sessions, 'Continue');
+      const registration = sessions.session;
+      if (!registration) { throw new Error('Missing registration'); }
+      registration.agentName = 'renamed';
+      sessions.retained.rename('fake', 'renamed');
+      sessions.answer();
+      await turn;
+
+      expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith({ configuredName: 'renamed', sessionId: SESSION_ID });
+    });
+
     it('restores foreground state and review context when a controller is recreated during autonomous work', async () => {
-      const { sessions, controller, environment, editor, terminals } = setup();
+      const { sessions, controller, environment, editor } = setup();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'requiresAction' });
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'autonomous', text: 'Working' });
       await controller.dispose();
       environment.take();
       environment.executeCommand.mockClear();
-      const replacement = new ChatViewController(sessions, environment, editor, terminals);
+      const replacement = new ChatViewController(sessions, environment, editor);
       onTestFinished(() => replacement.dispose());
       await replacement.handleMessage({ type: 'ready' });
       expect(replacement.hasRunningTurn).toBe(true);
       const messages = environment.take();
-      const first = messages[0];
-      if (!first) { throw new Error('Missing session state'); }
-      const opened = update(initialState, first, 0).state;
-      const streaming = update(opened, { type: 'agentText', messageId: 'autonomous', text: 'Working' }, 1).state;
-      const state = messages.reduce((state, message) => update(state, message, 2).state, streaming);
+      const state = messages.reduce((state, message) => update(state, message, 2).state, initialState);
       expect(state.activeSession?.turnRunning).toBe(true);
-      expect(state.transcript.currentTurn).toBe(streaming.transcript.currentTurn);
-      expect(state.transcript.entries).toEqual(streaming.transcript.entries);
-      expect(messages.map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
+      expect(state.transcript.currentTurn).toBe(1);
+      expect(state.transcript.entries).toEqual([{ kind: 'turn', id: 1, parts: [{ kind: 'message', messageId: 'autonomous', text: 'Working' }] }]);
+      expect(messages.map((message) => message.type)).toEqual(['viewSnapshot']);
       expect(environment.executeCommand.mock.calls).toEqual([['setContext', 'your-turn.turnInProgress', true]]);
     });
 
@@ -120,7 +186,8 @@ describe('ChatViewController', () => {
       if (outcome === 'answer') { sessions.answer(); } else { sessions.fail(new Error('Rejected')); }
       await turn;
       expect(controller.hasRunningTurn).toBe(true);
-      expect(environment.take()).toEqual(outcome === 'answer' ? [] : [{ type: 'error', message: 'Rejected' }]);
+      expect(environment.take().map((message) => message.type)).toEqual(outcome === 'answer' ? [] : ['contentPatch']);
+      if (outcome === 'fail') { expect(environment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 2, text: 'Rejected' }); }
     });
 
     it('holds queued prompts until prompt acceptance settles and does not release twice for repeated idle', async () => {
@@ -156,21 +223,23 @@ describe('ChatViewController', () => {
       await sendPrompt(controller, sessions, 'hello');
 
       expect(sessions.sendPrompt).not.toHaveBeenCalled();
-      expect(environment.take()).toEqual([{ type: 'error', message: 'No active session. Create a session first.' }]);
+      expect(environment.take()).toEqual([]);
+      expect(environment.transcript().entries).toEqual([]);
     });
 
     it('runs a turn and reports its end', async () => {
       const { sessions, environment, controller } = setup();
 
       const turn = sendPrompt(controller, sessions, 'hello');
-      expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith(SESSION_ID, 'hello');
-      expect(environment.take()).toEqual([{ type: 'promptStart' }]);
+      expect(sessions.sendPrompt).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: SESSION_ID }, 'hello');
+      expect(environment.take().map((message) => message.type)).toEqual(['contentPatch', 'promptStart']);
+      expect(environment.transcript().entries).toEqual([{ kind: 'prompt', id: 1, text: 'hello' }]);
       expect(controller.hasRunningTurn).toBe(true);
 
       sessions.answer();
       await turn;
 
-      expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith(SESSION_ID);
+      expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: SESSION_ID });
       expect(environment.take()).toStrictEqual([{ type: 'promptEnd' }]);
       expect(controller.hasRunningTurn).toBe(false);
     });
@@ -179,16 +248,14 @@ describe('ChatViewController', () => {
       const { sessions, environment, controller } = setup();
 
       const turn = sendPrompt(controller, sessions, 'hello');
+      expect(environment.take().map((message) => message.type)).toEqual(['contentPatch', 'promptStart']);
       sessions.fail(new Error('agent crashed'));
       await turn;
 
       expect(controller.hasRunningTurn).toBe(false);
       expect(sessions.recordTurnEnded).not.toHaveBeenCalled();
-      expect(environment.take()).toEqual([
-        { type: 'promptStart' },
-        { type: 'error', message: 'agent crashed' },
-        { type: 'promptEnd' },
-      ]);
+      expect(environment.take().map((message) => message.type)).toEqual(['contentPatch', 'promptEnd']);
+      expect(environment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 2, text: 'agent crashed' });
     });
 
     it('uses a generic message when the failure has none', async () => {
@@ -198,11 +265,14 @@ describe('ChatViewController', () => {
       sessions.fail({});
       await turn;
 
-      expect(environment.take()).toContainEqual({ type: 'error', message: 'Prompt failed' });
+      expect(environment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 2, text: 'Prompt failed' });
     });
 
     it('tells the editor a turn is in progress until it ends, also when it fails', async () => {
-      const { sessions, environment, controller } = setup();
+      const parts = setup();
+      const { sessions, environment, controller } = parts;
+      await issuedTarget(parts);
+      environment.executeCommand.mockClear();
       const inProgress = (value: boolean) => ['setContext', 'your-turn.turnInProgress', value];
 
       const turn = sendPrompt(controller, sessions, 'hello');
@@ -218,7 +288,9 @@ describe('ChatViewController', () => {
     });
 
     it('tells its turn listeners each time it tells the editor, for the review to pause', async () => {
-      const { sessions, controller } = setup();
+      const parts = setup();
+      const { sessions, controller } = parts;
+      await issuedTarget(parts);
       const heard: boolean[] = [];
       controller.addTurnListener((inProgress) => heard.push(inProgress));
 
@@ -234,13 +306,13 @@ describe('ChatViewController', () => {
       environment.take();
 
       await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs', 'foregroundActivity']);
+      expect(environment.take().map((message) => message.type)).toEqual(['viewSnapshot']);
 
       sessions.answer();
       await turn;
       environment.take();
       await controller.handleMessage({ type: 'ready' });
-      expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs']);
+      expect(environment.take().map((message) => message.type)).toEqual(['viewSnapshot']);
     });
 
     describe('in a session the chat view no longer shows', () => {
@@ -287,11 +359,11 @@ describe('ChatViewController', () => {
         const { sessions, environment, controller } = setup();
         const turn = sendPrompt(controller, sessions, 'hello');
         switchTo(sessions, controller, OTHER_SESSION_ID);
-        expect(environment.take().map((message) => message.type)).toEqual(['promptStart', 'state']);
+        expect(environment.take().map((message) => message.type)).toEqual(['contentPatch', 'promptStart', 'viewSnapshot']);
 
         switchTo(sessions, controller, SESSION_ID);
 
-        expect(environment.take().map((message) => message.type)).toEqual(['state', 'foregroundActivity']);
+        expect(environment.take().map((message) => message.type)).toEqual(['viewSnapshot']);
         sessions.answer();
         await turn;
       });
@@ -317,7 +389,7 @@ describe('ChatViewController', () => {
 
       controller.notifyActiveSessionChanged();
 
-      expect(environment.take().map((message) => message.type)).toEqual(['state']);
+      expect(environment.take().map((message) => message.type)).toEqual(['viewSnapshot']);
       sessions.answer();
       await turn;
     });
@@ -361,7 +433,7 @@ describe('ChatViewController', () => {
         environment.take();
         await controller.handleMessage({ type: 'ready' });
 
-        expect(environment.take().map((message) => message.type)).toEqual(['state', 'sessionTabs']);
+        expect(environment.take().map((message) => message.type)).toEqual(['viewSnapshot']);
         expect(controller.hasRunningTurn).toBe(false);
         sessions.fail(new Error('ACP connection closed'));
         await turn;
@@ -378,15 +450,17 @@ describe('ChatViewController', () => {
       });
     });
 
-    it('knows how many prompts the chat view holds, none once a chat view opens anew', async () => {
-      const { controller } = setup();
+    it('reads the retained queue count and preserves it when a chat view opens anew', async () => {
+      const { controller, sessions } = setup();
       expect(controller.queuedPrompts).toBe(0);
-
-      await controller.handleMessage({ type: 'queuedPrompts', count: 2 });
+      const turn = sendPrompt(controller, sessions, 'running');
+      await sendPrompt(controller, sessions, 'head');
+      await sendPrompt(controller, sessions, 'tail');
       expect(controller.queuedPrompts).toBe(2);
-
       await controller.handleMessage({ type: 'ready' });
-      expect(controller.queuedPrompts).toBe(0);
+      expect(controller.queuedPrompts).toBe(2);
+      sessions.answer();
+      await turn;
     });
 
     it('tells the chat view to clear the transcript', () => {

@@ -1,5 +1,12 @@
 import type { Disposable, Event } from 'vscode';
 import { suiteTeardown, teardown } from 'mocha';
+import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
+
+export function promptTarget(posts: readonly ExtensionToWebviewMessage[]) {
+  const snapshot = [...posts].reverse().flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : [] : message.type === 'contentSnapshot' ? [message] : [])[0];
+  if (!snapshot) { throw new Error('Missing issued projection'); }
+  return snapshot.target;
+}
 
 const pending = new Set<() => void>();
 teardown(() => { for (const cancel of pending) { cancel(); } });

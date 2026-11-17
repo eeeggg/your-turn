@@ -722,7 +722,7 @@
     "@vitest/coverage-v8": "^5.0.5",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^4.1.0",
+    "@vscode/vsce": "^4.1.1",
     "esbuild": "^0.28.2",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -754,7 +754,7 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "@vscode/vsce-sign@2.1.0": true,
+    "@vscode/vsce-sign@2.1.1": true,
     "@parcel/watcher@2.5.1": true
   }
 }

@@ -3,15 +3,16 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import type {
   DiffFile,
-  ExtensionToWebviewMessage,
   ToolCallContent,
   WebviewToExtensionMessage
 } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
-import { initialState, update, type Action } from '@/webview/state/RootState';
+import { initialState, update } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
+import { setup as retainedSession, sessionInfo } from '@tests/unit/core/ChatViewControllerTestSupport';
+import { ContentProjection, isContentReport, type ContentReport, type FixtureAction } from '@tests/ContentProjection';
 const SESSION_ID = 'ddcb43e9-df3c-4604-8444-be1fb55dcdfa';
 
 afterEach(() => {
@@ -60,13 +61,54 @@ vi.mock('use-stick-to-bottom', async () => {
   };
 });
 
-type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>;
+type ToolCallReport = Omit<Extract<ContentReport, { type: 'toolCall' }>, 'type'>;
 
-function renderChatView() {
+function renderChatView(retained = false) {
   const posted: WebviewToExtensionMessage[] = [];
+  const composerEdits: Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[] = [];
   let time = 0;
-  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message), () => time);
-  const send = (...actions: Action[]) => act(() => actions.forEach((action) => store.dispatch(action)));
+  const content = new ContentProjection();
+  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => {
+    if (message.type === 'composerEdited') {
+      composerEdits.push(message);
+      runtime?.sessions.editComposer(message.target, message.target.generation, message.revision, message.text);
+      return;
+    }
+    posted.push(message);
+    if (runtime) { void runtime.controller.handleMessage(message); }
+  }, () => time);
+  const runtime = retained ? retainedSession(undefined, (sessions) => { for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); } }) : undefined;
+  if (runtime) {
+    runtime.sessions.session = sessionInfo({ sessionId: SESSION_ID, agentName: 'Fake' });
+    runtime.sessions.activeId = SESSION_ID;
+    const publish = runtime.environment.post.bind(runtime.environment);
+    runtime.environment.post = (message) => {
+      publish(message);
+      if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot' || message.type === 'contentPatch') { dispatch(structuredClone(message)); }
+    };
+  }
+  const dispatch = store.dispatch;
+  const dispatchAction = (action: FixtureAction) => {
+    const registration = runtime?.sessions.session;
+    if (runtime && registration && (action.type === 'agentText' || action.type === 'plan' || action.type === 'error')) {
+      if (action.type === 'plan') { runtime.sessions.retained.accept(registration, { kind: 'plan', steps: action.steps }, time); }
+      else if (action.type === 'agentText') { runtime.sessions.retained.accept(registration, { kind: 'agentText', messageId: action.messageId, text: action.text }, time); }
+      else { runtime.sessions.retained.promptFailed(registration, action.message); }
+      runtime.controller.notifyActiveSessionChanged();
+      return;
+    }
+    if (runtime?.sessions.session && action.type === 'promptEnd') {
+      runtime.sessions.finishProjectedTurn(time);
+    }
+    const projected = !runtime ? content.project(action, store.getSnapshot().transcript, time, store.getSnapshot().activeSession?.turnRunning, store.getSnapshot().activeSession?.loading) : undefined;
+    if (projected) { dispatch(projected); }
+    if (!isContentReport(action)) { dispatch(action); }
+    if (runtime && action.type === 'promptEnd') {
+      dispatch({ type: 'foregroundActivity', running: runtime.controller.hasRunningTurn });
+    }
+  };
+  store.dispatch = dispatchAction;
+  const send = (...actions: FixtureAction[]) => act(() => actions.forEach(dispatchAction));
   const { container } = render(
     <StoreContext value={store}>
       <ChatView />
@@ -88,18 +130,38 @@ function renderChatView() {
     at: (now: number) => {
       time = now;
     },
-    connect: () =>
+    connect: () => {
       send({
         type: 'state',
         activeSessionId: SESSION_ID,
         session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] },
-      }),
-    answer: (text: string) => send({ type: 'agentText', messageId: null, text }),
+      });
+      if (runtime?.sessions.session) {
+        const registration = runtime.sessions.session;
+        act(() => {
+          runtime.sessions.retained.attach(registration);
+          runtime.controller.notifyActiveSessionChanged();
+        });
+      }
+    },
+    target: () => store.getSnapshot().transcript.projection?.target,
+    answer: (text: string) => {
+      const registration = runtime?.sessions.session;
+      if (runtime && registration) {
+        act(() => {
+          runtime.sessions.retained.accept(registration, { kind: 'agentText', messageId: null, text }, time);
+          runtime.controller.notifyActiveSessionChanged();
+        });
+      } else { send({ type: 'agentText', messageId: null, text }); }
+    },
     thought: (text: string) => send({ type: 'thoughtText', messageId: null, text }),
     toolCall: (report: ToolCallReport) => send({ type: 'toolCall', ...report }),
     takePosted: () => posted.splice(0),
+    takeComposerEdits: () => composerEdits.splice(0),
   };
 }
+
+const retainedQueueView = () => renderChatView(true);
 
 /** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
 async function toggle(details: HTMLDetailsElement): Promise<void> {
@@ -114,11 +176,13 @@ describe('the chat view', () => {
   it.each(['accept', 'decline', 'cancel'] as const)('shows a distinct collapsed %s record with inert question and response details', async (action) => {
     const view = renderChatView();
     view.connect();
-    view.send({ type: 'questionSettled', record: {
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 },
+      target: { configuredName: 'Fake', sessionId: SESSION_ID, generation: 1, projection: 1 }, revision: 0,
+      currentTurn: null, nextId: 2, usage: null, terminals: [], entries: [{ kind: 'question', id: 1, open: false, record: {
       interactionId: 'q1', sessionId: SESSION_ID, agentName: 'Agent', title: 'Settings', message: 'Visit https://example.com?', description: 'Choose carefully',
       fields: [{ name: 'enabled', kind: 'boolean', title: 'Enabled', description: 'Enable it?', required: false, choices: null, minimum: null, maximum: null, minLength: null, maxLength: null, minItems: null, maxItems: null, pattern: null, format: null }],
       response: action === 'accept' ? { action, content: { enabled: false } } : { action },
-    } });
+    } }] });
     const record = view.part<HTMLDetailsElement>('details.question-record');
     expect(record.open).toBe(false);
     const outcome = action === 'accept' ? 'Submitted' : action === 'decline' ? 'Declined' : 'Cancelled';
@@ -156,7 +220,7 @@ describe('the chat view', () => {
   });
 
   it('follows the stream again when the user sends a prompt, and not as the agent streams', () => {
-    const view = renderChatView();
+    const view = retainedQueueView();
     view.connect();
     stickToBottom.scrollToBottom.mockClear();
 
@@ -182,6 +246,7 @@ describe('the chat view', () => {
 });
 
 describe('the queue', () => {
+  const renderChatView = () => retainedQueueView();
   const queue = (view: ReturnType<typeof renderChatView>) => view.container.querySelector('#queuedPrompts');
   const queued = (view: ReturnType<typeof renderChatView>) =>
     view.all('#queuedPrompts > .queued-prompt').map((item) => [item.querySelector('.queued-label')?.textContent, item.querySelector('.queued-text')?.textContent, item.title]);
@@ -219,6 +284,8 @@ describe('the queue', () => {
   it('offers to send only the top prompt now, which cancels the running turn', () => {
     const view = renderChatView();
     view.connect();
+    const target = { configuredName: 'fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     prompt(view, 'first');
     prompt(view, 'second');
     prompt(view, 'third');
@@ -229,7 +296,7 @@ describe('the queue', () => {
     expect(buttons[0]?.textContent).toBe('Stop and send now');
     fireEvent.click(view.part('#queuedPrompts .send-now'));
 
-    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.target(), change: { kind: 'stop', id: view.store.getSnapshot().transcript.queued[0]?.id } }]);
   });
 
   it('steers only the queue head without cancellation and keeps the remainder queued', () => {
@@ -237,18 +304,24 @@ describe('the queue', () => {
     view.connect();
     prompt(view, 'first');
     view.send({ type: 'agentText', messageId: 'a1', text: 'before' });
+    expect(view.store.getSnapshot().transcript.entries.map((entry) => entry.id)).toEqual([1, 2]);
     prompt(view, 'second');
     prompt(view, 'third');
     view.takePosted();
     const buttons = view.all('#queuedPrompts .steer-now');
     expect(buttons.map((button) => button.closest('.queued-prompt')?.querySelector('.queued-text')?.textContent)).toEqual(['second']);
     expect(buttons[0]?.textContent).toBe('Steer now');
+    const target = view.target();
+    const id = view.store.getSnapshot().transcript.queued[0]?.id;
     fireEvent.click(view.part('#queuedPrompts .steer-now'));
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, { type: 'queuedPrompts', count: 1 }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target, change: { kind: 'steer', id } }]);
     expect(queued(view).map(([, value]) => value)).toEqual(['third']);
     expect(userMessages(view)).toEqual(['first', 'second']);
+    expect(view.store.getSnapshot().transcript.entries.map((entry) => entry.id)).toEqual([1, 2, 3]);
     view.send({ type: 'promptStart' }, { type: 'agentText', messageId: 'a2', text: 'after' });
     expect(userMessages(view)).toEqual(['first', 'second']);
+    expect(view.store.getSnapshot().transcript.entries.map((entry) => entry.id)).toEqual([1, 2, 3, 4]);
+    expect(view.all('#messages .message-content').map((element) => element.textContent)).toEqual(['first', 'before', 'second', 'after']);
     expect(view.takePosted()).toEqual([]);
   });
 
@@ -300,12 +373,18 @@ describe('the queue', () => {
     const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
     expect(document.activeElement).toBe(editor);
     fireEvent.change(editor, { target: { value: 'saved second' } });
+    const id = view.store.getSnapshot().transcript.queued[0]?.id;
+    expect(view.takePosted()).toEqual([
+      { type: 'queueChanged', target: view.target(), change: { kind: 'editStarted', id, revision: 1 } },
+      { type: 'queueChanged', target: view.target(), change: { kind: 'edited', id, revision: 2, text: 'saved second' } },
+    ]);
     view.send({ type: 'promptEnd' });
     expect(view.takePosted()).toEqual([]);
     expect(userMessages(view)).toEqual(['first']);
     expect(editor.value).toBe('saved second');
+    const target = view.target();
     fireEvent.keyDown(editor, { key: 'Enter' });
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'saved second' }, { type: 'queuedPrompts', count: 1 }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target, change: { kind: 'editSaved', id, revision: 3 } }]);
     expect(userMessages(view)).toEqual(['first', 'saved second']);
     expect(queued(view).map(([, text]) => text)).toEqual(['third']);
   });
@@ -327,10 +406,10 @@ describe('the queue', () => {
     expect(view.container.querySelector('[aria-label="Queued prompt text"]')).toBeNull();
     expect(document.activeElement).toBe(view.part('.queued-text'));
     expect(queued(view).map(([, text]) => text)).toEqual(['second']);
-    expect(view.takePosted()).toEqual([]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.target(), change: { kind: 'editDiscarded', id: view.store.getSnapshot().transcript.queued[0]?.id, revision: 3 } }]);
   });
 
-  it.each(['cancel', 'empty save'] as const)('%s preserves the composer and recalls the last saved text without a transcript entry', (method) => {
+  it.each(['cancel', 'empty save'] as const)('%s preserves the composer and excludes unsent text from recall and transcript', (method) => {
     const view = renderChatView();
     view.connect();
     prompt(view, 'first');
@@ -346,10 +425,11 @@ describe('the queue', () => {
     expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('composer draft');
     expect(queued(view).map(([, text]) => text)).toEqual(['third']);
     expect(userMessages(view)).toEqual(['first']);
-    expect(view.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.target(), change: method === 'cancel'
+      ? { kind: 'cancelled', id: 1 } : { kind: 'editSaved', id: 1, revision: 3 } }]);
     view.send({ type: 'promptEdited', text: '' });
     fireEvent.keyDown(view.part('#promptInput'), { key: 'ArrowUp' });
-    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('second');
+    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('first');
     expect(userMessages(view)).toEqual(['first']);
     expect(view.takePosted()).toEqual([]);
   });
@@ -419,7 +499,7 @@ describe('transcript entries', () => {
   it('copies a user message directly without offering Markdown options', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
-    const view = renderChatView();
+    const view = renderChatView(true);
     view.connect();
     view.send({ type: 'promptEdited', text: 'user message' }, { type: 'promptSent' });
 
@@ -457,7 +537,7 @@ describe('transcript entries', () => {
   });
 
   it('draws prompts, turns and errors in order, with their classes, and a plan inside its turn', () => {
-    const view = renderChatView();
+    const view = renderChatView(true);
     view.connect();
     view.send({ type: 'promptEdited', text: 'question' }, { type: 'promptSent' }, { type: 'promptStart' });
     view.answer('answer');
@@ -524,11 +604,11 @@ describe('a turn', () => {
 });
 
 describe('a compaction', () => {
-  type Report = Extract<Action, { type: 'compactionUpdate' }>;
+  type Report = Extract<ContentReport, { type: 'compactionUpdate' }>;
   const report = (status = 'in_progress', fields: Partial<Pick<Report, 'summary' | 'error'>> = {}, compactionId = 'opaque/id'): Report => ({
     type: 'compactionUpdate', compactionId, status, summary: { present: false }, error: { present: false }, ...fields,
   });
-  const chunk = (text: string): Action => ({ type: 'compactionSummaryChunk', compactionId: 'opaque/id', content: { type: 'text', text } });
+  const chunk = (text: string): FixtureAction => ({ type: 'compactionSummaryChunk', compactionId: 'opaque/id', content: { type: 'text', text } });
   const summary = { present: true, value: [{ type: 'text', text: '**Summary**' }] } as const;
   const withSummary = (status = 'in_progress') => report(status, { summary: { present: true, value: [...summary.value] } });
 
@@ -839,6 +919,8 @@ describe('tool calls', () => {
   it("makes each file's path a link that opens it, with the context VS Code's menu reads; a move's source and a directory are not links", () => {
     const view = renderChatView();
     view.connect();
+    const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 3, projection: 7 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     view.toolCall({ toolCallId: 't1', title: 'Edit', status: 'failed', content: [
       { kind: 'diff', files: [diffFile({
         operation: 'modify',
@@ -857,18 +939,21 @@ describe('tool calls', () => {
 
     const links = view.all('.tc-diff-link');
     expect(links.map((link): unknown[] => [link.textContent, JSON.parse(link.dataset['vscodeContext'] ?? 'null') as unknown])).toEqual([
-      ['a.ts', { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: 't1', yourTurnDiffFile: 0, yourTurnDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
-      ['src/math.ts', { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: 't1', yourTurnDiffFile: 1, yourTurnDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
+      ['a.ts', { webviewSection: 'toolCallDiffFile', yourTurnTarget: target, yourTurnToolCallId: 't1', yourTurnDiffFile: 0, yourTurnDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
+      ['src/math.ts', { webviewSection: 'toolCallDiffFile', yourTurnTarget: target, yourTurnToolCallId: 't1', yourTurnDiffFile: 1, yourTurnDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
     ]);
     expect(view.all('.tc-diff-path').map((path) => path.textContent)).toEqual(['a.ts', 'src/util.ts → src/math.ts', 'dist']);
 
     fireEvent.click(view.part('.tc-diff-file:nth-child(1) .tc-diff-link'));
-    expect(view.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 0 }]);
+    expect(view.takePosted()).toEqual([{ type: 'openFile', target, toolCallId: 't1', file: 0 }]);
   });
 
   it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", () => {
     const view = renderChatView();
     view.connect();
+    const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 3, projection: 7 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0,
+      entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     view.send({ type: 'terminal', terminalId: 'term', text: 'ok', truncated: false, exitStatus: null });
     view.toolCall({ toolCallId: 'c1', title: 'npm test', content: [{ kind: 'terminal', terminalId: 'term' }] });
     view.toolCall({ toolCallId: 'c2', title: '', content: [{ kind: 'commandOutput', text: 'a.ts', truncated: false }] });
@@ -876,8 +961,8 @@ describe('tool calls', () => {
     const contexts = (selector: string) => view.all(selector).map((element) => JSON.parse(element.dataset['vscodeContext'] ?? 'null') as unknown);
 
     const expected = [
-      { webviewSection: 'commandOutput', yourTurnSessionId: SESSION_ID, yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
-      { webviewSection: 'commandOutput', yourTurnSessionId: SESSION_ID, yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
+      { webviewSection: 'commandOutput', yourTurnTarget: target, yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
+      { webviewSection: 'commandOutput', yourTurnTarget: target, yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
     ];
     expect(contexts('.tc-command')).toEqual(expected);
     expect(contexts('.tc-summary')).toEqual([...expected, null]);

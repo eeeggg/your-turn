@@ -1,6 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
 import { planStepIcon, thoughtSummary, turnShown } from '@/webview/state/Transcript';
-import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { retainedChatView as chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('agent messages', () => {
   it('collects the text of a turn into one message, and starts a turn per prompt', () => {
@@ -250,6 +250,7 @@ describe('plans', () => {
     view.send({ type: 'loadSessionStart' });
 
     view.plan({ text: 'b', status: 'pending' });
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(view.summary()).toEqual(['turn: plan b']);
   });

@@ -130,7 +130,7 @@ describe('session state', () => {
   });
 
   it('keeps the transcript when the host reports the same session again', () => {
-    page = loadChatPage();
+    page = loadChatPage({ retained: true });
     connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');

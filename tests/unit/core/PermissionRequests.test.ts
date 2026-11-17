@@ -70,6 +70,27 @@ function manualRequests(autoApprove: AutoApprove = 'ask') {
 }
 
 describe('PermissionRequests', () => {
+  it('observes active and queued permission lifetimes without changing chooser order or cancellation', async () => {
+    const { requests, ask, pending } = manualRequests();
+    const seen: (readonly PermissionRequest[])[] = [];
+    const unsubscribe = requests.subscribe(() => { seen.push(requests.snapshot()); });
+    const firstRequest = request('First');
+    const secondRequest = request('Second');
+    const first = ask(firstRequest);
+    const second = ask(secondRequest);
+    expect(requests.snapshot()).toEqual([firstRequest, secondRequest]);
+    expect(pending.map((choice) => choice.prompt.title)).toEqual(['First']);
+    requests.cancelSession(SESSION_ID);
+    expect(await Promise.all([first, second])).toEqual([cancelled, cancelled]);
+    expect(requests.snapshot()).toEqual([]);
+    expect(seen.map((entries) => entries.map((entry) => entry.title))).toEqual([['First'], ['First', 'Second'], ['Second'], []]);
+    unsubscribe();
+    const detached = ask(request('Detached', [allowOnce]));
+    requests.cancelSession(SESSION_ID);
+    await detached;
+    expect(seen).toHaveLength(4);
+  });
+
   it("returns the option the user chooses, showing the request's title", async () => {
     const { ask, pending, nextChoice } = manualRequests();
     const shown = nextChoice();

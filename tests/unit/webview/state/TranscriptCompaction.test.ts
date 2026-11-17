@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { Action } from '@/webview/state/RootState';
+import type { FixtureAction as Action, ContentReport } from '@tests/ContentProjection';
 import { chatView, promptEnd, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('session compaction', () => {
-  type Patch = Extract<Action, { type: 'compactionUpdate' }>;
+  type Patch = Extract<ContentReport, { type: 'compactionUpdate' }>;
   const patch = (compactionId: string, status = 'in_progress', fields: Partial<Pick<Patch, 'summary' | 'error'>> = {}): Patch => ({
     type: 'compactionUpdate', compactionId, status, summary: { present: false }, error: { present: false }, ...fields,
   });

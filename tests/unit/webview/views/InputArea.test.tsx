@@ -3,13 +3,15 @@ import { act, cleanup, fireEvent, render, within } from '@testing-library/react'
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionSnapshot, SlashCommand, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { InputArea } from '@/webview/views/InputArea';
-import { initialState, update, type Action } from '@/webview/state/RootState';
+import { initialState, update } from '@/webview/state/RootState';
+import { ContentProjection, isContentReport, type FixtureAction as Action } from '@tests/ContentProjection';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
 const SESSION_ID = '17040418-6daf-4892-9868-4d34172cd873';
+const target = { configuredName: 'Fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
 
 let scrolledIntoView: Element[];
 
@@ -28,8 +30,18 @@ afterEach(() => {
 
 function renderInputArea() {
   const posted: WebviewToExtensionMessage[] = [];
-  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message));
-  const send = (action: Action) => act(() => store.dispatch(action));
+  const composerEdits: Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[] = [];
+  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => {
+    if (message.type === 'composerEdited') { composerEdits.push(message); }
+    else { posted.push(message); }
+  });
+  const content = new ContentProjection();
+  const send = (action: Action) => act(() => {
+    const state = store.getSnapshot();
+    const projected = content.project(action, state.transcript, 0, state.activeSession?.turnRunning, state.activeSession?.loading);
+    if (projected) { store.dispatch(projected); }
+    if (!isContentReport(action)) { store.dispatch(action); }
+  });
   const { container } = render(
     <StoreContext value={store}>
       <InputArea />
@@ -50,15 +62,19 @@ function renderInputArea() {
     prompt,
     items: () => [...container.querySelectorAll<HTMLElement>('.slash-popup-item')],
     popupOpen: () => part('#slashPopup').classList.contains('open'),
-    connect: (session: Partial<SessionSnapshot> = {}) =>
+    connect: (session: Partial<SessionSnapshot> = {}) => {
       send({
         type: 'state',
         activeSessionId: session.sessionId ?? SESSION_ID,
         session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review], ...session },
-      }),
+      });
+      send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { ...target, sessionId: session.sessionId ?? SESSION_ID }, revision: 0,
+        entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+    },
     type: (text: string) => fireEvent.change(prompt(), { target: { value: text } }),
     press: (key: string, init: KeyboardEventInit = {}) => fireEvent.keyDown(prompt(), { key, ...init }),
     takePosted: () => posted.splice(0),
+    takeComposerEdits: () => composerEdits.splice(0),
     usage: () => store.getSnapshot().transcript.usage,
   };
 }
@@ -89,7 +105,11 @@ describe('input area', () => {
 
     // Enter's own newline would land in the box the send has just emptied.
     expect(view.press('Enter')).toBe(false);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'hello' }]);
+    expect(view.takeComposerEdits()).toEqual([
+      { type: 'composerEdited', target, revision: 1, text: 'hello' },
+      { type: 'composerEdited', target, revision: 2, text: '' },
+    ]);
     expect(view.prompt().value).toBe('');
   });
 
@@ -404,7 +424,7 @@ describe('slash command popup', () => {
 
     view.type('/in');
     expect(view.press('Enter')).toBe(false);
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: '/init' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target, text: '/init' }]);
 
     view.type('/re');
     expect(view.press('Tab')).toBe(false);

@@ -4,8 +4,9 @@ import type { AgentApp, SessionConfigOption } from '@agentclientprotocol/sdk';
 import { methods } from '@agentclientprotocol/sdk';
 import type { ConfigOption, FileLink, SessionRoots, SessionUpdate } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { AgentTerminals } from '@/core/AgentTerminals';
+import type { TerminalDisplays } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
+import type { FileEditor } from '@/core/ReportedFiles';
 import {
   SessionReferences,
   WorkspaceState,
@@ -21,6 +22,7 @@ import {
 } from '@/core/SessionManager';
 import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
+
 import {
   fakeAgent,
   InProcessAgents,
@@ -29,6 +31,12 @@ import {
   work,
   type AgentScript
 } from '@tests/unit/core/InProcessAgents';
+
+export function promptTarget(posts: readonly ExtensionToWebviewMessage[]) {
+  const snapshot = [...posts].reverse().flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : [] : message.type === 'contentSnapshot' ? [message] : [])[0];
+  if (!snapshot) { throw new Error('Missing issued projection'); }
+  return snapshot.target;
+}
 
 function memoryStore(): KeyValueStore {
   const values = new Map<string, unknown>();
@@ -87,7 +95,7 @@ export function modelConfig(current: string): ConfigOption {
   };
 }
 
-export function setup(scripts: Record<string, AgentScript>) {
+export function setup(scripts: Record<string, AgentScript>, presentation?: { editor: FileEditor; showsDiffs: boolean; terminals?: TerminalDisplays }, createHandlers?: ConstructorParameters<typeof ConnectionManager>[1]) {
   const agents = new InProcessAgents(scripts);
   const updates = new SessionUpdateHandler();
   let fileLink: FileLink | undefined;
@@ -102,29 +110,26 @@ export function setup(scripts: Record<string, AgentScript>) {
     activeFileLink: () => fileLink,
   };
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
-  const connections = new ConnectionManager('0.0.0-test', () => ({
+  const connections = new ConnectionManager('0.0.0-test', createHandlers ?? (() => ({
     ...unusedHandlers,
     permissions: { ...unusedHandlers.permissions, cancelSession: () => {} },
-  }));
-  const manager = new SessionManager(agents, connections, environment, authPrompt, updates);
+  })));
+  const manager = new SessionManager(agents, connections, environment, authPrompt, updates, presentation?.terminals);
   onTestFinished(async () => { await manager.dispose(); });
   const references = new SessionReferences(memoryStore(), () => Date.now());
   const workspace = new WorkspaceState(memoryStore());
   manager.setPersistedState(references, workspace);
 
   // As in the extension, runtime applies metadata before the chat view projects it.
-  const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
   const executeCommand = vi.fn(async () => {});
   const posted: ExtensionToWebviewMessage[] = [];
-  onTestFinished(async () => { await terminals.dispose(); });
   const chatView = new ChatViewController(
     manager,
-    { post: (message) => posted.push(message), executeCommand, showsToolCallDiffs: () => false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
-    unusedEditor,
-    terminals,
+    { post: (message) => posted.push(message), executeCommand, showsToolCallDiffs: () => presentation?.showsDiffs ?? false, visible: true, reveal: async () => {}, showInformationMessage: async () => undefined },
+    presentation?.editor ?? unusedEditor,
     environment,
   );
-  manager.on('session-opened', ({ sessionId }) => chatView.notifySessionOpened(sessionId));
+  manager.on('session-opened', ({ sessionId, agentName }) => chatView.notifySessionOpened({ configuredName: agentName, sessionId }));
   onTestFinished(async () => { updates.dispose(); await chatView.dispose(); });
   const received: [string, SessionUpdate][] = [];
   const receivedWaiters: { count: number; resolve: () => void }[] = [];

@@ -7,6 +7,7 @@ import { InputToolbar } from '@/webview/views/InputToolbar';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 const SESSION_ID = 'b6a7edcb-d5c3-40b4-a121-341f88837580';
+const target = { configuredName: 'fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
 
 afterEach(() => {
   cleanup();
@@ -52,6 +53,7 @@ function renderToolbar(session: Partial<SessionSnapshot>) {
     activeSessionId: session.sessionId ?? SESSION_ID,
     session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [], ...session },
   });
+      send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { ...target, sessionId: session.sessionId ?? SESSION_ID }, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
   return { container, send, takePosted: () => posted.splice(0) };
 }
 
@@ -159,7 +161,7 @@ describe('pickers', () => {
 
     document.removeEventListener('click', reachedDocument);
     expect(reachedDocument).not.toHaveBeenCalled();
-    expect(takePosted()).toEqual([{ type: 'pickerValueChosen', pickerId: 'model', value: 'b' }]);
+    expect(takePosted()).toEqual([{ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' }]);
     expect(element(container, '.picker-label').textContent).toBe('Model B');
     expect(element(container, '.picker-dropdown').classList.contains('open')).toBe(false);
   });

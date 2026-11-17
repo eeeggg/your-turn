@@ -139,12 +139,13 @@ export class V1Driver implements AcpDriver {
     return sessionState(response);
   }
 
-  async prompt(sessionId: string, prompt: PromptPart[]): Promise<void> {
+  async prompt(sessionId: string, prompt: PromptPart[]): Promise<{ stopReason: string | null }> {
     const response = await authChecked(this.connection.agent.request(methods.agent.session.prompt, {
       sessionId,
       prompt: prompt.map(contentBlock),
     }));
     logInfo('Prompt turn ended', { stopReason: response.stopReason });
+    return { stopReason: response.stopReason };
   }
 
   async cancel(sessionId: string): Promise<void> {

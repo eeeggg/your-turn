@@ -56,6 +56,7 @@ export class SessionCommands {
       if (!tab) { return; }
       if (snapshot.selectedTabId !== tabId) {
         this.chatView.sessionTabs.close(tabId);
+        this.sessions.releaseSessionState({ configuredName: tab.agentName, sessionId: tab.sessionId });
         this.chatView.notifyTabsChanged();
         return;
       }
@@ -66,6 +67,7 @@ export class SessionCommands {
       const activeAgent = this.sessions.getActiveAgentName();
       if (ownsActive && activeAgent) { await this.sessions.disconnectAgent(activeAgent); }
       const next = this.chatView.sessionTabs.close(tabId);
+      this.sessions.releaseSessionState({ configuredName: tab.agentName, sessionId: tab.sessionId });
       this.chatView.notifyTabsChanged();
       if (next) {
         if (this.chatView.sessionTabs.matches(next.tabId, this.sessions.getActiveSession())) {
@@ -275,40 +277,44 @@ export class SessionCommands {
   }
 
   async cancelTurn(): Promise<void> {
-    const activeId = this.sessions.getActiveSessionId();
-    if (!activeId) { return; }
+    const session = this.sessions.getActiveSession();
+    if (!session) { return; }
     try {
-      await this.sessions.cancelTurn(activeId);
+      await this.sessions.cancelTurn({ configuredName: session.agentName, sessionId: session.sessionId });
     } catch (e) {
       logError('Cancel failed', e);
     }
   }
 
   async setMode(modeId?: string): Promise<void> {
-    const activeId = this.sessions.getActiveSessionId();
-    if (!activeId) { return; }
+    const session = this.sessions.getActiveSession();
+    if (!session) { return; }
     const mode = modeId || await this.window.showInputBox({
       placeHolder: 'Enter mode ID (e.g., "plan", "code")',
       title: 'Set Agent Mode',
     });
     if (!mode) { return; }
+    const identity = { configuredName: session.agentName, sessionId: session.sessionId };
+    if (this.sessions.getSession(identity) !== session) { return; }
     try {
-      await this.sessions.setMode(activeId, mode);
+      await this.sessions.setMode(identity, mode);
     } catch (e) {
       this.report('Failed to set mode', e);
     }
   }
 
   async setModel(modelId?: string): Promise<void> {
-    const activeId = this.sessions.getActiveSessionId();
-    if (!activeId) { return; }
+    const session = this.sessions.getActiveSession();
+    if (!session) { return; }
     const model = modelId || await this.window.showInputBox({
       placeHolder: 'Enter model ID',
       title: 'Set Agent Model',
     });
     if (!model) { return; }
+    const identity = { configuredName: session.agentName, sessionId: session.sessionId };
+    if (this.sessions.getSession(identity) !== session) { return; }
     try {
-      await this.sessions.setModel(activeId, model);
+      await this.sessions.setModel(identity, model);
     } catch (e) {
       this.report('Failed to set model', e);
     }

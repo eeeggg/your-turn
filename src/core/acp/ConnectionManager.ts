@@ -2,7 +2,7 @@ import { ndJsonStream } from '@agentclientprotocol/sdk';
 import type { Stream } from '@agentclientprotocol/sdk';
 
 import type { AgentStreams } from '@/core/AgentManager';
-import type { ClientHandlers, Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
+import type { ClientHandlers, Elicitations, ElicitationInteractions, PermissionInteractions } from '@/core/ClientHandlers';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { captureTraffic } from '@/core/Traffic';
 import { logDebug, logError, logInfo } from '@/core/Log';
@@ -22,7 +22,8 @@ export class ConnectionManager {
   ) {}
 
   /** Connect to an agent over its streams and initialize the connection. */
-  async connect(agentName: string, streams: AgentStreams, agentId: string, updates: SessionUpdateSink, onClosed?: () => void): Promise<AcpDriver> {
+  async connect(agentName: string, streams: AgentStreams, agentId: string, updates: SessionUpdateSink, onClosed?: () => void,
+    options?: { observeRequests(context: { agentName: string; agentId: string; permissions: PermissionInteractions | undefined; elicitations: ElicitationInteractions }): () => void }): Promise<AcpDriver> {
     logDebug('Connecting to agent', { agentName });
 
     const stream = ndJsonStream(streams.input, streams.output);
@@ -33,6 +34,7 @@ export class ConnectionManager {
     const connectionElicitations = new ElicitationRequests((id) => outgoing.has(id));
     const handlers = this.createHandlers({ agentName, agentId, elicitations: connectionElicitations });
     const elicitations = handlers.elicitations ?? connectionElicitations;
+    let stopObserving: (() => void) | undefined;
     let closed = false;
     const close = () => {
       if (closed) { return; }
@@ -40,11 +42,15 @@ export class ConnectionManager {
       try { elicitations.close(); }
       finally {
         try { outgoing.close(); handlers.close?.(); }
-        finally { onClosed?.(); }
+        finally {
+          try { stopObserving?.(); }
+          finally { onClosed?.(); }
+        }
       }
     };
     const owned = { ...handlers, elicitations, close };
     try {
+      stopObserving = options?.observeRequests({ agentName, agentId, permissions: handlers.permissionInteractions, elicitations: connectionElicitations });
       const negotiated = await negotiate(agentName, tappedStream, this.clientVersion);
       logInfo('Negotiated ACP protocol', { agentName, version: negotiated.version });
       return await (negotiated.version === 2

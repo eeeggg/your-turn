@@ -211,7 +211,7 @@ describe('SessionStartup', () => {
 
     const outcome = await startup.attempt();
 
-    expect(outcome).toEqual({ kind: 'loaded', session: manager.getSession(LAST_SESSION) });
+    expect(outcome).toEqual({ kind: 'loaded', session: manager.getSession({ configuredName: 'fake', sessionId: LAST_SESSION }) });
     expect(manager.getActiveSessionId()).toBe(LAST_SESSION);
     expect(await startup.attempt()).toBe(outcome);
     expect(fake.requests).toEqual([`session/load ${LAST_SESSION}`]);
@@ -285,7 +285,7 @@ describe('SessionStartup', () => {
       const { manager, startup, request, taken } = await seeded({ fake: fake.script });
       await request(asked);
 
-      expect(await startup.attempt()).toEqual({ kind: 'loaded', session: manager.getSession(REQUESTED_SESSION) });
+      expect(await startup.attempt()).toEqual({ kind: 'loaded', session: manager.getSession({ configuredName: 'fake', sessionId: REQUESTED_SESSION }) });
 
       expect(fake.requests).toEqual([`session/load ${REQUESTED_SESSION}`]);
       expect(await taken()).toBeUndefined();

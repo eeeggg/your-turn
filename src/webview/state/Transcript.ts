@@ -1,7 +1,6 @@
 import type {
   DiffFile,
   ExitStatus,
-  ExtensionToWebviewMessage,
   ImagePresentation,
   PlanStep,
   PlanStepStatus,
@@ -9,7 +8,8 @@ import type {
   SessionUsage,
   ToolCallContent,
   ToolCallStatus,
-  WebviewToExtensionMessage,
+WebviewToExtensionMessage,
+PresentationTarget,
 } from '@/shared/WebviewMessages';
 import type { ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
@@ -58,14 +58,13 @@ interface SettledQuestion {
   readonly open: boolean;
 }
 
-type CompactionReport = Extract<ExtensionToWebviewMessage, { type: 'compactionUpdate' | 'compactionSummaryChunk' }>;
-type SummaryChunk = Extract<CompactionReport, { type: 'compactionSummaryChunk' }>;
+type CompactionValue = null | boolean | number | string | CompactionValue[] | { [key: string]: CompactionValue };
 
 export interface Compaction {
   readonly kind: 'compaction';
   readonly compactionId: string;
   readonly status: string;
-  readonly summary: readonly SummaryChunk['content'][];
+  readonly summary: readonly CompactionValue[];
   readonly error: string | null;
   readonly open: boolean;
   readonly startedAt: number | null;
@@ -139,6 +138,7 @@ interface Terminal {
 }
 
 export interface QueuedPrompt {
+  readonly revision?: number;
   readonly id: EntryId;
   readonly text: string;
   readonly open: boolean;
@@ -146,6 +146,9 @@ export interface QueuedPrompt {
 }
 
 export interface TranscriptState {
+  readonly toolGroupOverrides: ReadonlyMap<string, boolean>;
+  readonly thoughtOverrides: ReadonlyMap<string, boolean>;
+  readonly projection: { readonly target: PresentationTarget; readonly revision: number } | null;
   readonly markdownContext: number | null;
   readonly markdownContextRequested: boolean;
   readonly markdownOrigin: string | null;
@@ -164,8 +167,6 @@ export interface TranscriptState {
   readonly currentTurn: EntryId | null;
   /** Prompts the user sent while a turn ran, oldest first; each goes to the agent when the turn before it ends. */
   readonly queued: readonly QueuedPrompt[];
-  /** Cancelled prompts, ordered with sent prompts by their cancellation IDs, without transcript entries. */
-  readonly cancelledPrompts: readonly { readonly id: EntryId; readonly text: string }[];
   /** Rises each time the view must follow the stream again: for each prompt the user sends, and on each clear. */
   readonly followRequests: number;
 }
@@ -191,6 +192,9 @@ export type TranscriptAction =
   | { type: 'queuedPromptCancelled'; id: EntryId };
 
 export const initialTranscript: TranscriptState = {
+  toolGroupOverrides: new Map(),
+  thoughtOverrides: new Map(),
+  projection: null,
   markdownContext: null,
   markdownContextRequested: false,
   markdownOrigin: null,
@@ -203,7 +207,6 @@ export const initialTranscript: TranscriptState = {
   nextId: 1,
   currentTurn: null,
   queued: [],
-  cancelledPrompts: [],
   followRequests: 0,
 };
 
@@ -217,10 +220,9 @@ export function showsEmptyState(transcript: TranscriptState, session: ActiveSess
   return session === null && transcript.entries.length === 0;
 }
 
-/** Sent, replayed and cancelled prompts, oldest first; cancellation does not put an unsent prompt in the transcript. */
+/** Sent and replayed prompts, oldest first. Unsent queue entries are not history. */
 export function promptHistory(transcript: TranscriptState): string[] {
-  return [...transcript.entries.filter((entry) => entry.kind === 'prompt'), ...transcript.cancelledPrompts]
-    .sort((a, b) => a.id - b.id).flatMap((entry) => entry.text.trim() !== '' ? [entry.text] : []);
+  return transcript.entries.flatMap((entry) => entry.kind === 'prompt' && entry.text.trim() !== '' ? [entry.text] : []);
 }
 
 /** A part is drawn only once it has something to show, so whitespace before the answer leaves no trace. */
@@ -244,7 +246,7 @@ function elapsedSeconds(start: number | null, end: number | null): number {
 export function compactionSummary(compaction: Compaction): string {
   const { status, startedAt, endedAt } = compaction;
   if (status === 'in_progress') { return 'Compacting…'; }
-  if (!terminalCompaction(status)) { return `Compaction — unknown status: ${status}`; }
+  if (!['completed', 'failed', 'cancelled'].includes(status)) { return `Compaction — unknown status: ${status}`; }
   const seconds = elapsedSeconds(startedAt, endedAt);
   return `Compaction ${status}${seconds > 0 ? ` in ${seconds}s` : ''}`;
 }
@@ -396,7 +398,6 @@ export function updateTranscript(
   action: Action,
   now: number,
   turnRunning = false,
-  loading = false,
 ): Transition<TranscriptState, WebviewToExtensionMessage> {
   switch (action.type) {
     case 'markdownImageLoad': {
@@ -407,13 +408,13 @@ export function updateTranscript(
       }) }, outgoing: [{ type: 'loadMarkdownImage', context: transcript.markdownContext, occurrence: action.occurrence }] };
     }
     case 'markdownImageMounted': {
-      if (transcript.sessionId === null || transcript.markdownImages.has(action.occurrence)) { return stateOnly(transcript); }
+      if (transcript.sessionId === null || !transcript.projection || transcript.markdownImages.has(action.occurrence)) { return stateOnly(transcript); }
       const images = new Map(transcript.markdownImages).set(action.occurrence, { source: action.source, presentation: null });
       return {
         state: { ...transcript, markdownImages: images, markdownContextRequested: true },
         outgoing: transcript.markdownContext !== null
           ? [{ type: 'resolveMarkdownImage', context: transcript.markdownContext, occurrence: action.occurrence, source: action.source }]
-          : transcript.markdownContextRequested ? [] : [{ type: 'markdownImageContext', sessionId: transcript.sessionId }],
+          : transcript.markdownContextRequested ? [] : [{ type: 'markdownImageContext', target: transcript.projection.target }],
       };
     }
     case 'markdownImageUnmounted': {
@@ -435,17 +436,6 @@ export function updateTranscript(
         source: image.source, presentation: { src: action.src, ...(action.fallback ? { fallback: action.fallback } : {}), ...(action.status ? { status: action.status } : {}) },
       }) });
     }
-    case 'questionSettled': {
-      if (loading || action.record.sessionId !== transcript.sessionId || transcript.entries.some((entry) => entry.kind === 'question'
-        ? entry.record.interactionId === action.record.interactionId
-        : entry.kind === 'turn' && entry.parts.some((part) => part.kind === 'question' && part.record.interactionId === action.record.interactionId))) {
-        return stateOnly(transcript);
-      }
-      const question: SettledQuestion = { kind: 'question', record: action.record, open: false };
-      return stateOnly(transcript.currentTurn !== null || turnRunning
-        ? inCurrentTurn(transcript, (turn) => withLastPart(turn, question, 'adding', now))
-        : appended(transcript, (id) => ({ ...question, id })));
-    }
     case 'questionRecordToggled': {
       const revise = <T extends SettledQuestion>(question: T): T => question.record.interactionId === action.interactionId && question.open !== action.open ? { ...question, open: action.open } : question;
       return stateOnly({ ...transcript, entries: transcript.entries.map((entry) => entry.kind === 'question' ? revise(entry)
@@ -464,7 +454,7 @@ export function updateTranscript(
     case 'sessionEnded':
       // Nothing can send the queued prompts now, and the transcript shows only what happened.
       return stateOnly({
-        ...appended(endTurn(transcript, now), (id) => ({ kind: 'error', id, text: action.message })),
+        ...(transcript.projection ? endTurn(transcript, now) : appended(endTurn(transcript, now), (id) => ({ kind: 'error', id, text: action.message }))),
         queued: [],
         sessionEnded: true,
       });
@@ -475,64 +465,15 @@ export function updateTranscript(
     case 'promptStart':
       return stateOnly(transcript);
     case 'promptEnd':
-      return withQueueHeadSent(endTurn(transcript, now));
+      return stateOnly(endTurn(transcript, now));
     case 'foregroundActivity':
-      return action.running ? stateOnly(transcript) : withQueueHeadSent(endTurn(transcript, now));
+      return action.running ? stateOnly(transcript) : stateOnly(endTurn(transcript, now));
     case 'loadSessionEnd': {
       const ended = endTurn(transcript, now);
       return stateOnly(action.ok ? ended : appended(ended, (id) => ({ kind: 'error', id, text: 'Failed to load session.' })));
     }
     case 'error':
       return stateOnly(appended(transcript, (id) => ({ kind: 'error', id, text: action.message || 'An error occurred' })));
-    case 'agentText':
-    case 'thoughtText':
-      return stateOnly(withAgentText(transcript, action, now));
-    case 'agentImage':
-      return stateOnly(inCurrentTurn(transcript, (turn) => withLastPart(turn, {
-        kind: 'image', messageId: action.messageId, src: action.src, ...(action.reference ? { reference: true } : {}), ...(action.fallback ? { fallback: action.fallback } : {}),
-      }, 'adding', now)));
-    case 'thoughtImage':
-      return stateOnly(inCurrentTurn(transcript, (turn) => withLastPart(turn, {
-        kind: 'thought', messageId: action.messageId, text: '', imageSrc: action.src, startedAt: now, endedAt: null, open: true,
-        ...(action.reference ? { imageReference: true } : {}),
-        ...(action.fallback ? { imageFallback: action.fallback } : {}),
-      }, 'adding', now)));
-    case 'promptImage':
-      return stateOnly(appended(endTurn(transcript, now), (id) => ({ kind: 'promptImage', id, messageId: action.messageId, src: action.src, text: '', ...(action.reference ? { reference: true } : {}), ...(action.fallback ? { fallback: action.fallback } : {}) })));
-    case 'promptText':
-      return stateOnly(withReplayedPrompt(transcript, action, now));
-    case 'agentMessage':
-      return stateOnly(transcript.entries.some((entry) => entry.kind === 'turn' && entry.parts.some((part) => part.kind === 'image' && part.messageId === action.messageId))
-        ? withAgentReplaced(transcript, action.messageId, action.text ? [{ kind: 'text', text: action.text }] : [], now)
-        : withMessageReplaced(transcript, action, now));
-    case 'agentRichMessage':
-      return stateOnly(withAgentReplaced(transcript, action.messageId, action.content, now));
-    case 'thoughtRichMessage':
-      return stateOnly(withThoughtReplaced(transcript, action.messageId, action.content, now));
-    case 'promptRichMessage':
-      return stateOnly(withPromptContentReplaced(transcript, action.messageId, action.content, now));
-    case 'thoughtMessage':
-      return stateOnly(transcript.entries.some((entry) => entry.kind === 'turn' && entry.parts.some((part) => part.kind === 'thought' && part.imageSrc !== undefined && part.messageId === action.messageId))
-        ? withThoughtReplaced(transcript, action.messageId, action.text ? [{ kind: 'text', text: action.text }] : [], now)
-        : withMessageReplaced(transcript, action, now));
-    case 'promptMessage':
-      if (transcript.entries.some((entry) => entry.kind === 'promptImage' && entry.messageId === action.messageId)) {
-        return stateOnly(withPromptContentReplaced(transcript, action.messageId, action.text ? [{ kind: 'text', text: action.text }] : [], now));
-      }
-      return stateOnly(withPromptReplaced(transcript, action, now));
-    case 'toolCall':
-      return stateOnly(withToolCallReported(transcript, action, now));
-    case 'terminal': {
-      const { text, truncated, exitStatus } = action;
-      return stateOnly({ ...transcript, terminals: new Map(transcript.terminals).set(action.terminalId, { text, truncated, exitStatus }) });
-    }
-    case 'plan':
-      return stateOnly(withPlan(transcript, { kind: 'plan', steps: action.steps }, now));
-    case 'usage':
-      return stateOnly({ ...transcript, usage: action.usage });
-    case 'compactionUpdate':
-    case 'compactionSummaryChunk':
-      return stateOnly(withCompactionReported(transcript, action, now, turnRunning, loading));
     case 'compactionToggled':
       return stateOnly(withCompaction(transcript, action.compactionId, (compaction) => compaction.open === action.open ? compaction : { ...compaction, open: action.open }) ?? transcript);
     case 'thoughtToggled':
@@ -554,16 +495,18 @@ export function updateTranscript(
         ),
       );
     case 'diffFileClicked':
-      return { state: transcript, outgoing: [{ type: 'openFile', toolCallId: action.toolCallId, file: action.file }] };
+      return { state: transcript, outgoing: transcript.projection
+        ? [{ type: 'openFile', target: transcript.projection.target, toolCallId: action.toolCallId, file: action.file }] : [] };
     case 'sendNowChosen':
       // Cancelling ends the turn, which sends the top of the queue; the queue itself stays as it is until then.
-      return !turnRunning || transcript.queued[0]?.id !== action.id
+      return !turnRunning || transcript.queued[0]?.id !== action.id || !transcript.projection
         ? stateOnly(transcript)
-        : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'cancelTurn' }] };
+        : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'queueChanged', target: transcript.projection.target, change: { kind: 'stop', id: action.id } }] };
     case 'steerNowChosen':
       return !turnRunning || transcript.queued[0]?.id !== action.id || transcript.queued[0].draft !== null
         ? stateOnly(transcript)
-        : withQueueHeadSent({ ...endTurn(transcript, now), followRequests: transcript.followRequests + 1 });
+        : { state: { ...transcript, followRequests: transcript.followRequests + 1 },
+          outgoing: transcript.projection ? [{ type: 'queueChanged', target: transcript.projection.target, change: { kind: 'steer', id: action.id } }] : [] };
     case 'queuedPromptToggled':
     case 'queuedPromptEditStarted':
     case 'queuedPromptEdited':
@@ -572,12 +515,9 @@ export function updateTranscript(
     case 'queuedPromptCancelled': {
       const prompt = transcript.queued.find((item) => item.id === action.id);
       if (!prompt) { return stateOnly(transcript); }
-      if (action.type === 'queuedPromptCancelled' || (action.type === 'queuedPromptEditSaved' && prompt.draft !== null && prompt.draft.trim() === '')) {
-        const cancelled = {
-          ...transcript, queued: transcript.queued.filter((item) => item.id !== action.id),
-          cancelledPrompts: [...transcript.cancelledPrompts, { id: transcript.nextId, text: prompt.text }], nextId: transcript.nextId + 1,
-        };
-        return turnRunning ? stateOnly(cancelled) : withQueueHeadSent(cancelled);
+      if (!transcript.projection) { return stateOnly(transcript); }
+      if (action.type === 'queuedPromptCancelled') {
+        return { state: transcript, outgoing: [{ type: 'queueChanged', target: transcript.projection.target, change: { kind: 'cancelled', id: action.id } }] };
       }
       let revised: QueuedPrompt;
       switch (action.type) {
@@ -588,234 +528,17 @@ export function updateTranscript(
         case 'queuedPromptEditDiscarded': revised = { ...prompt, draft: null }; break;
       }
       if (revised === prompt) { return stateOnly(transcript); }
+      if (action.type === 'queuedPromptToggled') { return stateOnly({ ...transcript, queued: transcript.queued.map((item) => item.id === action.id ? revised : item) }); }
+      const revision = (prompt.revision ?? 0) + 1;
+      revised = { ...revised, revision };
       const changed = { ...transcript, queued: transcript.queued.map((item) => item.id === action.id ? revised : item) };
-      return !turnRunning && (action.type === 'queuedPromptEditSaved' || action.type === 'queuedPromptEditDiscarded')
-        ? withQueueHeadSent(changed) : stateOnly(changed);
+      const kind = { queuedPromptEditStarted: 'editStarted', queuedPromptEdited: 'edited', queuedPromptEditSaved: 'editSaved', queuedPromptEditDiscarded: 'editDiscarded' } as const;
+      return { state: changed, outgoing: [{ type: 'queueChanged', target: transcript.projection.target,
+        change: action.type === 'queuedPromptEdited' ? { kind: 'edited', id: action.id, text: action.text, revision } : { kind: kind[action.type], id: action.id, revision } }] };
     }
     default:
       return stateOnly(transcript);
   }
-}
-
-/**
- * Routes each prompt the prompt box sent: to the agent and into the transcript, or into the queue while a turn runs,
- * as only one prompt may be in flight. The view follows either way.
- */
-export function withSentPrompts(
-  transcript: TranscriptState,
-  outgoing: readonly WebviewToExtensionMessage[],
-  turnRunning: boolean,
-): Transition<TranscriptState, WebviewToExtensionMessage> {
-  let state = transcript;
-  let busy = turnRunning;
-  const posted: WebviewToExtensionMessage[] = [];
-  for (const message of outgoing) {
-    if (message.type !== 'sendPrompt') {
-      posted.push(message);
-      continue;
-    }
-    const followed = { ...state, followRequests: state.followRequests + 1 };
-    if (busy || state.queued.length > 0) {
-      state = { ...followed, queued: [...followed.queued, { id: followed.nextId, text: message.text, open: false, draft: null }], nextId: followed.nextId + 1 };
-    } else {
-      state = withPrompt(followed, message.text);
-      posted.push(message);
-      busy = true;
-    }
-  }
-  return { state, outgoing: posted };
-}
-
-function withQueueHeadSent(transcript: TranscriptState): Transition<TranscriptState, WebviewToExtensionMessage> {
-  const [head, ...rest] = transcript.queued;
-  if (head?.draft !== null) {
-    return stateOnly(transcript);
-  }
-  return { state: { ...withPrompt(transcript, head.text), queued: rest }, outgoing: [{ type: 'sendPrompt', text: head.text }] };
-}
-
-function withPrompt(transcript: TranscriptState, text: string): TranscriptState {
-  return appended(withCurrent(transcript, null), (id) => ({ kind: 'prompt', id, text }));
-}
-
-function withAgentText(
-  transcript: TranscriptState,
-  { type, messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'agentText' | 'thoughtText' }>,
-  now: number,
-): TranscriptState {
-  // A thought starts on its first text, even an empty one; a message is drawn only once it has something to show.
-  if (type === 'agentText' && !text) {
-    return transcript;
-  }
-  const kind = type === 'agentText' ? 'message' : 'thought';
-  return inCurrentTurn(transcript, (turn) => {
-    const last = turn.parts.at(-1);
-    if ((last?.kind === 'message' || (last?.kind === 'thought' && last.imageSrc === undefined)) && last.kind === kind && sameMessage(last.messageId, messageId)) {
-      return withLastPart(turn, { ...last, text: last.text + text }, 'replacing', now);
-    }
-    const part: TurnPart =
-      kind === 'message' ? { kind, messageId, text } : { kind, messageId, text, startedAt: now, endedAt: null, open: true };
-    return withLastPart(turn, part, 'adding', now);
-  });
-}
-
-function withAgentReplaced(
-  transcript: TranscriptState,
-  messageId: string,
-  content: Extract<ExtensionToWebviewMessage, { type: 'agentRichMessage' }>['content'],
-  now: number,
-): TranscriptState {
-  const parts: TurnPart[] = joinedText(content).flatMap((block): TurnPart[] => block.kind === 'image'
-    ? [{ ...block, messageId }]
-    : block.text ? [{ kind: 'message', messageId, text: block.text }] : []);
-  const matches = (part: TurnPart) => (part.kind === 'message' || part.kind === 'image') && part.messageId === messageId;
-  for (let at = transcript.entries.length - 1; at >= 0; at--) {
-    const entry = transcript.entries[at];
-    if (entry?.kind !== 'turn') { continue; }
-    const first = entry.parts.findIndex(matches);
-    if (first < 0) { continue; }
-    const before = entry.parts.slice(0, first);
-    const after = entry.parts.slice(first).filter((part) => !matches(part));
-    const revision = Math.max(0, ...entry.parts.filter(matches).map((part) => part.kind === 'message' ? part.markdownRevision ?? 0 : 0)) + 1;
-    return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [...before, ...parts.map((part) => part.kind === 'message' ? { ...part, markdownRevision: revision } : part), ...after] }));
-  }
-  return parts.length ? inCurrentTurn(transcript, (turn) => parts.reduce((current, part) => withLastPart(current, part, 'adding', now), turn)) : transcript;
-}
-
-function withThoughtReplaced(
-  transcript: TranscriptState,
-  messageId: string,
-  content: Extract<ExtensionToWebviewMessage, { type: 'thoughtRichMessage' }>['content'],
-  now: number,
-): TranscriptState {
-  const parts: Thought[] = joinedText(content).flatMap((block): Thought[] => block.kind === 'image'
-    ? [{ kind: 'thought', messageId, text: '', imageSrc: block.src, ...(block.reference ? { imageReference: true } : {}), ...(block.fallback ? { imageFallback: block.fallback } : {}), startedAt: now, endedAt: null, open: true }]
-    : block.text ? [{ kind: 'thought', messageId, text: block.text, startedAt: now, endedAt: null, open: true }] : []);
-  const matches = (part: TurnPart) => part.kind === 'thought' && part.messageId === messageId;
-  for (let at = transcript.entries.length - 1; at >= 0; at--) {
-    const entry = transcript.entries[at];
-    if (entry?.kind !== 'turn') { continue; }
-    const first = entry.parts.findIndex(matches);
-    if (first < 0) { continue; }
-    const revision = Math.max(0, ...entry.parts.filter(matches).map((part) => part.kind === 'thought' ? part.markdownRevision ?? 0 : 0)) + 1;
-    return withTurn(transcript, entry.id, (turn) => ({ ...turn, parts: [
-      ...entry.parts.slice(0, first), ...parts.map((part) => ({ ...part, markdownRevision: revision })), ...entry.parts.slice(first).filter((part) => !matches(part)),
-    ] }));
-  }
-  return parts.length ? inCurrentTurn(transcript, (turn) => parts.reduce((current, part) => withLastPart(current, part, 'adding', now), turn)) : transcript;
-}
-
-function withPromptContentReplaced(
-  transcript: TranscriptState,
-  messageId: string,
-  content: Extract<ExtensionToWebviewMessage, { type: 'promptRichMessage' }>['content'],
-  now: number,
-): TranscriptState {
-  const matches = (entry: TranscriptEntry) => (entry.kind === 'prompt' || entry.kind === 'promptImage') && entry.messageId === messageId;
-  const first = transcript.entries.findIndex(matches);
-  const before = first < 0 ? endTurn(transcript, now) : { ...transcript, entries: transcript.entries.slice(0, first) };
-  const filled = joinedText(content).reduce((state, block) => appended(state, (id) => block.kind === 'image'
-    ? { ...block, kind: 'promptImage', id, messageId, text: '' }
-    : { kind: 'prompt', id, messageId, text: block.text }), before);
-  return first < 0 ? filled : { ...filled, entries: [...filled.entries, ...transcript.entries.slice(first).filter((entry) => !matches(entry))] };
-}
-
-function joinedText(content: Extract<ExtensionToWebviewMessage, { type: 'agentRichMessage' }>['content']) {
-  const joined: typeof content = [];
-  for (const block of content) {
-    const last = joined.at(-1);
-    if (block.kind === 'text' && last?.kind === 'text') {
-      joined[joined.length - 1] = { kind: 'text', text: last.text + block.text };
-    } else {
-      joined.push(block);
-    }
-  }
-  return joined;
-}
-
-/** Only a load replays prompts; each one ends the turn before it. */
-function withReplayedPrompt(
-  transcript: TranscriptState,
-  { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptText' }>,
-  now: number,
-): TranscriptState {
-  const ended = endTurn(transcript, now);
-  const last = ended.entries.at(-1);
-  return last?.kind === 'prompt' && sameMessage(last.messageId ?? null, messageId)
-    ? replaced(ended, { ...last, text: last.text + text })
-    : appended(ended, (id) => ({ kind: 'prompt', id, ...(messageId !== null ? { messageId } : {}), text }));
-}
-
-/**
- * The latest part of the kind with the ID takes the whole text, in whichever turn. Without one, the text goes into the
- * current turn as streamed text would, unless it is empty, as there is nothing to clear.
- */
-function withMessageReplaced(
-  transcript: TranscriptState,
-  { type, messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'agentMessage' | 'thoughtMessage' }>,
-  now: number,
-): TranscriptState {
-  const kind = type === 'agentMessage' ? 'message' : 'thought';
-  for (let at = transcript.entries.length - 1; at >= 0; at--) {
-    const entry = transcript.entries[at];
-    if (entry?.kind !== 'turn') {
-      continue;
-    }
-    const index = lastPartIndex(entry, (part) => (part.kind === 'message' || part.kind === 'thought') && part.kind === kind && part.messageId === messageId);
-    if (index !== -1) {
-      return withTurn(transcript, entry.id, (turn) =>
-        withPart(turn, index, (part) => ((part.kind === 'message' || part.kind === 'thought')
-          ? { ...part, text, ...(text ? { markdownRevision: (part.markdownRevision ?? 0) + 1 } : {}) } : part)),
-      );
-    }
-  }
-  return text ? withAgentText(transcript, { type: kind === 'message' ? 'agentText' : 'thoughtText', messageId, text }, now) : transcript;
-}
-
-/** The latest prompt with the ID takes the whole text; without one, the prompt is replayed as a new one, unless it is empty, as for a message. */
-function withPromptReplaced(
-  transcript: TranscriptState,
-  { messageId, text }: Extract<ExtensionToWebviewMessage, { type: 'promptMessage' }>,
-  now: number,
-): TranscriptState {
-  for (let at = transcript.entries.length - 1; at >= 0; at--) {
-    const entry = transcript.entries[at];
-    if (entry?.kind === 'prompt' && entry.messageId === messageId) {
-      return entry.text === text ? transcript : replaced(transcript, { ...entry, text });
-    }
-  }
-  return text ? appended(endTurn(transcript, now), (id) => ({ kind: 'prompt', id, messageId, text })) : transcript;
-}
-
-function lastPartIndex(turn: Turn, matches: (part: TurnPart) => boolean): PartIndex {
-  for (let at = turn.parts.length - 1; at >= 0; at--) {
-    const part = turn.parts[at];
-    if (part && matches(part)) {
-      return at;
-    }
-  }
-  return -1;
-}
-
-/** A tool call already shown is revised where it is, in whichever turn; a new one goes into the current turn. */
-function withToolCallReported(
-  transcript: TranscriptState,
-  reported: Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>,
-  now: number,
-): TranscriptState {
-  const { toolCallId } = reported;
-  const holder = turnWithToolCall(transcript, toolCallId);
-  if (holder) {
-    return withTurn(transcript, holder.id, (turn) => withToolCall(turn, toolCallId, (call) => revised(call, reported)));
-  }
-  const status = reported.status ?? 'pending';
-  const call: ToolCall = { toolCallId, title: reported.title ?? '', status, content: reported.content ?? [], open: status === 'failed' };
-  return inCurrentTurn(transcript, (turn) => {
-    const last = turn.parts.at(-1);
-    return last?.kind === 'toolCalls'
-      ? withLastPart(turn, { ...last, toolCalls: [...last.toolCalls, call] }, 'replacing', now)
-      : withLastPart(turn, { kind: 'toolCalls', toolCalls: [call], collapsed: false }, 'adding', now);
-  });
 }
 
 /** The first report fixes placement; reports for that ID revise it across turn boundaries. */
@@ -835,81 +558,8 @@ function withCompaction(transcript: TranscriptState, compactionId: string, chang
   return null;
 }
 
-function withCompactionReported(transcript: TranscriptState, report: CompactionReport, now: number, turnRunning: boolean, loading: boolean): TranscriptState {
-  const revised = withCompaction(transcript, report.compactionId, (compaction) => revisedCompaction(compaction, report, now, loading));
-  if (revised) { return revised; }
-  const compaction = revisedCompaction({
-    kind: 'compaction', compactionId: report.compactionId, status: 'in_progress', summary: [], error: null,
-    open: true, startedAt: null, endedAt: null, timingAllowed: !loading,
-  }, report, now, loading);
-  return transcript.currentTurn !== null || turnRunning
-    ? inCurrentTurn(transcript, (turn) => withLastPart(turn, compaction, 'adding', now))
-    : appended(transcript, (id) => ({ ...compaction, id }));
-}
-
-function terminalCompaction(status: string): boolean {
-  return status === 'completed' || status === 'failed' || status === 'cancelled';
-}
-
-function revisedCompaction(compaction: Compaction, report: CompactionReport, now: number, loading: boolean): Compaction {
-  const status = report.type === 'compactionUpdate' ? report.status : compaction.status;
-  const changedStatus = status !== compaction.status;
-  const terminal = terminalCompaction(status);
-  const startedAt = compaction.startedAt ?? (!loading && compaction.timingAllowed && status === 'in_progress' ? now : null);
-  const endedAt = compaction.endedAt ?? (!loading && startedAt !== null && terminal ? now : null);
-  const presentation = {
-    status, startedAt, endedAt,
-    timingAllowed: compaction.timingAllowed && !loading && !terminal,
-    open: changedStatus && status === 'completed' ? false : changedStatus && (status === 'failed' || status === 'cancelled') ? true : compaction.open,
-  };
-  return report.type === 'compactionSummaryChunk'
-    ? { ...compaction, ...presentation, summary: [...compaction.summary, report.content] }
-    : {
-      ...compaction,
-      ...presentation,
-      summary: report.summary.present ? report.summary.value ?? [] : compaction.summary,
-      error: report.error.present ? report.error.value : compaction.error,
-    };
-}
-
-function withPlan(transcript: TranscriptState, plan: Plan, now: number): TranscriptState {
-  return inCurrentTurn(transcript, (turn) => {
-    const index = turn.parts.findIndex((part) => part.kind === 'plan');
-    return index === -1 ? withLastPart(turn, plan, 'adding', now) : withPart(turn, index, () => plan);
-  });
-}
-
-/** What the report leaves out, or gives as empty text, stays as it was. A tool call opens when it fails, once; closing it again is up to the user. */
-function revised(call: ToolCall, reported: Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>): ToolCall {
-  const status = reported.status ?? call.status;
-  return {
-    ...call,
-    title: reported.title || call.title,
-    status,
-    content: reported.content ?? call.content,
-    ...(reported.content ? { markdownRevision: (call.markdownRevision ?? 0) + 1 } : {}),
-    open: call.open || (status === 'failed' && call.status !== 'failed'),
-  };
-}
-
-function sameMessage(a: string | null, b: string | null): boolean {
-  return a === null || b === null || a === b;
-}
-
 function finished(thought: Thought, now: number): Thought {
   return thought.endedAt === null ? { ...thought, endedAt: now } : thought;
-}
-
-/**
- * Puts `part` at the end of the turn, replacing the last part it continues or adding it after.
- * Once something shown follows a thought still running, the thought finishes and closes.
- */
-function withLastPart(turn: Turn, part: TurnPart, mode: 'replacing' | 'adding', now: number): Turn {
-  const before = mode === 'replacing' ? turn.parts.slice(0, -1) : turn.parts;
-  const settled = partShown(part)
-    ? before.map((earlier) => (earlier.kind === 'thought' && earlier.endedAt === null ? { ...finished(earlier, now), open: false } : earlier))
-    : before;
-  return { ...turn, parts: [...settled, part] };
 }
 
 /** Finishes the current turn's thoughts and collapses its long groups of tool calls; the next work starts a new turn. */
@@ -933,7 +583,7 @@ function endedPart(part: TurnPart, now: number): TurnPart {
 
 function cleared(transcript: TranscriptState, sessionId: string | null): TranscriptState {
   const empty =
-    !transcript.markdownContextRequested && transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0 && transcript.cancelledPrompts.length === 0;
+    !transcript.markdownContextRequested && transcript.entries.length === 0 && transcript.terminals.size === 0 && transcript.usage === null && transcript.currentTurn === null && transcript.queued.length === 0;
   return empty && transcript.sessionId === sessionId
     ? transcript
     : {
@@ -949,7 +599,6 @@ function cleared(transcript: TranscriptState, sessionId: string | null): Transcr
       usage: null,
       currentTurn: null,
       queued: [],
-      cancelledPrompts: [],
       followRequests: transcript.followRequests + 1,
     };
 }
@@ -973,12 +622,6 @@ function findEntry(transcript: TranscriptState, id: EntryId): TranscriptEntry | 
 function findTurn(transcript: TranscriptState, id: EntryId): Turn | undefined {
   const entry = findEntry(transcript, id);
   return entry?.kind === 'turn' ? entry : undefined;
-}
-
-function turnWithToolCall(transcript: TranscriptState, toolCallId: string): Turn | undefined {
-  return transcript.entries.find(
-    (entry): entry is Turn => entry.kind === 'turn' && groupIndex(entry, toolCallId) !== -1,
-  );
 }
 
 function groupIndex(turn: Turn, toolCallId: string): PartIndex {
@@ -1017,16 +660,6 @@ function withToolCall(turn: Turn, toolCallId: string, change: (call: ToolCall) =
     const next = change(call);
     return next === call ? group : { ...group, toolCalls: group.toolCalls.map((candidate) => (candidate === call ? next : candidate)) };
   });
-}
-
-/** Applies `change` to the current turn, starting one if the agent's work has none to go into yet. */
-function inCurrentTurn(transcript: TranscriptState, change: (turn: Turn) => Turn): TranscriptState {
-  if (transcript.currentTurn !== null) {
-    return withTurn(transcript, transcript.currentTurn, change);
-  }
-  const started = appended(transcript, (id) => ({ kind: 'turn', id, parts: [] }));
-  const id = started.nextId - 1;
-  return withTurn({ ...started, currentTurn: id }, id, change);
 }
 
 function stateOnly(transcript: TranscriptState): Transition<TranscriptState, WebviewToExtensionMessage> {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SlashCommand } from '@/shared/WebviewMessages';
-import { answer, connect, loadChatPage, replayed, type ChatPage } from '@tests/webview/chatPage';
+import { answer, connect, loadChatPage as loadPage, replayed, type ChatPage } from '@tests/webview/chatPage';
+
+const loadChatPage = () => loadPage({ retained: true });
 
 let page: ChatPage;
 
@@ -32,9 +34,14 @@ describe('sending prompts', () => {
     page.takePosted();
 
     page.typePrompt('  hello  ');
+    const target = page.target();
     page.pressKey('Enter');
 
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'hello' }]);
+    expect(page.takeComposerEdits()).toEqual([
+      { type: 'composerEdited', target, revision: 1, text: '  hello  ' },
+      { type: 'composerEdited', target, revision: 2, text: '' },
+    ]);
     expect(userMessages()).toEqual(['hello']);
     expect(promptInput().value).toBe('');
   });
@@ -81,12 +88,14 @@ describe('sending prompts', () => {
     page.takePosted();
 
     page.typePrompt('follow-up');
+    const target = page.target();
     page.pressKey('Enter');
-    expect(page.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'follow-up' }]);
+    expect(userMessages()).toEqual([]);
     expect(promptInput().value).toBe('');
 
     page.send({ type: 'promptEnd' });
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }, { type: 'queuedPrompts', count: 0 }]);
+    expect(page.takePosted()).toEqual([]);
     expect(userMessages()).toEqual(['follow-up']);
   });
 });
@@ -123,8 +132,9 @@ describe('when the prompt box can be used', () => {
 
     page.send({ type: 'loadSessionEnd', ok: true });
     expect(usable()).toBe(true);
+    const target = page.target();
     page.pressKey('Enter');
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'hello' }]);
   });
 });
 
@@ -186,9 +196,10 @@ describe('slash commands', () => {
     page.takePosted();
 
     page.typePrompt('/in');
+    const target = page.target();
     page.pressKey('Enter');
 
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: '/init' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: '/init' }]);
     expect(popupOpen()).toBe(false);
   });
 
@@ -224,9 +235,10 @@ describe('slash commands', () => {
     page.takePosted();
 
     page.typePrompt('/');
+    const target = page.target();
     (popupItems()[0] as HTMLElement).click();
 
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: '/init' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: '/init' }]);
   });
 
   it('closes on Escape without sending', () => {

@@ -68,8 +68,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   }
 
   post(message: ExtensionToWebviewMessage): void {
-    if (message.type === 'state') {
-      this.title = message.session ? `Chat ${message.session.agentName}` : 'Chat';
+    if (message.type === 'state' || message.type === 'viewSnapshot') {
+      const session = message.type === 'viewSnapshot' ? message.state.session : message.session;
+      this.title = session ? `Chat ${session.agentName}` : 'Chat';
       if (this.view) { this.view.title = this.title; }
     }
     if (this.view) {

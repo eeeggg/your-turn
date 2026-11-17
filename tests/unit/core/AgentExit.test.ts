@@ -1,7 +1,6 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { methods, RequestError } from '@agentclientprotocol/sdk';
-import { AgentTerminals } from '@/core/AgentTerminals';
 import { ChatViewController } from '@/core/ChatViewController';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionManager } from '@/core/SessionManager';
@@ -53,19 +52,15 @@ function setup(controlledPrompts = false) {
   const messages: ExtensionToWebviewMessage[] = [];
   const toExtension = (message: WebviewToExtensionMessage) => setImmediate(() => void controller.handleMessage(message));
   const store = createStore(initialState, update, toExtension, () => 0);
-  const terminals = new AgentTerminals({ open: () => ({ write: () => {}, show: () => {} }) });
-  onTestFinished(async () => { await terminals.dispose(); });
   const controller = new ChatViewController(manager, {
     post: (message) => { messages.push(message); store.dispatch(message); },
     executeCommand: async (...args) => { turnInProgress.push(args[2]); },
     showsToolCallDiffs: () => false,
     visible: true, reveal: async () => {}, showInformationMessage: async () => undefined,
-  }, unusedEditor, terminals);
+  }, unusedEditor);
   onTestFinished(async () => { updates.dispose(); await controller.dispose(); });
   updates.addListener((delivery) => controller.handleSessionUpdate(delivery));
-  updates.addListener(({ input }) => terminals.handleSessionUpdate(input.origin.identity.sessionId, input.update));
   manager.on('session-removed', ({ sessionId }) => {
-    terminals.endSession(sessionId);
     controller.notifySessionRemoved(sessionId);
   });
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
@@ -97,20 +92,22 @@ describe('runtime prompt queue wiring', () => {
     const { manager, store, controller, prompts, replies, messages, prompt, nextPrompt, stateChanged, summary } = setup(true);
     await controller.handleMessage({ type: 'ready' });
     const session = await manager.connectToAgent('fake');
+    const completed = (message: ExtensionToWebviewMessage) => message.type === 'promptEnd' || message.type === 'foregroundActivity' && !message.running;
     const firstSent = nextPrompt();
     prompt('first');
     await firstSent;
     prompt('steer');
     prompt('second');
     prompt('third');
+    await stateChanged(() => store.getSnapshot().transcript.queued.length === 3);
     const head = store.getSnapshot().transcript.queued[0];
     if (!head) { throw new Error('Missing steering prompt'); }
     const steeringSent = nextPrompt();
     store.dispatch({ type: 'steerNowChosen', id: head.id });
     await steeringSent;
     expect(prompts).toEqual(['first', 'steer']);
-    manager.applyForegroundState(session.sessionId, 'running');
-    manager.applyForegroundState(session.sessionId, 'idle');
+    manager.applyForegroundState({ configuredName: session.agentName, sessionId: session.sessionId }, 'running');
+    manager.applyForegroundState({ configuredName: session.agentName, sessionId: session.sessionId }, 'idle');
     expect(store.getSnapshot().transcript.queued.map((queued) => queued.text)).toEqual(['second', 'third']);
     expect(messages.filter((message) => message.type === 'promptEnd')).toEqual([]);
 
@@ -119,25 +116,26 @@ describe('runtime prompt queue wiring', () => {
     replies[1]?.reject(RequestError.internalError(undefined, 'Steering refused'));
     await secondSent;
     expect(prompts).toEqual(['first', 'steer', 'second']);
-    const completion = messages.findIndex((message) => message.type === 'promptEnd');
-    const error = messages.findIndex((message) => message.type === 'error');
+    const completion = messages.findIndex(completed);
+    const error = messages.findIndex((_, index) => messages.slice(0, index + 1)
+      .reduce((state, message) => update(state, message, 0).state, initialState).transcript.entries.some((entry) => entry.kind === 'error'));
     expect(error).toBeGreaterThan(-1);
     expect(completion).toBeGreaterThan(error);
-    expect(messages.filter((message) => message.type === 'promptEnd')).toHaveLength(1);
+    expect(messages.filter(completed)).toHaveLength(1);
     expect(summary()).toEqual(['prompt: first', 'prompt: steer', 'error: Internal error: Steering refused', 'prompt: second']);
 
-    manager.applyForegroundState(session.sessionId, 'idle');
-    manager.applyForegroundState(session.sessionId, 'idle');
+    manager.applyForegroundState({ configuredName: session.agentName, sessionId: session.sessionId }, 'idle');
+    manager.applyForegroundState({ configuredName: session.agentName, sessionId: session.sessionId }, 'idle');
     expect(store.getSnapshot().transcript.queued.map((queued) => queued.text)).toEqual(['third']);
     const thirdSent = nextPrompt();
     replies[2]?.resolve();
     await thirdSent;
     expect(prompts).toEqual(['first', 'steer', 'second', 'third']);
-    expect(messages.filter((message) => message.type === 'promptEnd')).toHaveLength(2);
+    expect(messages.filter(completed)).toHaveLength(2);
     const finished = stateChanged(() => !store.getSnapshot().activeSession?.turnRunning);
     replies[3]?.resolve();
     await finished;
-    expect(messages.filter((message) => message.type === 'promptEnd')).toHaveLength(3);
+    expect(messages.filter(completed)).toHaveLength(3);
     expect(store.getSnapshot().transcript.queued).toEqual([]);
     expect(manager.resolutionBlocked()).toBe(false);
   });
