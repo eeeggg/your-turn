@@ -1,6 +1,6 @@
 import type { ElicitationInteraction, ElicitationResponse, ElicitationResponseResult, ElicitationValue, PermissionRequest } from '@/core/acp/AcpDriver';
 import type { ElicitationInteractions, PermissionInteractions } from '@/core/ClientHandlers';
-import type { SessionIdentity } from '@/core/SessionUpdateHandler';
+import type { SessionIdentity } from '@/core/sessions/UpdateHandler';
 
 export interface RetainedQuestion {
   readonly agentName: string;

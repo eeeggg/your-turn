@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initialContent, updateContent } from '@/core/SessionContent';
+import { initialContent, updateContent } from '@/core/sessions/Content';
 
 describe('retained session content', () => {
   it('replaces replayed rich prompts and thoughts without losing surrounding content', () => {

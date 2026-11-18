@@ -12,13 +12,13 @@ import {
   type AuthMethod,
 } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { Reviews } from '@/core/review/Reviews';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import {
   AuthenticationCancelled,
   SessionManager,
-} from '@/core/SessionManager';
+} from '@/core/sessions/Manager';
 import {
   fakeAgent,
   fakeV2Agent,
@@ -40,7 +40,7 @@ import {
   setup,
   sessionAgent,
   promptTarget,
-} from '@tests/unit/core/SessionManagerTestSupport';
+} from '@tests/unit/core/sessions/SessionManagerTestSupport';
 
 const LISTED_SESSION = '5c0d51df-76e9-4ea6-b54c-c75c6afae821';
 const SECOND_LISTED_SESSION = '40972ed1-a6f0-4221-a351-1cdaf335d338';
@@ -1403,7 +1403,7 @@ describe('SessionManager', () => {
     it('drops a session the agent no longer has from the chat view, keeping its reference', async () => {
       const { manager, references, reference, workspace, takeEvents } = setup({ fake: replayingAgent() });
       await references.used(address('gone'));
-      let load: import('@/core/SessionUpdateHandler').SessionLoad | undefined;
+      let load: import('@/core/sessions/UpdateHandler').SessionLoad | undefined;
       manager.once('session-load-start', (started) => { load = started; });
 
       await expect(manager.loadSession('fake', 'gone')).rejects.toThrow(UnknownSession);

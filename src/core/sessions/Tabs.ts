@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { renamesBetween, type AgentConfigEntry } from '@/core/AgentManager';
 import { Writes, type SessionAddress, type SessionReferences, type WorkspaceState, type WorkspaceTarget } from '@/core/PersistedState';
-import type { SessionEnvironment, SessionInfo } from '@/core/SessionManager';
+import type { SessionEnvironment, SessionInfo } from '@/core/sessions/Manager';
 
 export type TabReference = Pick<SessionInfo, 'sessionId' | 'agentName' | 'agentDisplayName' | 'cwd' | 'title'>;
 

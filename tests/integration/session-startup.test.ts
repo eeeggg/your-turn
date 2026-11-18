@@ -11,9 +11,9 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { SessionReferences, StartupRequests, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionStartup, type StartupOutcome } from '@/core/SessionStartup';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionStartup, type StartupOutcome } from '@/core/sessions/Startup';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { cleanup } from '@tests/integration/cleanup';
 
 function memoryStore(): KeyValueStore {

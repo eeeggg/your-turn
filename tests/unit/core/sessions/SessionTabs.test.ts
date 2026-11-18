@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SessionTabs, type TabReference } from '@/core/SessionTabs';
+import { SessionTabs, type TabReference } from '@/core/sessions/Tabs';
 import { SessionReferences, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 
 const FIRST_SESSION_ID = '2779b18b-8433-482d-b740-376fd1a5c020';

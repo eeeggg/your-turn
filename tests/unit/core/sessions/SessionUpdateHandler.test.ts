@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
-import { SessionUpdateHandler, type SessionDelivery } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler, type SessionDelivery } from '@/core/sessions/UpdateHandler';
 
 const SESSION_ID = 'f46de271-4614-4bbf-a2cd-c6ea2160a19f';
 const OTHER_SESSION_ID = 'ebc4bda3-f73e-41fc-bf94-b3ebd28d2177';

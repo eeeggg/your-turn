@@ -23,18 +23,18 @@ import type {
   ToolCallContent as WebviewToolCallContent,
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
-import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/SessionManager';
-import type { SessionStateView } from '@/core/SessionStates';
-import type { SessionDelivery, SessionLoad, SessionIdentity } from '@/core/SessionUpdateHandler';
+import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/sessions/Manager';
+import type { SessionStateView } from '@/core/sessions/States';
+import type { SessionDelivery, SessionLoad, SessionIdentity } from '@/core/sessions/UpdateHandler';
 import type { CommandSource } from '@/core/AgentTerminals';
 import type { ShownContent } from '@/core/CommandOutput';
 import { logDebug, logError, logInfo, messageOf } from '@/core/Log';
 import { openReportedChanges, openReportedFile, type FileEditor } from '@/core/ReportedFiles';
 import type { DiffFile } from '@/core/ToolCallDiffs';
 import type { Commands, Window } from '@/core/VsCodeApi';
-import type { RetainedQuestion, SettledQuestion } from '@/core/SessionInteractions';
-import { SessionTabs } from '@/core/SessionTabs';
-import type { SessionCommands } from '@/core/SessionCommands';
+import type { RetainedQuestion, SettledQuestion } from '@/core/sessions/Interactions';
+import { SessionTabs } from '@/core/sessions/Tabs';
+import type { SessionCommands } from '@/core/sessions/Commands';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<

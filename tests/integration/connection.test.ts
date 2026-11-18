@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import type { AcpDriver } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, type AgentProcess } from '@/core/AgentManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled, type TrafficDirection } from '@/core/Traffic';
 import { setLogSink } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';

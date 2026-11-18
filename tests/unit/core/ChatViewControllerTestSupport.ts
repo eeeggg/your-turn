@@ -1,16 +1,16 @@
 import { expect, onTestFinished, vi } from 'vitest';
 import type { ImageNetwork } from '@/core/MarkdownImageNetwork';
 import type { ConfigOption, ForegroundState, SessionUpdate } from '@/core/acp/AcpDriver';
-import { SessionStates } from '@/core/SessionStates';
-import { SessionInteractions } from '@/core/SessionInteractions';
+import { SessionStates } from '@/core/sessions/States';
+import { SessionInteractions } from '@/core/sessions/Interactions';
 import {
   ChatViewController,
   type ChatSessions,
   type ChatViewEnvironment
 } from '@/core/ChatViewController';
 import type { FileEditor } from '@/core/ReportedFiles';
-import type { SessionManager, SessionInfo } from '@/core/SessionManager';
-import type { SessionDelivery, SessionLoad } from '@/core/SessionUpdateHandler';
+import type { SessionManager, SessionInfo } from '@/core/sessions/Manager';
+import type { SessionDelivery, SessionLoad } from '@/core/sessions/UpdateHandler';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { initialState, update } from '@/webview/state/RootState';
 

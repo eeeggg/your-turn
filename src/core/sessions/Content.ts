@@ -1,6 +1,6 @@
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import type { ShownContent } from '@/core/CommandOutput';
-import type { SettledQuestion } from '@/core/SessionInteractions';
+import type { SettledQuestion } from '@/core/sessions/Interactions';
 
 interface Message {
   readonly kind: 'message';

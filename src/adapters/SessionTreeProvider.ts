@@ -7,7 +7,7 @@ import {
 } from '@/core/OtherWorkspaces';
 import type { SessionAddress, SessionReferences } from '@/core/PersistedState';
 import type { WorkspaceOpening } from '@/core/WorkspaceOpening';
-import type { AgentSessions, SessionList, SessionRow } from '@/core/SessionList';
+import type { AgentSessions, SessionList, SessionRow } from '@/core/sessions/List';
 
 /** Tier 1: a configured agent, expandable to its session list. */
 class AgentTreeItem extends vscode.TreeItem {

@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { join } from 'node:path';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
-import type { AgentSessions } from '@/core/SessionList';
+import type { AgentSessions } from '@/core/sessions/List';
 import type { ExtensionTestApi } from '@/extension';
 import { cleanup } from '@tests/integration/cleanup';
 

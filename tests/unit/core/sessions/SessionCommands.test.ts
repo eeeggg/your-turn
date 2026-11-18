@@ -10,11 +10,11 @@ import {
   type KeyValueStore,
   type SessionAddress
 } from '@/core/PersistedState';
-import { SessionCommands } from '@/core/SessionCommands';
-import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
-import { SessionStartup } from '@/core/SessionStartup';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { SessionTabs } from '@/core/SessionTabs';
+import { SessionCommands } from '@/core/sessions/Commands';
+import { SessionManager, type SessionEnvironment } from '@/core/sessions/Manager';
+import { SessionStartup } from '@/core/sessions/Startup';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
+import { SessionTabs } from '@/core/sessions/Tabs';
 import type { ReviewDecision, ReviewDecisionResult } from '@/core/review/Reviews';
 import { ProgressLocation } from '@/core/VsCodeApi';
 import {

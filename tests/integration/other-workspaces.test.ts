@@ -7,9 +7,9 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { SessionReferences, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 import { WorkspaceState } from '@/core/PersistedState';
-import { SessionList, type AgentSessions } from '@/core/SessionList';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionList, type AgentSessions } from '@/core/sessions/List';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { cleanup } from '@tests/integration/cleanup';
 
 function memoryStore(): KeyValueStore {

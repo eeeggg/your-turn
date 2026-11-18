@@ -8,9 +8,9 @@ export interface ActiveSession {
   readonly title: string | null;
   readonly cwd: string;
   readonly commands: readonly SlashCommand[];
-  /** From the webview posting a prompt, or the extension's `promptStart`, to `promptEnd`. */
+  /** Projected activity, updated optimistically when the webview posts a prompt. */
   readonly turnRunning: boolean;
-  /** From `loadSessionStart` to `loadSessionEnd`, while the agent replays the transcript. */
+  /** Projected Load state; remains true until the committed transcript is delivered. */
   readonly loading: boolean;
 }
 
@@ -67,7 +67,7 @@ export function updateActiveSession(
   }
 }
 
-/** A posted prompt starts its turn at once, before its `promptStart` arrives, so the next prompt waits in the queue. */
+/** Show activity immediately after posting; runtime owns prompt admission and queue release. */
 export function withPromptsPosted(session: ActiveSession | null, outgoing: readonly WebviewToExtensionMessage[]): ActiveSession | null {
   return outgoing.some((message) => message.type === 'sendPrompt') ? withChanges(session, { turnRunning: true }) : session;
 }

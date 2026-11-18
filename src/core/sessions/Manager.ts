@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { SessionStates, type SessionStateView, type QueueChange } from '@/core/SessionStates';
-import { SessionInteractions } from '@/core/SessionInteractions';
+import { SessionStates, type SessionStateView, type QueueChange } from '@/core/sessions/States';
+import { SessionInteractions } from '@/core/sessions/Interactions';
 import type { ShownDiffs } from '@/core/ToolCallDiffs';
 import type { TerminalDisplays, CommandSource } from '@/core/AgentTerminals';
 
@@ -23,7 +23,7 @@ import {
   type SlashCommand,
 } from '@/core/acp/AcpDriver';
 import type { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler, type QualifiedSessionUpdate, type SessionIdentity, type SessionOrigin, type SessionRegistration, type SessionLoad } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler, type QualifiedSessionUpdate, type SessionIdentity, type SessionOrigin, type SessionRegistration, type SessionLoad } from '@/core/sessions/UpdateHandler';
 import {
   commandNotFound,
   renamesBetween,

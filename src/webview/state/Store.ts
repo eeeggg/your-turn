@@ -5,9 +5,8 @@ export interface Transition<S, O> {
 }
 
 /**
- * The webview's state, changed only by dispatching actions through a pure
- * `update`. `subscribe` and `getSnapshot` are the contract React's
- * `useSyncExternalStore` takes.
+ * The webview's state, changed only by dispatching actions through a pure `update`. `subscribe` and
+ * `getSnapshot` are the contract React's `useSyncExternalStore` takes.
  */
 export interface Store<S, A> {
   subscribe: (onStoreChange: () => void) => () => void;

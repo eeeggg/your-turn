@@ -1,5 +1,5 @@
 import type { SessionReference } from '@/core/PersistedState';
-import { relativeTime, UNTITLED } from '@/core/SessionList';
+import { relativeTime, UNTITLED } from '@/core/sessions/List';
 
 /** A workspace other windows used sessions in, as the Agents view's Other Workspaces mode lists it. */
 export interface OtherWorkspace {

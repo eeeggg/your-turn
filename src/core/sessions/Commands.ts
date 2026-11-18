@@ -1,14 +1,14 @@
 import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { ChatViewController } from '@/core/ChatViewController';
 import { logError, messageOf } from '@/core/Log';
-import type { SessionManager } from '@/core/SessionManager';
+import type { SessionManager } from '@/core/sessions/Manager';
 import type { SessionAddress } from '@/core/PersistedState';
 import {
   openingFailure,
   type OpeningFailure,
   type SessionStartup,
   type StartupOutcome
-} from '@/core/SessionStartup';
+} from '@/core/sessions/Startup';
 import { ProgressLocation, QuickPickItemKind, type Commands, type QuickPickItem, type Window } from '@/core/VsCodeApi';
 
 /** What commands need from the chat view. */

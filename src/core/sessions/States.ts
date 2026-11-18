@@ -8,13 +8,13 @@ import {
   endContentTurn,
   withCleanedToolContent,
   type SessionContent
-} from '@/core/SessionContent';
+} from '@/core/sessions/Content';
 import { cleaned, type ShownContent } from '@/core/CommandOutput';
 import { logError } from '@/core/Log';
 import { ToolCallDiffs, type ShownDiffs } from '@/core/ToolCallDiffs';
 import { AgentTerminals, type TerminalDisplays, type CommandSource } from '@/core/AgentTerminals';
-import type { SessionIdentity, SessionRegistration, SessionLoad, SessionOrigin } from '@/core/SessionUpdateHandler';
-import type { SettledQuestion } from '@/core/SessionInteractions';
+import type { SessionIdentity, SessionRegistration, SessionLoad, SessionOrigin } from '@/core/sessions/UpdateHandler';
+import type { SettledQuestion } from '@/core/sessions/Interactions';
 
 type Usage = Omit<Extract<SessionUpdate, { kind: 'usage' }>, 'kind'>;
 

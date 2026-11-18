@@ -9,10 +9,10 @@ import {
   type SessionAddress,
   type WorkspaceTarget
 } from '@/core/PersistedState';
-import { SessionList, type AgentSessions } from '@/core/SessionList';
-import { SessionManager, type AuthPrompt } from '@/core/SessionManager';
-import { SessionTabs } from '@/core/SessionTabs';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionList, type AgentSessions } from '@/core/sessions/List';
+import { SessionManager, type AuthPrompt } from '@/core/sessions/Manager';
+import { SessionTabs } from '@/core/sessions/Tabs';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import {
   fakeAgent,
   InProcessAgents,

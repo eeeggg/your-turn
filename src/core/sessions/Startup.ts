@@ -1,8 +1,8 @@
 import { UnknownSession } from '@/core/acp/AcpDriver';
 import { messageOf } from '@/core/Log';
 import type { SessionAddress, StartupRequests, WorkspaceState } from '@/core/PersistedState';
-import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/SessionManager';
-import type { SessionTabs } from '@/core/SessionTabs';
+import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/sessions/Manager';
+import type { SessionTabs } from '@/core/sessions/Tabs';
 
 /** Why a session did not open, and what the user is told; its reference stays either way. */
 export interface OpeningFailure {

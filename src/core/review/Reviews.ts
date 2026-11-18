@@ -1,6 +1,6 @@
 import type { AcpSchema } from '@/core/acp/AcpDriver';
 import { logWarning, messageOf } from '@/core/Log';
-import type { QualifiedSessionUpdate, SessionIdentity, SessionRegistration, SessionLoad } from '@/core/SessionUpdateHandler';
+import type { QualifiedSessionUpdate, SessionIdentity, SessionRegistration, SessionLoad } from '@/core/sessions/UpdateHandler';
 import { FollowedFiles, type WatchFile } from '@/core/review/FollowedFiles';
 import { Review, type ExamineEvidence, type ReadFile, type RestoreFile, type ReviewedFile } from '@/core/review/Review';
 import { V1Guard } from '@/core/review/V1Guard';

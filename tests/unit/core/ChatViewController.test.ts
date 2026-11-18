@@ -9,7 +9,7 @@ import { ChatViewController } from '@/core/ChatViewController';
 import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
-import type { SessionInfo } from '@/core/SessionManager';
+import type { SessionInfo } from '@/core/sessions/Manager';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
 import {
   SESSION_ID,

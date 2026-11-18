@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { SessionUpdate, ToolCallContent, ToolKind } from '@/core/acp/AcpDriver';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { Cleaner, type ShownOutput } from '@/core/CommandOutput';
-import { SessionStates } from '@/core/SessionStates';
+import { SessionStates } from '@/core/sessions/States';
 
 const identity = { configuredName: 'fake', sessionId: 'session' };
 const registration = { agentName: 'fake', agentId: 'source', sessionId: identity.sessionId };

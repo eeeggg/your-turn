@@ -5,7 +5,7 @@ import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { attachUrlElicitations } from '@/core/UrlElicitations';
 import { v1Elicitation, v2Elicitation } from '@/core/acp/Elicitation';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import type { Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
 import {
   connectedDriver,

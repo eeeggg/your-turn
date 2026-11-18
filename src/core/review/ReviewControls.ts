@@ -3,7 +3,7 @@ import { lineChanges, splitLines } from '@/core/diff/LineChanges';
 import type { Change } from '@/core/review/Hunks';
 import type { FileContent } from '@/core/review/Review';
 import type { Reviews, ReviewDecision, ReviewDecisionResult } from '@/core/review/Reviews';
-import type { SessionRegistration } from '@/core/SessionUpdateHandler';
+import type { SessionRegistration } from '@/core/sessions/UpdateHandler';
 
 /** The editors the review's controls act on, by a file's path. */
 export interface ReviewEditors {

@@ -3,7 +3,7 @@ import type { AcpSchema, SessionUpdate } from '@/core/acp/AcpDriver';
 import { Reviews, type ReviewFiles, type ReviewAdmission } from '@/core/review/Reviews';
 import type { FileContent } from '@/core/review/Review';
 import { setLogSink } from '@/core/Log';
-import type { QualifiedSessionUpdate, SessionRegistration, SessionLoad } from '@/core/SessionUpdateHandler';
+import type { QualifiedSessionUpdate, SessionRegistration, SessionLoad } from '@/core/sessions/UpdateHandler';
 
 const SESSION_ID = { sessionId: '9f0a753c-2018-4a39-9be2-458f06ba72d1', agentName: 'fake', agentId: 'source' };
 const OTHER_SESSION_ID = { sessionId: '28ec645b-c197-45da-a461-d0b72685ef39', agentName: 'fake', agentId: 'source' };

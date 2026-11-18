@@ -22,7 +22,7 @@ export function ChatView() {
   );
 }
 
-/** Prompts sent during a turn, next to go out at the top; pinned outside the transcript, so they stay in view while it scrolls. */
+/** Runtime queue projection, oldest first; pinned outside the scrolling transcript. */
 function QueuedPrompts() {
   const queued = useSelector((state) => state.transcript.queued);
   const running = useSelector((state) => state.activeSession?.turnRunning ?? false);
@@ -92,7 +92,7 @@ function QueuedPromptRow({ prompt, sendNow }: { prompt: QueuedPrompt; sendNow: b
   </li>;
 }
 
-/** Covers the chat view while the agent replays a session's transcript. */
+/** Covers replay and transcript delivery until the extension ends loading. */
 function LoadOverlay() {
   const loading = useSelector((state) => state.activeSession?.loading ?? false);
   return (

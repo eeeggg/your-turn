@@ -15,13 +15,13 @@ import type { ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
 
-/** Unique for the life of the page, even across clears, so a late reply about a cleared entry matches nothing. */
+/** Entry identity within projected content; the presentation target scopes actions and patches. */
 export type EntryId = number;
 
 interface Prompt {
   readonly kind: 'prompt';
   readonly id: EntryId;
-  /** The agent's ID for a prompt a load replays; text with another ID is another prompt, and a whole one with this ID replaces its text. */
+  /** The replayed prompt's agent-supplied ID; core resolves content replacement. */
   readonly messageId?: string;
   readonly text: string;
 }
@@ -35,7 +35,7 @@ interface PromptImage extends Readonly<ImagePresentation> {
   readonly reference?: true;
 }
 
-/** The agent's side of a turn, an entry of its own after the prompt that started it. */
+/** Projected agent work, including autonomous work without a preceding prompt. */
 export interface Turn {
   readonly kind: 'turn';
   readonly id: EntryId;
@@ -73,13 +73,13 @@ export interface Compaction {
   readonly timingAllowed: boolean;
 }
 
-/** A part's place in its turn, which never changes: parts are only ever added at the end. */
+/** A part's current position in its turn; part-range replacements can change it. */
 export type PartIndex = number;
 
 export interface AgentMessage {
   readonly markdownRevision?: number;
   readonly kind: 'message';
-  /** The agent's ID for the message, when it sends one; text with another ID is another message. */
+  /** The agent-supplied message ID, or null; core resolves message grouping. */
   readonly messageId: string | null;
   /** Everything streamed so far, as markdown; shown once it has more than whitespace. */
   readonly text: string;
@@ -116,7 +116,7 @@ export interface ToolCall {
   readonly open: boolean;
 }
 
-/** The agent's latest plan in a turn, which replaces the earlier ones of that turn where the first one was. */
+/** The plan projected at the position chosen by core. */
 export interface Plan {
   readonly kind: 'plan';
   readonly steps: readonly PlanStep[];
@@ -163,9 +163,9 @@ export interface TranscriptState {
   /** The latest reported context and session cost; null until reported, retained with an ended session's transcript. */
   readonly usage: SessionUsage | null;
   readonly nextId: EntryId;
-  /** The turn the agent's work goes into, until the turn ends. */
+  /** The current turn selected by core, or null when no turn is open. */
   readonly currentTurn: EntryId | null;
-  /** Prompts the user sent while a turn ran, oldest first; each goes to the agent when the turn before it ends. */
+  /** Runtime-owned queue projection, oldest first, with immediate local editing and expansion. */
   readonly queued: readonly QueuedPrompt[];
   /** Rises each time the view must follow the stream again: for each prompt the user sends, and on each clear. */
   readonly followRequests: number;
@@ -498,7 +498,7 @@ export function updateTranscript(
       return { state: transcript, outgoing: transcript.projection
         ? [{ type: 'openFile', target: transcript.projection.target, toolCallId: action.toolCallId, file: action.file }] : [] };
     case 'sendNowChosen':
-      // Cancelling ends the turn, which sends the top of the queue; the queue itself stays as it is until then.
+      // Runtime handles Stop and queue release; keep the queue projection until it responds.
       return !turnRunning || transcript.queued[0]?.id !== action.id || !transcript.projection
         ? stateOnly(transcript)
         : { state: { ...transcript, followRequests: transcript.followRequests + 1 }, outgoing: [{ type: 'queueChanged', target: transcript.projection.target, change: { kind: 'stop', id: action.id } }] };
@@ -541,7 +541,7 @@ export function updateTranscript(
   }
 }
 
-/** The first report fixes placement; reports for that ID revise it across turn boundaries. */
+/** Changes an existing projected compaction without changing its placement. */
 function withCompaction(transcript: TranscriptState, compactionId: string, change: (compaction: Compaction) => Compaction): TranscriptState | null {
   for (const entry of transcript.entries) {
     if (entry.kind === 'compaction' && entry.compactionId === compactionId) {
@@ -562,7 +562,7 @@ function finished(thought: Thought, now: number): Thought {
   return thought.endedAt === null ? { ...thought, endedAt: now } : thought;
 }
 
-/** Finishes the current turn's thoughts and collapses its long groups of tool calls; the next work starts a new turn. */
+/** Settles displayed thought timing and tool-group expansion when turn completion arrives. */
 function endTurn(transcript: TranscriptState, now: number): TranscriptState {
   const { currentTurn } = transcript;
   const ended =

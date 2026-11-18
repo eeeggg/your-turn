@@ -19,8 +19,8 @@ import {
   type AuthPrompt,
   type SessionEnvironment,
   type SessionManagerEvents,
-} from '@/core/SessionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+} from '@/core/sessions/Manager';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 
 import {

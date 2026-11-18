@@ -15,6 +15,6 @@ it.each([
 });
 
 it('preserves existing core import fences with the review mutation fence', async () => {
-  const results = await eslint.lintText("import * as vscode from 'vscode'; void vscode;", { filePath: 'src/core/SessionCommands.ts' });
+  const results = await eslint.lintText("import * as vscode from 'vscode'; void vscode;", { filePath: 'src/core/sessions/Commands.ts' });
   expect(results.flatMap((result) => result.messages).some((message) => message.ruleId === 'no-restricted-imports')).toBe(true);
 });

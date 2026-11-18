@@ -4,14 +4,14 @@ import { agent, methods, PROTOCOL_VERSION, RequestError } from '@agentclientprot
 import type { AgentContext, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { setLogSink } from '@/core/Log';
-import { SessionManager } from '@/core/SessionManager';
+import { SessionManager } from '@/core/sessions/Manager';
 import { ChatViewController } from '@/core/ChatViewController';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { SessionStates } from '@/core/SessionStates';
-import type { SessionLoad } from '@/core/SessionUpdateHandler';
+import { SessionStates } from '@/core/sessions/States';
+import type { SessionLoad } from '@/core/sessions/UpdateHandler';
 import { Reviews } from '@/core/review/Reviews';
 import * as CommandOutput from '@/core/CommandOutput';
-import * as RetainedContent from '@/core/SessionContent';
+import * as RetainedContent from '@/core/sessions/Content';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
@@ -33,7 +33,7 @@ import {
   setup,
   sessionAgent,
   promptTarget,
-} from '@tests/unit/core/SessionManagerTestSupport';
+} from '@tests/unit/core/sessions/SessionManagerTestSupport';
 
 describe('SessionManager', () => {
   it('reconstructs a pending Load overlay through a replacement controller', async () => {

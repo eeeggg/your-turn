@@ -7,9 +7,9 @@ import {
   AuthenticationCancelled,
   type SessionManager,
   type SessionOpening
-} from '@/core/SessionManager';
-import type { SessionTabs } from '@/core/SessionTabs';
-import type { SessionOrigin, SessionRegistration } from '@/core/SessionUpdateHandler';
+} from '@/core/sessions/Manager';
+import type { SessionTabs } from '@/core/sessions/Tabs';
+import type { SessionOrigin, SessionRegistration } from '@/core/sessions/UpdateHandler';
 
 export interface AgentEntry {
   readonly name: string;

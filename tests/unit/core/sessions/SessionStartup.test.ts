@@ -12,9 +12,9 @@ import {
   type SessionAddress,
   type WorkspaceTarget,
 } from '@/core/PersistedState';
-import { SessionManager, type SessionEnvironment } from '@/core/SessionManager';
-import { SessionStartup } from '@/core/SessionStartup';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionManager, type SessionEnvironment } from '@/core/sessions/Manager';
+import { SessionStartup } from '@/core/sessions/Startup';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import {
   fakeAgent,
   InProcessAgents,

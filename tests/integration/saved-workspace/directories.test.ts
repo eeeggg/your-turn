@@ -10,8 +10,8 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { WorkspaceState } from '@/core/PersistedState';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import type { ExtensionTestApi } from '@/extension';
 import { cleanup } from '@tests/integration/cleanup';
 

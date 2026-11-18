@@ -1,4 +1,4 @@
-import { endContentTurn, initialContent, updateContent, withPromptError, type SessionContent } from '@/core/SessionContent';
+import { endContentTurn, initialContent, updateContent, withPromptError, type SessionContent } from '@/core/sessions/Content';
 import type { SessionUpdate } from '@/core/acp/AcpDriver';
 import type { ExtensionToWebviewMessage, ImagePresentation, ToolCallContent, ToolCallStatus } from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
