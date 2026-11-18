@@ -43,9 +43,11 @@ export interface SessionStateView {
   readonly usage: Readonly<Usage> | null;
   readonly content: SessionContent;
   readonly terminals: ReadonlyMap<string, SessionTerminal>;
+  readonly reviewOpportunity: number | null;
+  readonly turnOutcome: 'completed' | 'failed' | null;
 }
 
-const emptyState = { queue: [] as readonly QueuedSubmission[], composer: { text: '', revision: 0 }, usage: null, content: initialContent, terminals: new Map<string, SessionTerminal>() };
+const emptyState = { queue: [] as readonly QueuedSubmission[], composer: { text: '', revision: 0 }, usage: null, content: initialContent, terminals: new Map<string, SessionTerminal>(), reviewOpportunity: null, turnOutcome: null };
 
 interface SessionOutput {
   readonly terminalTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -72,6 +74,7 @@ function reduced(state: SessionStateView, update: SessionUpdate, now: number, lo
 export class SessionStates {
   private nextGeneration = 0;
   private nextSubmission = 0;
+  private nextReviewOpportunity = 0;
   private readonly cleaning = new Set<Promise<void>>();
   private disposed = false;
   private disposal: Promise<void> | undefined;
@@ -162,6 +165,21 @@ export class SessionStates {
 
   view(identity: SessionIdentity): SessionStateView | undefined {
     return this.entries.get(this.key(identity))?.state;
+  }
+
+  setTurnOutcome(identity: SessionIdentity, outcome: SessionStateView['turnOutcome']): void {
+    const owner = this.entries.get(this.key(identity));
+    if (owner && owner.state.turnOutcome !== outcome) { owner.state = { ...owner.state, turnOutcome: outcome }; }
+  }
+
+  recordReviewOpportunity(identity: SessionIdentity): void {
+    const owner = this.entries.get(this.key(identity));
+    if (owner) { owner.state = { ...owner.state, reviewOpportunity: ++this.nextReviewOpportunity }; }
+  }
+
+  consumeReviewOpportunity(identity: SessionIdentity, revision: number): void {
+    const owner = this.entries.get(this.key(identity));
+    if (owner?.state.reviewOpportunity === revision) { owner.state = { ...owner.state, reviewOpportunity: null }; }
   }
 
   questionSettled(registration: SessionRegistration, question: SettledQuestion): void {
@@ -395,7 +413,8 @@ export class SessionStates {
       pending.output.state = { ...pending.output.state, content: endContentTurn(pending.output.state.content, Date.now()) };
       const key = this.key({ configuredName: load.registration.agentName, sessionId: load.registration.sessionId });
       const previous = this.entries.get(key);
-      if (previous) { pending.output.state = { ...pending.output.state, composer: previous.state.composer, queue: previous.state.queue }; }
+      if (previous) { pending.output.state = { ...pending.output.state, composer: previous.state.composer, queue: previous.state.queue,
+        reviewOpportunity: previous.state.reviewOpportunity, turnOutcome: previous.state.turnOutcome }; }
       for (const registration of previous?.registrations ?? []) {
         if (registration !== load.registration) { this.closedRegistrations.add(registration); }
       }

@@ -21,7 +21,7 @@ const SESSION_ID = 'e17c4a95-0ce6-4a99-8b93-06c4a9bc7392';
 describe('versioned elicitation translation', () => {
   it('v2 preserves future string formats as unconstrained text', async () => {
     const requests = new ElicitationRequests();
-    const answer = v2Elicitation({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { properties: { text: { type: 'string', format: 'future' } } } }, 1, new AbortController().signal, requests);
+    const answer = v2Elicitation({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', properties: { text: { type: 'string', format: 'future' } } } }, 1, new AbortController().signal, requests);
     const interaction = requests.snapshot()[0];
     expect(interaction).toMatchObject({ form: { fields: [{ name: 'text', format: 'future' }] } });
     requests.respond(interaction?.interactionId ?? '', { action: 'accept', content: { text: 'anything' } });
@@ -48,7 +48,7 @@ describe('versioned elicitation translation', () => {
       await (client as V2.ClientConnection).agent.request(V2.methods.agent.initialize, { protocolVersion: 2, info: { name: 'internal-test', version: '1' }, capabilities: { elicitation: { form: {} } } });
     }
     const controller = new AbortController();
-    const params = { mode: 'form' as const, sessionId: SESSION_ID, message: 'Question', requestedSchema: {} };
+    const params = { mode: 'form' as const, sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object' as const, properties: {} } };
     const response = version === 1
       ? (agent as V1.AgentConnection).client.request(V1.methods.client.elicitation.create, params, { cancellationSignal: controller.signal })
       : (agent as V2.AgentConnection).client.request(V2.methods.client.elicitation.create, params, { cancellationSignal: controller.signal });
@@ -71,7 +71,7 @@ describe('versioned elicitation translation', () => {
         create: () => Promise.resolve({ action: 'accept', content: {} }),
         complete() {}, close() {},
       };
-      const request = { mode: 'form' as const, sessionId: SESSION_ID, message: 'Question', requestedSchema: { properties: { count: { type: 'number' as const, minimum: 'not numeric' as unknown as number } } } };
+      const request = { mode: 'form' as const, sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object' as const, properties: { count: { type: 'number' as const, minimum: 'not numeric' as unknown as number } } } };
       const answer = translate(request, 1, new AbortController().signal, requests);
       await expect(answer).rejects.toMatchObject({ code: -32602 });
     });
@@ -80,7 +80,7 @@ describe('versioned elicitation translation', () => {
       const requests = new ElicitationRequests();
       const request = {
         mode: 'form' as const, sessionId: SESSION_ID, message: 'Settings', requestedSchema: {
-          title: 'Profile', description: 'Details', required: ['choice'], properties: {
+          type: 'object' as const, title: 'Profile', description: 'Details', required: ['choice'], properties: {
             text: { type: 'string' as const, minLength: 1, maxLength: 8, pattern: '^a', default: 'abc' },
             choice: { type: 'string' as const, oneOf: [{ const: 'a', title: 'Alpha', description: 'First' }] },
             count: { type: 'number' as const, minimum: 0, maximum: 2, default: 0 },
@@ -112,14 +112,14 @@ describe('versioned elicitation translation', () => {
     it(`v${version} rejects unknown modes and unknown required fields at translation or validation`, async () => {
       const requests = new ElicitationRequests();
       await expect(translate({ mode: '_future', sessionId: SESSION_ID, message: 'Question' }, 1, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
-      await expect(translate({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { required: ['future'], properties: { future: { type: '_future' } } } }, 2, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
+      await expect(translate({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', required: ['future'], properties: { future: { type: '_future' } } } }, 2, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
       expect(requests.snapshot()).toEqual([]);
     });
 
     it.each(['accept', 'decline', 'cancel'] as const)(`v${version} translates form scope and %s`, async (action) => {
       const requests = new ElicitationRequests((id) => id === 'parent');
       const signal = new AbortController().signal;
-      const answer = translate({ mode: 'form', requestId: 'parent', message: 'Question', requestedSchema: { properties: { count: { type: 'integer' } } } }, 'incoming', signal, requests);
+      const answer = translate({ mode: 'form', requestId: 'parent', message: 'Question', requestedSchema: { type: 'object', properties: { count: { type: 'integer' } } } }, 'incoming', signal, requests);
       const interaction = requests.snapshot()[0];
       expect(interaction).toMatchObject({ rpcId: 'incoming', scope: { requestId: 'parent' }, form: { fields: [{ name: 'count', type: 'integer' }] } });
       const response = action === 'accept' ? { action, content: { count: 0 } } : { action };
@@ -138,7 +138,7 @@ describe('versioned elicitation translation', () => {
     });
 
     it(`v${version} returns invalid params for unrenderable forms instead of a user refusal`, async () => {
-      await expect(translate({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { required: ['absent'] } }, 1, new AbortController().signal, new ElicitationRequests())).rejects.toMatchObject({ code: -32602 });
+      await expect(translate({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', properties: {}, required: ['absent'] } }, 1, new AbortController().signal, new ElicitationRequests())).rejects.toMatchObject({ code: -32602 });
     });
   }
 });
@@ -185,7 +185,7 @@ describe('elicitation wire behavior', () => {
     let interactions: ElicitationInteractions | undefined;
     const duringAuth = async (client: V1.AgentContext | V2.AgentContext, requestId: string | number | null) => {
       if (requestId === null || !interactions) { throw new Error('Missing authentication ownership'); }
-      const params = { mode: 'form' as const, requestId, message: 'Setup', requestedSchema: { properties: { enabled: { type: 'boolean' as const } } } };
+      const params = { mode: 'form' as const, requestId, message: 'Setup', requestedSchema: { type: 'object' as const, properties: { enabled: { type: 'boolean' as const } } } };
       if (version === 1) {
         await expect((client as V1.AgentContext).request(V1.methods.client.elicitation.create, { ...params, requestId: 'stale' })).rejects.toMatchObject({ code: -32602 });
       } else {
@@ -337,7 +337,7 @@ describe('elicitation wire behavior', () => {
     let received: unknown;
     const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
       const request: V2.CreateElicitationRequest = mode === 'form'
-        ? { mode, sessionId: SESSION_ID, message: 'Question', requestedSchema: { required: ['missing'] } }
+        ? { mode, sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', properties: {}, required: ['missing'] } }
         : { mode, sessionId: SESSION_ID, message: 'Authorize', elicitationId: 'external', url: 'file:///tmp/login' };
       received = await client.request(V2.methods.client.elicitation.create, request).catch((error: unknown) => error);
       return { sessionId: SESSION_ID };

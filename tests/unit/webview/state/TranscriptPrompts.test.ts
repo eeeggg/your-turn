@@ -14,11 +14,12 @@ describe('prompts', () => {
     view.send({ type: 'promptEdited', text: 'draft' });
     view.takePosted();
     const before = view.store.getSnapshot();
+    const review = { modified: false, created: false, deleted: false };
     const navigation: Extract<ExtensionToWebviewMessage, { type: 'sessionTabs' }> = {
       type: 'sessionTabs', selectedTabId: 'tab-a',
       tabs: [
-        { tabId: 'tab-a', title: 'First', agentName: 'Fake', cwd: '/work', additionalDirectories: ['/other'], running: true },
-        { tabId: 'tab-b', title: null, agentName: 'Other', cwd: '/work', additionalDirectories: ['/other'], running: false },
+        { tabId: 'tab-a', title: 'First', agentName: 'Fake', cwd: '/work', additionalDirectories: ['/other'], status: 'working', review },
+        { tabId: 'tab-b', title: null, agentName: 'Other', cwd: '/work', additionalDirectories: ['/other'], status: 'quiet', review },
       ],
     };
 

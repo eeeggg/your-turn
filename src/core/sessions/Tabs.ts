@@ -1,9 +1,13 @@
 import { EventEmitter } from 'node:events';
 import { renamesBetween, type AgentConfigEntry } from '@/core/AgentManager';
 import { Writes, type SessionAddress, type SessionReferences, type WorkspaceState, type WorkspaceTarget } from '@/core/PersistedState';
-import type { SessionEnvironment, SessionInfo } from '@/core/sessions/Manager';
-
-export type TabReference = Pick<SessionInfo, 'sessionId' | 'agentName' | 'agentDisplayName' | 'cwd' | 'title'>;
+export interface TabReference {
+  readonly sessionId: string;
+  readonly agentName: string;
+  readonly agentDisplayName: string;
+  readonly cwd: string;
+  readonly title?: string;
+}
 
 export interface OpenTab extends TabReference {
   readonly tabId: string;
@@ -12,7 +16,10 @@ export interface OpenTab extends TabReference {
 interface TabPersistence {
   readonly workspace: Pick<WorkspaceState, 'tabLayout' | 'setTabLayout' | 'lastActiveSession'>;
   readonly references: Pick<SessionReferences, 'get'>;
-  readonly environment: Pick<SessionEnvironment, 'workspaceTarget' | 'workspaceTargetKnown'>;
+  readonly environment: {
+    workspaceTarget(): WorkspaceTarget | undefined;
+    workspaceTargetKnown(): Promise<WorkspaceTarget | undefined>;
+  };
 }
 
 /** This workspace window's navigation references, independent of live connections. */

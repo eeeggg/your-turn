@@ -2,6 +2,7 @@ import {
   yourTurnContainerControl,
   agentMoreActions,
   agentsViewRow,
+  chatTheme,
   chatTranscript,
   chatViewTitle,
   chooseAgentAction,
@@ -185,6 +186,42 @@ test('arrow navigation requires keyboard activation before switching the selecte
   await expect(first).toHaveAttribute('aria-selected', 'false');
   await expect(strip.getByRole('tab')).toHaveCount(2);
   await expect(promptInput(window)).toBeEnabled();
+});
+
+test('selected tab remains distinct when focus leaves Chat in dark, light, and high-contrast themes', async ({ window, workspace }, testInfo) => {
+  await yourTurnContainerControl(window).click();
+  await agentsViewRow(window, 'fake-v1').click();
+  await selectListedSession(window, 'Compaction session');
+  await selectListedSession(window, 'Another session with a deliberately long title for tab overflow');
+  const tabs = sessionTabs(window).getByRole('tab');
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+
+  for (const [theme, kind] of [['Dark Modern', 'dark'], ['Light Modern', 'light'], ['Dark High Contrast', 'high-contrast']] as const) {
+    await window.keyboard.press('F1');
+    await quickInput(window).fill('>Preferences: Color Theme');
+    await quickInputRow(window, 'Preferences: Color Theme').click();
+    await quickInput(window).fill(theme);
+    await quickInputRow(window, theme).click();
+    await expect(quickInput(window)).toBeHidden();
+    await expect(chatTheme(window)).toHaveClass(new RegExp(`\\bvscode-${kind}\\b`));
+    await window.keyboard.press('F1');
+    await expect(quickInput(window)).toBeFocused();
+    const appearance = await tabs.evaluateAll((elements) => elements.map((tab) => {
+      if (!tab.parentElement) { throw new Error('Missing tab container'); }
+      const style = getComputedStyle(tab.parentElement);
+      return { background: style.backgroundColor, border: style.borderTopColor, width: style.borderTopWidth, contrast: style.boxShadow };
+    }));
+    const [inactive, active] = appearance;
+    if (!inactive || !active) { throw new Error('Missing tab appearance'); }
+    expect(active.width).not.toBe('0px');
+    expect(active.border).not.toBe(inactive.border);
+    if (kind !== 'high-contrast') { expect(active.background).not.toBe(inactive.background); }
+    else { expect(active.contrast).not.toBe(inactive.contrast); }
+    await expect(tabs.nth(0)).toHaveAttribute('title', `Compaction session\nFakeAgent\n${workspace}`);
+    await window.screenshot({ path: testInfo.outputPath(`session-tabs-${kind}.png`) });
+    await window.keyboard.press('Escape');
+    await expect(quickInput(window)).toBeHidden();
+  }
 });
 
 test('session tabs wrap into rows with keyboard and close controls reachable in a narrow chat view', async ({ window, workspace }, testInfo) => {

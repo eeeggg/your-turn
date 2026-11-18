@@ -124,7 +124,7 @@ describe('V2Driver', () => {
       [SESSION_ID, { kind: 'foreground', state: 'idle' }],
       [SESSION_ID, { kind: 'foreground', state: 'running' }],
       [OTHER_SESSION_ID, { kind: 'foreground', state: 'requiresAction' }],
-      [SESSION_ID, { kind: 'foreground', state: 'idle' }],
+      [SESSION_ID, { kind: 'foreground', state: 'idle', outcome: 'cancelled' }],
     ]);
   });
 

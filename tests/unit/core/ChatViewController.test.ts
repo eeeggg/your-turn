@@ -9,6 +9,7 @@ import { ChatViewController } from '@/core/ChatViewController';
 import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
+import { Reviews } from '@/core/review/Reviews';
 import type { SessionInfo } from '@/core/sessions/Manager';
 import type { ExtensionToWebviewMessage, Picker } from '@/shared/WebviewMessages';
 import {
@@ -330,6 +331,41 @@ describe('ChatViewController', () => {
     expect(requests).toEqual(['select:opaque-one', 'close:opaque-two']);
     expect(environment.take()).toEqual([]);
   });
+  it('projects background review markers and clears both tabs when their shared file is kept', async () => {
+    const { controller, sessions, environment } = setup();
+    const reviews = new Reviews({ read: async () => 'new', watch: () => ({ dispose() {} }), snapshot: () => undefined,
+      restore: async () => {}, applyEdit: async () => false, save: async () => {},
+    }, { resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+    });
+    onTestFinished(() => reviews.dispose());
+    controller.setTabReviews(reviews);
+    const first = sessionInfo();
+    const second = sessionInfo({ sessionId: OTHER_SESSION_ID });
+    controller.sessionTabs.open(first);
+    controller.sessionTabs.open(second);
+    sessions.session = second;
+    sessions.activeId = second.sessionId;
+    reviews.activeSessionChanged(second);
+    for (const registration of [first, second]) {
+      await reviews.handleSessionUpdate({ schema: 'v1', origin: { sourceId: registration.agentId,
+        identity: { configuredName: registration.agentName, sessionId: registration.sessionId } },
+        update: { kind: 'toolCall', toolCallId: 'edit', status: 'completed', content: [{ kind: 'diff',
+          diff: { kind: 'wholeFile', path: '/work/project/file.ts', oldText: 'old', newText: 'new' } }] },
+      });
+    }
+    const tabMessages = () => environment.take().filter((message) => message.type === 'sessionTabs');
+    expect(tabMessages().at(-1)).toMatchObject({ selectedTabId: 'tab-2', tabs: [
+      { review: { modified: true, created: false, deleted: false } }, { review: { modified: true, created: false, deleted: false } },
+    ] });
+    const keep = reviews.captureDecision({ action: 'keep-all' });
+    if (!keep) { throw new Error('Missing decision'); }
+    expect(await reviews.decide(keep)).toMatchObject({ kind: 'applied' });
+    expect(tabMessages().at(-1)).toMatchObject({ selectedTabId: 'tab-2', tabs: [
+      { review: { modified: false, created: false, deleted: false } }, { review: { modified: false, created: false, deleted: false } },
+    ] });
+  });
+
   it('commits tabs only on successful opens and re-sends the complete navigation on readiness', async () => {
     const { controller, sessions, environment } = setup();
     controller.notifyActiveSessionChanged();
@@ -338,7 +374,8 @@ describe('ChatViewController', () => {
     const first = environment.take();
     const snapshot = first.find((message) => message.type === 'sessionTabs');
     expect(snapshot).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-1', tabs: [
-      { tabId: 'tab-1', title: null, agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
+      { tabId: 'tab-1', title: null, agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], status: 'quiet',
+        review: { modified: false, created: false, deleted: false } },
     ] });
     if (snapshot?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
     expect(snapshot.selectedTabId).toBe(snapshot.tabs[0]?.tabId);
@@ -357,7 +394,8 @@ describe('ChatViewController', () => {
     const second = environment.take().find((message) => message.type === 'sessionTabs');
     expect(second?.type === 'sessionTabs' && second.tabs).toEqual([
       snapshot.tabs[0],
-      { tabId: 'tab-2', title: 'Second', agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
+      { tabId: 'tab-2', title: 'Second', agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], status: 'quiet',
+        review: { modified: false, created: false, deleted: false } },
     ]);
     controller.notifySessionOpened({ configuredName: 'fake', sessionId: OTHER_SESSION_ID });
     expect(environment.take()).toEqual([second]);
@@ -377,7 +415,7 @@ describe('ChatViewController', () => {
     environment.take();
     controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'running' });
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([
-      { ...initial, tabs: [{ ...tab, running: true }] },
+      { ...initial, tabs: [{ ...tab, status: 'working' }] },
     ]);
     const turn = sendPrompt(controller, sessions, 'steering');
     const registration = sessions.session;
@@ -410,7 +448,7 @@ describe('ChatViewController', () => {
     environment.take();
     controller.handleSessionUpdate(SESSION_ID, { kind: 'foreground', state: 'running' });
     const snapshot = environment.take().find((message) => message.type === 'sessionTabs');
-    expect(snapshot).toMatchObject({ tabs: [{ running: true }] });
+    expect(snapshot).toMatchObject({ tabs: [{ status: 'working' }] });
   });
 
   it('rejects stale controls after reconnect and rechecks connection ownership after native reveal', async () => {
@@ -1703,8 +1741,8 @@ describe('ChatViewController', () => {
 
       for (const text of ['Hel', 'lo', ' world']) {
         controller.handleSessionUpdate(SESSION_ID, answerChunk(text));
+        vi.advanceTimersByTime(5);
       }
-      vi.advanceTimersByTime(15);
       expect(environment.take()).toEqual([]);
 
       vi.advanceTimersByTime(1);

@@ -68,6 +68,82 @@ function reviews(files: Partial<ReviewFiles> = {}, admission: ReviewAdmission = 
 }
 
 describe('Reviews', () => {
+  it('notifies both sessions when a shared file is kept, but not an unrelated session', async () => {
+    const { reviews: subject } = reviews();
+    const first = { configuredName: SESSION_ID.agentName, sessionId: SESSION_ID.sessionId };
+    const second = { configuredName: OTHER_SESSION_ID.agentName, sessionId: OTHER_SESSION_ID.sessionId };
+    const unrelated = { ...SESSION_ID, agentName: 'other configuration' };
+    const third = { configuredName: unrelated.agentName, sessionId: unrelated.sessionId };
+    const empty = { fileCount: 0, modified: false, created: false, deleted: false };
+    const modified = { ...empty, fileCount: 1, modified: true };
+    const notices: (typeof first)[] = [];
+    const visibleCounts: number[][] = [];
+    const unsubscribe = subject.onSummaryChanged((identity) => {
+      notices.push(identity);
+      visibleCounts.push([first, second, third].map((session) => subject.summary(session).fileCount));
+    });
+    expect(subject.summary(third)).toEqual(empty);
+    subject.activeSessionChanged(SESSION_ID);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('first', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(OTHER_SESSION_ID, edited('same file', '/w/a.ts', 'a', 'A'), 'v1'));
+    await subject.handleSessionUpdate(input(unrelated, edited('unrelated', '/w/b.ts', 'b', 'B'), 'v1'));
+    expect(notices.splice(0)).toEqual([first, second, third]);
+    expect(subject.summary(second)).toEqual(modified);
+    const keep = subject.captureDecision({ action: 'keep-file', path: '/w/a.ts' });
+    if (!keep) { throw new Error('Missing decision'); }
+    visibleCounts.length = 0;
+    expect(await subject.decide(keep)).toMatchObject({ kind: 'applied' });
+    expect(notices.splice(0)).toEqual([first, second]);
+    expect(visibleCounts).toEqual([[0, 0, 1], [0, 0, 1]]);
+    expect(subject.summary(first)).toEqual(empty);
+    expect(subject.summary(second)).toEqual(empty);
+    expect(subject.summary(third)).toEqual(modified);
+    unsubscribe();
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('fresh', '/w/a.ts', 'a', 'A'), 'v1'));
+    expect(notices).toEqual([]);
+  });
+
+  it('distinguishes an empty file from a missing file and ignores text-only changes to the summary', async () => {
+    let contents: FileContent = '';
+    const { reviews: subject } = reviews({ read: async () => contents });
+    const identity = { configuredName: SESSION_ID.agentName, sessionId: SESSION_ID.sessionId };
+    const notices: number[] = [];
+    const unsubscribe = subject.onSummaryChanged((changed) => notices.push(subject.summary(changed).fileCount));
+    onTestFinished(unsubscribe);
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('empty', '/w/a.ts', 'a', ''), 'v1'));
+    expect(subject.summary(identity)).toEqual({ fileCount: 1, modified: true, created: false, deleted: false });
+    contents = 'other';
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('edit', '/w/a.ts', '', contents), 'v1'));
+    expect(notices).toEqual([1]);
+    contents = null;
+    await subject.handleSessionUpdate(input(SESSION_ID, edited('removed', '/w/a.ts', 'other', ''), 'v1'));
+    expect(subject.summary(identity)).toEqual({ fileCount: 1, modified: false, created: false, deleted: true });
+    expect(notices).toEqual([1, 1]);
+  });
+
+  it('reports a created file under its new identity after a configuration rename', async () => {
+    const { reviews: subject } = reviews();
+    const old = { configuredName: SESSION_ID.agentName, sessionId: SESSION_ID.sessionId };
+    const renamed = { ...old, configuredName: 'renamed' };
+    const notices: { identity: typeof old; oldCount: number; newCount: number }[] = [];
+    const unsubscribe = subject.onSummaryChanged((identity) => notices.push({
+      identity, oldCount: subject.summary(old).fileCount, newCount: subject.summary(renamed).fileCount,
+    }));
+    onTestFinished(unsubscribe);
+    await subject.handleSessionUpdate(input(SESSION_ID, {
+      kind: 'toolCall', toolCallId: 'create', status: 'completed', content: [{ kind: 'diff', diff: {
+        kind: 'changes', changes: [{ operation: 'add', path: '/w/a.ts', fileType: 'text', mimeType: null }],
+        patch: { format: 'git_patch', text: '--- /dev/null\n+++ /w/a.ts\n@@ -0,0 +1 @@\n+A\n\\ No newline at end of file\n' },
+      } }],
+    }, 'v2'));
+    expect(subject.summary(old)).toEqual({ fileCount: 1, modified: false, created: true, deleted: false });
+    expect(notices.splice(0)).toEqual([{ identity: old, oldCount: 1, newCount: 0 }]);
+    subject.configurationRenamed(old.configuredName, renamed.configuredName);
+    expect(notices).toEqual([{ identity: old, oldCount: 0, newCount: 1 }, { identity: renamed, oldCount: 0, newCount: 1 }]);
+    expect(subject.summary(old)).toEqual({ fileCount: 0, modified: false, created: false, deleted: false });
+    expect(subject.summary(renamed)).toEqual({ fileCount: 1, modified: false, created: true, deleted: false });
+  });
+
   it('drains an admitted restore before authority disposal completes', async () => {
     let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });

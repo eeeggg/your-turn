@@ -217,6 +217,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   });
   sessionUpdateHandler.addListener((delivery) => chatViewController.handleSessionUpdate(delivery));
   const reviews = new Reviews(workspaceFiles, sessionManager);
+  chatViewController.setTabReviews(reviews);
   const showReviewAdmission = () => {
     void vscode.commands.executeCommand('setContext', 'your-turn.reviewResolutionBlocked', reviews.resolutionBlocked());
   };
@@ -237,7 +238,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     const review = reviews.dispose();
     const tabState = sessionTabs.dispose();
     const sessions = sessionManager.dispose();
-    disposal = Promise.allSettled([output, takeovers, presenters, diffs, review, tabState, sessions, turnEndShown]).then((results) => {
+    disposal = Promise.allSettled([output, takeovers, presenters, diffs, review, tabState, sessions]).then((results) => {
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down Your Turn');
@@ -251,7 +252,9 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   reviews.addListener(() => reviewChanges.fire());
   sessionUpdateHandler.addListener(({ input }) => { void reviews.handleSessionUpdate(input); });
   const reviewDiffs = factories.createReviewPresentation?.(reviews) ?? new DiffReviewPresentation(reviews);
-  const reviewControls = new ReviewControls(reviews, reviewDiffs);
+  const reviewControls = new ReviewControls(reviews, reviewDiffs,
+    () => vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') === 'diffEditor');
+  chatViewController.setReviewOpening(reviewControls);
   reviewDiffs.attach(reviewControls);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
   chatViewController.addTurnListener((inProgress) => reviewPresenters.turnInProgress(inProgress));
@@ -281,9 +284,8 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   sessionManager.on('session-ended', ({ sessionId }, reason) => {
     chatViewController.notifySessionEnded(sessionId, reason);
   });
-  let turnEndShown = Promise.resolve();
   sessionManager.on('turn-ended', (registration) => {
-    turnEndShown = reviewControls.turnEnded(registration).catch((e: unknown) => logError("Showing the turn's change failed", e));
+    chatViewController.notifyTurnEnded(registration);
   });
   sessionManager.on('clear-transcript', () => {
     chatViewController.clearTranscript();
@@ -461,7 +463,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     reviewChanges: reviewChanges.event,
     reviewOriginal: (uri) => reviewSourceControl.originalResource(uri),
     reviewListedFiles: () => reviewSourceControl.listedFiles(),
-    turnEndShown: () => turnEndShown,
+    turnEndShown: () => chatViewController.reviewOpeningSettled(),
     reviewPresentationSettled: async () => { await reviewPresenters.settled(); await reviewDiffs.settled(); },
     persistedStateSettled: async () => {
       await sessionManager.recordsSettled();

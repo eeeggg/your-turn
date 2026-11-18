@@ -245,7 +245,8 @@ export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}, 
   const full = sessionSnapshot(session);
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
   page.send({ type: 'sessionTabs', selectedTabId: tabId, tabs: [{
-    tabId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], running: false,
+    tabId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], status: 'quiet',
+    review: { modified: false, created: false, deleted: false },
   }] });
 }
 

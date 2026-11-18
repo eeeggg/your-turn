@@ -10,6 +10,7 @@ import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { SessionStates } from '@/core/sessions/States';
 import type { SessionLoad } from '@/core/sessions/UpdateHandler';
 import { Reviews } from '@/core/review/Reviews';
+import { ReviewControls } from '@/core/review/ReviewControls';
 import * as CommandOutput from '@/core/CommandOutput';
 import * as RetainedContent from '@/core/sessions/Content';
 import { AgentTerminals } from '@/core/AgentTerminals';
@@ -36,6 +37,87 @@ import {
 } from '@tests/unit/core/sessions/SessionManagerTestSupport';
 
 describe('SessionManager', () => {
+  it('opens the first still-unresolved review file after selection and successful Load', async () => {
+    const { manager, chatView } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+      .onRequest(methods.agent.session.load, () => ({})) });
+    let release!: (text: string) => void;
+    const lateRead = new Promise<string>((resolve) => { release = resolve; });
+    const reviews = new Reviews({
+      read: (path) => path === '/w/remaining.ts' ? lateRead : Promise.resolve('new'),
+      watch: () => ({ dispose() {} }), snapshot: () => undefined,
+      restore: () => { throw new Error('Unexpected restore'); },
+      applyEdit: () => { throw new Error('Unexpected edit'); },
+      save: () => { throw new Error('Unexpected save'); },
+    }, manager);
+    onTestFinished(() => reviews.dispose());
+    const shown: string[] = [];
+    const controls = new ReviewControls(reviews, {
+      captureNavigation: () => () => true, activePath: () => undefined, isOpen: () => false,
+      open: async () => {}, showChange: async (path, current) => { if (!current || current()) { shown.push(path); } },
+      showChangeOf: async () => {}, closeChange: async () => {}, showError: () => {}, text: () => undefined,
+    });
+    chatView.setReviewOpening(controls);
+    manager.on('active-session-changed', (registration) => {
+      reviews.activeSessionChanged(registration);
+      chatView.notifyActiveSessionChanged();
+    });
+    manager.on('session-load-start', (load) => { reviews.loadStarted(load); chatView.notifyLoadSessionStart(load); });
+    manager.on('session-load-end', (load, ok) => { reviews.loadEnded(load); chatView.notifyLoadSessionEnd(load, ok); });
+    manager.on('session-removed', (registration) => reviews.sessionRemoved(registration));
+    manager.on('turn-ended', (registration) => { chatView.notifyTurnEnded(registration); });
+    const evidence = (sessionId: string, path: string) => {
+      const registration = manager.getSession(address(sessionId));
+      if (!registration) { throw new Error('Missing session'); }
+      return reviews.handleSessionUpdate({ origin: { identity: address(sessionId), sourceId: registration.agentId }, schema: 'v1',
+        update: { kind: 'toolCall', toolCallId: path, status: 'completed',
+          content: [{ kind: 'diff', diff: { kind: 'wholeFile', path, oldText: 'old', newText: 'new' } }] } });
+    };
+    await manager.connectToAgent('fake');
+    await evidence(FIRST_SESSION, '/w/shared.ts');
+    const receiving = evidence(FIRST_SESSION, '/w/remaining.ts');
+    try {
+      manager.recordTurnEnded(address(FIRST_SESSION));
+      await manager.loadSession('fake', SECOND_SESSION);
+      await evidence(SECOND_SESSION, '/w/shared.ts');
+      expect(await controls.keepAll()).toMatchObject({ kind: 'applied' });
+      release('new');
+      await receiving;
+      await chatView.reviewOpeningSettled();
+      expect(shown).toEqual([]);
+      expect(manager.sessionState(address(FIRST_SESSION))?.reviewOpportunity).not.toBeNull();
+      await manager.loadSession('fake', FIRST_SESSION);
+      await chatView.reviewOpeningSettled();
+      expect(shown).toEqual(['/w/remaining.ts']);
+      expect(manager.sessionState(address(FIRST_SESSION))?.reviewOpportunity).toBeNull();
+    } finally { release('new'); await receiving; }
+  });
+
+  it('retains a completion opportunity across Load but not tab closure', async () => {
+    const { manager } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+      .onRequest(methods.agent.session.load, () => ({})) });
+    const identity = address(FIRST_SESSION);
+    await manager.connectToAgent('fake');
+    expect(manager.sessionState(identity)?.reviewOpportunity).toBeNull();
+    manager.recordTurnEnded(identity);
+    const opportunity = manager.sessionState(identity)?.reviewOpportunity;
+    expect(typeof opportunity).toBe('number');
+    await manager.loadSession('fake', SECOND_SESSION);
+    expect(manager.sessionState(address(SECOND_SESSION))?.reviewOpportunity).toBeNull();
+    await manager.loadSession('fake', FIRST_SESSION);
+    expect(manager.sessionState(identity)?.reviewOpportunity).toBe(opportunity);
+    if (opportunity == null) { throw new Error('Missing opportunity'); }
+    manager.recordTurnEnded(identity);
+    const newer = manager.sessionState(identity)?.reviewOpportunity;
+    expect(newer).not.toBe(opportunity);
+    manager.consumeReviewOpportunity(identity, opportunity);
+    expect(manager.sessionState(identity)?.reviewOpportunity).toBe(newer);
+    manager.releaseSessionState(identity);
+    await manager.loadSession('fake', FIRST_SESSION);
+    expect(manager.sessionState(identity)?.reviewOpportunity).toBeNull();
+  });
+
   it('reconstructs a pending Load overlay through a replacement controller', async () => {
     let entered!: () => void;
     const loading = new Promise<void>((resolve) => { entered = resolve; });
@@ -212,6 +294,28 @@ describe('SessionManager', () => {
     const content = states.view(identity)?.content;
     expect(content?.entries.flatMap((entry) => entry.kind === 'turn' ? entry.parts.filter((part) => part.kind === 'question') : entry.kind === 'question' ? [entry] : []))
       .toHaveLength(1);
+  });
+
+  it('shows only unanswered requests of an unselected tab ahead of foreground work', async () => {
+    const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+    const registration = await manager.connectToAgent('fake');
+    chatView.sessionTabs.open({ ...registration, sessionId: SECOND_SESSION });
+    const requests = new ElicitationRequests();
+    const stop = manager.interactions.observe({ agentName: 'fake', agentId: registration.agentId, elicitations: requests, permissions: undefined });
+    onTestFinished(() => { stop(); requests.close(); });
+    const lastTabs = () => posted.filter((message) => message.type === 'sessionTabs').at(-1);
+    manager.applyForegroundState(address(FIRST_SESSION), 'running');
+    expect(lastTabs()).toMatchObject({ selectedTabId: 'tab-2', tabs: [{ status: 'working' }, { status: 'quiet' }] });
+
+    const url = requests.create({ rpcId: null, mode: 'url', scope: { sessionId: FIRST_SESSION }, message: 'Connect', elicitationId: 'browser', url: 'https://example.org/connect' });
+    expect(lastTabs()).toMatchObject({ tabs: [{ status: 'needsInput' }, { status: 'quiet' }] });
+    const interaction = requests.snapshot()[0];
+    if (!interaction) { throw new Error('Missing pending URL'); }
+    expect(requests.respond(interaction.interactionId, { action: 'accept' })).toEqual({ kind: 'settled' });
+    await url;
+    expect(requests.snapshot()[0]?.status).toBe('awaitingCompletion');
+    expect(lastTabs()).toMatchObject({ tabs: [{ status: 'working' }, { status: 'quiet' }] });
+    expect(posted.filter(({ type }) => type === 'sessionTabAnnouncement')).toHaveLength(1);
   });
 
   it('observes native permission and URL requests before registration without creating retained session state', async () => {

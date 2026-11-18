@@ -59,6 +59,16 @@ const contract = {
   message: "Only ChatViewController translates into the webview's contract; the rest of core, drivers included, never sees it.",
 };
 
+const sessionNavigation = {
+  group: ["@/core/sessions/Tabs", "@/core/sessions/Commands", "@/core/sessions/List", "@/core/sessions/Startup", "@/core/ChatViewController"],
+  message: "Session runtime and review do not depend on navigation or the chat view controller.",
+};
+
+const sessionRuntime = {
+  group: ["@/core/sessions/Manager", "@/core/sessions/States", "@/core/sessions/Content", "@/core/sessions/Interactions", "@/core/AgentManager", "@/core/acp/ConnectionManager"],
+  message: "Use qualified session contracts or a narrow capability, not concrete runtime owners.",
+};
+
 // A rule of its own, as every layer's rule replaces the other's options: Monaco's diff code is imported by internal paths,
 // which an upgrade can move.
 /** @type {import("eslint").Linter.RulesRecord} */
@@ -194,7 +204,19 @@ export default defineConfig(
   },
   {
     files: ["src/core/acp/**/*.ts"],
-    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, contract] }),
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, contract, sessionNavigation] }),
+  },
+  {
+    files: ["src/core/AgentManager.ts", "src/core/sessions/{Manager,States,Content,Interactions,UpdateHandler}.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract, sessionNavigation] }),
+  },
+  {
+    files: ["src/core/review/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract, sessionNavigation, sessionRuntime] }),
+  },
+  {
+    files: ["src/core/sessions/Tabs.ts"],
+    rules: restrictImports({ paths: [vscodeApi, { name: "@/core/sessions/Manager", message: sessionRuntime.message }], patterns: [coreLayers, acpSdkInCore, contract] }),
   },
   {
     files: ["src/shared/**/*.ts"],

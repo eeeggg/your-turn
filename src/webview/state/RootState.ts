@@ -39,6 +39,7 @@ import {
 export interface RootState {
   readonly activeSession: ActiveSession | null;
   readonly sessionTabs: SessionTabsSnapshot;
+  readonly tabAnnouncement: Extract<ExtensionToWebviewMessage, { type: 'sessionTabAnnouncement' }> | null;
   readonly pickers: PickersState;
   readonly promptBox: PromptBoxState;
   readonly transcript: TranscriptState;
@@ -52,6 +53,7 @@ export type Action = ExtensionToWebviewMessage | PickerAction | PromptBoxAction 
 export const initialState: RootState = {
   activeSession: null,
   sessionTabs: { tabs: [], selectedTabId: null },
+  tabAnnouncement: null,
   pickers: initialPickers,
   promptBox: initialPromptBox,
   transcript: initialTranscript,
@@ -203,6 +205,9 @@ export function update(state: RootState, action: Action, now: number): Transitio
   if (action.type === 'sessionTabs') {
     return { state: { ...state, sessionTabs: { tabs: action.tabs, selectedTabId: action.selectedTabId } }, outgoing: [] };
   }
+  if (action.type === 'sessionTabAnnouncement') {
+    return { state: action.revision > (state.tabAnnouncement?.revision ?? 0) ? { ...state, tabAnnouncement: action } : state, outgoing: [] };
+  }
   const updatedSession = updateActiveSession(state.activeSession, action);
   const questions = updateQuestions(state.questions, action, state.transcript.projection?.target);
   const pickers = updatePickers(state.pickers, action, state.transcript.projection?.target);
@@ -236,7 +241,7 @@ export function update(state: RootState, action: Action, now: number): Transitio
     transcript.state !== state.transcript || questions.state !== state.questions;
   return {
     state: changed
-      ? { activeSession, sessionTabs: state.sessionTabs, pickers: pickers.state, promptBox: promptBox.state, transcript: transcript.state, questions: questions.state }
+      ? { ...state, activeSession, pickers: pickers.state, promptBox: promptBox.state, transcript: transcript.state, questions: questions.state }
       : state,
     outgoing,
   };

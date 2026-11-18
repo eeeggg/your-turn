@@ -104,6 +104,15 @@ _Avoid_: current conversation
 The extension's own link between a session and the agent configuration and workspace it was used through, kept for each session the user created, loaded or resumed with the extension, with when it was last used and the last title the agent reported. Shared by every window of one VS Code application, local or remote; the session itself stays the agent's.
 _Avoid_: saved session, session entry, history entry
 
+**Session tab**:
+An open navigation reference to a session in the Chat view. A tab has a
+selection state, a session status, and pending review markers. The runtime
+retains the tab's session content in memory; the agent owns persistence.
+
+**Session status**:
+The tab's indication that its session is quiet, working, needs input, failed,
+or finished while unselected. Selection and pending review are separate facts.
+
 **Session history**:
 The session references of one agent configuration in the window's host and cwd, which are the session list when the agent cannot list its sessions itself.
 _Avoid_: history (unqualified), recent sessions

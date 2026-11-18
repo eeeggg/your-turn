@@ -24,13 +24,16 @@ export interface ReviewEditors {
   text(path: string): string | undefined;
 }
 
+export type ReviewOpeningOutcome = 'opened' | 'already-open' | 'no-files' | 'not-automatic' | 'invalidated';
+
 /**
  * What the user sees of the shown review and does with it, from the editor's title area and the status bar: each
  * command acts on the file it is given, or the active editor's. Moving between files goes round from the last to the
  * first.
  */
 export class ReviewControls {
-  constructor(private readonly reviews: Reviews, private readonly editors: ReviewEditors) {}
+  constructor(private readonly reviews: Reviews, private readonly editors: ReviewEditors,
+    private readonly canRevealDeferred = () => true) {}
 
   /** A session is active, so its review is shown, whether or not it has files yet. */
   sessionShown(): boolean {
@@ -155,15 +158,24 @@ export class ReviewControls {
    * The shown session's turn ended: the first unresolved change in review order, once the files its edits name were
    * read, unless a review presentation is already open.
    */
-  async turnEnded(registration: SessionRegistration): Promise<void> {
+  async turnEnded(registration: SessionRegistration, opportunityCurrent = () => true, deferred = false): Promise<ReviewOpeningOutcome> {
     const navigationCurrent = this.editors.captureNavigation();
-    await this.reviews.afterShownTurn(registration, async (review, stillSelected) => {
-      if (!stillSelected() || !navigationCurrent() || review.files().some((file) => this.editors.isOpen(file.path))) { return; }
-      const file = review.files()[0];
-      if (file) {
-        await this.editors.showChange(file.path, () => stillSelected() && navigationCurrent() && review.file(file.path) === file);
-      }
+    const outcome = await this.reviews.afterShownTurn(registration, async (review, stillSelected): Promise<ReviewOpeningOutcome> => {
+      if (!stillSelected() || !opportunityCurrent() || !navigationCurrent()) { return 'invalidated'; }
+      if (deferred && !this.canRevealDeferred()) { return 'not-automatic'; }
+      const files = review.files();
+      if (files.some((file) => this.editors.isOpen(file.path))) { return 'already-open'; }
+      const file = files[0];
+      if (!file) { return 'no-files'; }
+      const attempt = { invalidated: false };
+      await this.editors.showChange(file.path, () => {
+        attempt.invalidated ||= !stillSelected() || !opportunityCurrent() || !navigationCurrent() || review.file(file.path) !== file
+          || (deferred && !this.canRevealDeferred());
+        return !attempt.invalidated;
+      });
+      return attempt.invalidated || !stillSelected() || !opportunityCurrent() ? 'invalidated' : 'opened';
     });
+    return outcome ?? 'invalidated';
   }
 
   /**

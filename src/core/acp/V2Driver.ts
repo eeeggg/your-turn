@@ -79,9 +79,13 @@ export class V2Driver implements AcpDriver {
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
           foreground.report(params.sessionId, params.update);
           if (Acp.StateUpdate.isIdle(params.update) || Acp.StateUpdate.isRunning(params.update) || Acp.StateUpdate.isRequiresAction(params.update)) {
+            const outcome = Acp.StateUpdate.isIdle(params.update)
+              ? Acp.IdleStateUpdate.isError(params.update) ? 'failed' : params.update.stopReason === 'cancelled' ? 'cancelled' : undefined
+              : undefined;
             updates.handleUpdate(params.sessionId, {
               kind: 'foreground',
               state: Acp.StateUpdate.isRequiresAction(params.update) ? 'requiresAction' : params.update.state,
+              ...(outcome ? { outcome } : {}),
             }, 'v2');
           }
           return;

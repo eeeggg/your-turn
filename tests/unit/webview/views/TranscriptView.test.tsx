@@ -208,7 +208,7 @@ describe('the chat view', () => {
   it('lays out the tabs, the transcript, the input area and the load overlay in that order', () => {
     const { container } = renderChatView();
 
-    expect([...container.children].map((child) => child.id)).toEqual(['sessionTabs', 'transcript', 'questionAnchor', 'loadOverlay']);
+    expect([...container.children].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
     expect([...container.querySelector('#questionAnchor')?.children ?? []].map((child) => child.id)).toEqual(['inputArea']);
   });
 
@@ -271,7 +271,7 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
 
-      expect([...view.container.children].map((child) => child.id)).toEqual(['sessionTabs', 'transcript', 'questionAnchor', 'loadOverlay']);
+      expect([...view.container.children].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
     expect([...view.part('#questionAnchor').children].map((child) => child.id)).toEqual(['queuedPrompts', 'inputArea']);
     expect(queue(view)?.getAttribute('aria-label')).toBe('Queued prompts');
     expect(queued(view)).toEqual([

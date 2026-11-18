@@ -128,14 +128,15 @@ export interface SessionSnapshot {
   commands: SlashCommand[];
 }
 
-/** A navigation reference, not a retained transcript or a live connection. */
+/** Presentation of an open tab, without its transcript or live connection. */
 interface SessionTab {
   tabId: string;
   title: string | null;
   agentName: string;
   cwd: string;
   additionalDirectories: readonly string[];
-  running: boolean;
+  status: 'quiet' | 'working' | 'needsInput' | 'failed' | 'completed';
+  review: { readonly modified: boolean; readonly created: boolean; readonly deleted: boolean };
 }
 
 export interface SessionTabsSnapshot {
@@ -222,6 +223,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'markdownImageContext'; sessionId: string; context: number; origin?: string }
   | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)
   | ({ type: 'sessionTabs' } & SessionTabsSnapshot)
+  | { type: 'sessionTabAnnouncement'; revision: number; text: string }
   | { type: 'questionOpen'; interactionId: string }
   | { type: 'questions'; questions: Question[] }
   | { type: 'questionErrors'; interactionId: string; errors: Readonly<Record<string, string>> }

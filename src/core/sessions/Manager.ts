@@ -190,6 +190,8 @@ export interface SessionManagerEvents {
   'agent-closed': [agentId: string, code: number | null];
 }
 
+export type SessionStatus = 'quiet' | 'working' | 'needsInput' | 'failed' | 'completed';
+
 /**
  * Manages agents, their connections, and their sessions.
  *
@@ -215,9 +217,29 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     return this.retained.view(identity);
   }
 
+  sessionStatus(identity: SessionIdentity): SessionStatus {
+    const registration = this.getSession(identity);
+    if (registration && this.driverFor(registration)) {
+      const pending = this.interactions.pending(identity, registration.agentId);
+      const foreground = this.activity.get(JSON.stringify([registration.agentId, identity.sessionId]))?.foreground;
+      if (foreground === 'requiresAction' || pending.permissions.length > 0
+        || pending.elicitations.some(({ status }) => status === 'pending')) { return 'needsInput'; }
+      if (this.hasForegroundWork(identity)) { return 'working'; }
+    }
+    return this.retained.view(identity)?.turnOutcome ?? 'quiet';
+  }
+
+  acknowledgeCompletion(identity: SessionIdentity): void {
+    if (this.retained.view(identity)?.turnOutcome === 'completed') { this.retained.setTurnOutcome(identity, null); }
+  }
+
   sessionLoad(identity: SessionIdentity): SessionLoad | undefined {
     const registration = this.getSession(identity);
     return registration && this.loading.get(registration);
+  }
+
+  consumeReviewOpportunity(identity: SessionIdentity, revision: number): void {
+    this.retained.consumeReviewOpportunity(identity, revision);
   }
 
   editComposer(identity: SessionIdentity, generation: number, revision: number, text: string): void {
@@ -473,11 +495,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       }
     }
     const agent = this.agents.get(agentName);
+    const session = this.sessionOf(agentName);
+    if (session) { this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId: session.sessionId }, null); }
     if (agent) {
       logInfo('Disconnecting agent', { agentName });
       this.stopAgent(agent);
     }
-    const session = this.sessionOf(agentName);
     if (session) {
       this.removeSession(session);
       this.emit('active-session-changed', null);
@@ -640,7 +663,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         else { this.pendingModes.set(key, update.modeId); }
         break;
       case 'foreground':
-        this.applyForegroundState(identity, update.state, process.id);
+        this.applyForegroundState(identity, update.state, process.id, update.outcome);
         if (!registration) { this.pendingForeground.set(key, update.state); }
         break;
       default:
@@ -651,11 +674,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   }
 
   private handleAgentExit(agentName: string, agentProcess: AgentProcess, code: number | null): void {
-    this.retireSource(agentProcess);
     // Still registered means nothing here stopped it.
     const running = [...this.agents.values()].find((agent) => agent.process === agentProcess);
     const currentName = running?.name ?? agentName;
     const unexpected = running !== undefined;
+    const session = [...this.sessions.values()].find((session) => session.agentId === agentProcess.id);
+    if (session && unexpected) {
+      this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId: session.sessionId }, 'failed');
+    }
+    this.retireSource(agentProcess);
     if (unexpected) {
       logError('Agent exited unexpectedly', undefined, { agentName, exitCode: code });
     } else {
@@ -667,7 +694,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     }
 
     // Only the session running on this process goes; a newer one for the same agent stays.
-    const session = [...this.sessions.values()].find((session) => session.agentId === agentProcess.id);
     if (session?.agentId === agentProcess.id) {
       if (unexpected) {
         const reason = exitReason(session.agentDisplayName, code);
@@ -846,6 +872,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     }
 
     const submission = this.beginPrompt(session);
+    this.retained.setTurnOutcome(identity, null);
     this.retained.submitted(session, text);
     this.emit('activity-changed', undefined, session);
     const activity = this.activity.get(JSON.stringify([session.agentId, sessionId]));
@@ -863,7 +890,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       if (agent.driver.closed) {
         await agent.exited;
       }
-      if (this.driverFor(session) === agent.driver) { this.retained.promptFailed(session, messageOf(e) || 'Prompt failed'); }
+      if (this.driverFor(session) === agent.driver) {
+        this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId }, 'failed');
+        this.retained.promptFailed(session, messageOf(e) || 'Prompt failed');
+      }
       throw e;
     } finally {
       activity?.submissions.delete(submission);
@@ -1030,7 +1060,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   /** A turn of the session ended: record it as used, and tell the session list. */
   recordTurnEnded(identity: SessionIdentity): void {
     const session = this.getSession(identity);
-    if (!session) { return; }
+    if (!session || this.loading.has(session)) { return; }
+    this.retained.recordReviewOpportunity(identity);
+    if (this.retained.view(identity)?.turnOutcome !== 'failed') { this.retained.setTurnOutcome(identity, 'completed'); }
     this.record(session, (address, { references }) => void references.used(address));
     this.emit('turn-ended', session);
   }
@@ -1396,16 +1428,25 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   }
 
   /** Also retains snapshots that arrive before session/new or session/resume answers. */
-  applyForegroundState(identity: SessionIdentity, state: ForegroundState, agentId?: string): void {
+  applyForegroundState(identity: SessionIdentity, state: ForegroundState, agentId?: string, outcome?: 'cancelled' | 'failed'): void {
     const { sessionId } = identity;
     agentId ??= this.getSession(identity)?.agentId;
     const key = JSON.stringify([agentId, sessionId]);
     const activity = this.activity.get(key) ?? { foreground: null, submissions: new Set<symbol>(), agentId };
+    const previous = activity.foreground;
     activity.foreground = state;
     this.activity.set(key, activity);
     if (state === 'running' || state === 'requiresAction') { this.activityRevision++; }
-    this.emit('activity-changed');
     const session = this.getSession(identity);
+    if (session && session.agentId === agentId && !this.loading.has(session)) {
+      const wasWorking = previous === 'running' || previous === 'requiresAction';
+      if (!wasWorking && state !== 'idle') { this.retained.setTurnOutcome(identity, null); }
+      // Prompt responses own their own outcome, even if a foreground update arrives first.
+      if (wasWorking && state === 'idle' && activity.submissions.size === 0) {
+        this.retained.setTurnOutcome(identity, outcome === 'failed' ? 'failed' : outcome === 'cancelled' ? null : 'completed');
+      }
+    }
+    this.emit('activity-changed');
     if (session && session.agentId === agentId) { this.releaseQueued(session); }
   }
 

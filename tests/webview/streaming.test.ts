@@ -23,16 +23,18 @@ function agentMessages(): string[] {
 
 describe('streaming a turn', () => {
   it('shows the tab activity indicator while core reports foreground work', () => {
+    const tab = { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [],
+      review: { modified: false, created: false, deleted: false } };
     page.send({ type: 'promptStart' });
     page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [
-      { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [], running: true },
+      { ...tab, status: 'working' },
     ] });
 
     expect(page.byId('sessionTabs').querySelector('.activity-dot')?.getAttribute('aria-label')).toBe('Actively working');
 
     page.send({ type: 'promptEnd' });
     page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [
-      { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [], running: false },
+      { ...tab, status: 'quiet' },
     ] });
     expect(page.byId('sessionTabs').querySelector('.activity-dot')).toBeNull();
   });
@@ -40,6 +42,7 @@ describe('streaming a turn', () => {
   it('accumulates the text of a turn into one agent message', () => {
     page.send({ type: 'promptStart' });
     answer(page, 'hello ');
+    expect(agentMessages()).toEqual(['hello']);
     answer(page, 'world');
 
     expect(agentMessages()).toEqual(['hello world']);

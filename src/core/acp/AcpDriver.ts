@@ -209,7 +209,7 @@ export type ForegroundState = 'idle' | 'running' | 'requiresAction';
  * not the webview messages' `type`, so an update cannot be posted to the webview as it is.
  */
 export type SessionUpdate =
-  | { kind: 'foreground'; state: ForegroundState }
+  | { kind: 'foreground'; state: ForegroundState; outcome?: 'cancelled' | 'failed' }
   | { kind: 'agentText'; messageId: string | null; text: string }
   | { kind: 'agentImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
   | { kind: 'thoughtImage'; messageId: string | null; data: string; mimeType: string; reference?: true }

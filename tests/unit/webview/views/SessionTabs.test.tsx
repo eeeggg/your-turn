@@ -9,6 +9,8 @@ import { StoreContext } from '@/webview/views/StoreContext';
 
 afterEach(cleanup);
 
+const review = { modified: false, created: false, deleted: false };
+
 function renderTabs() {
   const posted: WebviewToExtensionMessage[] = [];
   const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message));
@@ -28,18 +30,59 @@ function renderTabs() {
   const connect = (session: Partial<SessionSnapshot> = {}) => send({
     type: 'sessionTabs', selectedTabId: 'a', tabs: [{
       tabId: 'a', title: session.title ?? null, agentName: session.agentName ?? 'OpenCode', cwd: session.cwd ?? '/work/project',
-      additionalDirectories: [], running: false,
+      additionalDirectories: [], status: 'quiet', review,
     }],
   });
   return { send, connect, part, posted };
 }
 
 describe('session tabs', () => {
+  it('announces a revision once without moving focus or replaying it on tab updates', () => {
+    const { connect, send } = renderTabs();
+    connect({ title: 'Build' });
+    const tab = screen.getByRole('tab', { name: 'Build' });
+    tab.focus();
+    const live = screen.getByRole('status');
+    expect(live.textContent).toBe('');
+    send({ type: 'sessionTabAnnouncement', revision: 2, text: 'Other: Needs your input.' });
+    const announced = live.firstChild;
+    expect(announced?.textContent).toBe('Other: Needs your input.');
+    connect({ title: 'Build' });
+    send({ type: 'sessionTabAnnouncement', revision: 2, text: 'Duplicate' });
+    send({ type: 'sessionTabAnnouncement', revision: 1, text: 'Obsolete' });
+    expect(live.firstChild).toBe(announced);
+    expect(document.activeElement).toBe(tab);
+  });
+
+  it.each([
+    ['needsInput', '?', 'Needs your input'], ['failed', '!', 'Interrupted or failed'], ['completed', '✓', 'Finished while unselected'],
+  ] as const)('shows the %s marker and describes it independently of selection', (status, glyph, description) => {
+    const { send } = renderTabs();
+    const tabs = [{ tabId: 'a', title: 'A session', agentName: 'Agent', cwd: '/work', additionalDirectories: [], review, status }];
+    send({ type: 'sessionTabs', selectedTabId: null, tabs });
+    const tab = screen.getByRole('tab', { name: 'A session', description: `${description}.` });
+    expect(tab.textContent).toBe(`${glyph}A session`);
+    expect(tab.getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('describes review markers in fixed order without changing the tab or close name', () => {
+    const { send, part } = renderTabs();
+    const tabs = [{ tabId: 'a', title: 'Review files', agentName: 'Agent', cwd: '/work', additionalDirectories: [], status: 'working' as const,
+      review: { deleted: true, created: true, modified: true } }];
+    send({ type: 'sessionTabs', selectedTabId: 'a', tabs });
+    const tab = screen.getByRole('tab', { name: 'Review files', description: 'Actively working. Modified files. Created files. Deleted files.' });
+    expect(part('.session-tab-markers').textContent).toBe('MUD');
+    expect(tab.contains(screen.getByLabelText('Actively working'))).toBe(true);
+    expect(screen.getByRole('button', { name: 'Close Review files' })).toBeTruthy();
+    send({ type: 'sessionTabs', selectedTabId: null, tabs });
+    expect(part('.session-tab-markers').textContent).toBe('MUD');
+  });
+
   it('shows navigation references and sends requests without changing selection locally', () => {
     const { send, posted } = renderTabs();
     send({ type: 'sessionTabs', selectedTabId: 'a', tabs: [
-      { tabId: 'a', title: 'Fix the build', agentName: 'OpenCode', cwd: '/work/project', additionalDirectories: ['/other'], running: false },
-      { tabId: 'b', title: null, agentName: 'Other', cwd: '/work/project', additionalDirectories: [], running: true },
+      { tabId: 'a', title: 'Fix the build', agentName: 'OpenCode', cwd: '/work/project', additionalDirectories: ['/other'], status: 'quiet', review },
+      { tabId: 'b', title: null, agentName: 'Other', cwd: '/work/project', additionalDirectories: [], status: 'working', review },
     ] });
     const first = screen.getByRole('tab', { name: 'Fix the build' });
     const second = screen.getByRole('tab', { name: 'Other' });
@@ -90,7 +133,7 @@ describe('session tabs', () => {
     const { connect, send } = renderTabs();
     connect();
 
-    send({ type: 'sessionTabs', selectedTabId: 'a', tabs: [{ tabId: 'a', title: null, agentName: 'OpenCode', cwd: '/work/project', additionalDirectories: [], running: true }] });
+    send({ type: 'sessionTabs', selectedTabId: 'a', tabs: [{ tabId: 'a', title: null, agentName: 'OpenCode', cwd: '/work/project', additionalDirectories: [], status: 'working', review }] });
     expect(screen.getByLabelText('Actively working').classList.contains('bg-success')).toBe(true);
 
     connect();

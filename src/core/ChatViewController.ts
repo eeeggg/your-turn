@@ -25,7 +25,7 @@ import type {
 } from '@/shared/WebviewMessages';
 import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/sessions/Manager';
 import type { SessionStateView } from '@/core/sessions/States';
-import type { SessionDelivery, SessionLoad, SessionIdentity } from '@/core/sessions/UpdateHandler';
+import type { SessionDelivery, SessionLoad, SessionIdentity, SessionRegistration } from '@/core/sessions/UpdateHandler';
 import type { CommandSource } from '@/core/AgentTerminals';
 import type { ShownContent } from '@/core/CommandOutput';
 import { logDebug, logError, logInfo, messageOf } from '@/core/Log';
@@ -35,6 +35,8 @@ import type { Commands, Window } from '@/core/VsCodeApi';
 import type { RetainedQuestion, SettledQuestion } from '@/core/sessions/Interactions';
 import { SessionTabs } from '@/core/sessions/Tabs';
 import type { SessionCommands } from '@/core/sessions/Commands';
+import type { ReviewControls } from '@/core/review/ReviewControls';
+import type { Reviews } from '@/core/review/Reviews';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<
@@ -44,6 +46,7 @@ export type ChatSessions = Pick<
   | 'getSession'
   | 'sessionState'
   | 'sessionLoad'
+  | 'consumeReviewOpportunity'
   | 'editComposer'
   | 'changeQueuedPrompt'
   | 'submitPrompt'
@@ -53,6 +56,8 @@ export type ChatSessions = Pick<
   | 'setMode'
   | 'setConfigOption'
   | 'hasForegroundWork'
+  | 'sessionStatus'
+  | 'acknowledgeCompletion'
   | 'onChanged'
   | 'interactions'
 >;
@@ -168,9 +173,49 @@ export class ChatViewController {
   private presented = new WeakMap<object, Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number]
     | Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'turn' }>['parts'][number]>();
   private readonly tabs: SessionTabs;
+  private lastTabStatuses = new Map<string, SessionTabsSnapshot['tabs'][number]['status']>();
+  private tabAnnouncementRevision = 0;
   get sessionTabs(): SessionTabs { return this.tabs; }
   notifyTabsChanged(): void { this.sendTabs(true); }
   private navigation: Pick<SessionCommands, 'selectTab' | 'closeTab'> | undefined;
+  private tabReviews: Pick<Reviews, 'summary' | 'onSummaryChanged'> | undefined;
+  private stopTabReviews: (() => void) | undefined;
+  private reviewOpening: Pick<ReviewControls, 'turnEnded'> | undefined;
+  private reviewSelection: SessionRegistration | null = null;
+  private readonly reviewAttempts = new Set<Promise<void>>();
+
+  setReviewOpening(controls: Pick<ReviewControls, 'turnEnded'>): void { this.reviewOpening = controls; }
+
+  setTabReviews(reviews: Pick<Reviews, 'summary' | 'onSummaryChanged'>): void {
+    this.stopTabReviews?.();
+    this.tabReviews = reviews;
+    this.stopTabReviews = reviews.onSummaryChanged(({ configuredName, sessionId }) => {
+      if (this.tabs.has(configuredName, sessionId)) { this.sendTabs(); }
+    });
+    this.sendTabs();
+  }
+
+  reviewOpeningSettled(): Promise<void> { return Promise.all(this.reviewAttempts).then(() => {}); }
+
+  notifyTurnEnded(registration: SessionRegistration): void {
+    this.tryReviewOpening(registration, false);
+  }
+
+  private tryReviewOpening(registration: SessionRegistration, deferred: boolean): void {
+    const controls = this.reviewOpening;
+    if (!controls || this.disposed || this.sessions.getActiveSession() !== registration) { return; }
+    const identity = { configuredName: registration.agentName, sessionId: registration.sessionId };
+    if (this.sessions.sessionLoad(identity)) { return; }
+    const revision = this.sessions.sessionState(identity)?.reviewOpportunity;
+    if (revision == null) { return; }
+    const current = () => !this.disposed && this.sessions.getActiveSession() === registration
+      && registration.agentName === identity.configuredName && this.sessions.sessionState(identity)?.reviewOpportunity === revision;
+    const attempt = controls.turnEnded(registration, current, deferred).then((outcome) => {
+      if (outcome !== 'invalidated' && current()) { this.sessions.consumeReviewOpportunity(identity, revision); }
+    }).catch((error: unknown) => logError("Showing the turn's change failed", error));
+    this.reviewAttempts.add(attempt);
+    void attempt.then(() => this.reviewAttempts.delete(attempt));
+  }
 
   setTabNavigation(navigation: Pick<SessionCommands, 'selectTab' | 'closeTab'>): void {
     this.navigation = navigation;
@@ -191,6 +236,7 @@ export class ChatViewController {
     this.tabs = tabs;
     this.stopQuestions = sessions.interactions.subscribe((created) => {
       this.sendQuestions();
+      this.sendTabs(false, true);
       if (created && !this.environment.visible && this.questionSource(created.interaction.interactionId)) {
         void this.discoverQuestion(created.interaction, created.agentName, created.agentId);
       }
@@ -336,6 +382,7 @@ export class ChatViewController {
         this.resetMarkdownImages();
         logInfo('Chat view ready');
         this.setTurnInProgress(this.hasRunningTurn);
+        this.rememberTabStatuses(this.presentTabs());
         this.sendContentSnapshot(true);
         break;
       case 'openFile':
@@ -445,6 +492,11 @@ export class ChatViewController {
       }
     }
     this.sendContentSnapshot(true);
+    const selected = this.sessions.getActiveSession() ?? null;
+    if (selected !== this.reviewSelection) {
+      this.reviewSelection = selected;
+      if (selected) { this.tryReviewOpening(selected, true); }
+    }
   }
 
   /** The session is gone, whether its agent exited or the user disconnected it. */
@@ -493,13 +545,14 @@ export class ChatViewController {
   notifyLoadSessionEnd(load: SessionLoad, ok: boolean): boolean {
     if (this.shownLoad !== load) { return false; }
     this.shownLoad = undefined;
-    const activeId = this.sessions.getActiveSessionId();
-    if (activeId !== null && activeId !== load.registration.sessionId) { return false; }
     const current = this.sessions.getSession({ configuredName: load.registration.agentName, sessionId: load.registration.sessionId });
     if (current && current !== load.registration) { return false; }
+    const active = this.sessions.getActiveSession();
+    if (active && active !== load.registration) { return false; }
     this.sendContentSnapshot();
     this.post({ type: 'loadSessionEnd', ok });
     this.sendActivity();
+    if (ok) { this.tryReviewOpening(load.registration, true); }
     return true;
   }
 
@@ -515,11 +568,12 @@ export class ChatViewController {
     this.disposed = true;
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); }
     this.stopActivity();
+    this.stopTabReviews?.();
     this.imageBytes.clear();
     this.resetMarkdownImages();
     this.turnListeners.clear();
     this.stopQuestions();
-    this.disposal = Promise.resolve();
+    this.disposal = this.reviewOpeningSettled();
     return this.disposal;
   }
 
@@ -608,23 +662,49 @@ export class ChatViewController {
     };
   }
 
-  private sendTabs(includeEmpty = false): void {
-    const snapshot = this.presentTabs();
+  private sendTabs(includeEmpty = false, statusOnly = false): void {
+    const navigation = this.tabs.snapshot();
+    const selected = navigation.tabs.find((tab) => tab.tabId === navigation.selectedTabId);
+    if (selected) {
+      const identity = { configuredName: selected.agentName, sessionId: selected.sessionId };
+      if (this.sessions.sessionStatus(identity) === 'completed') { this.sessions.acknowledgeCompletion(identity); }
+    }
+    const snapshot = this.presentTabs(navigation);
     if (!includeEmpty && snapshot.tabs.length === 0) { return; }
+    const previous = this.lastTabStatuses;
+    if (statusOnly && snapshot.tabs.every((tab) => previous.get(tab.tabId) === tab.status)) { return; }
+    this.rememberTabStatuses(snapshot);
     this.post({ type: 'sessionTabs', ...snapshot });
+    const announced = snapshot.tabs.flatMap(({ tabId, title, agentName, status }) => {
+      if (previous.get(tabId) === status) { return []; }
+      const message = status === 'needsInput' ? 'Needs your input' : status === 'failed' ? 'Interrupted or failed'
+        : status === 'completed' ? 'Finished' : undefined;
+      return message ? [`${title || agentName}: ${message}.`] : [];
+    });
+    if (announced.length > 0) {
+      this.post({ type: 'sessionTabAnnouncement', revision: ++this.tabAnnouncementRevision, text: announced.join(' ') });
+    }
   }
 
-  private presentTabs(): SessionTabsSnapshot {
-    const snapshot = this.tabs.snapshot();
+  private rememberTabStatuses(snapshot: SessionTabsSnapshot): void {
+    this.lastTabStatuses = new Map(snapshot.tabs.map(({ tabId, status }) => [tabId, status]));
+  }
+
+  private presentTabs(snapshot = this.tabs.snapshot()): SessionTabsSnapshot {
     const additionalDirectories = this.workspace?.workspaceRoots().additionalDirectories ?? [];
     return {
       selectedTabId: snapshot.selectedTabId,
-      tabs: snapshot.tabs.map((tab) => ({
-        tabId: tab.tabId, title: tab.title ?? null, agentName: tab.agentDisplayName,
-        cwd: tab.cwd, additionalDirectories: [...additionalDirectories],
-        running: this.tabs.matches(tab.tabId, this.sessions.getSession({ configuredName: tab.agentName, sessionId: tab.sessionId }))
-          && this.sessions.hasForegroundWork({ configuredName: tab.agentName, sessionId: tab.sessionId }),
-      })),
+      tabs: snapshot.tabs.map((tab) => {
+        const identity = { configuredName: tab.agentName, sessionId: tab.sessionId };
+        const review = this.tabReviews?.summary(identity);
+        const status = this.sessions.sessionStatus(identity);
+        return {
+          tabId: tab.tabId, title: tab.title ?? null, agentName: tab.agentDisplayName,
+          cwd: tab.cwd, additionalDirectories: [...additionalDirectories],
+          review: { modified: review?.modified ?? false, created: review?.created ?? false, deleted: review?.deleted ?? false },
+          status: status === 'completed' && tab.tabId === snapshot.selectedTabId ? 'quiet' : status,
+        };
+      }),
     };
   }
 

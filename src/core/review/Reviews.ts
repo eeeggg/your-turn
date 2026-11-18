@@ -29,6 +29,13 @@ interface ReviewDocument {
 /** The shown review changed: another session's is shown, or a file in it came under review, changed or left it. */
 export type ShownReviewListener = () => void;
 
+interface ReviewSummary {
+  readonly fileCount: number;
+  readonly modified: boolean;
+  readonly created: boolean;
+  readonly deleted: boolean;
+}
+
 export interface ReviewAdmission {
   resolutionBlocked(): boolean;
   onChanged(listener: () => void): () => void;
@@ -62,6 +69,7 @@ export type ReviewDecisionResult =
 
 interface SessionReview {
   identity: SessionIdentity;
+  summary: ReviewSummary;
   readonly view: ReviewView;
   readonly guards: Map<string, { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard }>;
   readonly order: Map<string, number>;
@@ -87,6 +95,11 @@ class CapturedDecision implements ReviewDecision {
 
 const keyOf = ({ configuredName, sessionId }: SessionIdentity): string => JSON.stringify([configuredName, sessionId]);
 const identityOf = ({ agentName, sessionId }: SessionRegistration): SessionIdentity => ({ configuredName: agentName, sessionId });
+const emptySummary: ReviewSummary = Object.freeze({ fileCount: 0, modified: false, created: false, deleted: false });
+
+function sameSummary(a: ReviewSummary, b: ReviewSummary): boolean {
+  return a.fileCount === b.fileCount && a.modified === b.modified && a.created === b.created && a.deleted === b.deleted;
+}
 
 /**
  * Retains shared pending files and each configuration/session's associations independently of registration. Each source has its own guards;
@@ -97,6 +110,7 @@ export class Reviews {
   private readonly sessions = new Map<string, SessionReview>();
   private readonly loading = new Map<string, SessionLoad>();
   private readonly listeners = new Set<ShownReviewListener>();
+  private readonly summaryListeners = new Set<(identity: SessionIdentity) => void>();
   /** Each session's updates so far, settled once all were taken. */
   private readonly taken = new Map<string, Promise<unknown>>();
   private readonly pending = new Set<Promise<void>>();
@@ -122,10 +136,11 @@ export class Reviews {
       (path, read) => this.enqueue(path, async () => { await read(); return true; }).then(() => {}));
     this.review.addListener((path) => {
       const shown = this.shownSessionId !== null && this.sessions.get(this.shownSessionId)?.order.has(path);
+      const affected = [...this.sessions.values()].filter((session) => session.order.has(path));
       if (!this.review.file(path)) {
         for (const observation of this.observations.get(path) ?? []) { observation.retired = true; }
         this.lifetimes.delete(path);
-        for (const session of this.sessions.values()) { session.order.delete(path); }
+        for (const session of affected) { session.order.delete(path); }
       } else if (!this.lifetimes.has(path)) {
         const lifetime = { evidence: 0 };
         this.lifetimes.set(path, lifetime);
@@ -133,6 +148,7 @@ export class Reviews {
           if (observation.lifetime === undefined && !observation.retired) { observation.lifetime = lifetime; }
         }
       }
+      this.refreshSummaries(affected);
       if (shown) { this.changed(); }
     });
     this.detachAdmission = admission.onChanged(() => this.changed());
@@ -304,17 +320,24 @@ export class Reviews {
   }
 
   configurationRenamed(from: string, to: string): void {
+    if (from === to) { return; }
+    const previous = new Map<SessionIdentity, ReviewSummary>();
     if (this.selected) { this.shownSessionId = keyOf(identityOf(this.selected)); }
     for (const [key, session] of this.sessions) {
       if (session.identity.configuredName !== from) { continue; }
+      const identity = { ...session.identity, configuredName: to };
+      previous.set(session.identity, session.summary);
+      previous.set(identity, this.summary(identity));
       this.sessions.delete(key);
-      session.identity = { ...session.identity, configuredName: to };
+      session.identity = identity;
       const renamed = keyOf(session.identity);
       this.sessions.set(renamed, session);
       const taken = this.taken.get(key);
       if (taken) { this.taken.delete(key); this.taken.set(renamed, taken); }
       if (this.shownSessionId === key) { this.shownSessionId = renamed; }
     }
+    this.notifySummaries([...previous].filter(([identity, summary]) => !sameSummary(summary, this.summary(identity)))
+      .map(([identity]) => identity));
   }
 
   sourceRetired(sourceId: string): void {
@@ -332,6 +355,17 @@ export class Reviews {
 
   removeListener(listener: ShownReviewListener): void {
     this.listeners.delete(listener);
+  }
+
+  /** Pending-file counts and categories, independent of the selected session. */
+  summary(identity: SessionIdentity): ReviewSummary {
+    return this.sessions.get(keyOf(identity))?.summary ?? emptySummary;
+  }
+
+  /** Notifies after the affected summaries are readable, with no initial notification. */
+  onSummaryChanged(listener: (identity: SessionIdentity) => void): () => void {
+    if (!this.disposed) { this.summaryListeners.add(listener); }
+    return () => { this.summaryListeners.delete(listener); };
   }
 
   /** Whether a session is active, even one whose review was not made yet, as it is made on its first update. */
@@ -365,10 +399,9 @@ export class Reviews {
   }
 
   /** Settles once the session's updates so far were taken, as its turn can end before the files they name were read. */
-  async afterShownTurn(registration: SessionRegistration, present: (review: ReviewView, stillSelected: () => boolean) => Promise<void>): Promise<void> {
+  async afterShownTurn<T>(registration: SessionRegistration, present: (review: ReviewView, stillSelected: () => boolean) => Promise<T>): Promise<T | undefined> {
     if (this.disposed || this.selected !== registration) { return; }
-    const entry = this.sessions.get(keyOf(identityOf(registration)));
-    if (!entry) { return; }
+    const entry = this.session(identityOf(registration));
     const revision = this.selectionRevision;
     const taken = this.taken.get(keyOf(entry.identity));
     const received = entry.view.files().flatMap((file) => this.ingress.get(file.path) ?? []);
@@ -378,7 +411,8 @@ export class Reviews {
     if (!current()) { return; }
     const established = entry.view.files().flatMap((file) => this.ingress.get(file.path) ?? []);
     await Promise.all([...received, ...established]);
-    if (current()) { await present(entry.view, current); }
+    if (current()) { return present(entry.view, current); }
+    return undefined;
   }
 
   loadStarted(load: SessionLoad): void {
@@ -414,6 +448,7 @@ export class Reviews {
     this.disposed = true;
     this.detachAdmission();
     this.listeners.clear();
+    this.summaryListeners.clear();
     this.shownSessionId = null;
     this.selected = null;
     const followed = this.followed.dispose();
@@ -439,7 +474,7 @@ export class Reviews {
         files: () => [...order].sort((a, b) => a[1] - b[1]).flatMap(([path]) => file(path) ?? []),
         file,
       });
-      session = { identity, view, guards: new Map(), order };
+      session = { identity, summary: emptySummary, view, guards: new Map(), order };
       this.sessions.set(sessionId, session);
     }
     return session;
@@ -464,7 +499,10 @@ export class Reviews {
         this.review.changed(path, evidence.before, content);
         const lifetime = this.lifetimes.get(path);
         if (lifetime) { lifetime.evidence++; }
-        if (associated && this.review.file(path) === before && keyOf(session.identity) === this.shownSessionId) { this.changed(); }
+        if (associated && this.review.file(path) === before) {
+          this.refreshSummaries([session]);
+          if (keyOf(session.identity) === this.shownSessionId) { this.changed(); }
+        }
         return true;
       };
       return this.enqueue(path, take);
@@ -484,6 +522,33 @@ export class Reviews {
   private async settle(path: string): Promise<void> {
     const received = this.ingress.get(path);
     if (received) { await received; }
+  }
+
+  private refreshSummaries(affected: readonly SessionReview[]): void {
+    const changed: SessionIdentity[] = [];
+    for (const session of affected) {
+      let modified = false;
+      let created = false;
+      let deleted = false;
+      for (const path of session.order.keys()) {
+        const file = this.review.file(path);
+        if (!file) { continue; }
+        if (file.baseline === null) { created = true; }
+        else if (file.current === null) { deleted = true; }
+        else { modified = true; }
+      }
+      const summary = { fileCount: session.order.size, modified, created, deleted };
+      if (sameSummary(session.summary, summary)) { continue; }
+      session.summary = Object.freeze(summary);
+      changed.push(session.identity);
+    }
+    this.notifySummaries(changed);
+  }
+
+  private notifySummaries(changed: readonly SessionIdentity[]): void {
+    for (const identity of changed) {
+      for (const listener of this.summaryListeners) { listener(identity); }
+    }
   }
 
   private changed(): void {

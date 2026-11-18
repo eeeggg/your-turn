@@ -95,6 +95,10 @@ export function sessionTabs(window: Page): Locator {
   return chatFrame(window).getByRole('tablist', { name: 'Sessions', exact: true });
 }
 
+export function chatTheme(window: Page): Locator {
+  return chatFrame(window).locator('body');
+}
+
 /** The chat view's header uses VS Code's private pane DOM, identified by its contributed icon. */
 export function chatViewTitle(window: Page): Locator {
   return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-comment-discussion') })

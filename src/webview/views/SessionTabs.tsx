@@ -1,12 +1,28 @@
-import { useLayoutEffect, useRef } from 'react';
+import { useId, useLayoutEffect, useRef } from 'react';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
+
+const reviewMarkers = [
+  { key: 'modified', glyph: 'M', label: 'Modified files', color: 'text-review-modified' },
+  { key: 'created', glyph: 'U', label: 'Created files', color: 'text-review-created' },
+  { key: 'deleted', glyph: 'D', label: 'Deleted files', color: 'text-review-deleted' },
+] as const;
+
+const statusMarkers = {
+  quiet: null,
+  working: { glyph: '', label: 'Actively working', style: 'activity-dot size-2 rounded-full bg-success' },
+  needsInput: { glyph: '?', label: 'Needs your input', style: 'font-semibold text-warning' },
+  failed: { glyph: '!', label: 'Interrupted or failed', style: 'font-semibold text-failure' },
+  completed: { glyph: '✓', label: 'Finished while unselected', style: 'text-muted-foreground' },
+} as const;
 
 /** Manual-activation tabs: arrow keys move focus; Enter or Space requests an open. */
 export function SessionTabs() {
   const navigation = useSelector((state) => state.sessionTabs);
+  const announcement = useSelector((state) => state.tabAnnouncement);
   const dispatch = useDispatch();
   const strip = useRef<HTMLDivElement>(null);
   const focusedTab = useRef<string | null>(null);
+  const descriptionPrefix = useId();
   const selected = navigation.selectedTabId ?? navigation.tabs[0]?.tabId;
 
   useLayoutEffect(() => {
@@ -18,6 +34,7 @@ export function SessionTabs() {
   }, [navigation, selected]);
 
   return (
+    <>
     <div id="sessionTabs" ref={strip} role="tablist" aria-label="Sessions" hidden={navigation.tabs.length === 0}
       onBlur={(event) => {
         if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) { focusedTab.current = null; }
@@ -27,12 +44,22 @@ export function SessionTabs() {
         {navigation.tabs.map((tab, index) => {
           const label = tab.title || tab.agentName;
           const current = tab.tabId === navigation.selectedTabId;
+          const descriptionId = `${descriptionPrefix}-${tab.tabId}`;
+          const markers = reviewMarkers.filter(({ key }) => tab.review[key]);
+          const status = statusMarkers[tab.status];
+          const description = [
+            ...(status ? [status.label] : []),
+            ...markers.map(({ label }) => label),
+          ].map((part) => `${part}.`).join(' ');
           return <div key={tab.tabId} role="presentation"
-            className={`group flex max-w-[min(100%,15rem)] flex-none items-center border-r border-border ${current ? 'bg-background text-foreground' : 'text-muted-foreground'}`}>
+            className={`flex max-w-[min(100%,15rem)] flex-none items-center border-t-2 border-r border-r-border ${current
+              ? 'session-tab-selected border-t-tab-active-border bg-tab-active text-tab-active-foreground'
+              : 'border-t-transparent bg-tab-inactive text-tab-inactive-foreground'}`}>
             <button type="button" role="tab" aria-label={label} aria-selected={current} tabIndex={tab.tabId === selected ? 0 : -1}
+              aria-describedby={description ? descriptionId : undefined}
               onFocus={() => { focusedTab.current = tab.tabId; }}
               title={[label, tab.agentName, tab.cwd, ...tab.additionalDirectories].join('\n')}
-              className="flex min-w-0 cursor-pointer items-center gap-2 px-3 py-2 text-sm hover:bg-hover focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring"
+              className={`flex min-w-0 cursor-pointer items-center gap-2 px-3 py-2 text-sm focus-visible:-outline-offset-2 focus-visible:outline-2 focus-visible:outline-ring ${current ? '' : 'hover:bg-hover'}`}
               onClick={() => dispatch({ type: 'sessionTabSelected', tabId: tab.tabId })}
               onKeyDown={(event) => {
                 let next: number;
@@ -50,9 +77,13 @@ export function SessionTabs() {
                 event.preventDefault();
                 strip.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
               }}>
-              {tab.running && <span aria-label="Actively working" className="activity-dot size-2 flex-none rounded-full bg-success" />}
+              {status && <span aria-hidden="true" aria-label={status.label} className={`flex-none ${status.style}`}>{status.glyph}</span>}
+              {markers.length > 0 && <span aria-hidden="true" className="session-tab-markers flex flex-none gap-0.5">
+                {markers.map(({ key, glyph, color }) => <span key={key} className={color}>{glyph}</span>)}
+              </span>}
               <span className="truncate">{label}</span>
             </button>
+            {description && <span id={descriptionId} hidden>{description}</span>}
             <button type="button" aria-label={`Close ${label}`} title={`Close ${label}`}
               onFocus={() => { focusedTab.current = tab.tabId; }}
               className="mr-1 flex size-6 flex-none cursor-pointer items-center justify-center rounded-sm text-base hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
@@ -61,5 +92,9 @@ export function SessionTabs() {
         })}
       </div>
     </div>
+    <span id="sessionTabStatus" className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+      {announcement && <span key={announcement.revision}>{announcement.text}</span>}
+    </span>
+    </>
   );
 }

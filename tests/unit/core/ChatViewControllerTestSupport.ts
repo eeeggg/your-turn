@@ -92,6 +92,8 @@ export class FakeSessions implements ChatSessions {
     const activity = this.getSession(identity) && this.activity.get(identity.sessionId);
     return activity !== undefined && (activity.submissions.size > 0 || activity.foreground === 'running' || activity.foreground === 'requiresAction');
   };
+  sessionStatus: ChatSessions['sessionStatus'] = (identity) => this.hasForegroundWork(identity) ? 'working' : 'quiet';
+  acknowledgeCompletion: ChatSessions['acknowledgeCompletion'] = () => {};
   activeId: string | null = SESSION_ID;
   session: SessionInfo | undefined = sessionInfo();
   readonly prompts: { text: string; reply: Deferred<undefined> }[] = [];
@@ -99,6 +101,7 @@ export class FakeSessions implements ChatSessions {
   getActiveSessionId = () => this.activeId;
   getActiveSession = () => this.session?.sessionId === this.activeId ? this.session : undefined;
   sessionState: ChatSessions['sessionState'] = (identity) => this.retained.view(identity);
+  consumeReviewOpportunity: ChatSessions['consumeReviewOpportunity'] = (...args) => this.retained.consumeReviewOpportunity(...args);
   editComposer: ChatSessions['editComposer'] = (...args) => this.retained.editComposer(...args);
   submitPrompt: ChatSessions['submitPrompt'] = (identity, generation, text) => {
     if (!this.getSession(identity) || this.retained.view(identity)?.generation !== generation) { return; }

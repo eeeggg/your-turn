@@ -29,7 +29,7 @@ const lineChanged = (line: number) => ({ original: { start: line, end: line + 1 
  * `/w/gone.ts` deleted when `deleted` is set and `/w/m.ts` changed twice when `changes` is; the editors record what
  * they were asked, their open documents being what the disk holds, and `failing` makes restores reject.
  */
-async function controls({ deleted = false, changes = false } = {}) {
+async function controls({ deleted = false, changes = false, canRevealDeferred = true } = {}) {
   const disk: Record<string, FileContent> = { '/w/a.ts': 'A\n', '/w/b.ts': 'B\n', '/w/c.ts': 'C\n', '/w/gone.ts': null, '/w/m.ts': twoChanges.after };
   const documents = new Map<string, string>(Object.entries(disk).flatMap(([path, text]) => text === null ? [] : [[path, text]]));
   const versions = new Map<string, number>();
@@ -92,14 +92,18 @@ async function controls({ deleted = false, changes = false } = {}) {
     activePath: () => active,
     isOpen: (path) => active === path || opened.includes(path) || shown.includes(path),
     open: async (path, current) => { followUp?.(current); if (!current || current()) { opened.push(path); } },
-    showChange: async (path) => { shown.push(path); },
+    showChange: async (path, current) => {
+      followUp?.(current);
+      if (current && !current()) { return; }
+      shown.push(path);
+    },
     showChangeOf: async (path, changes, index) => {
       views.push(`show ${path} at ${String(changes[index]?.modified.start)} of ${changes.map(({ modified }) => modified.start).join()}`);
     },
     closeChange: async (path) => { views.push(`close ${path} with ${documents.get(path) === twoChanges.after ? 'both' : 'one'}`); },
     showError: (message) => errors.push(message),
     text: (path) => documents.get(path),
-  });
+  }, () => canRevealDeferred);
   return {
     controls: subject,
     reviews,
@@ -122,6 +126,22 @@ async function controls({ deleted = false, changes = false } = {}) {
 }
 
 describe('ReviewControls', () => {
+  it('does not open a deferred review in quick diff mode but keeps selected turn-end behavior', async () => {
+    const { controls: subject, shown } = await controls({ canRevealDeferred: false });
+    expect(await subject.turnEnded(SESSION_ID, () => true, true)).toBe('not-automatic');
+    expect(shown).toEqual([]);
+    expect(await subject.turnEnded(SESSION_ID)).toBe('opened');
+    expect(shown).toEqual(['/w/a.ts']);
+  });
+
+  it('reports an invalidated attempt when an editor rejects the final guard', async () => {
+    const { controls: subject, reviews, shown, beforeFollowUp } = await controls();
+    beforeFollowUp(() => reviews.activeSessionChanged(OTHER_SESSION_ID));
+    const attempt = await subject.turnEnded(SESSION_ID);
+    expect(attempt).toBe('invalidated');
+    expect(shown).toEqual([]);
+  });
+
   it('guards final advancement against a session switch inside editor preparation', async () => {
     const { controls: subject, reviews, opened, activate, beforeFollowUp } = await controls();
     activate('/w/a.ts');

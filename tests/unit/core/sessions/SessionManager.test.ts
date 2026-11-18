@@ -48,6 +48,51 @@ const LAST_PAGE_SESSION = '59e34b91-76f2-4b5b-9a78-73382d3fe8b1';
 const KEPT_SESSION = '1468854e-6b9b-4e7a-89e0-9f7b8771bdd7';
 
 describe('SessionManager', () => {
+  it('retains a background completion until its tab is selected', async () => {
+    const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION, (app) =>
+      app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' }))).script });
+    const first = await manager.connectToAgent('fake');
+    const second = { ...first, sessionId: SECOND_SESSION, title: 'Other session' };
+    const snapshot = () => posted.filter((message) => message.type === 'sessionTabs').at(-1);
+    // Control tab selection without changing the production connection policy.
+    chatView.sessionTabs.open(second);
+    chatView.notifyTabsChanged();
+    await manager.sendPrompt(address(FIRST_SESSION), 'Continue');
+    expect(snapshot()).toMatchObject({ selectedTabId: 'tab-2', tabs: [{ status: 'completed' }, { status: 'quiet' }] });
+    expect(posted.filter(({ type }) => type === 'sessionTabAnnouncement')).toHaveLength(1);
+
+    posted.length = 0;
+    await chatView.handleMessage({ type: 'ready' });
+    expect(posted.map(({ type }) => type)).not.toContain('sessionTabAnnouncement');
+    chatView.sessionTabs.open(first);
+    chatView.notifyTabsChanged();
+    expect(snapshot()).toMatchObject({ selectedTabId: 'tab-1', tabs: [{ status: 'quiet' }, { status: 'quiet' }] });
+    chatView.sessionTabs.open(second);
+    chatView.notifyTabsChanged();
+    expect(snapshot()).toMatchObject({ tabs: [{ status: 'quiet' }, { status: 'quiet' }] });
+  });
+
+  it('retains prompt failure on selection and clears it when new work begins', async () => {
+    let fail = true;
+    const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION, (app) =>
+      app.onRequest(methods.agent.session.prompt, () => {
+        if (fail) { throw RequestError.invalidParams(undefined, 'Prompt rejected'); }
+        return { stopReason: 'cancelled' };
+      })).script });
+    const registration = await manager.connectToAgent('fake');
+    const tabs = () => posted.flatMap((message) => message.type === 'sessionTabs' ? message.tabs : []);
+    await expect(manager.sendPrompt(address(FIRST_SESSION), 'Continue')).rejects.toThrow('Prompt rejected');
+    expect(tabs().at(-1)).toMatchObject({ status: 'failed' });
+    chatView.notifySessionOpened(address(registration.sessionId));
+    expect(tabs().at(-1)).toMatchObject({ status: 'failed' });
+
+    posted.length = 0;
+    fail = false;
+    await manager.sendPrompt(address(FIRST_SESSION), 'Try again');
+    expect(tabs()).toContainEqual(expect.objectContaining({ status: 'working' }));
+    expect(tabs().at(-1)).toMatchObject({ status: 'quiet' });
+  });
+
   it('opens navigation references for create, load and resume, but not a failed replay', async () => {
     const script: AgentScript = () => fakeAgent({ agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } })
       .onRequest(methods.agent.session.new, () => ({ sessionId: randomUUID() }))
@@ -63,10 +108,11 @@ describe('SessionManager', () => {
     await expect(manager.loadSession('fake', 'failed')).rejects.toThrow('Cannot load');
     await chatView.handleMessage({ type: 'ready' });
     const snapshots = posted.filter((message) => message.type === 'sessionTabs');
+    const review = { modified: false, created: false, deleted: false };
     expect(snapshots.at(-1)).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-3', tabs: [
-      { tabId: 'tab-1', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], running: false },
-      { tabId: 'tab-2', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], running: false },
-      { tabId: 'tab-3', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], running: false },
+      { tabId: 'tab-1', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], status: 'quiet', review },
+      { tabId: 'tab-2', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], status: 'quiet', review },
+      { tabId: 'tab-3', title: null, agentName: 'Fake Agent', cwd: '/work', additionalDirectories: [], status: 'quiet', review },
     ] });
   });
 
@@ -125,7 +171,7 @@ describe('SessionManager', () => {
   });
 
   it.each(['disconnect', 'exit'] as const)('resets Stop and review context through the extension lifecycle on %s', async (ending) => {
-    const { manager, chatView, agents, executeCommand } = setup({ fake: sessionAgent(FIRST_SESSION).script });
+    const { manager, chatView, agents, executeCommand, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
     manager.on('active-session-changed', () => chatView.notifyActiveSessionChanged());
     manager.on('session-removed', ({ sessionId }) => chatView.notifySessionRemoved(sessionId));
     manager.on('session-ended', ({ sessionId }, reason) => chatView.notifySessionEnded(sessionId, reason));
@@ -140,6 +186,8 @@ describe('SessionManager', () => {
     else { await agents.running('fake')[0]?.crash(); }
     expect(chatView.hasRunningTurn).toBe(false);
     expect(executeCommand).toHaveBeenLastCalledWith('setContext', 'your-turn.turnInProgress', false);
+    expect(posted.filter((message) => message.type === 'sessionTabs').at(-1))
+      .toMatchObject({ tabs: [{ status: ending === 'exit' ? 'failed' : 'quiet' }] });
   });
 
   it('keeps another agent opening snapshot when an unrelated connection exits', async () => {
@@ -214,6 +262,24 @@ describe('SessionManager', () => {
     await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'agent_message_chunk', messageId: 'background', content: { type: 'text', text: 'Detached output' } } });
     await manager.listSessions('fake');
     expect(chatView.hasRunningTurn).toBe(false);
+    expect(posted.filter((message) => message.type === 'sessionTabs').at(-1)).toMatchObject({ tabs: [{ status: 'quiet' }] });
+  });
+
+  it('shows autonomous completion on an unselected tab, but not on a repeated idle report', async () => {
+    let client!: V2.AgentContext;
+    const { manager, chatView, posted } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] }))
+      .onRequest(V2.methods.agent.session.new, ({ client: connected }) => { client = connected; return { sessionId: FIRST_SESSION }; }) });
+    const session = await manager.connectToAgent('fake');
+    chatView.sessionTabs.open({ ...session, sessionId: SECOND_SESSION });
+    chatView.notifyTabsChanged();
+    await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'running' } });
+    for (let i = 0; i < 2; i++) {
+      await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+      await manager.listSessions('fake');
+    }
+    expect(posted.filter((message) => message.type === 'sessionTabs').at(-1)).toMatchObject({ tabs: [{ status: 'completed' }, { status: 'quiet' }] });
+    expect(posted.filter((message) => message.type === 'sessionTabAnnouncement')).toHaveLength(1);
   });
 
   it('retains running snapshots received before session creation or resume registration', async () => {

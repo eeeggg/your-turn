@@ -13,7 +13,7 @@ export function createReviewPresentation(reviews: Reviews): DiffReviewPresentati
     (...args) => scheduling.before(() => vscode.commands.executeCommand('vscode.diff', ...args)),
     undefined, createReviewEditors());
   const show = presentation.showChange.bind(presentation);
-  presentation.showChange = (path) => scheduling.accept(() => show(path));
+  presentation.showChange = (...args) => scheduling.accept(() => show(...args));
   const showOf = presentation.showChangeOf.bind(presentation);
   presentation.showChangeOf = (...args) => scheduling.accept(() => showOf(...args));
   const control = connectControl(Number(port), async (command, signal) => {
