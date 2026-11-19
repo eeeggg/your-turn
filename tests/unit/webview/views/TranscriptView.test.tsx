@@ -853,6 +853,20 @@ describe('a compaction', () => {
     view.send(report('cancelled'));
     expect(view.part('.compaction-header').textContent).toBe('Compaction cancelled in 10s');
   });
+
+  it('mounts compaction summary content only while its disclosure is open', async () => {
+    const view = renderChatView();
+    view.send(withSummary('completed'));
+    const details = view.part<HTMLDetailsElement>('.compaction-block');
+    expect(details.open).toBe(false);
+    expect(details.querySelector('.compaction-content')).toBeNull();
+
+    await toggle(details);
+    expect(details.querySelector('.compaction-content [data-streamdown="strong"]')?.textContent).toBe('Summary');
+
+    await toggle(details);
+    expect(details.querySelector('.compaction-content')).toBeNull();
+  });
 });
 
 describe('a thought', () => {
@@ -895,6 +909,22 @@ describe('a thought', () => {
     expect(thought.open).toBe(false);
     expect(view.store.getSnapshot().transcript.entries[0]).toMatchObject({ parts: [{ kind: 'thought', open: false }] });
   });
+
+  it('mounts thought content only while its disclosure is open', async () => {
+    const view = renderChatView();
+    view.connect();
+    view.thought('**secret reasoning**');
+    view.answer('answer');
+    const thought = view.part<HTMLDetailsElement>('.thought-block');
+    expect(thought.open).toBe(false);
+    expect(thought.querySelector('.thought-content')).toBeNull();
+
+    await toggle(thought);
+    expect(thought.querySelector('.thought-content [data-streamdown="strong"]')?.textContent).toBe('secret reasoning');
+
+    await toggle(thought);
+    expect(thought.querySelector('.thought-content')).toBeNull();
+  });
 });
 
 describe('tool calls', () => {
@@ -908,7 +938,7 @@ describe('tool calls', () => {
     expect(details.open).toBe(false);
     expect(header.textContent).toBe(command);
     expect(header.classList.contains('truncate')).toBe(true);
-    expect(view.part('.tc-body').style.display).toBe('none');
+    expect(view.container.querySelector('.tc-body')).toBeNull();
 
     await toggle(details);
     expect(details.open).toBe(true);
@@ -931,7 +961,7 @@ describe('tool calls', () => {
     expect(header.textContent).toBe(command);
   });
 
-  it('shows a distinct non-spinning icon, accessible status, title, and text content for each tool call', () => {
+  it('shows a distinct non-spinning icon, accessible status, title, and text content for each tool call', async () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'Run', status: 'running', content: [{ kind: 'text', text: 'one' }, { kind: 'text', text: 'two' }] });
@@ -954,11 +984,13 @@ describe('tool calls', () => {
     ]));
     expect(run.querySelector('.tc-summary .sr-only')?.textContent).toBe('Running: ');
     expect(run.querySelector('.tc-title')?.textContent).toBe('Run');
+    await toggle(run as HTMLDetailsElement);
     expect([...run.querySelectorAll('.tc-body-block')].map((block) => block.textContent)).toEqual(['one', 'two']);
     expect(run.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
     expect(run.querySelector('.tc-body-truncated')).toBeNull();
     expect(untitled.querySelector('.tc-title')?.textContent).toBe('Tool Call');
     expect(untitled.querySelector('.tc-summary .sr-only')?.textContent).toBe('Pending: ');
+    await toggle(untitled as HTMLDetailsElement);
     expect(untitled.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
     expect(done.querySelector('.tc-summary .sr-only')?.textContent).toBe('Completed: ');
     expect(fail.querySelector('.tc-summary .sr-only')?.textContent).toBe('Failed: ');
@@ -1060,7 +1092,7 @@ describe('tool calls', () => {
     expect(view.takePosted()).toEqual([{ type: 'openFile', target, toolCallId: 't1', file: 0 }]);
   });
 
-  it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", () => {
+  it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", async () => {
     const view = renderChatView();
     view.connect();
     const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 3, projection: 7 };
@@ -1076,14 +1108,17 @@ describe('tool calls', () => {
       { webviewSection: 'commandOutput', yourTurnTarget: target, yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
       { webviewSection: 'commandOutput', yourTurnTarget: target, yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
     ];
-    expect(contexts('.tc-command')).toEqual(expected);
     expect(contexts('.tc-summary')).toEqual([...expected, null]);
+    await toggle(view.part<HTMLDetailsElement>('#tc-c1'));
+    await toggle(view.part<HTMLDetailsElement>('#tc-c2'));
+    expect(contexts('.tc-command')).toEqual(expected);
   });
 
-  it("shows a command's terminal in its tool call as it updates and ends without a summary spinner", () => {
+  it("shows a command's terminal in its tool call as it updates and ends without a summary spinner", async () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
     expect(view.container.querySelector('.tc-body .tc-command')).toBeNull();
 
     view.send({ type: 'terminal', terminalId: 'term', text: 'running tests', truncated: false, exitStatus: null });
@@ -1095,11 +1130,12 @@ describe('tool calls', () => {
     expect(view.part('.tc-command').textContent).toBe('all passed');
   });
 
-  it("notes a command's earlier output not shown above its text, and how it failed below", () => {
+  it("notes a command's earlier output not shown above its text, and how it failed below", async () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'terminal', terminalId: 'term', text: 'Error: 3 tests failed', truncated: true, exitStatus: { exitCode: 1, signal: null } });
     view.toolCall({ toolCallId: 't1', title: 'npm test', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect([...view.part('.tc-command').children].map((part) => [part.className.split(' ')[0], part.textContent])).toEqual([
       ['tc-command-cut', 'Earlier output not shown'],
@@ -1109,33 +1145,36 @@ describe('tool calls', () => {
     expect(view.container.querySelector('.tc-body-truncated')).toBeNull();
   });
 
-  it("shows a command's text sent as text the same way", () => {
+  it("shows a command's text sent as text the same way", async () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'ls', status: 'running', content: [{ kind: 'commandOutput', text: 'a.ts\nb.ts', truncated: true }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect(view.part('.tc-command-cut').textContent).toBe('Earlier output not shown');
     expect(view.part('.tc-command-text').textContent).toBe('a.ts\nb.ts');
     expect(view.container.querySelector('.tc-running')).toBeNull();
   });
 
-  it('says the agent disconnected before a command still running finished, once its session ends', () => {
+  it('says the agent disconnected before a command still running finished, once its session ends', async () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'terminal', terminalId: 'term', text: 'watching', truncated: false, exitStatus: null });
     view.toolCall({ toolCallId: 't1', title: 'npm run watch', content: [{ kind: 'terminal', terminalId: 'term' }] });
 
     view.send({ type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect(view.container.querySelector('.tc-running')).toBeNull();
     expect(view.part('.tc-command-disconnected').textContent).toBe('The agent disconnected before the command finished.');
   });
 
-  it('notes content cut off at the limit', () => {
+  it('notes content cut off at the limit', async () => {
     const view = renderChatView();
     view.connect();
 
     view.toolCall({ toolCallId: 't1', title: 'Run', content: [{ kind: 'text', text: 'x'.repeat(25_000) }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect(view.part('.tc-body-block').textContent).toHaveLength(20_000);
     expect(view.part('.tc-body-truncated').textContent).toBe('... (output truncated)');
@@ -1173,5 +1212,55 @@ describe('tool calls', () => {
     fireEvent.click(summary);
     expect(summary.textContent).toBe('4 tool calls');
     expect(hookClasses(list)).toBe('turn-tools-list');
+  });
+
+  it('mounts tool call items in a collapsed group only once expanded', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'promptStart' });
+    for (const id of ['t1', 't2', 't3', 't4']) {
+      view.toolCall({ toolCallId: id, title: `Read ${id}`, status: 'completed' });
+    }
+    view.send({ type: 'promptEnd' });
+    const summary = view.part('.turn-tools-summary');
+    const list = view.part('.turn-tools-list');
+    expect(hookClasses(list)).toBe('turn-tools-list collapsed');
+    expect(list.querySelectorAll('.tool-call-inline')).toHaveLength(0);
+
+    fireEvent.click(summary);
+    expect(list.querySelectorAll('.tool-call-inline')).toHaveLength(4);
+
+    fireEvent.click(summary);
+    expect(list.querySelectorAll('.tool-call-inline')).toHaveLength(0);
+  });
+
+  it('mounts a tool call body and resolves its Markdown images only while open, keeping command summary context while closed', async () => {
+    const view = renderChatView();
+    view.connect();
+    const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0,
+      entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+    view.takePosted();
+    view.toolCall({ toolCallId: 't1', title: 'Run check', status: 'completed', content: [
+      { kind: 'commandOutput', text: 'ok', truncated: false },
+      { kind: 'text', text: '![Chart](https://images.example/chart.png)' },
+    ] });
+    const call = view.part<HTMLDetailsElement>('#tc-t1');
+    expect(call.open).toBe(false);
+    expect(call.querySelector('.tc-body')).toBeNull();
+    expect(view.takePosted()).toEqual([]);
+    expect(JSON.parse(call.querySelector<HTMLElement>('.tc-summary')?.dataset['vscodeContext'] ?? 'null')).toEqual({
+      webviewSection: 'commandOutput',
+      yourTurnTarget: target,
+      yourTurnTitle: 'Run check',
+      yourTurnToolCallId: 't1',
+    });
+
+    await toggle(call);
+    expect(call.querySelector('.tc-command-text')?.textContent).toBe('ok');
+    expect(view.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
+
+    await toggle(call);
+    expect(call.querySelector('.tc-body')).toBeNull();
   });
 });

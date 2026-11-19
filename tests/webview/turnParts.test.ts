@@ -7,6 +7,7 @@ import {
   plan,
   shownText,
   thought,
+  toggle,
   toolCall,
   type ChatPage
 } from '@tests/webview/chatPage';
@@ -42,11 +43,14 @@ describe('the parts of a turn', () => {
     expect(parts()).toEqual(['message agent: one more', 'message agent: two']);
   });
 
-  it('shows thinking after the answer as a thought of its own, below it', () => {
+  it('shows thinking after the answer as a thought of its own, below it', async () => {
     thought(page, 'first');
     answer(page, 'answer');
     thought(page, 'second');
 
+    expect(parts()).toEqual(['thought-block: Thought', 'message agent: answer', 'thought-block streaming:  Thinking…second']);
+
+    await toggle(page.document.querySelector<HTMLDetailsElement>('.thought-block'));
     expect(parts()).toEqual(['thought-block: Thoughtfirst', 'message agent: answer', 'thought-block streaming:  Thinking…second']);
   });
 

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
-import { connect, DEFAULT_SESSION_ID, loadChatPage, texts, toolCall, type ChatPage } from '@tests/webview/chatPage';
+import { connect, DEFAULT_SESSION_ID, loadChatPage, texts, toggle, toolCall, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 
@@ -86,9 +86,10 @@ describe('tool calls', () => {
     expect(shown('t1').open).toBe(true);
   });
 
-  it('keeps the status when a report carries none', () => {
+  it('keeps the status when a report carries none', async () => {
     toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running' });
     toolCall(page, { toolCallId: 't1', content: texts('partial output') });
+    await toggle(shown('t1'));
 
     expect(hookClasses(shown('t1').querySelector('.tc-icon'))).toBe('tc-icon running');
     expect(blocks('t1')).toEqual(['partial output']);
@@ -111,9 +112,10 @@ describe('tool calls', () => {
     expect(shown('t1').querySelector('.tc-title')?.textContent).toBe('Edit foo.ts');
   });
 
-  it('shows the text output in blocks', () => {
+  it('shows the text output in blocks', async () => {
     toolCall(page, { toolCallId: 't1', title: 'Edit foo.ts', status: 'pending' });
     toolCall(page, { toolCallId: 't1', status: 'completed', content: texts('first', 'second') });
+    await toggle(shown('t1'));
 
     expect(blocks('t1')).toEqual(['first', 'second']);
     const body = shown('t1').querySelector<HTMLElement>('.tc-body');
@@ -123,31 +125,36 @@ describe('tool calls', () => {
     expect(scroll?.querySelector('.tc-body-inner')).not.toBeNull();
   });
 
-  it('keeps existing output when a report has none', () => {
+  it('keeps existing output when a report has none', async () => {
     toolCall(page, { toolCallId: 't1', title: 'Run', status: 'running', content: texts('output') });
     toolCall(page, { toolCallId: 't1', status: 'completed' });
+    await toggle(shown('t1'));
 
     expect(blocks('t1')).toEqual(['output']);
   });
 
-  it('hides the body when there is no text output', () => {
+  it('hides the body when there is no text output', async () => {
     toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
+    expect(shown('t1').querySelector('.tc-body')).toBeNull();
 
+    await toggle(shown('t1'));
     expect(shown('t1').querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
   });
 
-  it('truncates output beyond 20,000 characters', () => {
+  it('truncates output beyond 20,000 characters', async () => {
     toolCall(page, { toolCallId: 't1', title: 'Run', status: 'pending' });
     toolCall(page, { toolCallId: 't1', status: 'completed', content: texts('a'.repeat(15_000), 'b'.repeat(10_000)) });
+    await toggle(shown('t1'));
 
     expect(blocks('t1').join('')).toHaveLength(20_000);
     expect(shown('t1').querySelector('.tc-body-truncated')?.textContent).toBe('... (output truncated)');
   });
 
-  it("shows a command's terminal in its tool call as it runs and how it failed once it ends", () => {
+  it("shows a command's terminal in its tool call as it runs and how it failed once it ends", async () => {
     page.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { configuredName: 'configured-fake', sessionId: DEFAULT_SESSION_ID, generation: 0, projection: 1 }, revision: 0,
       entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     toolCall(page, { toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    await toggle(shown('t1'));
     page.send({ type: 'terminal', terminalId: 'term', text: 'running', truncated: false, exitStatus: null });
     expect(shown('t1').querySelector('.tc-running')).toBeNull();
     expect(shown('t1').querySelector('.tc-command-text')?.textContent).toBe('running');

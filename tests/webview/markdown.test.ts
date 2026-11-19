@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { answer as agentText, connect, DEFAULT_SESSION_ID, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
+import { answer as agentText, connect, DEFAULT_SESSION_ID, loadChatPage, toggle, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
 const OTHER_SESSION_ID = 'f9e339f1-8507-4ed8-92ae-394cd34502a2';
@@ -206,9 +206,10 @@ describe('markdown while it streams', () => {
     expect(page.document.querySelectorAll('#messages img')).toHaveLength(0);
   });
 
-  it('replaces tool images and reference fallbacks without leaving old payloads', () => {
+  it('replaces tool images and reference fallbacks without leaving old payloads', async () => {
     const src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
     page.send({ type: 'toolCall', toolCallId: 't', content: [{ kind: 'image', src }, { kind: 'image', src: null, reference: true }] });
+    await toggle(page.byId<HTMLDetailsElement>('tc-t'));
     expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
     expect(page.document.querySelector('#messages')?.textContent).toContain('Image reference not displayed');
     page.send({ type: 'toolCall', toolCallId: 't', status: 'completed' });
@@ -279,14 +280,17 @@ describe('markdown while it streams', () => {
     expect(page.takePosted()).toEqual([]);
   });
 
-  it.each(['agentRichMessage', 'thoughtRichMessage', 'toolCall'] as const)('invalidates HTTPS consent on an identical %s content replacement', (surface) => {
+  it.each(['agentRichMessage', 'thoughtRichMessage', 'toolCall'] as const)('invalidates HTTPS consent on an identical %s content replacement', async (surface) => {
     const text = '![Picture](https://images.example/picture.gif)';
     const send = () => {
       if (surface === 'toolCall') { page.send({ type: 'toolCall', toolCallId: 'image-tool', content: [{ kind: 'text', text }] }); }
       else { page.send({ type: surface, messageId: 'image-message', content: [{ kind: 'text', text }] }); }
     };
     send();
-    if (surface === 'toolCall') { page.byId('tc-image-tool').querySelector('summary')?.click(); }
+    if (surface === 'toolCall') {
+      expect(page.takePosted()).toEqual([]);
+      await toggle(page.byId<HTMLDetailsElement>('tc-image-tool'));
+    }
     expect(page.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
     page.send({ type: 'markdownImageContext', target, context: 42 });
     const first = page.takePosted()[0];
@@ -349,7 +353,7 @@ describe('markdown while it streams', () => {
   it.each([
     ['thoughtRichMessage', 'thoughtText', 'thoughtMessage', 'thoughtImage'],
     ['promptRichMessage', 'promptText', 'promptMessage', 'promptImage'],
-  ] as const)('replaces, appends and clears mixed %s content', (type, chunk, clear, image) => {
+  ] as const)('replaces, appends and clears mixed %s content', async (type, chunk, clear, image) => {
     const src = 'data:image/png;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
     page.send({ type: chunk, messageId: 'm1', text: 'obsolete' });
     page.send({ type: image, messageId: 'm1', src });
@@ -358,6 +362,9 @@ describe('markdown while it streams', () => {
     ] });
     expect(page.document.querySelectorAll('#messages img')).toHaveLength(1);
     page.send({ type: chunk, messageId: 'm1', text: ' appended' });
+    for (const block of page.document.querySelectorAll<HTMLDetailsElement>('details.thought-block')) {
+      if (!block.open) { await toggle(block); }
+    }
     const messages = page.document.querySelector('#messages');
     expect(messages?.querySelectorAll('img')).toHaveLength(1);
     expect(messages?.textContent).not.toContain('obsolete');
@@ -423,12 +430,13 @@ describe('markdown while it streams', () => {
     expect(page.document.querySelector('img[alt="Image in agent thought"]')?.getAttribute('src')).toBe(src);
   });
 
-  it('shows a tool-call image among its content', () => {
+  it('shows a tool-call image among its content', async () => {
     const src = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR0YAAAAASUVORK5CYII=';
     page.send({ type: 'promptStart' });
     page.send({ type: 'toolCall', toolCallId: 't1', title: 'Inspect', content: [
       { kind: 'text', text: 'before' }, { kind: 'image', src }, { kind: 'text', text: 'after' },
     ] });
+    await toggle(page.byId<HTMLDetailsElement>('tc-t1'));
     expect(page.document.querySelector('img[alt="Image in tool output"]')?.getAttribute('src')).toBe(src);
   });
 

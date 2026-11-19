@@ -266,11 +266,13 @@ const CompactionBlock = memo(function CompactionBlock({ compaction }: { compacti
       <Chevron direction={compaction.open ? 'down' : 'right'} />
       {header}
     </summary>
-    <div className="compaction-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal wrap-anywhere">
-      {blocks.map((block, index) => block.kind === 'text'
-        ? <div key={index}><Markdown text={block.text} streaming={progressing} /></div>
-        : <div key={index} className="text-muted-foreground italic">Unsupported {block.type} content</div>)}
-    </div>
+    {compaction.open && (
+      <div className="compaction-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal wrap-anywhere">
+        {blocks.map((block, index) => block.kind === 'text'
+          ? <div key={index}><Markdown text={block.text} streaming={progressing} /></div>
+          : <div key={index} className="text-muted-foreground italic">Unsupported {block.type} content</div>)}
+      </div>
+    )}
   </details>{error}</>;
 });
 
@@ -311,11 +313,13 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
           thoughtSummary(thought)
         )}
       </summary>
-      <div
-        className={`thought-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal text-muted-foreground italic ${plainText}`}
-      >
-        {thought.imageSrc === undefined ? <Markdown key={thought.markdownRevision ?? 0} text={thought.text} streaming={thinking} /> : <AgentImageView src={thought.imageSrc} alt="Image in agent thought" reference={thought.imageReference} fallback={thought.imageFallback} />}
-      </div>
+      {thought.open && (
+        <div
+          className={`thought-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal text-muted-foreground italic ${plainText}`}
+        >
+          {thought.imageSrc === undefined ? <Markdown key={thought.markdownRevision ?? 0} text={thought.text} streaming={thinking} /> : <AgentImageView src={thought.imageSrc} alt="Image in agent thought" reference={thought.imageReference} fallback={thought.imageFallback} />}
+        </div>
+      )}
     </details>
   );
 });
@@ -489,7 +493,7 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
         {`${count} tool call${count === 1 ? '' : 's'}`}
       </button>
       <div id={`tc-list-${turnId}-${index}`} className={collapsed ? 'turn-tools-list collapsed hidden' : 'turn-tools-list'}>
-        {toolCalls.map((call) => (
+        {!collapsed && toolCalls.map((call) => (
           <ToolCallView key={call.toolCallId} turnId={turnId} call={call} />
         ))}
       </div>
@@ -497,19 +501,12 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
   );
 });
 
-/** Its diffs are drawn only while it is open, as a closed one shows none. */
+/** Its body is mounted only while it is open, keeping closed tool calls lightweight. */
 const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: EntryId; call: ToolCall }) {
   const dispatch = useDispatch();
-  const terminals = useSelector((state) => state.transcript.terminals);
-  const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
+  const commandSource = useSelector((state) => firstCommandSource(call.content, state.transcript.terminals));
   const identity = useSelector((state) => state.transcript.projection?.target);
   const title = call.title || 'Tool Call';
-  const { blocks, truncated } = useMemo(
-    () => shownContent(call.content, { terminals, sessionEnded }, call.open),
-    [call.content, terminals, sessionEnded, call.open],
-  );
-  const { scrollRef, contentRef } = useStickToBottom({ initial: 'instant', resize: 'instant' });
-  const command = blocks.find((block): block is CommandBlock => block.kind === 'command');
   const StatusIcon = statusIcon[call.status];
   return (
     <details
@@ -522,7 +519,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
     >
       <summary
         className="tc-summary flex cursor-pointer items-center gap-1.5 rounded-sm select-none focus-visible:outline-1 focus-visible:outline-ring list-none"
-        data-vscode-context={command && commandOutputContext(command, identity, call.toolCallId, title)}
+        data-vscode-context={commandSource !== undefined ? commandOutputContext(commandSource, identity, call.toolCallId, title) : undefined}
       >
         <span
           className={`tc-icon ${call.status} inline-flex size-3.5 flex-none items-center justify-center ${statusColor[call.status]}`}
@@ -536,44 +533,72 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
         <span className="sr-only">{`${statusLabel[call.status]}: `}</span>
         <span className={`tc-title min-w-0 flex-1 ${call.open ? 'whitespace-pre-wrap wrap-anywhere' : 'truncate'}`}>{title}</span>
       </summary>
-      <div className="tc-body mt-1 border-t border-border pt-1" style={blocks.length === 0 ? { display: 'none' } : undefined}>
-        <div ref={scrollRef} className="tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90">
-          <div ref={contentRef} className="tc-body-inner">
-            {blocks.map((block, index) => {
-              switch (block.kind) {
-                case 'text':
-                  return (
-                    <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
-                      <Markdown key={call.markdownRevision ?? 0} text={block.text} streaming={call.status === 'running'} />
-                    </div>
-                  );
-                case 'image':
-                  return <AgentImageView key={index} src={block.src} alt="Image in tool output" reference={block.reference} fallback={block.fallback} />;
-                case 'command':
-                  return <CommandOutputView key={index} block={block} identity={identity} toolCallId={call.toolCallId} title={title} />;
-                case 'diff':
-                  return <ToolCallDiffView key={index} files={block.files} toolCallId={call.toolCallId} firstFile={block.firstFile} />;
-              }
-            })}
-            {truncated && <div className="tc-body-truncated mt-1 text-muted-foreground italic">... (output truncated)</div>}
-          </div>
-        </div>
-      </div>
+      {call.open && <ToolCallBody call={call} identity={identity} title={title} />}
     </details>
   );
 });
 
+function ToolCallBody({ call, identity, title }: { call: ToolCall; identity: PresentationTarget | undefined; title: string }) {
+  const terminals = useSelector((state) => state.transcript.terminals);
+  const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
+  const { blocks, truncated } = useMemo(
+    () => shownContent(call.content, { terminals, sessionEnded }, true),
+    [call.content, terminals, sessionEnded],
+  );
+  const { scrollRef, contentRef } = useStickToBottom({ initial: 'instant', resize: 'instant' });
+  return (
+    <div className="tc-body mt-1 border-t border-border pt-1" style={blocks.length === 0 ? { display: 'none' } : undefined}>
+      <div ref={scrollRef} className="tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90">
+        <div ref={contentRef} className="tc-body-inner">
+          {blocks.map((block, index) => {
+            switch (block.kind) {
+              case 'text':
+                return (
+                  <div key={index} className={`tc-body-block mb-1 last:mb-0 ${plainText}`}>
+                    <Markdown key={call.markdownRevision ?? 0} text={block.text} streaming={call.status === 'running'} />
+                  </div>
+                );
+              case 'image':
+                return <AgentImageView key={index} src={block.src} alt="Image in tool output" reference={block.reference} fallback={block.fallback} />;
+              case 'command':
+                return <CommandOutputView key={index} block={block} identity={identity} toolCallId={call.toolCallId} title={title} />;
+              case 'diff':
+                return <ToolCallDiffView key={index} files={block.files} toolCallId={call.toolCallId} firstFile={block.firstFile} />;
+            }
+          })}
+          {truncated && <div className="tc-body-truncated mt-1 text-muted-foreground italic">... (output truncated)</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type CommandBlock = Extract<ShownBlock, { kind: 'command' }>;
+
+function firstCommandSource(
+  content: ToolCall['content'],
+  terminals: ReadonlyMap<string, unknown>,
+): string | null | undefined {
+  for (const item of content) {
+    if (item.kind === 'commandOutput') {
+      return null;
+    }
+    if (item.kind === 'terminal' && terminals.has(item.terminalId)) {
+      return item.terminalId;
+    }
+  }
+  return undefined;
+}
 
 /**
  * What Open in Terminal reads, which `package.json` contributes to `webview/context` for a right-click on the command's
  * output or its tool call's title; VS Code's own items stay, so the output can be copied.
  */
-function commandOutputContext(block: CommandBlock, identity: PresentationTarget | undefined, toolCallId: string, title: string): string | undefined {
+function commandOutputContext(terminalId: string | null, identity: PresentationTarget | undefined, toolCallId: string, title: string): string | undefined {
   if (!identity) {
     return undefined;
   }
-  const source = block.terminalId !== null ? { yourTurnTerminalId: block.terminalId } : { yourTurnToolCallId: toolCallId };
+  const source = terminalId !== null ? { yourTurnTerminalId: terminalId } : { yourTurnToolCallId: toolCallId };
   return JSON.stringify({ webviewSection: 'commandOutput', yourTurnTarget: identity, yourTurnTitle: title, ...source });
 }
 
@@ -584,7 +609,7 @@ function CommandOutputView({ block, identity, toolCallId, title }: {
   title: string;
 }) {
   return (
-    <div className="tc-command mb-1 last:mb-0" data-vscode-context={commandOutputContext(block, identity, toolCallId, title)}>
+    <div className="tc-command mb-1 last:mb-0" data-vscode-context={commandOutputContext(block.terminalId, identity, toolCallId, title)}>
       {block.truncated && <div className="tc-command-cut mb-1 text-muted-foreground italic">Earlier output not shown</div>}
       {block.text && <div className={`tc-command-text ${plainText}`}>{block.text}</div>}
       {block.status === 'disconnected' && (

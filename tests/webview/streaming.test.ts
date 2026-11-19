@@ -6,6 +6,7 @@ import {
   plan,
   shownText,
   thought,
+  toggle,
   type ChatPage
 } from '@tests/webview/chatPage';
 
@@ -191,14 +192,4 @@ function plans(): string[][] {
   return [...page.document.querySelectorAll('.plan')].map((block) =>
     [...block.querySelectorAll('.plan-entry')].map((entry) => entry.textContent),
   );
-}
-
-/** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
-async function toggle(details: HTMLDetailsElement | null): Promise<void> {
-  if (!details) {
-    throw new Error('no details element to toggle');
-  }
-  const toggled = new Promise((resolve) => details.addEventListener('toggle', resolve, { once: true }));
-  details.querySelector('summary')?.click();
-  await toggled;
 }

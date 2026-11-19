@@ -93,10 +93,10 @@ test('loaded and live compactions retain their transcript position and user-cont
   await expect(live).not.toHaveAttribute('open');
   await quickInputRow(window, 'Continue summary').click();
   await expect(quickInputRow(window, 'Complete compaction')).toBeVisible();
-  await expect(content).toHaveText('Live summary. More detail.');
   await expect(content).toBeHidden();
   await live.locator('summary').click();
   await expect(content).toBeVisible();
+  await expect(content).toHaveText('Live summary. More detail.');
   await quickInputRow(window, 'Complete compaction').click();
   await expect(live.locator('summary')).toHaveText(/^Compaction completed in [1-9]\d*s$/);
   await expect(content).toBeHidden();
