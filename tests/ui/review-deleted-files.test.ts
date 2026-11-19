@@ -19,7 +19,7 @@ test.use({ workspaceFiles: { 'a.ts': 'one\ntwo\n', 'gone.ts': 'removed content\n
 
 test('SCM deletion clicks show removed content and deletion identity while review navigation preserves absence', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review ${workspace}`);

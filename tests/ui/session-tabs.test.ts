@@ -273,7 +273,7 @@ test('session tabs wrap into rows with keyboard and close controls reachable in 
   await expect(chatViewTitle(window)).toHaveText('Chat');
   await expect(promptInput(window)).toBeDisabled();
   const agent = agentsViewRow(window, 'fake-v1');
-  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — disconnected/);
+  await expect(agent).toHaveAttribute('aria-label', /fake-v1 — connected/);
   await agent.click({ button: 'right' });
   const newSession = window.getByRole('menuitem', { name: 'Your Turn: New Session', exact: true });
   // Home selects the first action in VS Code's menu model, not just its DOM focus.

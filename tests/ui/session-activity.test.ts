@@ -17,7 +17,7 @@ test.use({ agentVersion: 'v2' });
 
 test('Stop returns for autonomous foreground work and cancels the active session', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v2', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v2', 'New Session');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   const tabs = sessionTabs(window);
@@ -76,7 +76,7 @@ test('Stop returns for autonomous foreground work and cancels the active session
 
 test('picker-row cancel supports keyboard activation during autonomous work without a hover tooltip', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v2', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v2', 'New Session');
   const prompt = promptInput(window);
   const stop = chatStop(window);
   await expect(prompt).toBeEnabled();

@@ -46,6 +46,7 @@ export type ChatSessions = Pick<
   | 'getSession'
   | 'sessionState'
   | 'sessionLoad'
+  | 'sessionReloading'
   | 'consumeReviewOpportunity'
   | 'editComposer'
   | 'changeQueuedPrompt'
@@ -511,6 +512,11 @@ export class ChatViewController {
     if (registration === this.markdownImageOwner?.registration) {
       for (const read of this.markdownReads.values()) { read.abort(); }
       this.markdownReads.clear();
+    }
+    if (registration === this.shownSession && this.sessions.sessionReloading({
+      configuredName: registration.agentName, sessionId: registration.sessionId,
+    })) {
+      this.notifyActiveSessionChanged();
     }
     this.sendTabs();
   }

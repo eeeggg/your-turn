@@ -16,7 +16,7 @@ for (const agentVersion of ['v1', 'v2'] as const) {
         if (request.url().includes('example.invalid') || request.url().includes('not-read')) { requests.push(request.url()); }
       });
       await yourTurnContainerControl(window).click();
-      await chooseAgentAction(window, `fake-${agentVersion}`, 'Connect to Agent');
+      await chooseAgentAction(window, `fake-${agentVersion}`, 'New Session');
       const prompt = promptInput(window);
       await expect(prompt).toBeEnabled();
       await prompt.fill('images');

@@ -108,12 +108,12 @@ for (const version of [1, 2]) {
 
     test('creates distinct sessions across process relaunches and reopens the requested prior session', async () => {
       const { manager, address, startup } = await starting('0cf9748d-8cb9-4f45-82b5-fd82ea081d5f');
-      const first = await manager.connectToAgent(agentName);
+      const first = await manager.newSession(agentName);
       await manager.disconnectAgent(agentName);
-      const second = await manager.connectToAgent(agentName);
+      const second = await manager.newSession(agentName);
       assert.notStrictEqual(second.sessionId, first.sessionId);
       await manager.disconnectAgent(agentName);
-      const other = await manager.connectToAgent(otherName);
+      const other = await manager.newSession(otherName);
       assert.notStrictEqual(other.sessionId, first.sessionId);
       assert.notStrictEqual(other.sessionId, second.sessionId);
 

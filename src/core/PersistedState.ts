@@ -132,8 +132,9 @@ export class SessionReferences extends EventEmitter<{ changed: [] }> {
   }
 
   /** The session was created, loaded or resumed, or a turn of it ended. */
-  used(address: SessionAddress): Promise<void> {
-    return this.upsert(address, (reference) => ({ ...reference, lastActiveAt: this.timestamp() }));
+  used(address: SessionAddress, title?: string): Promise<void> {
+    return this.upsert(address, (reference) => ({ ...reference, lastActiveAt: this.timestamp(),
+      ...(title === undefined ? {} : { title }) }));
   }
 
   /** The agent reported the session's title, or that it has none. */

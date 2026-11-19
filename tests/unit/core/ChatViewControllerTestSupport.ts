@@ -70,6 +70,7 @@ export function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 export class FakeSessions implements ChatSessions {
   loading: SessionLoad | undefined;
   sessionLoad: ChatSessions['sessionLoad'] = () => this.loading;
+  sessionReloading: ChatSessions['sessionReloading'] = () => false;
   readonly interactions = new SessionInteractions((identity, agentId) => this.getSession(identity)?.agentId === agentId
     ? this.retained.view(identity)?.generation ?? 0 : undefined, (identity, agentId, question) => {
       const session = this.getSession(identity);

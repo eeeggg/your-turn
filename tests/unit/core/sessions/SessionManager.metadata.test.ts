@@ -73,7 +73,7 @@ describe('SessionManager', () => {
         update: { kind: 'toolCall', toolCallId: path, status: 'completed',
           content: [{ kind: 'diff', diff: { kind: 'wholeFile', path, oldText: 'old', newText: 'new' } }] } });
     };
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await evidence(FIRST_SESSION, '/w/shared.ts');
     const receiving = evidence(FIRST_SESSION, '/w/remaining.ts');
     try {
@@ -98,7 +98,7 @@ describe('SessionManager', () => {
       .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
       .onRequest(methods.agent.session.load, () => ({})) });
     const identity = address(FIRST_SESSION);
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     expect(manager.sessionState(identity)?.reviewOpportunity).toBeNull();
     manager.recordTurnEnded(identity);
     const opportunity = manager.sessionState(identity)?.reviewOpportunity;
@@ -126,7 +126,7 @@ describe('SessionManager', () => {
     const parts = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
       .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
       .onRequest(methods.agent.session.load, async () => { entered(); await completing; return {}; }) });
-    await parts.manager.connectToAgent('fake');
+    await parts.manager.newSession('fake');
     const load = parts.manager.loadSession('fake', FIRST_SESSION);
     try {
       await loading;
@@ -153,7 +153,7 @@ describe('SessionManager', () => {
 
   it('reconstructs ready as one projection with controls, activity, content, composer, queue and questions', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     const target = promptTarget(posted);
     manager.editComposer(target, target.generation, 1, 'retained composer');
@@ -298,7 +298,7 @@ describe('SessionManager', () => {
 
   it('shows only unanswered requests of an unselected tab ahead of foreground work', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-    const registration = await manager.connectToAgent('fake');
+    const registration = await manager.newSession('fake');
     chatView.sessionTabs.open({ ...registration, sessionId: SECOND_SESSION });
     const requests = new ElicitationRequests();
     const stop = manager.interactions.observe({ agentName: 'fake', agentId: registration.agentId, elicitations: requests, permissions: undefined });
@@ -340,7 +340,7 @@ describe('SessionManager', () => {
       if (pending.permissions.length) { permissionSeen(); }
       if (pending.elicitations.length) { urlSeen(); }
     });
-    const connecting = parts.manager.connectToAgent('fake');
+    const connecting = parts.manager.newSession('fake');
     try {
       await permissionArrived;
       const agentId = parts.agents.launched[0]?.process.id ?? '';
@@ -355,8 +355,7 @@ describe('SessionManager', () => {
     } finally {
       choose('allow');
       stop();
-      await parts.manager.disconnectAgent('fake');
-      await connecting.catch(() => undefined);
+      await Promise.all([parts.manager.disconnectAgent('fake'), connecting.catch(() => undefined)]);
     }
   });
 
@@ -380,7 +379,7 @@ describe('SessionManager', () => {
       }) });
     parts.authPrompt.chooseAuthMethod.mockResolvedValue({ id: 'browser', name: 'Browser', description: null });
     const stop = parts.manager.interactions.subscribe((question) => { if (question) { arrived(); } });
-    const connecting = parts.manager.connectToAgent('fake');
+    const connecting = parts.manager.newSession('fake');
     try {
       await created;
       expect(parts.manager.getActiveSession()).toBeUndefined();
@@ -420,7 +419,7 @@ describe('SessionManager', () => {
       elicitations.subscribe((change) => { if (change.kind === 'created') { received(); } });
       return { permissions: { requestPermission: async () => ({ kind: 'cancelled' }), cancelSession() {} } };
     });
-    const connecting = parts.manager.connectToAgent('fake');
+    const connecting = parts.manager.newSession('fake');
     try {
       await created;
       expect(parts.manager.getActiveSession()).toBeUndefined();
@@ -478,7 +477,7 @@ describe('SessionManager', () => {
         await new Promise<void>((resolve) => { pending.push({ text, finish: resolve }); entered(); });
         return { stopReason: 'end_turn' };
       }) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     const target = promptTarget(posted);
     const first = chatView.handleMessage({ type: 'sendPrompt', target, text: 'first' });
@@ -521,7 +520,7 @@ describe('SessionManager', () => {
 
   it('routes every page submission into the retained queue while busy without dispatching it', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     const target = promptTarget(posted);
     manager.applyForegroundState(target, 'running');
@@ -536,7 +535,7 @@ describe('SessionManager', () => {
 
   it('reconstructs the core queue on ready without dispatching it or accepting old-page queue edits', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     const target = promptTarget(posted);
     manager.applyForegroundState(target, 'running');
@@ -575,7 +574,7 @@ describe('SessionManager', () => {
         await new Promise<void>((resolve) => { pending.push({ text, finish: resolve }); firstStarted(); if (pending.length === 2) { started(); } });
         return { stopReason: 'end_turn' };
       }) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const identity = address(FIRST_SESSION);
     const first = manager.sendPrompt(identity, 'first');
     const generation = manager.sessionState(identity)?.generation;
@@ -599,7 +598,7 @@ describe('SessionManager', () => {
 
   it('retains an ordered composer draft through page recreation without adding transcript content', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     const target = promptTarget(posted);
     const edit = { type: 'composerEdited' as const, target, revision: 2, text: 'latest draft' };
@@ -624,7 +623,7 @@ describe('SessionManager', () => {
         prompts.push(params.prompt.flatMap((part) => part.type === 'text' ? [part.text] : []).join(''));
         return { stopReason: 'end_turn' };
       }) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const identity = address(FIRST_SESSION);
     const generation = manager.sessionState(identity)?.generation;
     if (generation === undefined) { throw new Error('Missing owner'); }
@@ -655,7 +654,7 @@ describe('SessionManager', () => {
 
   it('excludes cancelled core queue text from recall and drops unsent entries on source retirement', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     const target = promptTarget(posted);
     manager.applyForegroundState(target, 'running');
@@ -696,7 +695,7 @@ describe('SessionManager', () => {
         next();
         return { stopReason: 'end_turn' };
       }) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const identity = address(FIRST_SESSION);
     const first = manager.sendPrompt(identity, 'first');
     const failure = expect(first).rejects.toThrow('Refused');
@@ -717,7 +716,7 @@ describe('SessionManager', () => {
     const { manager, chatView, posted } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
       .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
       .onRequest(methods.agent.session.load, () => ({})) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     let target = promptTarget(posted);
     await chatView.handleMessage({ type: 'composerEdited', target, revision: 1, text: 'retained' });
@@ -742,8 +741,9 @@ describe('SessionManager', () => {
           return { configOptions: [modelOption('b')] };
         });
       const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script, other: script });
-      await manager.connectToAgent('fake');
-      const selected = await manager.connectToAgent('other');
+      await manager.newSession('fake');
+      await manager.disconnectAgent('fake');
+      const selected = await manager.newSession('other');
       const wrong = { configuredName: 'fake', sessionId: FIRST_SESSION };
       const right = { configuredName: 'other', sessionId: FIRST_SESSION };
 
@@ -789,7 +789,7 @@ describe('SessionManager', () => {
           return {};
         });
       const { manager, reference, takeEvents, agents } = setup({ fake: script });
-      const original = await manager.connectToAgent('fake');
+      const original = await manager.newSession('fake');
       const setting = kind === 'config'
         ? manager.setConfigOption(address(FIRST_SESSION), 'model', 'b')
         : manager.setMode(address(FIRST_SESSION), 'code');
@@ -817,7 +817,7 @@ describe('SessionManager', () => {
         configOptions: [modelOption(String(params.value))],
       })));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       const options = await manager.setConfigOption(address(FIRST_SESSION), 'model', 'b');
 
@@ -830,7 +830,7 @@ describe('SessionManager', () => {
         { configOptions: null } as unknown as { configOptions: SessionConfigOption[] }
       )));
       const { manager, reference } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       const options = await manager.setConfigOption(address(FIRST_SESSION), 'model', 'b');
 
@@ -849,7 +849,7 @@ describe('SessionManager', () => {
           return { configOptions: null } as unknown as { configOptions: SessionConfigOption[] };
         });
       const { manager, reference } = setup({ fake });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.setConfigOption(address(FIRST_SESSION), 'fast', true);
 
@@ -865,7 +865,7 @@ describe('SessionManager', () => {
         return { configOptions: [modelOption(String(params.value))] };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.setModel(address(FIRST_SESSION), 'b');
 
@@ -875,7 +875,7 @@ describe('SessionManager', () => {
     it('cannot set the model when the agent has no model option', async () => {
       const script: AgentScript = () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }));
       const { manager } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await expect(manager.setModel(address(FIRST_SESSION), 'b')).rejects.toThrow('Fake Agent does not expose a model config option');
     });
@@ -892,7 +892,7 @@ describe('SessionManager', () => {
           return {};
         });
       const { manager, takeEvents } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       takeEvents();
 
       await manager.setMode(address(FIRST_SESSION), 'code');
@@ -915,7 +915,7 @@ describe('SessionManager', () => {
           return { configOptions: [{ ...modeOption, currentValue: String(params.value) }] };
         });
       const { manager } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.setMode(address(FIRST_SESSION), 'code');
 
@@ -937,7 +937,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('retained') }, 'v2');
       await chatView.handleMessage({ type: 'ready' });
       const old = contentSnapshots(posted).at(-1);
@@ -1064,7 +1064,7 @@ describe('SessionManager', () => {
         if (!snapshot) { throw new Error('Missing retained presentation for empty session'); }
         return snapshot;
       };
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const original = await snapshot();
       expect(original.entries).toEqual([]);
       await manager.resumeSession('fake', FIRST_SESSION);
@@ -1085,7 +1085,7 @@ describe('SessionManager', () => {
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
         .onRequest(methods.agent.session.prompt, async () => { await finished; return { stopReason: 'end_turn' }; }),
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.handleMessage({ type: 'ready' });
     const prompt = chatView.handleMessage({ type: 'sendPrompt', target: promptTarget(posted), text: 'First prompt' });
       try {
@@ -1108,7 +1108,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.handleMessage({ type: 'ready' });
     const prompt = chatView.handleMessage({ type: 'sendPrompt', target: promptTarget(posted), text: 'run' });
       let cleaned!: () => void;
@@ -1138,7 +1138,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.handleMessage({ type: 'ready' });
       let view = posted.reduce((state, message) => updateView(state, structuredClone(message), 0).state, initialState);
       posted.splice(0);
@@ -1175,7 +1175,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       expect(manager.sessionState(identity)?.terminals.get('term')).toEqual({ text: 'early', truncated: false, exitStatus: null });
     });
 
@@ -1213,7 +1213,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('original') }, 'v2');
       await readStarted;
       await reading;
@@ -1278,7 +1278,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const identity = { configuredName: 'fake', sessionId: FIRST_SESSION };
       sink?.handleUpdate(FIRST_SESSION, { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('clean') }, 'v2');
       expect(manager.openCommandOutput(identity, { kind: 'terminal', terminalId: 'term' }, 'Terminal')).toBe(true);
@@ -1295,7 +1295,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'run', content: [{ kind: 'terminal', terminalId: 'term' }] }, 'v2');
       await chatView.handleMessage({ type: 'ready' });
       let finished!: () => void;
@@ -1331,7 +1331,7 @@ describe('SessionManager', () => {
         return connect(name, streams, id, input, closed);
       });
       const identity = { configuredName: 'fake', sessionId: FIRST_SESSION };
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('original') }, 'v2');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'run', toolKind: 'execute', content: [
         { kind: 'text', text: '\x1b[32mcommand\x1b[0m' },
@@ -1341,7 +1341,7 @@ describe('SessionManager', () => {
       written.splice(0);
       const loading = await manager.loadSession('fake', FIRST_SESSION).then(() => 'ok', () => 'failed');
       expect(loading).toBe(ok ? 'ok' : 'failed');
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
       sinks.get('other')?.handleUpdate(FIRST_SESSION, { kind: 'terminalOutput', terminalId: 'term', data: new TextEncoder().encode('other') }, 'v2');
       expect(manager.openCommandOutput(identity, { kind: 'terminal', terminalId: 'term' }, 'Terminal')).toBe(true);
       expect(manager.openCommandOutput({ configuredName: 'other', sessionId: FIRST_SESSION }, { kind: 'terminal', terminalId: 'term' }, 'Other')).toBe(true);
@@ -1363,7 +1363,7 @@ describe('SessionManager', () => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
       });
-      const registration = await manager.connectToAgent('fake');
+      const registration = await manager.newSession('fake');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'edit', content: [
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/first.ts', oldText: 'a', newText: 'b' } },
       ] }, 'v1');
@@ -1377,7 +1377,7 @@ describe('SessionManager', () => {
       if (!first) { throw new Error('Missing retained projection'); }
       await chatView.handleMessage({ type: 'openFile', target: first.target, toolCallId: 'edit', file: 0 });
       await chatView.handleMessage({ type: 'openChanges', target: first.target, toolCallId: 'edit', file: 0 });
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
       sinks.get('other')?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'edit', content: [
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/second.ts', oldText: 'a', newText: 'b' } },
       ] }, 'v1');
@@ -1413,7 +1413,7 @@ describe('SessionManager', () => {
         if (name === 'fake') { sink = input; }
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'edit', content: [
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/original.ts', oldText: null, newText: 'original' } },
       ] }, 'v1');
@@ -1427,7 +1427,7 @@ describe('SessionManager', () => {
       expect(await loading).toBe(ok ? 'ok' : 'failed');
       expect(manager.sessionToolCallDiffs(identity, 'edit', '/work')?.flat()[0]?.reported?.path)
         .toBe(ok ? '/work/replayed.ts' : '/work/original.ts');
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
       expect(manager.sessionToolCallDiffs({ configuredName: 'other', sessionId: FIRST_SESSION }, 'edit', '/work')).toBeUndefined();
       expect(manager.sessionToolCallDiffs(identity, 'edit', '/work')?.flat()[0]?.reported?.path)
         .toBe(ok ? '/work/replayed.ts' : '/work/original.ts');
@@ -1454,7 +1454,7 @@ describe('SessionManager', () => {
           && part.toolCalls.some((call) => call.content.some((item) => item.kind === 'commandOutput'))))) { finishCleaning(); }
       });
       try {
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
         await cleaned;
         await chatView.handleMessage({ type: 'ready' });
         expect(contentSnapshots(posted).at(-1)).toMatchObject({ entries: [
@@ -1471,7 +1471,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'first', title: 'First', status: 'running', content: [] }, 'v1');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'second', title: 'Second', status: 'running', content: [] }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
@@ -1521,7 +1521,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.dispose();
       sink?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'run', toolKind: 'execute', title: 'Run',
         content: [{ kind: 'text', text: 'Original' }] }, 'v1');
@@ -1555,7 +1555,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'm1', text: 'Starting' }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
       let finishCleaning!: () => void;
@@ -1591,10 +1591,10 @@ describe('SessionManager', () => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'm1', text: 'First owner' }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
       chatView.notifyActiveSessionChanged();
       const selected = posted.reduce((state, message) => updateView(state, structuredClone(message), 0).state, initialState);
       posted.splice(0);
@@ -1614,7 +1614,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'thoughtText', messageId: 'r1', text: 'First' }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
       let view = posted.reduce((state, message) => updateView(state, structuredClone(message), 0).state, initialState);
@@ -1638,7 +1638,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'm1', text: 'First' }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
       sink?.handleUpdate(FIRST_SESSION, { kind: 'foreground', state: 'running' }, 'v2');
@@ -1668,7 +1668,7 @@ describe('SessionManager', () => {
       manager.on('active-session-changed', () => chatView.notifyActiveSessionChanged());
       manager.on('session-load-start', (load) => chatView.notifyLoadSessionStart(load));
       manager.on('session-load-end', (load, success) => chatView.notifyLoadSessionEnd(load, success));
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'm1', text: 'Retained' }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
       posted.splice(0);
@@ -1688,11 +1688,11 @@ describe('SessionManager', () => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'm1', text: 'First owner' }, 'v1');
       await chatView.handleMessage({ type: 'ready' });
       posted.splice(0);
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
       sinks.get('other')?.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'm1', text: 'Second owner' }, 'v1');
       chatView.notifyActiveSessionChanged();
       expect(contentSnapshots(posted).at(-1)).toMatchObject({
@@ -1708,7 +1708,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'promptRichMessage', messageId: 'p1', content: [
         { kind: 'text', text: 'Before' }, { kind: 'image', data: '', mimeType: 'image/png' }, { kind: 'text', text: 'After' },
       ] }, 'v1');
@@ -1734,7 +1734,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
       try {
       sink?.handleUpdate(FIRST_SESSION, { kind: 'agentText', messageId: 'm1', text: 'Partial' }, 'v1');
@@ -1759,7 +1759,7 @@ describe('SessionManager', () => {
           return { stopReason: 'end_turn' };
         })).script,
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await manager.sendPrompt(address(FIRST_SESSION), 'First prompt');
       await manager.sendPrompt(address(FIRST_SESSION), 'Second prompt');
       expect(manager.sessionState({ configuredName: 'fake', sessionId: FIRST_SESSION })).toMatchObject({ content: {
@@ -1775,7 +1775,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const identity = { configuredName: 'fake', sessionId: FIRST_SESSION };
       let observed: unknown;
       updates.addListener(() => { observed = manager.sessionState(identity); });
@@ -1813,7 +1813,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'usage', used: 123, size: 1000, cost: null }, 'v1');
 
       await expect(manager.resumeSession('fake', SECOND_SESSION)).rejects.toThrow('Resume failed');
@@ -1846,7 +1846,7 @@ describe('SessionManager', () => {
         return connect(name, streams, id, input, closed);
       });
       const identity = { configuredName: 'fake', sessionId: FIRST_SESSION };
-      const opening = manager.connectToAgent('fake').then(() => 'ok', () => 'failed');
+      const opening = manager.newSession('fake').then(() => 'ok', () => 'failed');
       try {
         await entered;
         expect(manager.sessionState(identity)).toBeUndefined();
@@ -1879,7 +1879,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'usage', used: 123, size: 1000, cost: null }, 'v1');
       const identity = { configuredName: 'fake', sessionId: FIRST_SESSION };
       const loading = manager.loadSession('fake', FIRST_SESSION);
@@ -1906,9 +1906,9 @@ describe('SessionManager', () => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'usage', used: 123, size: 1000, cost: null }, 'v1');
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
       sinks.get('other')?.handleUpdate(FIRST_SESSION, { kind: 'usage', used: 456, size: 2000, cost: null }, 'v1');
 
       expect(manager.sessionState({ configuredName: 'fake', sessionId: FIRST_SESSION })?.usage).toEqual({ used: 123, size: 1000, cost: null });
@@ -1927,7 +1927,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const observed: unknown[] = [];
       updates.addListener(() => observed.push(manager.sessionState({ configuredName: 'fake', sessionId: FIRST_SESSION })?.usage));
       sink?.handleUpdate(FIRST_SESSION, { kind: 'usage', used: 123, size: 1000, cost: { amount: 0.25, currency: 'USD' } }, 'v2');
@@ -1952,7 +1952,7 @@ describe('SessionManager', () => {
         sink = input;
         return connect(name, streams, id, input, closed);
       });
-      const registration = await manager.connectToAgent('fake');
+      const registration = await manager.newSession('fake');
       const projected: unknown[] = [];
       updates.addListener((delivery) => projected.push(delivery));
       sink?.handleUpdate(FIRST_SESSION, { kind: 'agentText', messageId: null, text: 'accepted' }, 'v1');
@@ -2019,7 +2019,7 @@ describe('SessionManager', () => {
       await references.used(address(FIRST_SESSION));
       await references.setTitle(address(FIRST_SESSION), 'Remembered title');
       const received = receivedAtLeast(2);
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       await received;
       expect(session.modes?.current).toBe('code');
       expect(session.title).toBeUndefined();
@@ -2061,7 +2061,7 @@ describe('SessionManager', () => {
           .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION, configOptions: [option('a')] })),
       });
       await manager.listSessions('other');
-      const selected = order === 'before' ? await manager.connectToAgent('fake') : undefined;
+      const selected = order === 'before' ? await manager.newSession('fake') : undefined;
       const received = receivedAtLeast(4);
       for (const update of [
         { sessionUpdate: 'config_option_update', configOptions: [option('b')] },
@@ -2072,14 +2072,14 @@ describe('SessionManager', () => {
         await earlyClient.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update });
       }
       await received;
-      const first = selected ?? await manager.connectToAgent('fake');
+      const first = selected ?? await manager.newSession('fake');
       expect(first.configOptions).toEqual([modelConfig('a')]);
       expect(first.availableCommands).toEqual([]);
       expect(first.title).toBeUndefined();
       expect(manager.hasForegroundWork(address(FIRST_SESSION))).toBe(false);
 
       await manager.disconnectAgent('fake');
-      const other = await manager.connectToAgent('other');
+      const other = await manager.newSession('other');
       expect(other.configOptions).toEqual([modelConfig('b')]);
       expect(other.availableCommands).toEqual([{ name: 'other', description: 'Other', takesInput: false, hint: null }]);
       expect(other.title).toBe('Other title');
@@ -2095,7 +2095,7 @@ describe('SessionManager', () => {
           return { sessions: [] };
         }),
       });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       await manager.ensureConnected('other');
       await manager.listSessions('other');
       const received = receivedAtLeast(1);
@@ -2114,7 +2114,7 @@ describe('SessionManager', () => {
           return { sessionId: FIRST_SESSION };
         }),
       });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       const seen: unknown[] = [];
       const applying = vi.spyOn(manager, 'applyConfigOptions');
       updates.addListener(({ registration }) => {
@@ -2138,7 +2138,7 @@ describe('SessionManager', () => {
         other: () => fakeAgent({ agentCapabilities: { sessionCapabilities: { list: {} } } })
           .onRequest(methods.agent.session.list, ({ client: connected }) => { client = connected; return { sessions: [] }; }),
       });
-      const selected = await manager.connectToAgent('fake');
+      const selected = await manager.newSession('fake');
       await manager.listSessions('other');
       const reports: unknown[][] = [];
       manager.on('session-info-changed', (...args) => reports.push(args));
@@ -2167,7 +2167,7 @@ describe('SessionManager', () => {
       const { manager, received, receivedAtLeast } = setup({ fake: script });
       const updatesReceived = receivedAtLeast(3);
 
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       await updatesReceived;
 
       expect(received).toHaveLength(3);
@@ -2177,7 +2177,7 @@ describe('SessionManager', () => {
     });
 
     it.each([
-      ['creating', (manager: SessionManager) => manager.connectToAgent('fake')],
+      ['creating', (manager: SessionManager) => manager.newSession('fake')],
       ['resuming', (manager: SessionManager) => manager.resumeSession('fake', FIRST_SESSION)],
       ['loading', (manager: SessionManager) => manager.loadSession('fake', FIRST_SESSION)],
     ])('takes the slash commands a v2 session state carries, on %s the session', async (_, open) => {
@@ -2199,7 +2199,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, received, receivedAtLeast } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const updated = receivedAtLeast(received.length + 1);
 
       await manager.sendPrompt(address(FIRST_SESSION), 'hello');
@@ -2210,7 +2210,7 @@ describe('SessionManager', () => {
 
     it("caches titles in the session's reference and clears them on null", async () => {
       const { manager, reference } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       manager.applySessionInfoUpdate(address(FIRST_SESSION), { title: 'Named' });
       expect(manager.getSession(address(FIRST_SESSION))?.title).toBe('Named');
@@ -2230,7 +2230,7 @@ describe('SessionManager', () => {
         modes: { availableModes: [{ id: 'ask', name: 'Ask' }, { id: 'code', name: 'Code' }], currentModeId: 'ask' },
       }));
       const { manager } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       manager.applyCurrentMode(address(FIRST_SESSION), 'code');
 
@@ -2242,7 +2242,7 @@ describe('SessionManager', () => {
       try {
         const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })));
         const { manager, chatView, references, posted } = setup({ fake: fake.script });
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
         vi.setSystemTime(Date.parse('2026-10-18T11:00:00Z'));
         await references.used(address(OLDER_SESSION));
         vi.setSystemTime(Date.parse('2026-10-18T12:00:00Z'));
@@ -2330,7 +2330,7 @@ describe('SessionManager', () => {
 
     it('starts distinct mode sessions across process replacement', async () => {
       const { manager } = setup({ fake: modesAgent() });
-      const first = await manager.connectToAgent('fake');
+      const first = await manager.newSession('fake');
       const second = await manager.newSession();
       expect(second).toBeDefined();
       expect(second?.sessionId).not.toBe(first.sessionId);
@@ -2339,7 +2339,7 @@ describe('SessionManager', () => {
 
     it('saves every option as the agent answers the user, with the changes it brings about', async () => {
       const { manager, reference } = setup({ fake: selectingAgent([FIRST_SESSION]) });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.setConfigOption(address(FIRST_SESSION), 'model', 'b');
 
@@ -2349,7 +2349,7 @@ describe('SessionManager', () => {
     it('saves what the agent answers, not the value asked for', async () => {
       const fake = sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.setConfigOption, () => ({ configOptions: [modelOption('a')] })));
       const { manager, reference } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.setConfigOption(address(FIRST_SESSION), 'model', 'b');
 
@@ -2367,7 +2367,7 @@ describe('SessionManager', () => {
         throw RequestError.invalidParams(undefined, 'unknown value');
       }));
       const { manager, reference } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       const setting = manager.setConfigOption(address(FIRST_SESSION), 'model', 'b');
       await requested;
@@ -2380,7 +2380,7 @@ describe('SessionManager', () => {
 
     it('saves every option when the agent changes them itself', async () => {
       const { manager, reference, received, receivedAtLeast } = setup({ fake: selectingAgent([FIRST_SESSION]) });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const reported = receivedAtLeast(received.length + 1);
 
       await manager.sendPrompt(address(FIRST_SESSION), 'hello');
@@ -2391,7 +2391,7 @@ describe('SessionManager', () => {
 
     it('saves the mode of an agent using the modes API as the user sets it, then as the agent switches it', async () => {
       const { manager, reference, received, receivedAtLeast } = setup({ fake: modesAgent(FIRST_SESSION) });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.setMode(address(FIRST_SESSION), 'code');
       expect(reference(FIRST_SESSION)?.selections).toEqual({ modeId: 'code', options: {} });
@@ -2414,7 +2414,7 @@ describe('SessionManager', () => {
       const { manager, reference, receivedAtLeast } = setup({ fake: script });
       const updated = receivedAtLeast(2);
 
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await updated;
 
       expect(reference(FIRST_SESSION)?.selections).toEqual({ options: {} });
@@ -2422,7 +2422,7 @@ describe('SessionManager', () => {
 
     it('starts a new session with the selections its agent supplies, not those saved for another', async () => {
       const { manager, reference } = setup({ fake: selectingAgent([FIRST_SESSION, SECOND_SESSION]) });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await manager.setConfigOption(address(FIRST_SESSION), 'model', 'b');
 
       const created = await manager.newSession();
@@ -2436,7 +2436,7 @@ describe('SessionManager', () => {
       const script: AgentScript = () => fakeAgent()
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION, configOptions: [modelOption('a')], modes: modes('ask') }));
       const { manager, reference } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       manager.applyCurrentMode(address(FIRST_SESSION), 'code');
 
@@ -2784,7 +2784,7 @@ describe('SessionManager', () => {
 
     it('notifies configuration renames after moving live ownership, but not unrelated changes', async () => {
       const { manager, agents } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       const renames: unknown[][] = [];
       manager.on('configuration-renamed', (from, to) => {
       renames.push([from, to, session.agentName, manager.openSessionsOf(to).includes(session),
@@ -2893,7 +2893,7 @@ describe('SessionManager', () => {
           return { sessionId: FIRST_SESSION };
         });
       const { manager, agents, references, workspace } = setup({ fake: script });
-      const opening = manager.connectToAgent('fake');
+      const opening = manager.newSession('fake');
       try {
         await entered;
         manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
@@ -2935,7 +2935,7 @@ describe('SessionManager', () => {
           configOptions: [modelOption(String(params.value))],
         })));
       const { manager } = setup({ fake: fake.script });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
 
       manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
 
@@ -2958,7 +2958,7 @@ describe('SessionManager', () => {
 
     it("rebinds this host's references and this workspace's last active session to the new name", async () => {
       const { manager, references, workspace, reference } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await manager.recordsSettled();
 
       manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
@@ -2972,7 +2972,7 @@ describe('SessionManager', () => {
 
     it('records a session still running under the old name under the new one', async () => {
       const { manager, references, reference } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
       manager.applySessionInfoUpdate({ configuredName: 'renamed', sessionId: FIRST_SESSION }, { title: 'After the rename' });
@@ -2985,7 +2985,7 @@ describe('SessionManager', () => {
 
     it('records a session still running under its first name under the last, after two renames', async () => {
       const { manager, references } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
       manager.agentsChanged({ renamed: fakeConfig }, { again: fakeConfig });
@@ -2998,7 +2998,7 @@ describe('SessionManager', () => {
 
     it('keeps recording the original session under its renamed configuration when the old name is reused', async () => {
       const { manager, references, reference } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       manager.agentsChanged({ fake: fakeConfig }, { renamed: fakeConfig });
 
       manager.agentsChanged({ renamed: fakeConfig }, { renamed: fakeConfig, fake: { command: 'other' } });

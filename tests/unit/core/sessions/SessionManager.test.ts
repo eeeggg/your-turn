@@ -15,6 +15,7 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { Reviews } from '@/core/review/Reviews';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
+import { deferred } from '@tests/unit/core/ChatViewControllerTestSupport';
 import {
   AuthenticationCancelled,
   SessionManager,
@@ -48,10 +49,198 @@ const LAST_PAGE_SESSION = '59e34b91-76f2-4b5b-9a78-73382d3fe8b1';
 const KEPT_SESSION = '1468854e-6b9b-4e7a-89e0-9f7b8771bdd7';
 
 describe('SessionManager', () => {
+  it.each([undefined, 'unknown'] as const)('holds automatic queue release after a v2 restart with activity %s', async (snapshot) => {
+    const prompts: string[] = [];
+    const { manager } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+      .onRequest(V2.methods.agent.session.resume, async ({ client, params }) => {
+        if (snapshot) {
+          await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: snapshot } });
+        }
+        return {};
+      })
+      .onRequest(V2.methods.agent.session.prompt, async ({ client, params }) => {
+        prompts.push(...params.prompt.flatMap((part) => part.type === 'text' && typeof part.text === 'string' ? [part.text] : []));
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'running' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+        return { messageId: 'accepted' };
+      }) });
+    const identity = address(FIRST_SESSION);
+    const original = await manager.newSession('fake');
+    await manager.restartAgent('fake', original.agentId);
+    const state = manager.sessionState(identity);
+    if (!state) { throw new Error('Missing replayed state'); }
+    await manager.submitPrompt(identity, state.generation, 'Queued after restart');
+    expect(manager.sessionState(identity)?.queue.map(({ text }) => text)).toEqual(['Queued after restart']);
+    expect(prompts).toEqual([]);
+    const ended = new Promise<void>((resolve) => { manager.once('turn-ended', () => resolve()); });
+    manager.applyForegroundState(identity, 'idle');
+    await ended;
+    expect(prompts).toEqual(['Queued after restart']);
+  });
+
+  it('ignores retired-source updates during and after Restart without overriding a newer selection', async () => {
+    const loading = deferred<undefined>();
+    const finish = deferred<undefined>();
+    const { manager, connections, received } = setup({
+      fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
+        .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+        .onRequest(methods.agent.session.load, async ({ client, params }) => {
+          await client.notify(methods.client.session.update, { sessionId: params.sessionId,
+            update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Replacement replay' } } });
+          loading.resolve(undefined);
+          await finish.promise;
+          return {};
+        }),
+      other: sessionAgent(SECOND_SESSION).script,
+    });
+    const sinks: import('@/core/acp/AcpDriver').SessionUpdateSink[] = [];
+    const connect = connections.connect.bind(connections);
+    vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, sink, closed) => {
+      if (name === 'fake') { sinks.push(sink); }
+      return connect(name, streams, id, sink, closed);
+    });
+    const other = await manager.newSession('other');
+    const original = await manager.newSession('fake');
+    const old = sinks[0];
+    if (!old) { throw new Error('Missing retired source'); }
+    const before = manager.sessionState(address(FIRST_SESSION))?.content;
+    const lateUpdate = () => {
+      old.handleUpdate(FIRST_SESSION, { kind: 'agentText', text: 'Retired output', messageId: null }, 'v1');
+      old.handleUpdate(FIRST_SESSION, { kind: 'foreground', state: 'running' }, 'v2');
+    };
+    const restarting = manager.restartAgent('fake', original.agentId);
+    try {
+      await loading.promise;
+      lateUpdate();
+      expect(manager.sessionState(address(FIRST_SESSION))?.content).toBe(before);
+      expect(manager.selectSession(other)).toBe(true);
+    } finally { finish.resolve(undefined); await restarting; }
+    lateUpdate();
+    expect(manager.getActiveSession()).toBe(other);
+    expect(manager.getSession(address(FIRST_SESSION))?.agentId).not.toBe(original.agentId);
+    expect(manager.hasForegroundWork(address(FIRST_SESSION))).toBe(false);
+    expect(received).toEqual([[FIRST_SESSION, { kind: 'agentText', text: 'Replacement replay', messageId: null }]]);
+    expect(JSON.stringify(manager.sessionState(address(FIRST_SESSION))?.content)).toContain('Replacement replay');
+  });
+
+  it('keeps the selected transcript visible but makes the chat dormant after an unsupported Restart', async () => {
+    const { manager, chatView, posted, takeEvents } = setup({ fake: sessionAgent(FIRST_SESSION, (app) =>
+      app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' }))).script });
+    manager.on('session-removed', (session) => chatView.notifySessionRemoved(session));
+    manager.on('active-session-changed', () => chatView.notifyActiveSessionChanged());
+    const session = await manager.newSession('fake');
+    const identity = address(FIRST_SESSION);
+    await manager.sendPrompt(identity, 'Keep this transcript');
+    await chatView.handleMessage({ type: 'ready' });
+    const before = chatView.sessionTabs.snapshot();
+    posted.length = 0;
+    takeEvents();
+
+    await expect(manager.restartAgent('fake', session.agentId)).rejects.toThrow('Full replay is not supported');
+
+    expect(chatView.sessionTabs.snapshot()).toEqual(before);
+    expect(manager.getSession(identity)).toBeUndefined();
+    expect(posted.filter(({ type }) => type === 'viewSnapshot').at(-1)).toMatchObject({
+      state: { session: null }, content: { target: { configuredName: 'fake', sessionId: FIRST_SESSION },
+        entries: [{ kind: 'prompt', text: 'Keep this transcript' }] },
+    });
+    expect(takeEvents().filter(([event]) => event === 'active-session-changed')).toEqual([]);
+  });
+
+  it('commits v2 replay only after setup succeeds and preserves a failed sibling transcript', async () => {
+    let created = 0;
+    const reloads: V2.ResumeSessionRequest[] = [];
+    const prompts: string[] = [];
+    const { manager } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: created++ === 0 ? FIRST_SESSION : SECOND_SESSION }))
+      .onRequest(V2.methods.agent.session.prompt, async ({ params, client }) => {
+        prompts.push(params.sessionId);
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'running' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+        return { messageId: 'original' };
+      })
+      .onRequest(V2.methods.agent.session.resume, async ({ params, client }) => {
+        reloads.push(params);
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', messageId: 'replay', content: { type: 'text', text: 'Replay only' } } });
+        if (params.sessionId === SECOND_SESSION) { throw new V2.RequestError(-32603, 'Incomplete replay'); }
+        await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'running' } });
+        return {};
+      }) });
+    const first = await manager.newSession('fake');
+    await manager.sendPrompt(address(FIRST_SESSION), 'First original');
+    await manager.newSession('fake');
+    await manager.sendPrompt(address(SECOND_SESSION), 'Second original');
+    const failedContent = manager.sessionState(address(SECOND_SESSION))?.content;
+
+    await expect(manager.restartAgent('fake', first.agentId)).rejects.toThrow('Incomplete replay');
+
+    expect(reloads).toEqual([FIRST_SESSION, SECOND_SESSION].map((sessionId) => ({ sessionId, cwd: '/work', replayFrom: { type: 'start' } })));
+    const replacedContent = JSON.stringify(manager.sessionState(address(FIRST_SESSION))?.content);
+    expect(replacedContent).toContain('Replay only');
+    expect(replacedContent).not.toContain('First original');
+    expect(manager.hasForegroundWork(address(FIRST_SESSION))).toBe(true);
+    expect(manager.sessionState(address(SECOND_SESSION))?.content).toBe(failedContent);
+    expect(manager.getSession(address(SECOND_SESSION))).toBeUndefined();
+    expect(prompts).toEqual([FIRST_SESSION, SECOND_SESSION]);
+    expect(created).toBe(2);
+  });
+
+  it('creates a sibling on the existing process without retiring the first session', async () => {
+    let created = 0;
+    const { manager, agents } = setup({ fake: () => fakeAgent()
+      .onRequest(methods.agent.session.new, () => ({ sessionId: created++ === 0 ? FIRST_SESSION : SECOND_SESSION })) });
+    const first = await manager.newSession('fake');
+
+    const second = await manager.newSession();
+
+    expect(second?.sessionId).toBe(SECOND_SESSION);
+    expect(second?.agentId).toBe(first.agentId);
+    expect(agents.launched).toHaveLength(1);
+    expect(manager.getSession(address(FIRST_SESSION))).toBe(first);
+    expect(manager.getActiveSession()).toBe(second);
+  });
+
+  it('releases the queued prompt when an unselected session settles', async () => {
+    const entered = deferred<undefined>();
+    const openFirst = deferred<undefined>();
+    const finishTurn = deferred<undefined>();
+    const queuedTurn = deferred<undefined>();
+    const { manager } = setup({ other: sessionAgent(SECOND_SESSION).script, fake: () => fakeAgent()
+      .onRequest(methods.agent.session.new, async () => {
+        entered.resolve(undefined);
+        await openFirst.promise;
+        return { sessionId: FIRST_SESSION };
+      })
+      .onRequest(methods.agent.session.prompt, async ({ params }) => {
+        if (params.prompt.some((part) => part.type === 'text' && part.text === 'held turn')) { await finishTurn.promise; }
+        if (params.sessionId === FIRST_SESSION && params.prompt.some((part) => part.type === 'text' && part.text === 'queued turn')) { queuedTurn.resolve(undefined); }
+        return { stopReason: 'end_turn' };
+      }) });
+    const opening = manager.newSession('fake');
+    await entered.promise;
+    let other;
+    try {
+      other = await manager.newSession('other');
+    } finally { openFirst.resolve(undefined); await opening; }
+    const identity = address(FIRST_SESSION);
+    const generation = manager.sessionState(identity)?.generation;
+    if (generation === undefined) { throw new Error('Missing session state'); }
+    const turn = manager.sendPrompt(identity, 'held turn');
+    try {
+      await manager.submitPrompt(identity, generation, 'queued turn');
+      expect(manager.sessionState(identity)?.queue.map(({ text }) => text)).toEqual(['queued turn']);
+      expect(manager.selectSession(other)).toBe(true);
+    } finally { finishTurn.resolve(undefined); await turn; }
+    expect(manager.getActiveAgentName()).toBe('other');
+    expect(manager.sessionState(identity)?.queue).toEqual([]);
+    await queuedTurn.promise;
+  });
+
   it('retains a background completion until its tab is selected', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION, (app) =>
       app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' }))).script });
-    const first = await manager.connectToAgent('fake');
+    const first = await manager.newSession('fake');
     const second = { ...first, sessionId: SECOND_SESSION, title: 'Other session' };
     const snapshot = () => posted.filter((message) => message.type === 'sessionTabs').at(-1);
     // Control tab selection without changing the production connection policy.
@@ -79,7 +268,7 @@ describe('SessionManager', () => {
         if (fail) { throw RequestError.invalidParams(undefined, 'Prompt rejected'); }
         return { stopReason: 'cancelled' };
       })).script });
-    const registration = await manager.connectToAgent('fake');
+    const registration = await manager.newSession('fake');
     const tabs = () => posted.flatMap((message) => message.type === 'sessionTabs' ? message.tabs : []);
     await expect(manager.sendPrompt(address(FIRST_SESSION), 'Continue')).rejects.toThrow('Prompt rejected');
     expect(tabs().at(-1)).toMatchObject({ status: 'failed' });
@@ -102,7 +291,7 @@ describe('SessionManager', () => {
       })
       .onRequest(methods.agent.session.resume, () => ({}));
     const { manager, chatView, posted } = setup({ fake: script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await manager.loadSession('fake', LOADED_SESSION);
     await manager.resumeSession('fake', RESUMED_SESSION);
     await expect(manager.loadSession('fake', 'failed')).rejects.toThrow('Cannot load');
@@ -123,7 +312,7 @@ describe('SessionManager', () => {
       await response;
       return { stopReason: 'end_turn' };
     })).script });
-    const registration = await manager.connectToAgent('fake');
+    const registration = await manager.newSession('fake');
     const completed: unknown[] = [];
     manager.on('turn-ended', (session) => { completed.push(session); });
     const turn = manager.sendPrompt(address(FIRST_SESSION), 'Continue');
@@ -136,7 +325,7 @@ describe('SessionManager', () => {
 
   it('does not record an intentional cancellation as successful completion', async () => {
     const { manager } = setup({ fake: sessionAgent(FIRST_SESSION, (app) => app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'cancelled' }))).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const completed: unknown[] = [];
     manager.on('turn-ended', (session) => { completed.push(session); });
 
@@ -157,7 +346,7 @@ describe('SessionManager', () => {
       });
       return { stopReason: 'end_turn' };
     })).script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const first = manager.sendPrompt(address(FIRST_SESSION), 'first');
     const second = manager.sendPrompt(address(FIRST_SESSION), 'second');
     await received;
@@ -175,7 +364,7 @@ describe('SessionManager', () => {
     manager.on('active-session-changed', () => chatView.notifyActiveSessionChanged());
     manager.on('session-removed', (registration) => chatView.notifySessionRemoved(registration));
     manager.on('session-ended', (registration, reason) => chatView.notifySessionEnded(registration, reason));
-    const registration = await manager.connectToAgent('fake');
+    const registration = await manager.newSession('fake');
     manager.applyForegroundState(address(FIRST_SESSION), 'running');
     chatView.handleSessionUpdate({ input: {
       origin: { identity: { configuredName: registration.agentName, sessionId: FIRST_SESSION }, sourceId: registration.agentId },
@@ -204,9 +393,9 @@ describe('SessionManager', () => {
       }
       return { sessionId: SECOND_SESSION };
     }) });
-    const first = manager.connectToAgent('fake');
+    const first = manager.newSession('fake');
     await firstEntered;
-    try { await manager.connectToAgent('fake'); }
+    try { await manager.newSession('fake'); }
     finally { release(); await first; }
     expect(agents.launched).toHaveLength(1);
     expect(manager.getSession(address(FIRST_SESSION))).toBeDefined();
@@ -242,11 +431,11 @@ describe('SessionManager', () => {
         })
         .onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })) });
       if (failure !== 'cancelled authentication') { authPrompt.chooseAuthMethod.mockResolvedValue({ id: 'test', name: 'Test', description: null }); }
-      const first = manager.connectToAgent('fake');
+      const first = manager.newSession('fake');
       const rejected = expect(first).rejects.toThrow(failure === 'cancelled authentication' ? AuthenticationCancelled
         : failure === 'authentication failure' ? 'Cannot authenticate' : 'Cannot create session');
       await firstEntered;
-      try { await manager.connectToAgent('fake'); }
+      try { await manager.newSession('fake'); }
       finally { release(); await rejected; }
 
       expect(agents.launched).toHaveLength(1);
@@ -270,10 +459,10 @@ describe('SessionManager', () => {
       .onRequest(methods.agent.session.load, reject)
       .onRequest(methods.agent.session.resume, reject)
       .onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })) });
-    const opening = manager.connectToAgent('fake');
+    const opening = manager.newSession('fake');
     await entered;
     let sibling;
-    try { sibling = await manager.connectToAgent('fake'); }
+    try { sibling = await manager.newSession('fake'); }
     finally { release(); await opening; }
 
     const attempt = how === 'load' ? manager.loadSession('fake', OLD_SESSION) : manager.resumeSession('fake', OLD_SESSION);
@@ -297,7 +486,7 @@ describe('SessionManager', () => {
       }),
     });
     await manager.ensureConnected('other');
-    const opening = manager.connectToAgent('fake');
+    const opening = manager.newSession('fake');
     try {
       await receivedAtLeast(1);
       await agents.running('other')[0]?.crash();
@@ -336,12 +525,12 @@ describe('SessionManager', () => {
     });
     manager.on('session-ended', (registration, reason) => chatView.notifySessionEnded(registration, reason));
 
-    // Overlap the initial opens so both registrations exist without a new navigation policy.
-    const opening = manager.connectToAgent('other');
+    const opening = manager.newSession('other');
     await entered;
-    try { await manager.connectToAgent('fake'); }
+    let selected;
+    try { selected = await manager.newSession('fake'); }
     finally { release(); await opening; }
-    const selected = await manager.connectToAgent('fake');
+    expect(manager.selectSession(selected)).toBe(true);
     await reviews.handleSessionUpdate({ origin: { identity: address(FIRST_SESSION), sourceId: selected.agentId }, schema: 'v1',
       update: { kind: 'toolCall', toolCallId: 'edit', status: 'completed',
         content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/b.ts', oldText: 'b', newText: 'B' } }],
@@ -382,11 +571,12 @@ describe('SessionManager', () => {
       sinks.set(name, sink);
       return connect(name, streams, id, sink, closed);
     });
-    const opening = manager.connectToAgent('other');
+    const opening = manager.newSession('other');
     await entered;
-    try { await manager.connectToAgent('fake'); }
+    let selected;
+    try { selected = await manager.newSession('fake'); }
     finally { release(); await opening; }
-    const selected = await manager.connectToAgent('fake');
+    expect(manager.selectSession(selected)).toBe(true);
     chatView.notifySessionOpened(selected);
     await chatView.handleMessage({ type: 'ready' });
     const foreground = vi.fn();
@@ -431,8 +621,8 @@ describe('SessionManager', () => {
         }
         return { sessionId: FIRST_SESSION };
       }) });
-    await expect(manager.connectToAgent('fake')).rejects.toThrow('Cannot open');
-    await manager.connectToAgent('fake');
+    await expect(manager.newSession('fake')).rejects.toThrow('Cannot open');
+    await manager.newSession('fake');
     expect(chatView.hasRunningTurn).toBe(false);
   });
 
@@ -449,7 +639,7 @@ describe('SessionManager', () => {
         return { messageId: 'u1' };
       })
       .onNotification(V2.methods.agent.session.cancel, ({ params }) => cancel(params.sessionId)) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await chatView.handleMessage({ type: 'ready' });
     await chatView.handleMessage({ type: 'sendPrompt', target: promptTarget(posted), text: 'go' });
     expect(chatView.hasRunningTurn).toBe(false);
@@ -478,7 +668,7 @@ describe('SessionManager', () => {
     const { manager, chatView, posted } = setup({ fake: () => fakeV2Agent()
       .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] }))
       .onRequest(V2.methods.agent.session.new, ({ client: connected }) => { client = connected; return { sessionId: FIRST_SESSION }; }) });
-    const session = await manager.connectToAgent('fake');
+    const session = await manager.newSession('fake');
     chatView.sessionTabs.open({ ...session, sessionId: SECOND_SESSION });
     chatView.notifyTabsChanged();
     await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'running' } });
@@ -501,7 +691,7 @@ describe('SessionManager', () => {
         await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId, update: { sessionUpdate: 'state_update', state: 'requires_action' } });
         return {};
       }) });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await manager.listSessions('fake');
     expect(chatView.hasRunningTurn).toBe(true);
     await manager.resumeSession('fake', SECOND_SESSION);
@@ -522,10 +712,10 @@ describe('SessionManager', () => {
       const two = sessionAgent(undefined, recordPrompts);
       const { manager } = setup({ one: one.script, two: two.script });
 
-      const first = await manager.connectToAgent('one');
+      const first = await manager.newSession('one');
       await manager.sendPrompt({ configuredName: first.agentName, sessionId: first.sessionId }, 'first');
       await manager.disconnectAgent('one');
-      const second = await manager.connectToAgent('two');
+      const second = await manager.newSession('two');
       expect(second.sessionId).not.toBe(first.sessionId);
       await manager.sendPrompt({ configuredName: second.agentName, sessionId: second.sessionId }, 'second');
       const third = await manager.newSession();
@@ -548,7 +738,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, agents } = setup({ fake: fake.script });
-      const first = await manager.connectToAgent('fake');
+      const first = await manager.newSession('fake');
       await manager.sendPrompt(address(first.sessionId), 'first');
       const second = await manager.newSession();
       expect(second).toBeDefined();
@@ -556,14 +746,14 @@ describe('SessionManager', () => {
       expect(second.sessionId).not.toBe(first.sessionId);
       await manager.sendPrompt(address(second.sessionId), 'second');
       await manager.disconnectAgent('fake');
-      const third = await manager.connectToAgent('fake');
+      const third = await manager.newSession('fake');
       expect(third.sessionId).not.toBe(first.sessionId);
       expect(third.sessionId).not.toBe(second.sessionId);
       await manager.sendPrompt(address(third.sessionId), 'third');
 
       expect(prompted).toEqual([firstId, secondId, thirdId]);
       expect(manager.getActiveSessionId()).toBe(thirdId);
-      expect(agents.launched).toHaveLength(3);
+      expect(agents.launched).toHaveLength(2);
     });
 
     it('tells whether an agent is running, without starting it', async () => {
@@ -582,7 +772,7 @@ describe('SessionManager', () => {
       const fake = sessionAgent(FIRST_SESSION);
       const { manager, reference, workspace, takeEvents } = setup({ fake: fake.script });
 
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
 
       expect(fake.requests).toEqual([{ method: 'session/new', params: { cwd: '/work', mcpServers: [] } }]);
       expect(session).toMatchObject({
@@ -608,7 +798,7 @@ describe('SessionManager', () => {
       const { manager, agents, withOtherFolders } = setup({ fake: fake.script });
       withOtherFolders('/more', '/other');
 
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await manager.loadSession('fake', OLD_SESSION);
       await manager.resumeSession('fake', OLDER_SESSION);
 
@@ -625,7 +815,7 @@ describe('SessionManager', () => {
       const { manager, references, workspace, withoutWorkspaceTarget } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       withoutWorkspaceTarget();
 
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       manager.applySessionInfoUpdate(address(FIRST_SESSION), { title: 'Named' });
       manager.recordTurnEnded(address(FIRST_SESSION));
 
@@ -638,7 +828,7 @@ describe('SessionManager', () => {
       const { manager, references, reference, workspace, withPendingWorkspaceTarget } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const learn = withPendingWorkspaceTarget();
 
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       manager.applySessionInfoUpdate(address(FIRST_SESSION), { title: 'Named' });
       manager.recordTurnEnded(address(FIRST_SESSION));
       expect(references.list(WORKSPACE.host, 'fake', '/work')).toEqual([]);
@@ -650,29 +840,30 @@ describe('SessionManager', () => {
       expect(workspace.lastActiveSession()).toEqual(address(FIRST_SESSION));
     });
 
-    it('reuses the live session when connecting to the same agent again', async () => {
+    it('reuses the connection and leaves its selected session alone when connecting again', async () => {
       const fake = sessionAgent();
       const { agents, manager } = setup({ fake: fake.script });
 
-      const first = await manager.connectToAgent('fake');
-      const second = await manager.connectToAgent('fake');
+      const first = await manager.newSession('fake');
+      await manager.ensureConnected('fake');
 
-      expect(second).toBe(first);
+      expect(manager.getActiveSession()).toBe(first);
       expect(agents.launched).toHaveLength(1);
       expect(fake.requests).toHaveLength(1);
     });
 
-    it('disconnects the previous agent when connecting to another', async () => {
+    it('connects another agent without creating a session or changing selection', async () => {
       const { agents, manager, takeEvents } = setup({ one: sessionAgent(FIRST_SESSION).script, two: sessionAgent(SECOND_SESSION).script });
-      const previous = await manager.connectToAgent('one');
+      const previous = await manager.newSession('one');
       takeEvents();
 
-      await manager.connectToAgent('two');
+      await manager.ensureConnected('two');
 
-      expect(agents.running('one')).toEqual([]);
-      expect(manager.getSession({ configuredName: 'one', sessionId: FIRST_SESSION })).toBeUndefined();
-      expect(manager.getAgentNamesWithSessions()).toEqual(['two']);
-      expect(takeEvents().slice(0, 2)).toEqual([['session-removed', previous], ['active-session-changed', null]]);
+      expect(agents.running('one')).toHaveLength(1);
+      expect(manager.isConnected('two')).toBe(true);
+      expect(manager.getActiveSession()).toBe(previous);
+      expect(manager.getAgentNamesWithSessions()).toEqual(['one']);
+      expect(takeEvents().map(([name]) => name)).not.toContain('active-session-changed');
     });
 
     it('reuses an agent already launched to list its sessions', async () => {
@@ -680,7 +871,7 @@ describe('SessionManager', () => {
 
       await manager.ensureConnected('fake');
       expect(manager.hasSession('fake')).toBe(false);
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       expect(agents.launched).toHaveLength(1);
       expect(manager.hasSession('fake')).toBe(true);
@@ -739,7 +930,7 @@ describe('SessionManager', () => {
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION })) });
       const states: boolean[] = [];
       manager.on('connection-changed', () => states.push(manager.isConnected('fake')));
-      const opening = kind === 'connection' ? manager.ensureConnected('fake') : manager.connectToAgent('fake');
+      const opening = kind === 'connection' ? manager.ensureConnected('fake') : manager.newSession('fake');
       const result = opening.then(() => 'opened', () => 'rejected');
       try {
         await entered;
@@ -816,7 +1007,7 @@ describe('SessionManager', () => {
 
     it('disconnects an agent with a session, dropping the session', async () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       takeEvents();
       const closed = new Promise<void>((resolve) => manager.once('agent-closed', () => resolve()));
 
@@ -836,7 +1027,7 @@ describe('SessionManager', () => {
     it('launches one process for concurrent callers', async () => {
       const { agents, manager } = setup({ fake: sessionAgent().script });
 
-      await Promise.all([manager.ensureConnected('fake'), manager.ensureConnected('fake'), manager.connectToAgent('fake')]);
+      await Promise.all([manager.ensureConnected('fake'), manager.ensureConnected('fake'), manager.newSession('fake')]);
 
       expect(agents.launched).toHaveLength(1);
     });
@@ -844,7 +1035,7 @@ describe('SessionManager', () => {
     it('rejects a name with no agent configuration', async () => {
       const { agents, manager } = setup({ fake: sessionAgent().script });
 
-      await expect(manager.connectToAgent('missing')).rejects.toThrow('No agent configuration named "missing". Configured: fake');
+      await expect(manager.newSession('missing')).rejects.toThrow('No agent configuration named "missing". Configured: fake');
       expect(agents.launched).toEqual([]);
     });
 
@@ -856,7 +1047,7 @@ describe('SessionManager', () => {
       const states: boolean[] = [];
       manager.on('connection-changed', () => states.push(manager.isConnected('fake')));
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow('boom');
+      await expect(manager.newSession('fake')).rejects.toThrow('boom');
       expect(agents.launched[0]?.killed).toBe(true);
       expect(manager.isConnected('fake')).toBe(false);
       expect(states).toEqual([]);
@@ -868,15 +1059,15 @@ describe('SessionManager', () => {
       });
       const { agents, manager } = setup({ fake: failing });
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow();
+      await expect(manager.newSession('fake')).rejects.toThrow();
       expect(agents.launched[0]?.killed).toBe(true);
       expect(manager.getActiveSessionId()).toBeNull();
     });
 
-    it('starts a new session on the same agent and clears the transcript', async () => {
+    it('selects a new sibling without removing the previous session or clearing its transcript', async () => {
       const script = sessionAgent([FIRST_SESSION, SECOND_SESSION]).script;
       const { manager, takeEvents } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       takeEvents();
 
       const session = await manager.newSession();
@@ -884,7 +1075,7 @@ describe('SessionManager', () => {
       expect(session?.sessionId).toBe(SECOND_SESSION);
       expect(manager.getActiveSessionId()).toBe(SECOND_SESSION);
       expect(takeEvents().map(([name]) => name)).toEqual([
-        'session-removed', 'active-session-changed', 'clear-transcript', 'session-added', 'active-session-changed',
+        'session-added', 'active-session-changed',
       ]);
     });
   });
@@ -914,7 +1105,7 @@ describe('SessionManager', () => {
       const fake = authAgent();
       const { manager, authPrompt } = setup({ fake: fake.script });
       authPrompt.chooseAuthMethod.mockResolvedValue(choices[1]);
-      const first = await manager.connectToAgent('fake');
+      const first = await manager.newSession('fake');
       const second = await manager.newSession();
       expect(second).toBeDefined();
       expect(second?.sessionId).not.toBe(first.sessionId);
@@ -925,7 +1116,7 @@ describe('SessionManager', () => {
       const { manager, authPrompt } = setup({ fake: fake.script });
       authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[1]);
 
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
 
       expect(authPrompt.chooseAuthMethod).toHaveBeenCalledExactlyOnceWith('fake', choices);
       expect(fake.authenticated).toEqual(['browser']);
@@ -935,7 +1126,7 @@ describe('SessionManager', () => {
     it('stops the agent when the user cancels', async () => {
       const { agents, manager } = setup({ fake: authAgent().script });
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow(AuthenticationCancelled);
+      await expect(manager.newSession('fake')).rejects.toThrow(AuthenticationCancelled);
       expect(agents.launched[0]?.killed).toBe(true);
     });
 
@@ -950,7 +1141,7 @@ describe('SessionManager', () => {
       const { agents, manager, authPrompt } = setup({ fake: script });
       authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[0]);
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow(/^Authentication failed: .*token expired/);
+      await expect(manager.newSession('fake')).rejects.toThrow(/^Authentication failed: .*token expired/);
       expect(agents.launched[0]?.killed).toBe(true);
     });
 
@@ -963,7 +1154,7 @@ describe('SessionManager', () => {
       const { agents, manager, authPrompt } = setup({ fake: script });
       authPrompt.chooseAuthMethod.mockResolvedValueOnce(choices[0]);
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow('Authentication required');
+      await expect(manager.newSession('fake')).rejects.toThrow('Authentication required');
       expect(authPrompt.chooseAuthMethod).toHaveBeenCalledOnce();
       expect(agents.launched[0]?.killed).toBe(true);
     });
@@ -1012,7 +1203,7 @@ describe('SessionManager', () => {
       });
       const { agents, manager } = setup({ fake: script });
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow('requires authentication but did not advertise any auth methods');
+      await expect(manager.newSession('fake')).rejects.toThrow('requires authentication but did not advertise any auth methods');
       expect(agents.launched[0]?.killed).toBe(true);
     });
   });
@@ -1020,7 +1211,7 @@ describe('SessionManager', () => {
   describe('prompts and session controls', () => {
     it.each(['running', 'requiresAction'] as const)('blocks review authority decisions while an unregistered sibling reports %s', async (state) => {
       const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      const selected = await manager.connectToAgent('fake');
+      const selected = await manager.newSession('fake');
       const subject = new Reviews({ read: async () => 'A', restore: async () => {}, watch: () => ({ dispose() {} }), snapshot: () => undefined,
         applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
       }, manager);
@@ -1052,7 +1243,7 @@ describe('SessionManager', () => {
         vi.spyOn(driver, 'prompt').mockImplementationOnce(async () => { start(); await gate; return { stopReason: 'end_turn' }; });
         return driver;
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.handleMessage({ type: 'ready' });
     const turn = chatView.handleMessage({ type: 'sendPrompt', target: promptTarget(posted), text: 'go' });
       await entered;
@@ -1076,7 +1267,7 @@ describe('SessionManager', () => {
         drivers.push(driver);
         return driver;
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.handleMessage({ type: 'ready' });
       const oldDriver = drivers[0];
       if (!oldDriver) { throw new Error('Missing old driver'); }
@@ -1084,7 +1275,7 @@ describe('SessionManager', () => {
     const oldTurn = chatView.handleMessage({ type: 'sendPrompt', target: promptTarget(posted), text: 'old' });
       await entered;
       await manager.disconnectAgent('fake');
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const driver = drivers[1];
       if (!driver) { throw new Error('Missing replacement driver'); }
       let finish!: () => void;
@@ -1110,7 +1301,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, chatView, executeCommand } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.handleMessage({ type: 'ready' });
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       try {
@@ -1130,7 +1321,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const first = manager.runDecision(async () => { start(); await gate; });
       await entered;
       const second = manager.runDecision(async () => { effects.push('second'); });
@@ -1150,7 +1341,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const heard: boolean[] = [];
       const unsubscribe = manager.onChanged(() => heard.push(manager.resolutionBlocked()));
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
@@ -1170,7 +1361,7 @@ describe('SessionManager', () => {
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const entered = new Promise<void>((resolve) => { start = resolve; });
       const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const effects: string[] = [];
       const first = manager.runDecision(async () => {
         effects.push('first');
@@ -1200,7 +1391,7 @@ describe('SessionManager', () => {
           return { stopReason: 'end_turn' };
         }), { agentCapabilities: { loadSession: true } });
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const decision = manager.runDecision(async () => { start(); await gate; });
       await entered;
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
@@ -1219,7 +1410,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, chatView } = setup({ fake: fake.script });
-      const registration = await manager.connectToAgent('fake');
+      const registration = await manager.newSession('fake');
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       try {
         chatView.notifySessionRemoved(registration);
@@ -1237,7 +1428,7 @@ describe('SessionManager', () => {
           return { sessions: [] };
         }),
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await manager.listSessions('other');
       const received = receivedAtLeast(1);
       const update: V2.UpdateSessionNotification['update'] = state === 'running'
@@ -1265,7 +1456,7 @@ describe('SessionManager', () => {
           return { stopReason: 'end_turn' };
         }), { agentCapabilities: { loadSession: true } });
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       try {
         await manager.loadSession('fake', SECOND_SESSION);
@@ -1281,7 +1472,7 @@ describe('SessionManager', () => {
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const entered = new Promise<void>((resolve) => { start = resolve; });
       const { manager } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const decision = manager.runDecision(async (stillAdmitted) => {
         start();
         await gate;
@@ -1303,7 +1494,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       try {
         manager.agentsChanged({ fake: { command: 'fake' } }, { renamed: { command: 'fake' } });
@@ -1323,7 +1514,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const decision = manager.runDecision(async () => { await gate; throw new Error('Restore failed'); });
       const failed = expect(decision).rejects.toThrow('Restore failed');
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
@@ -1344,7 +1535,7 @@ describe('SessionManager', () => {
         vi.spyOn(driver, 'prompt').mockImplementation(async (sessionId) => { dispatched.push(sessionId); return { stopReason: 'end_turn' }; });
         return driver;
       });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const decision = manager.runDecision(async () => { await gate; });
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       const failed = expect(turn).rejects.toThrow('Prompt session is no longer current');
@@ -1363,7 +1554,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       const settled = outcome === 'reject'
         ? expect(turn).rejects.toThrow('Prompt refused')
@@ -1385,7 +1576,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       let valid: (() => boolean) | undefined;
       const decision = manager.runDecision(async (stillAdmitted) => {
         valid = stillAdmitted;
@@ -1420,7 +1611,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, chatView } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       await chatView.dispose();
 
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'explain this');
@@ -1442,7 +1633,7 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, linkActiveFile } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       linkActiveFile({ uri: 'file:///work/a.ts', name: '/work/a.ts' });
 
       await manager.sendPrompt(address(FIRST_SESSION), 'explain this');
@@ -1468,7 +1659,7 @@ describe('SessionManager', () => {
         cancellationReceived();
       }));
       const { manager } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       await manager.cancelTurn(address(FIRST_SESSION));
       await received;
@@ -1495,6 +1686,19 @@ describe('SessionManager', () => {
         .onRequest(methods.agent.session.load, () => ({}));
       return { script, requests };
     }
+
+    it('persists the listed title on first open without relying on a later list refresh', async () => {
+      const fake = listingAgent({ '': { ids: [LISTED_SESSION] } });
+      const { manager, references, reference } = setup({ fake: fake.script });
+      await manager.listSessions('fake');
+      expect(reference(LISTED_SESSION)).toBeUndefined();
+
+      const session = await manager.loadSession('fake', LISTED_SESSION);
+      await references.settled();
+
+      expect(session.title).toBe(`Title ${LISTED_SESSION}`);
+      expect(reference(LISTED_SESSION)?.title).toBe(`Title ${LISTED_SESSION}`);
+    });
 
     it('lists the sessions the agent knows, with its capabilities cached', async () => {
       const fake = listingAgent({ '': { ids: [LISTED_SESSION, SECOND_LISTED_SESSION], nextCursor: 'page2' } });
@@ -1621,7 +1825,7 @@ describe('SessionManager', () => {
 
     it('creates distinct sessions before loading a prior session on the replacement process', async () => {
       const { manager } = setup({ fake: replayingAgent() });
-      const first = await manager.connectToAgent('fake');
+      const first = await manager.newSession('fake');
       const second = await manager.newSession();
       expect(second).toBeDefined();
       expect(second?.sessionId).not.toBe(first.sessionId);
@@ -1653,7 +1857,7 @@ describe('SessionManager', () => {
       const opened: unknown[] = [];
       manager.on('session-opened', (...args) => opened.push(args));
 
-      const created = await manager.connectToAgent('fake');
+      const created = await manager.newSession('fake');
       const loaded = await manager.loadSession('fake', LOADED_SESSION);
       const resumed = await manager.resumeSession('fake', RESUMED_SESSION);
       await expect(manager.loadSession('fake', 'gone')).rejects.toThrow('Resource not found');
@@ -1696,27 +1900,27 @@ describe('SessionManager', () => {
       ]);
     });
 
-    it("replaces the same agent's active session when loading another", async () => {
+    it.each(['load', 'resume'] as const)("preserves the same agent's live sessions during %s", async (opening) => {
       const { agents, manager, takeEvents } = setup({ fake: replayingAgent(undefined, FIRST_SESSION) });
-      const previous = await manager.connectToAgent('fake');
+      const previous = await manager.newSession('fake');
       takeEvents();
 
-      await manager.loadSession('fake', OLD_SESSION);
+      const opened = await (opening === 'load' ? manager.loadSession('fake', OLD_SESSION) : manager.resumeSession('fake', OLD_SESSION));
 
       expect(agents.launched).toHaveLength(1);
-      expect(manager.getSession(address(FIRST_SESSION))).toBeUndefined();
+      expect(manager.getSession(address(FIRST_SESSION))).toBe(previous);
       expect(manager.getActiveSessionId()).toBe(OLD_SESSION);
-      expect(takeEvents()[0]).toEqual(['session-removed', previous]);
+      expect(takeEvents()[0]).toEqual(['session-added', opened]);
     });
 
-    it("disconnects another agent's session before loading", async () => {
+    it("preserves another agent's session when loading", async () => {
       const { agents, manager } = setup({ fake: replayingAgent(), other: sessionAgent().script });
-      await manager.connectToAgent('other');
+      await manager.newSession('other');
 
       await manager.loadSession('fake', OLD_SESSION);
 
-      expect(agents.running('other')).toEqual([]);
-      expect(manager.getAgentNamesWithSessions()).toEqual(['fake']);
+      expect(agents.running('other')).toHaveLength(1);
+      expect(manager.getAgentNamesWithSessions()).toEqual(['other', 'fake']);
     });
 
     it('refuses to load when the agent does not support it', async () => {
@@ -1851,7 +2055,7 @@ describe('SessionManager', () => {
     it('starts a new session untitled', async () => {
       const { manager } = setup({ fake: sessionAgent().script });
 
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
 
       expect(session).not.toHaveProperty('title');
     });
@@ -1860,7 +2064,7 @@ describe('SessionManager', () => {
   describe('agent exit', () => {
     it('drops the session when its agent exits', async () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       takeEvents();
 
       await agents.launched[0]?.crash(1);
@@ -1877,7 +2081,7 @@ describe('SessionManager', () => {
 
     it('names no exit code when a signal killed the agent', async () => {
       const { agents, manager, takeEvents } = setup({ fake: sessionAgent(FIRST_SESSION).script });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       takeEvents();
 
       await agents.launched[0]?.crash(null);
@@ -1888,19 +2092,20 @@ describe('SessionManager', () => {
     it('announces no end for a session whose agent it stopped itself', async () => {
       const stops: [string, (manager: SessionManager) => Promise<unknown>][] = [
         ['disconnect', (manager) => manager.disconnectAgent('fake')],
-        ['new session', (manager) => manager.newSession()],
+        ['dispose', (manager) => manager.dispose()],
       ];
       for (const [name, stop] of stops) {
         const fake = sessionAgent();
         const { manager, takeEvents } = setup({ fake: fake.script });
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
         const closed = new Promise<void>((resolve) => manager.once('agent-closed', () => resolve()));
 
         await stop(manager);
         await closed;
 
         const events = takeEvents().map(([event]) => event);
-        expect(events, name).toContain('session-removed');
+        expect(events, name).toContain('agent-closed');
+        if (name === 'disconnect') { expect(events, name).toContain('session-removed'); }
         expect(events, name).not.toContain('session-ended');
       }
     });
@@ -1912,7 +2117,7 @@ describe('SessionManager', () => {
         agentCapabilities: { sessionCapabilities: { list: {} } }, authMethods: [{ id: 'login', name: 'Log in' }],
       });
       const { manager, takeEvents } = setup({ fake: fake.script });
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       takeEvents();
 
       await expect(manager.listSessions('fake')).rejects.toThrow(AuthenticationCancelled);
@@ -1933,7 +2138,7 @@ describe('SessionManager', () => {
             return new Promise(() => {});
           });
         const { agents, manager, events } = setup({ fake: script });
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
         const prompt = manager.sendPrompt(address(FIRST_SESSION), 'hello');
         await started;
 
@@ -1962,7 +2167,7 @@ describe('SessionManager', () => {
       await manager.ensureConnected('fake');
       await agents.launched[0]?.crash(1);
 
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
 
       expect(agents.launched).toHaveLength(2);
     });
@@ -1972,14 +2177,15 @@ describe('SessionManager', () => {
         .onRequest(methods.agent.session.new, () => ({ sessionId: randomUUID() }))
         .onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' }));
       const { agents, manager } = setup({ fake: script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const replaced = agents.launched[0];
 
-      const replacement = await manager.newSession();
+      const disconnecting = manager.disconnectAgent('fake');
+      const replacement = await manager.newSession('fake');
       expect(replaced?.killed).toBe(true);
+      await disconnecting;
       await replaced?.exitReported;
 
-      if (!replacement) { throw new Error('Replacement session did not open'); }
       expect(manager.getActiveSessionId()).toBe(replacement.sessionId);
       expect(manager.hasSession('fake')).toBe(true);
       await expect(manager.sendPrompt(address(replacement.sessionId), 'still there?')).resolves.toBeUndefined();
@@ -2017,27 +2223,27 @@ describe('SessionManager', () => {
       it('fails to connect through a command missing from the PATH with the explanation checking a package runner gives', async () => {
         const manager = realAgent({ command: 'acp-test-no-such-command', args: ['acp'] });
 
-        await expect(manager.connectToAgent('broken')).rejects.toThrow(commandNotFound('acp-test-no-such-command'));
+        await expect(manager.newSession('broken')).rejects.toThrow(commandNotFound('acp-test-no-such-command'));
         expect(manager.getActiveSessionId()).toBeNull();
       });
 
       it('fails to connect with the exit code of a command that exits before answering', async () => {
         const manager = realAgent({ command: process.execPath, args: ['-e', 'process.exitCode = 2'] });
 
-        await expect(manager.connectToAgent('broken')).rejects.toThrow('Agent "broken" exited with code 2 before connecting; its output is in the Your Turn log (Your Turn: Show Log).');
+        await expect(manager.newSession('broken')).rejects.toThrow('Agent "broken" exited with code 2 before connecting; its output is in the Your Turn log (Your Turn: Show Log).');
       });
     });
 
     it('stops every agent on dispose', async () => {
       const { agents, manager, takeEvents } = setup({ one: sessionAgent(FIRST_SESSION).script, two: sessionAgent(SECOND_SESSION).script });
       await manager.ensureConnected('one');
-      await manager.connectToAgent('two');
+      await manager.newSession('two');
       takeEvents();
 
       const disposed = manager.dispose();
 
       expect(agents.launched.map((l) => l.killed)).toEqual([true, true]);
-      expect(manager.getActiveSessionId()).toBe(SECOND_SESSION);
+      expect(manager.getActiveSessionId()).toBeNull();
       await disposed;
       expect(takeEvents().filter(([event]) => event === 'agent-closed')).toEqual([
         ['agent-closed', 'agent_1', null],
@@ -2070,10 +2276,10 @@ describe('SessionManager', () => {
 
     it('does not reuse a session while disposal is still waiting for its agent to exit', async () => {
       const { agents, manager } = setup({ fake: sessionAgent().script });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const disposed = manager.dispose();
 
-      await expect(manager.connectToAgent('fake')).rejects.toThrow('Session manager is disposed.');
+      await expect(manager.newSession('fake')).rejects.toThrow('Session manager is disposed.');
       await disposed;
 
       expect(manager.getActiveSessionId()).toBeNull();
@@ -2083,15 +2289,17 @@ describe('SessionManager', () => {
     it('awaits both a replaced agent and its replacement without reporting an unexpected session end', async () => {
       const script = sessionAgent([FIRST_SESSION, SECOND_SESSION]).script;
       const { agents, manager, takeEvents } = setup({ fake: script });
-      await manager.connectToAgent('fake');
-      await manager.newSession();
+      await manager.newSession('fake');
+      const disconnecting = manager.disconnectAgent('fake');
+      await manager.newSession('fake');
       takeEvents();
 
       await manager.dispose();
+      await disconnecting;
 
       expect(agents.launched).toHaveLength(2);
       expect(agents.launched.every((launched) => launched.killed)).toBe(true);
-      expect(takeEvents()).not.toContainEqual(['session-ended', SECOND_SESSION, 'Fake Agent exited unexpectedly.']);
+      expect(takeEvents().map(([event]) => event)).not.toContain('session-ended');
       expect(manager.getSession(address(SECOND_SESSION))).toBeUndefined();
       expect(manager.getActiveSessionId()).toBeNull();
     });
@@ -2107,7 +2315,7 @@ describe('SessionManager', () => {
         return { sessionId: FIRST_SESSION };
       });
       const { agents, manager } = setup({ fake: script });
-      const connecting = manager.connectToAgent('fake').then(() => 'connected', () => 'closed');
+      const connecting = manager.newSession('fake').then(() => 'connected', () => 'closed');
       await started;
       const process = agents.launched[0]?.process;
       if (!process) { throw new Error('Agent was not launched.'); }
@@ -2171,7 +2379,7 @@ describe('SessionManager', () => {
       const { manager, references, reference, workspace, withPendingWorkspaceTarget } = setup({ fake: sessionAgent().script });
       await references.used(address(KEPT_SESSION));
       const learn = withPendingWorkspaceTarget();
-      const session = await manager.connectToAgent('fake');
+      const session = await manager.newSession('fake');
       const removing = manager.removeFromHistory('fake', KEPT_SESSION);
 
       await manager.dispose();
@@ -2220,7 +2428,7 @@ describe('SessionManager', () => {
 
       for (const connect of [
         () => manager.ensureConnected('fake'),
-        () => manager.connectToAgent('fake'),
+        () => manager.newSession('fake'),
         () => manager.listSessions('fake'),
         () => manager.loadSession('fake', OLD_SESSION),
         () => manager.resumeSession('fake', OLD_SESSION),

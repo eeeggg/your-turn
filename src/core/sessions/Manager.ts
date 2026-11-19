@@ -14,7 +14,6 @@ import {
   type FileLink,
   type ForegroundState,
   type Modes,
-  type NewSession,
   type PromptPart,
   type SessionPage,
   type SessionRoots,
@@ -191,14 +190,13 @@ export interface SessionManagerEvents {
 }
 
 export type SessionStatus = 'quiet' | 'working' | 'needsInput' | 'failed' | 'completed';
+type CloseOutcome = { kind: 'closed' | 'stale' } | { kind: 'not-stopped'; reason: string };
 
 /**
  * Manages agents, their connections, and their sessions.
  *
- * One session is active at a time; connecting to, loading, or resuming with
- * another agent disconnects the agent that owned the previous one. At most one
- * agent process runs per agent name; it is launched on first use, either for a
- * session or to list an agent's sessions, and reused after that.
+ * Selection is independent of connection and session lifetime. Each agent
+ * configuration reuses one accepting process for its live sessions.
  */
 export class SessionManager extends EventEmitter<SessionManagerEvents> implements ReviewAdmission {
   private readonly retained: SessionStates;
@@ -206,9 +204,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const registration = this.getSession(identity);
     return registration?.agentId === agentId ? this.retained.view(identity)?.generation : undefined;
   }, (identity, agentId, question) => {
-    const registration = this.getSession(identity);
+    const registration = this.getSession(identity) ?? this.restarting.get(JSON.stringify([agentId, identity.sessionId]));
     if (registration?.agentId === agentId) { this.retained.questionSettled(registration, question); }
-    else if ([...this.processes].some(([process, lifetime]) => process.id === agentId && lifetime.accepting)) {
+    else if (this.acceptsOpening(agentId, identity.sessionId)) {
       this.retained.questionSettledOpening({ identity, sourceId: agentId }, question);
     }
   });
@@ -248,9 +246,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
   submitPrompt(identity: SessionIdentity, generation: number, text: string): Promise<void> | undefined {
     const session = this.getSession(identity);
-    if (!session || session !== this.getActiveSession() || !this.driverFor(session)
+    if (!session || session !== this.getActiveSession() || !this.driverFor(session) || this.closing.has(session)
       || this.retained.view(identity)?.generation !== generation || !text.trim()) { return; }
-    if (this.hasForegroundWork(identity) || (this.retained.view(identity)?.queue.length ?? 0) > 0) {
+    if (this.hasForegroundWork(identity) || this.awaitingIdle.has(session) || (this.retained.view(identity)?.queue.length ?? 0) > 0) {
       this.retained.enqueue(identity, generation, text);
       return;
     } else { return this.sendPrompt(identity, text); }
@@ -258,7 +256,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
   changeQueuedPrompt(identity: SessionIdentity, generation: number, change: QueueChange | { readonly kind: 'steer'; readonly id: number } | { readonly kind: 'stop'; readonly id: number }): void {
     const session = this.getSession(identity);
-    if (!session || session !== this.getActiveSession() || !this.driverFor(session)
+    if (!session || session !== this.getActiveSession() || !this.driverFor(session) || this.closing.has(session)
       || this.retained.view(identity)?.generation !== generation) { return; }
     if (change.kind === 'steer' || change.kind === 'stop') {
       const head = this.retained.view(identity)?.queue[0];
@@ -283,7 +281,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   private releaseQueued(session: SessionInfo): void {
     const identity = { configuredName: session.agentName, sessionId: session.sessionId };
     const state = this.retained.view(identity);
-    if (!state || session !== this.getActiveSession() || !this.driverFor(session) || this.hasForegroundWork(identity)) { return; }
+    if (!state || this.loading.has(session) || this.closing.has(session) || !this.driverFor(session) || this.hasForegroundWork(identity)) { return; }
+    if (this.awaitingIdle.has(session) && this.activity.get(JSON.stringify([session.agentId, session.sessionId]))?.foreground !== 'idle') { return; }
+    this.awaitingIdle.delete(session);
     const head = this.retained.takeQueued(identity, state.generation);
     if (head) { this.dispatchQueued(session, head.text); }
   }
@@ -338,6 +338,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
    * reapplied.
    */
   private readonly loading = new Map<SessionInfo, SessionLoad>();
+  private readonly creating = new Map<string, number>();
+  private readonly resuming = new Set<string>();
+  private readonly authFlows = new WeakMap<RunningAgent, Promise<void>>();
+  private readonly restarting = new Map<string, SessionInfo>();
+  private readonly reloading = new Set<SessionInfo>();
+  private readonly awaitingIdle = new WeakSet<SessionInfo>();
+  private readonly sessionRoots = new WeakMap<SessionInfo, SessionRoots>();
+  private selectionRevision = 0;
+  private readonly closing = new Map<SessionInfo, Promise<CloseOutcome>>();
 
   /**
    * Cache of each agent's capabilities, so the tree can render
@@ -428,63 +437,39 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     return this.capabilities.get(agentName);
   }
 
-  /**
-   * Make a session with an agent the active session, creating one unless the
-   * agent already has a live session. Disconnects the agent that owns the
-   * previous active session.
-   */
-  async connectToAgent(agentName: string): Promise<SessionInfo> {
-    const active = this.getActiveSession();
-    const [only, sibling] = this.openSessionsOf(agentName);
-    const existing = active?.agentName === agentName ? active : sibling ? undefined : only;
-    if (existing) {
-      this.activeSessionId = JSON.stringify([existing.agentName, existing.sessionId]);
-      this.emit('active-session-changed', existing);
-      return existing;
-    }
-    if (sibling) { throw new Error('Choose an existing session explicitly.'); }
-
-    const currentAgent = this.getActiveAgentName();
-    if (currentAgent) {
-      await this.disconnectAgent(currentAgent);
-    }
-
-    logDebug('Connecting to agent', { agentName });
-
+  async newSession(agentName: string): Promise<SessionInfo>;
+  async newSession(): Promise<SessionInfo | null>;
+  /** Create and select a new session without replacing the agent's connection. */
+  async newSession(agentName = this.getActiveAgentName()): Promise<SessionInfo | null> {
+    if (!agentName) { return null; }
     const agent = await this.ensureAgent(agentName);
-    const sessionInfo = await this.createAcpSession(agent, this.environment.workspaceRoots());
-
-    this.activeSessionId = JSON.stringify([sessionInfo.agentName, sessionInfo.sessionId]);
-
-    this.emit('session-added', sessionInfo);
-    this.emit('active-session-changed', sessionInfo);
-
-    logInfo('Connected to agent', { agentName, sessionId: sessionInfo.sessionId });
-    return sessionInfo;
+    const session = await this.createAcpSession(agent, this.environment.workspaceRoots());
+    this.requireRegistration(session);
+    this.selectionRevision++;
+    this.activeSessionId = JSON.stringify([session.agentName, session.sessionId]);
+    this.emit('session-added', session);
+    this.emit('active-session-changed', session);
+    return session;
   }
 
-  /**
-   * Start a new session with the agent that owns the active session, on a
-   * fresh agent process, and clear the transcript.
-   */
-  async newSession(): Promise<SessionInfo | null> {
-    const activeSession = this.getActiveSession();
-    if (!activeSession) {
-      return null;
-    }
-
-    const agentName = activeSession.agentName;
-    await this.disconnectAgent(agentName);
-    this.emit('clear-transcript');
-    return this.connectToAgent(agentName);
+  connectionSource(agentName: string): string | undefined {
+    return [...this.processes].find(([, lifetime]) => lifetime.name === agentName && lifetime.accepting)?.[0].id;
   }
 
-  /** Stop an agent and remove the registrations owned by its connection. */
-  async disconnectAgent(agentName: string): Promise<void> {
+  connectionNeedsStop(agentId: string): boolean {
+    return this.interactions.hasPending(agentId) || [...this.activity.values()].some((activity) => activity.agentId === agentId
+      && (activity.submissions.size > 0 || activity.foreground === 'running' || activity.foreground === 'requiresAction'));
+  }
+
+  /** Stop the captured connection and wait for its process to exit. */
+  async disconnectAgent(agentName: string, expectedSource?: string, preserveSelection = false): Promise<void> {
+    if (expectedSource !== undefined && this.connectionSource(agentName) !== expectedSource) { return; }
     this.launching.delete(agentName);
+    const waits: Promise<void>[] = [];
     for (const [process, lifetime] of this.processes) {
       if (lifetime.name === agentName && lifetime.accepting && !this.agents.has(agentName)) {
         this.retireSource(process);
+        waits.push(lifetime.exited);
         process.kill();
       }
     }
@@ -496,7 +481,89 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       }
       logInfo('Disconnecting agent', { agentName });
       this.stopAgent(agent);
-      this.removeSessions(sessions);
+      this.removeSessions(sessions, preserveSelection);
+      waits.push(agent.exited);
+    }
+    await Promise.all(waits);
+  }
+
+  /** Replace the captured process and commit each successful replay independently. */
+  async restartAgent(agentName: string, expectedSource: string): Promise<void> {
+    const current = this.agents.get(agentName);
+    if (current?.process.id !== expectedSource || !this.isConnected(agentName)) { return; }
+    const sessions = this.sessionsOn(current.process).filter((session) => this.driverFor(session) && !this.loading.has(session) && !this.closing.has(session));
+    const selected = this.getActiveSession();
+    const selectionRevision = this.selectionRevision;
+    for (const session of sessions) { this.reloading.add(session); }
+    const stopping = this.disconnectAgent(agentName, expectedSource, true);
+    // Reserve the next launch before another operation can reuse this configuration.
+    const launching = stopping.then(() => {
+      if (this.disposed || this.launching.get(current.name) !== launching) { throw new Error('Agent restart was interrupted.'); }
+      return this.launchAgent(current.name);
+    }).finally(() => {
+      if (this.launching.get(current.name) === launching) { this.launching.delete(current.name); }
+    });
+    this.launching.set(current.name, launching);
+    const failures: string[] = [];
+    try {
+      const replacement = await launching;
+      for (const previous of sessions) {
+        try {
+          const session = await this.reloadSession(replacement, previous);
+          if (previous === selected && this.selectionRevision === selectionRevision && this.driverFor(session)) {
+            this.activeSessionId = JSON.stringify([session.agentName, session.sessionId]);
+            this.emit('active-session-changed', session);
+          }
+        } catch (error) {
+          failures.push(`${previous.sessionId}: ${messageOf(error)}`);
+        } finally {
+          this.reloading.delete(previous);
+        }
+      }
+    } finally {
+      for (const session of sessions) { this.reloading.delete(session); }
+    }
+    if (failures.length) { throw new Error(`Could not reload ${failures.join('; ')}`); }
+  }
+
+  private async reloadSession(agent: RunningAgent, previous: SessionInfo): Promise<SessionInfo> {
+    const { sessionId } = previous;
+    if (!agent.driver.agent.capabilities.load) { throw new Error('Full replay is not supported.'); }
+    if (!this.processes.get(agent.process)?.accepting) { throw new Error('The replacement connection ended.'); }
+    const roots = this.sessionRoots.get(previous);
+    if (!roots) { throw new Error('Session directories are not available.'); }
+    const session: SessionInfo = { ...previous, agentName: agent.name, agentId: agent.process.id, modes: null, configOptions: null, availableCommands: [] };
+    const identity = { configuredName: session.agentName, sessionId };
+    const key = JSON.stringify([session.agentId, sessionId]);
+    const load: SessionLoad = { registration: session, origin: { identity, sourceId: session.agentId }, attempt: Symbol(sessionId) };
+    this.restarting.set(key, session);
+    this.loading.set(session, load);
+    this.retained.beginLoad(load);
+    this.emit('session-load-start', load);
+    let committed = false;
+    try {
+      const state = await agent.driver.loadSession(sessionId, roots);
+      const registrationKey = JSON.stringify([agent.name, sessionId]);
+      if (!this.processes.get(agent.process)?.accepting || this.sessions.has(registrationKey)) {
+        throw new Error('Session reload is no longer current.');
+      }
+      session.agentName = agent.name;
+      session.modes = state.modes;
+      session.configOptions = state.configOptions;
+      session.availableCommands = state.commands ?? session.availableCommands;
+      const keepTurnOpen = agent.driver.schema === 'v2' && this.activity.get(key)?.foreground !== 'idle';
+      if (keepTurnOpen) { this.awaitingIdle.add(session); }
+      this.sessionRoots.set(session, roots);
+      this.retained.endLoad(load, true, keepTurnOpen);
+      this.sessions.set(registrationKey, session);
+      committed = true;
+      this.emit('session-added', session);
+      return session;
+    } finally {
+      if (!committed) { this.retained.endLoad(load, false); }
+      this.restarting.delete(key);
+      this.loading.delete(session);
+      this.emit('session-load-end', load, committed);
     }
   }
 
@@ -629,14 +696,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const lifetime = this.processes.get(process);
     if (!lifetime?.accepting || this.disposed) { return; }
     const candidate = this.getSession({ configuredName: lifetime.name, sessionId });
-    const registration = candidate?.agentId === process.id && candidate.agentName === lifetime.name ? candidate : undefined;
+    const key = JSON.stringify([process.id, sessionId]);
+    const staging = this.restarting.get(key);
+    const registration = staging ?? (candidate?.agentId === process.id && candidate.agentName === lifetime.name ? candidate : undefined);
     const identity: SessionIdentity = { configuredName: lifetime.name, sessionId };
     const origin: SessionOrigin = { identity, sourceId: process.id };
     const now = Date.now();
     if (registration) { this.retained.accept(registration, update, now); }
-    else { this.retained.acceptOpening(origin, update, now); }
+    else if (this.acceptsOpening(process.id, sessionId)) { this.retained.acceptOpening(origin, update, now); }
     // Early metadata is source-local even when another source currently owns this raw ID.
-    const key = JSON.stringify([process.id, sessionId]);
     switch (update.kind) {
       case 'configOptions':
         if (registration) { registration.configOptions = update.options; this.saveSelections(registration); }
@@ -647,7 +715,10 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         else { this.pendingAvailableCommands.set(key, update.commands); }
         break;
       case 'sessionInfo':
-        if (registration) { this.applySessionInfoUpdate(identity, update); }
+        if (staging) {
+          if (update.title === null) { delete staging.title; }
+          else if (update.title !== undefined) { staging.title = update.title; }
+        } else if (registration) { this.applySessionInfoUpdate(identity, update); }
         else if (update.title !== undefined) { this.pendingTitles.set(key, update.title); }
         if (!registration) { this.emit('session-info-changed', origin, update); }
         break;
@@ -703,11 +774,25 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
   /** Create the ACP session, authenticating first if the agent requires it. */
   private async createAcpSession(agent: RunningAgent, roots: SessionRoots): Promise<SessionInfo> {
-    const requestSession = () => agent.driver.newSession(roots);
+    const requestSession = async () => {
+      const id = agent.process.id;
+      this.creating.set(id, (this.creating.get(id) ?? 0) + 1);
+      try {
+        const response = await agent.driver.newSession(roots);
+        return this.registerSession(agent, response.sessionId, roots, response);
+      } finally {
+        const remaining = (this.creating.get(id) ?? 1) - 1;
+        if (remaining) { this.creating.set(id, remaining); }
+        else {
+          this.creating.delete(id);
+          this.retained.discardOpenings(id, (sessionId) => !this.resuming.has(JSON.stringify([id, sessionId])));
+        }
+      }
+    };
 
-    let response: NewSession;
+    let sessionInfo: SessionInfo;
     try {
-      response = await requestSession();
+      sessionInfo = await requestSession();
     } catch (e) {
       if (!(e instanceof AuthRequired)) {
         logError('Failed to create session', e);
@@ -716,7 +801,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       }
       await this.runAuthFlow(agent);
       try {
-        response = await requestSession();
+        sessionInfo = await requestSession();
       } catch (retryErr) {
         logError('Failed to create session after authentication', retryErr);
         this.stopAgentWithoutSessions(agent);
@@ -724,7 +809,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       }
     }
 
-    const sessionInfo = this.registerSession(agent, response.sessionId, roots.cwd, response);
     this.recordOpened(sessionInfo, 'created');
     return sessionInfo;
   }
@@ -737,7 +821,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   private registerSession(
     agent: RunningAgent,
     sessionId: string,
-    cwd: string,
+    roots: SessionRoots,
     state: SessionState = NO_SESSION_STATE,
     reference: SessionReference | undefined = this.referenceOf(agent.name, sessionId),
   ): SessionInfo {
@@ -754,7 +838,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       agentId: agent.process.id,
       agentName: agent.name,
       agentDisplayName: agent.driver.agent.displayName || agent.name,
-      cwd,
+      cwd: roots.cwd,
       createdAt: new Date().toISOString(),
       modes: state.modes,
       configOptions: state.configOptions,
@@ -762,6 +846,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       ...(title ? { title } : {}),
     };
     this.sessions.set(JSON.stringify([agent.name, sessionId]), sessionInfo);
+    this.sessionRoots.set(sessionInfo, roots);
     this.retained.attach(sessionInfo);
     this.drainPending(sessionInfo);
     return sessionInfo;
@@ -771,7 +856,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
    * Run the interactive auth flow against an already-initialized connection.
    * On cancellation or failure, stop a connection only if it owns no sessions.
    */
-  private async runAuthFlow(agent: RunningAgent): Promise<void> {
+  private runAuthFlow(agent: RunningAgent): Promise<void> {
+    const existing = this.authFlows.get(agent);
+    if (existing) { return existing; }
+    const flow = Promise.resolve().then(() => this.authenticateAgent(agent)).finally(() => { this.authFlows.delete(agent); });
+    this.authFlows.set(agent, flow);
+    return flow;
+  }
+
+  private async authenticateAgent(agent: RunningAgent): Promise<void> {
     const { authMethods } = agent.driver.agent;
     if (authMethods.length === 0) {
       this.stopAgentWithoutSessions(agent);
@@ -844,7 +937,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   async sendPrompt(identity: SessionIdentity, text: string): Promise<void> {
     const { sessionId } = identity;
     const session = this.getSession(identity);
-    if (!session) {
+    if (!session || this.closing.has(session)) {
       throw new Error(`Session not found: ${sessionId}`);
     }
 
@@ -873,6 +966,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const decisions = this.decisions;
     try {
       if (decisions) { await decisions; }
+      if (this.closing.has(session)) { return; }
       if (this.driverFor(session) !== agent.driver) { throw new Error('Prompt session is no longer current.'); }
       const outcome = await agent.driver.prompt(sessionId, prompt);
       if (outcome.stopReason !== 'cancelled' && this.driverFor(session) === agent.driver) {
@@ -910,6 +1004,52 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
     logDebug('Cancelling turn', { sessionId });
     await driver.cancel(sessionId);
+  }
+
+  sessionNeedsStop(session: SessionInfo): boolean {
+    const identity = { configuredName: session.agentName, sessionId: session.sessionId };
+    return this.hasForegroundWork(identity) || this.interactions.hasPending(session.agentId, identity);
+  }
+
+  closeSession(session: SessionInfo): Promise<CloseOutcome> {
+    const existing = this.closing.get(session);
+    if (existing) { return existing; }
+    const operation = Promise.resolve().then(() => this.completeClose(session)).finally(() => { this.closing.delete(session); });
+    this.closing.set(session, operation);
+    return operation;
+  }
+
+  private async completeClose(session: SessionInfo): Promise<CloseOutcome> {
+    const driver = this.driverFor(session);
+    if (!driver || this.loading.has(session)) { return { kind: 'stale' }; }
+    const identity = () => ({ configuredName: session.agentName, sessionId: session.sessionId });
+    const agent = this.agents.get(session.agentName);
+    if (!agent) { return { kind: 'stale' }; }
+    if (this.sessionNeedsStop(session)) {
+      let check = () => {};
+      const settled = new Promise<void>((resolve) => {
+        check = () => {
+          if (!this.driverFor(session) || !this.hasForegroundWork(identity())) { resolve(); }
+        };
+        this.on('activity-changed', check);
+        check();
+      });
+      try {
+        const cancel = driver.cancel(session.sessionId).then(() => {
+          if (this.driverFor(session) === driver) { this.interactions.cancelSession(identity(), session.agentId); }
+        });
+        await Promise.race([agent.exited, Promise.all([cancel, settled])]);
+      } catch (error) {
+        if (!driver.closed) { return { kind: 'not-stopped', reason: messageOf(error) }; }
+      } finally { this.off('activity-changed', check); }
+    }
+    if (!this.driverFor(session)) {
+      await agent.exited;
+      return this.getSession(identity()) ? { kind: 'stale' } : { kind: 'closed' };
+    }
+    this.removeSessions([session]);
+    this.activity.delete(JSON.stringify([session.agentId, session.sessionId]));
+    return { kind: 'closed' };
   }
 
   /**
@@ -1129,20 +1269,18 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
    * moves to `agentName`.
    */
   async loadSession(agentName: string, sessionId: string, usedThrough?: UsedThrough): Promise<SessionInfo> {
-    await this.disconnectOtherAgent(agentName);
-
+    this.requireNotReloading(agentName, sessionId);
     const agent = await this.ensureAgent(agentName);
     if (!agent.driver.agent.capabilities.load) {
       throw new Error(`Agent "${agentName}" does not support session/load.`);
     }
 
-    this.dropActiveSessionUnless({ configuredName: agentName, sessionId });
-
     const roots = this.environment.workspaceRoots();
     const reference = this.referenceUsedThrough(agent.name, sessionId, usedThrough);
     // Registered and made active before the request, so the transcript the
     // agent replays during the load reaches the webview.
-    const session = this.registerSession(agent, sessionId, roots.cwd, NO_SESSION_STATE, reference);
+    const session = this.registerSession(agent, sessionId, roots, NO_SESSION_STATE, reference);
+    this.selectionRevision++;
     this.activeSessionId = JSON.stringify([session.agentName, sessionId]);
     // Emit active-session-changed BEFORE session-load-start so the webview
     // first repaints from the new session state, then immediately enters
@@ -1245,23 +1383,25 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
    * agent does not replay its transcript. `usedThrough` is as for {@link loadSession}.
    */
   async resumeSession(agentName: string, sessionId: string, usedThrough?: UsedThrough): Promise<SessionInfo> {
-    await this.disconnectOtherAgent(agentName);
-
+    this.requireNotReloading(agentName, sessionId);
     const agent = await this.ensureAgent(agentName);
     if (!agent.driver.agent.capabilities.resume) {
       throw new Error(`Agent "${agentName}" does not support session/resume.`);
     }
 
-    this.dropActiveSessionUnless({ configuredName: agentName, sessionId });
-
     const roots = this.environment.workspaceRoots();
-    const response = await agent.driver.resumeSession(sessionId, roots).catch((error: unknown) => {
-      this.retained.discardOpening(agent.process.id, sessionId);
-      throw error;
-    });
-
     const reference = this.referenceUsedThrough(agent.name, sessionId, usedThrough);
-    const sessionInfo = this.registerSession(agent, sessionId, roots.cwd, response, reference);
+    const key = JSON.stringify([agent.process.id, sessionId]);
+    if (this.resuming.has(key)) { throw new Error('Session resume is already in progress.'); }
+    this.resuming.add(key);
+    let sessionInfo: SessionInfo;
+    try {
+      const response = await agent.driver.resumeSession(sessionId, roots);
+      sessionInfo = this.registerSession(agent, sessionId, roots, response, reference);
+    } finally {
+      this.resuming.delete(key);
+      this.retained.discardOpening(agent.process.id, sessionId);
+    }
     this.loading.set(sessionInfo, { registration: sessionInfo, origin: { identity: { configuredName: sessionInfo.agentName, sessionId }, sourceId: sessionInfo.agentId }, attempt: Symbol(sessionId) });
     try {
       await this.reapplySelections(sessionInfo, reference?.selections);
@@ -1272,6 +1412,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     } finally {
       this.loading.delete(sessionInfo);
     }
+    this.selectionRevision++;
     this.activeSessionId = JSON.stringify([sessionInfo.agentName, sessionId]);
     this.emit('session-added', sessionInfo);
     this.emit('active-session-changed', sessionInfo);
@@ -1303,20 +1444,33 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     }
   }
 
-  /** Honor the single-active-session model when opening a session with `agentName`. */
-  private async disconnectOtherAgent(agentName: string): Promise<void> {
-    const currentAgent = this.getActiveAgentName();
-    if (currentAgent && currentAgent !== agentName) {
-      await this.disconnectAgent(currentAgent);
+  /** Select the captured live registration without opening it again. */
+  selectSession(session: SessionInfo): boolean {
+    if (!this.driverFor(session) || this.loading.has(session)) { return false; }
+    this.selectionRevision++;
+    if (this.getActiveSession() !== session) {
+      this.activeSessionId = JSON.stringify([session.agentName, session.sessionId]);
+      this.record(session, (address, { workspace }) => {
+        if (this.getActiveSession() === session) { void workspace.setLastActiveSession(address); }
+      });
+      this.emit('active-session-changed', session);
+    }
+    return true;
+  }
+
+  private requireNotReloading(agentName: string, sessionId: string): void {
+    if (this.sessionReloading({ configuredName: agentName, sessionId })) {
+      throw new Error('This session is being reloaded by Restart Agent.');
     }
   }
 
-  /** Drop the active session so `sessionId` can take its place. */
-  private dropActiveSessionUnless(identity: SessionIdentity): void {
-    const previous = this.getActiveSession();
-    if (previous && (previous.sessionId !== identity.sessionId || previous.agentName !== identity.configuredName)) {
-      this.removeSession(previous);
-    }
+  private acceptsOpening(agentId: string, sessionId: string): boolean {
+    return [...this.processes].some(([process, lifetime]) => process.id === agentId && lifetime.accepting)
+      && (this.creating.has(agentId) || this.resuming.has(JSON.stringify([agentId, sessionId])));
+  }
+
+  sessionReloading(identity: SessionIdentity): boolean {
+    return [...this.reloading].some((session) => session.agentName === identity.configuredName && session.sessionId === identity.sessionId);
   }
 
   private sessionsOn(process: AgentProcess): SessionInfo[] {
@@ -1327,19 +1481,19 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     if (this.sessionsOn(agent.process).length === 0) { this.stopAgent(agent); }
   }
 
-  private removeSessions(sessions: readonly SessionInfo[]): void {
+  private removeSessions(sessions: readonly SessionInfo[], preserveSelection = false): void {
     let removedActive = false;
-    for (const session of sessions) { removedActive = this.removeSession(session) || removedActive; }
-    if (removedActive && this.getActiveSession() === undefined) { this.emit('active-session-changed', null); }
+    for (const session of sessions) { removedActive = this.removeSession(session, preserveSelection) || removedActive; }
+    if (removedActive && !preserveSelection && this.getActiveSession() === undefined) { this.emit('active-session-changed', null); }
   }
 
   /** Forget a session and report whether it was active. The caller announces the selection change. */
-  private removeSession(session: SessionInfo): boolean {
+  private removeSession(session: SessionInfo, preserveSelection = false): boolean {
     const key = JSON.stringify([session.agentName, session.sessionId]);
     if (this.sessions.get(key) !== session) { return false; }
     this.sessions.delete(key);
     const wasActive = this.activeSessionId === key;
-    if (wasActive) {
+    if (wasActive && !preserveSelection) {
       this.activeSessionId = null;
     }
     this.emit('session-removed', session);
@@ -1358,7 +1512,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   /** The session was created, loaded or resumed here, which also makes it this workspace's last active session. */
   private recordOpened(session: SessionInfo, how: SessionOpening): void {
     this.record(session, (address, { references, workspace }) => {
-      void references.used(address);
+      void references.used(address, session.title);
       void workspace.setLastActiveSession(address);
     });
     this.emit('session-opened', session, how);
@@ -1472,7 +1626,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   }
 
   getActiveSessionId(): string | null {
-    return this.activeSessionId === null ? null : (JSON.parse(this.activeSessionId) as [string, string])[1];
+    return this.getActiveSession()?.sessionId ?? null;
   }
 
   /** Get the agent name for the current active session. */

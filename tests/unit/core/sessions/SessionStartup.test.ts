@@ -122,11 +122,11 @@ describe('SessionStartup', () => {
     const other = loadingAgent();
     const { manager } = setup({ fake: fake.script, other: other.script });
 
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const first = manager.getActiveSessionId();
     expect(first).not.toBeNull();
     await manager.disconnectAgent('fake');
-    await manager.connectToAgent('other');
+    await manager.newSession('other');
     const second = manager.getActiveSessionId();
 
     expect(second).not.toBeNull();
@@ -139,11 +139,11 @@ describe('SessionStartup', () => {
   it('keeps new sessions distinct across connection replacement and loads the requested prior session', async () => {
     const fake = loadingAgent();
     const { manager, startup, workspace } = setup({ fake: fake.script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const first = manager.getActiveSessionId();
     expect(first).not.toBeNull();
     await manager.disconnectAgent('fake');
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const second = manager.getActiveSessionId();
     expect(second).not.toBeNull();
     expect(second).not.toBe(first);
@@ -220,7 +220,7 @@ describe('SessionStartup', () => {
   it('loads nothing when a session is already open', async () => {
     const fake = loadingAgent();
     const { manager, startup } = await seeded({ fake: fake.script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
 
     expect(await startup.attempt()).toEqual({ kind: 'nothing' });
     expect(fake.requests).toEqual(['session/new']);
@@ -229,7 +229,7 @@ describe('SessionStartup', () => {
   it('loads nothing once a session has opened in this activation, though none is open now', async () => {
     const fake = loadingAgent();
     const { manager, startup } = await seeded({ fake: fake.script });
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     await manager.disconnectAgent('fake');
 
     expect(await startup.attempt()).toEqual({ kind: 'nothing' });

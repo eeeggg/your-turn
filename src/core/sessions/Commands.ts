@@ -12,18 +12,10 @@ import {
 import { ProgressLocation, QuickPickItemKind, type Commands, type QuickPickItem, type Window } from '@/core/VsCodeApi';
 
 /** What commands need from the chat view. */
-export type ChatView = Pick<ChatViewController, 'hasRunningTurn' | 'queuedPrompts' | 'clearTranscript' | 'sessionTabs' | 'notifyTabsChanged'>;
+export type ChatView = Pick<ChatViewController, 'sessionTabs' | 'notifyTabsChanged'>;
 
 /** What commands need of the shown review. */
-export type ShownReview = Pick<ReviewControls, 'reviewedPaths' | 'resolutionBlocked' | 'captureKeepAll' | 'keepAll'>;
-
-/** A switch of session: what it asks, its choices, and whether it stops the agent. */
-interface Switch {
-  question: string;
-  action: string;
-  keepAllAction: string;
-  stopsAgent: boolean;
-}
+export type ShownReview = Pick<ReviewControls, 'unresolvedFileCount'>;
 
 const counted = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
@@ -35,6 +27,7 @@ const CHOOSE_AGENT = 'Choose Agent';
 /** The commands that start, switch, open, and control sessions. */
 export class SessionCommands {
   private navigation = Promise.resolve();
+  private readonly closingTabs = new Map<string, Promise<void>>();
 
   private serial(action: () => Promise<void>): Promise<void> {
     const result = this.navigation.then(action);
@@ -50,34 +43,48 @@ export class SessionCommands {
   }
 
   closeTab(tabId: string): Promise<void> {
-    return this.serial(async () => {
-      const snapshot = this.chatView.sessionTabs.snapshot();
-      const tab = snapshot.tabs.find((tab) => tab.tabId === tabId);
-      if (!tab) { return; }
-      if (snapshot.selectedTabId !== tabId) {
-        this.chatView.sessionTabs.close(tabId);
-        this.sessions.releaseSessionState({ configuredName: tab.agentName, sessionId: tab.sessionId });
-        this.chatView.notifyTabsChanged();
-        return;
-      }
-      const closing = { question: 'Close this session tab?', action: 'Close Tab', keepAllAction: 'Keep All and Close', stopsAgent: true };
-      const ownsActive = this.chatView.sessionTabs.matches(tabId, this.sessions.getActiveSession());
-      if (ownsActive && !await this.confirmLeaving(closing)) { return; }
-      await this.startup.forgo();
-      const activeAgent = this.sessions.getActiveAgentName();
-      if (ownsActive && activeAgent) { await this.sessions.disconnectAgent(activeAgent); }
+    const existing = this.closingTabs.get(tabId);
+    if (existing) { return existing; }
+    const operation = this.closeCapturedTab(tabId).finally(() => { this.closingTabs.delete(tabId); });
+    this.closingTabs.set(tabId, operation);
+    return operation;
+  }
+
+  private async closeCapturedTab(tabId: string): Promise<void> {
+    const current = () => this.chatView.sessionTabs.snapshot().tabs.find((tab) => tab.tabId === tabId);
+    const tab = current();
+    if (!tab) { return; }
+    const identity = () => ({ configuredName: registration?.agentName ?? tab.agentName, sessionId: tab.sessionId });
+    const registration = this.sessions.getSession({ configuredName: tab.agentName, sessionId: tab.sessionId });
+    await this.startup.forgo();
+    if (this.sessions.sessionReloading(identity())) { return; }
+    for (;;) {
+      const next = current();
+      if (next?.agentName !== identity().configuredName || this.sessions.getSession(identity()) !== registration) { return; }
+      const busy = registration !== undefined && this.sessions.sessionNeedsStop(registration);
+      const reviewed = this.review.unresolvedFileCount(identity());
+      if (!busy && reviewed === 0) { break; }
+      const action = busy ? 'Stop Turn and Close Tab' : 'Close Tab';
+      const detail = [busy ? 'This stops the turn or cancels pending requests.' : '',
+        reviewed ? `${counted(reviewed, 'file is', 'files are')} still under review. Review stays available when you reopen this session.` : '']
+        .filter(Boolean).join(' ');
+      const choice = await this.window.showQuickPick([{ label: action, detail }, { label: 'Keep Tab Open' }], { title: action, placeHolder: 'Close this session tab?' });
+      if (choice?.label !== action) { return; }
+      const currentRegistration = this.sessions.getSession(identity());
+      if (currentRegistration !== registration || !current()) { return; }
+      if (busy || !registration || !this.sessions.sessionNeedsStop(registration)) { break; }
+    }
+    if (registration) {
+      const outcome = await this.sessions.closeSession(registration);
+      if (outcome.kind === 'not-stopped') { this.report('Failed to close tab', outcome.reason); }
+      if (outcome.kind !== 'closed') { return; }
+    }
+    await this.serial(async () => {
+      if (!current() || this.sessions.getSession(identity())) { return; }
       const next = this.chatView.sessionTabs.close(tabId);
-      this.sessions.releaseSessionState({ configuredName: tab.agentName, sessionId: tab.sessionId });
+      this.sessions.releaseSessionState(identity());
       this.chatView.notifyTabsChanged();
-      if (next) {
-        if (this.chatView.sessionTabs.matches(next.tabId, this.sessions.getActiveSession())) {
-          this.selectActiveTab();
-        } else if (!ownsActive) {
-          await this.openSession(next.agentName, next.sessionId, this.chatView.sessionTabs.address(next.tabId));
-        } else {
-          await this.openThrough(next.agentName, next.sessionId, this.chatView.sessionTabs.address(next.tabId));
-        }
-      }
+      if (next) { await this.openSession(next.agentName, next.sessionId, this.chatView.sessionTabs.address(next.tabId)); }
     });
   }
   constructor(
@@ -171,7 +178,7 @@ export class SessionCommands {
     if (choice?.command) { await this.commands.executeCommand(choice.command, agentName); }
   }
 
-  /** Make a session with an agent the active session, asking which agent when none is given. */
+  /** Initialize an agent connection without opening a session. */
   connect(agentName?: string): Promise<void> {
     return this.serial(() => this.connectAgent(agentName));
   }
@@ -179,54 +186,26 @@ export class SessionCommands {
   private async connectAgent(agentName?: string): Promise<void> {
     const name = agentName ?? await this.pickAgent();
     if (!name) { return; }
-    await this.startup.forgo();
-
-    const currentAgent = this.sessions.getActiveAgentName();
-    if (currentAgent && currentAgent !== name) {
-      const switching = { question: `Switch to ${name}?`, action: 'Switch Agent', keepAllAction: 'Keep All and Switch', stopsAgent: true };
-      if (!await this.confirmLeaving(switching)) { return; }
-      this.chatView.clearTranscript();
-    }
-
     try {
-      await this.withProgress(`Connecting to ${name}...`, () => this.sessions.connectToAgent(name));
-      this.selectActiveTab();
+      await this.withProgress(`Connecting to ${name}...`, () => this.sessions.ensureConnected(name));
     } catch (e) {
       this.report('Failed to connect', e);
     }
   }
 
-  /** Replace the active session with a new one from the same agent; connect when there is none. */
+  /** Create another session on the named or selected agent. */
   newSession(agentName?: string): Promise<void> {
     return this.serial(() => this.createSession(agentName));
   }
 
   private async createSession(agentName?: string): Promise<void> {
     await this.startup.forgo();
-    const activeSession = this.sessions.getActiveSession();
-    if (agentName && agentName !== activeSession?.agentName) {
-      const starting = { question: `Start a new session with ${agentName}?`, action: 'New Session', keepAllAction: 'Keep All and Start', stopsAgent: true };
-      if (!await this.confirmLeaving(starting)) { return; }
-      try {
-        // A listed agent can already have a session even when it is not the active agent.
-        if (this.sessions.hasSession(agentName)) { await this.sessions.disconnectAgent(agentName); }
-        this.chatView.clearTranscript();
-        await this.withProgress(`Starting new session with ${agentName}...`, () => this.sessions.connectToAgent(agentName));
-      } catch (e) {
-        this.report('Failed to start new session', e);
-      }
-      return;
-    }
-    if (!activeSession) {
-      await this.connectAgent();
-      return;
-    }
-
-    const starting = { question: 'Start a new session?', action: 'New Session', keepAllAction: 'Keep All and Start', stopsAgent: true };
-    if (!await this.confirmLeaving(starting)) { return; }
-
+    const active = this.sessions.getActiveSession();
+    const name = agentName ?? active?.agentName ?? await this.pickAgent({ placeHolder: 'Select an agent to start a session', title: 'New Session' });
+    if (!name) { return; }
+    const label = active?.agentName === name ? active.agentDisplayName : name;
     try {
-      await this.withProgress(`Starting new session with ${activeSession.agentDisplayName}...`, () => this.sessions.newSession());
+      await this.withProgress(`Starting new session with ${label}...`, () => this.sessions.newSession(name));
     } catch (e) {
       this.report('Failed to start new session', e);
     }
@@ -234,7 +213,7 @@ export class SessionCommands {
 
   /** Stop an agent, by default the active session's. */
   disconnect(agentName?: string): Promise<void> {
-    return this.serial(() => this.disconnectAgent(agentName));
+    return this.disconnectAgent(agentName);
   }
 
   private async disconnectAgent(agentName?: string): Promise<void> {
@@ -243,33 +222,37 @@ export class SessionCommands {
       void this.window.showInformationMessage('No active session.');
       return;
     }
-    await this.sessions.disconnectAgent(name);
+    const source = this.sessions.connectionSource(name);
+    if (source === undefined) { return; }
+    if (this.sessions.connectionNeedsStop(source)) {
+      const choice = await this.window.showQuickPick([
+        { label: 'Disconnect Agent', detail: 'This stops its work and cancels its requests. Its tabs and unresolved review stay open.' },
+        { label: 'Keep Connected' },
+      ], { title: 'Disconnect Agent', placeHolder: `Disconnect ${name}?` });
+      if (choice?.label !== 'Disconnect Agent') { return; }
+    }
+    if (this.sessions.connectionSource(name) !== source) { return; }
+    await this.sessions.disconnectAgent(name, source);
     void this.window.showInformationMessage(`Disconnected from ${name}.`);
   }
 
   /** Restart an agent, preserving whether it had an open session. */
-  restart(agentName?: string): Promise<void> {
-    return this.serial(() => this.restartAgent(agentName));
+  async restart(agentName?: string): Promise<void> {
+    const name = agentName ?? this.sessions.getActiveAgentName();
+    const source = name ? this.sessions.connectionSource(name) : undefined;
+    if (!name || !source) { return; }
+    let restarting: Promise<void> | undefined;
+    await this.serial(async () => {
+      if (this.sessions.connectionSource(name) === source) { restarting = this.restartAgent(name, source); }
+    });
+    await restarting;
   }
 
-  private async restartAgent(agentName?: string): Promise<void> {
-    await this.startup.forgo();
+  private async restartAgent(name: string, source: string): Promise<void> {
     const activeSession = this.sessions.getActiveSession();
-    const name = agentName ?? activeSession?.agentName;
-    if (!name) { return; }
     const label = activeSession?.agentName === name ? activeSession.agentDisplayName : name;
-    const hadSession = this.sessions.hasSession(name);
-    const sessionlessConnection = this.sessions.isConnected(name) && !hadSession;
-
     try {
-      await this.withProgress(`Restarting ${label}...`, async () => {
-        await this.sessions.disconnectAgent(name);
-        if (sessionlessConnection) {
-          await this.sessions.ensureConnected(name);
-        } else {
-          await this.sessions.connectToAgent(name);
-        }
-      });
+      await this.withProgress(`Restarting ${label}...`, () => this.sessions.restartAgent(name, source));
       void this.window.showInformationMessage(`Restarted ${name}`);
     } catch (e) {
       this.report('Failed to restart', e);
@@ -332,23 +315,6 @@ export class SessionCommands {
     }
     await this.startup.forgo();
 
-    const tab = this.chatView.sessionTabs.snapshot().tabs.find((tab) => tab.agentName === agentName && tab.sessionId === sessionId);
-    const active = this.sessions.getActiveSession();
-    if (tab ? this.chatView.sessionTabs.matches(tab.tabId, active) : active?.sessionId === sessionId && active.agentName === agentName) {
-      this.selectActiveTab();
-      await this.focusChatView();
-      return;
-    }
-
-    const currentAgent = this.sessions.getActiveAgentName();
-    const opening = {
-      question: 'Open a different session?',
-      action: 'Open Session',
-      keepAllAction: 'Keep All and Open',
-      stopsAgent: currentAgent !== null && currentAgent !== agentName,
-    };
-    if (!await this.confirmLeaving(opening)) { return; }
-
     await this.focusChatView();
     await this.openThrough(agentName, sessionId, address);
   }
@@ -368,6 +334,12 @@ export class SessionCommands {
           retry: () => this.openThrough(agentName, sessionId, usedThrough),
           chooseAgent: (configuredName) => this.openThrough(configuredName, sessionId, usedThrough),
         });
+        return;
+      }
+      const live = this.sessions.getSession({ configuredName: agentName, sessionId });
+      if (live && this.sessions.selectSession(live)) {
+        this.rebindTab(referencedAs, agentName, sessionId);
+        this.selectActiveTab();
         return;
       }
       // Load replays the transcript, so it is preferred over resume.
@@ -398,46 +370,6 @@ export class SessionCommands {
     if (from === to) { return; }
     this.chatView.sessionTabs.rebind(from, to, sessionId);
     this.chatView.notifyTabsChanged();
-  }
-
-  /**
-   * Whether to leave the shown session, asking first when that loses something: the turn in progress, when the agent
-   * is stopped; the prompts queued, which the chat view drops with the transcript; or files still under review, whose
-   * review is kept but no longer shown. A turn left on a running agent goes on, so it is not asked about.
-   */
-  private async confirmLeaving({ question, action, keepAllAction, stopsAgent }: Switch): Promise<boolean> {
-    const stopsTurn = stopsAgent && this.chatView.hasRunningTurn;
-    const queued = this.chatView.queuedPrompts;
-    const reviewed = this.review.reviewedPaths().length;
-    const keep = reviewed > 0 && !this.review.resolutionBlocked() ? this.review.captureKeepAll() : undefined;
-    if (!stopsTurn && queued === 0 && reviewed === 0) { return true; }
-
-    const losses = [
-      ...(stopsTurn ? ['stops the turn in progress'] : []),
-      ...(queued > 0 ? [`discards ${counted(queued, 'queued prompt', 'queued prompts')}`] : []),
-    ];
-    const consequences = losses.length > 0 ? [`This ${losses.join(' and ')}.`] : [];
-    const choice = await this.window.showQuickPick([
-      {
-        label: action,
-        detail: [
-          ...consequences,
-          ...(reviewed > 0 ? [`${counted(reviewed, 'file is', 'files are')} still under review, kept until this session is opened again in this window.`] : []),
-        ].join(' '),
-      },
-      ...(keep ? [{
-        label: keepAllAction,
-        detail: [...consequences, `Keep ${counted(reviewed, 'file', 'files')} under review before continuing.`].join(' '),
-      }] : []),
-      { label: 'Cancel' },
-    ], { title: action, placeHolder: question });
-    if (choice?.label === keepAllAction) {
-      if (!keep) { return false; }
-      const result = await this.review.keepAll(keep);
-      if (result.kind !== 'applied') { return false; }
-      return true;
-    }
-    return choice?.label === action;
   }
 
   private async pickAgent(options = { placeHolder: 'Select an agent to connect', title: 'Connect to Agent' }): Promise<string | undefined> {

@@ -41,7 +41,7 @@ for (const version of [2]) {
       );
       await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.newSession', agentName);
     });
 
     suiteTeardown(async function () {

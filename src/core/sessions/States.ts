@@ -183,11 +183,11 @@ export class SessionStates {
   }
 
   questionSettled(registration: SessionRegistration, question: SettledQuestion): void {
+    const pending = this.loads.get(registration)?.output;
+    if (pending) { pending.state = { ...pending.state, content: withSettledQuestion(pending.state.content, question, Date.now()) }; }
     const owner = this.entries.get(this.key({ configuredName: registration.agentName, sessionId: registration.sessionId }));
     if (!owner || owner.released || this.closedRegistrations.has(registration) || owner.sourceId !== registration.agentId) { return; }
     owner.state = { ...owner.state, content: withSettledQuestion(owner.state.content, question, Date.now()) };
-    const pending = this.loads.get(registration)?.output;
-    if (pending) { pending.state = { ...pending.state, content: withSettledQuestion(pending.state.content, question, Date.now()) }; }
     this.changed();
   }
 
@@ -399,18 +399,26 @@ export class SessionStates {
     if (sessions?.size === 0) { this.opening.delete(sourceId); }
   }
 
+  discardOpenings(sourceId: string, discard: (sessionId: string) => boolean): void {
+    for (const id of this.opening.get(sourceId)?.keys() ?? []) {
+      if (discard(id)) { this.discardOpening(sourceId, id); }
+    }
+  }
+
   beginLoad(load: SessionLoad): void {
     if (this.closedRegistrations.has(load.registration)) { return; }
     this.releaseOutput(this.loads.get(load.registration)?.output);
     this.loads.set(load.registration, { load, output: this.newOutput({ configuredName: load.registration.agentName, sessionId: load.registration.sessionId }, load.registration.agentId) });
   }
 
-  endLoad(load: SessionLoad, ok: boolean): void {
+  endLoad(load: SessionLoad, ok: boolean, keepTurnOpen = false): void {
     const pending = this.loads.get(load.registration);
     if (pending?.load !== load) { return; }
     this.loads.delete(load.registration);
     if (ok) {
-      pending.output.state = { ...pending.output.state, content: endContentTurn(pending.output.state.content, Date.now()) };
+      if (!keepTurnOpen) {
+        pending.output.state = { ...pending.output.state, content: endContentTurn(pending.output.state.content, Date.now()) };
+      }
       const key = this.key({ configuredName: load.registration.agentName, sessionId: load.registration.sessionId });
       const previous = this.entries.get(key);
       if (previous) { pending.output.state = { ...pending.output.state, composer: previous.state.composer, queue: previous.state.queue,

@@ -48,6 +48,7 @@ export function v1InitializeRequest(clientVersion: string): Acp.InitializeReques
 
 /** Speaks ACP v1 over a connection, through the SDK's stable v1 client. */
 export class V1Driver implements AcpDriver {
+  readonly schema = 'v1';
   /** Connect the SDK's v1 client to the stream and initialize the connection. */
   static async connect(
     agentName: string,

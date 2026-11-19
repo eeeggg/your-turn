@@ -40,7 +40,7 @@ suite('Renaming an agent configuration in a folder window', () => {
 
   test("rebinds the session's reference and this workspace's last active session to the new name", async () => {
     await config().update('agents', { [before]: entry }, vscode.ConfigurationTarget.Global);
-    await vscode.commands.executeCommand('your-turn.connectAgent', before);
+    await vscode.commands.executeCommand('your-turn.newSession', before);
     await api.persistedStateSettled();
     const sessionId = new WorkspaceState(api.storage.workspaceState).lastActiveSession()?.sessionId;
     assert.ok(sessionId, 'the created session was persisted');

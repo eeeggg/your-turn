@@ -33,7 +33,7 @@ test.use({ workspaceFiles: { 'm.ts': original }, gitRepository: true });
 
 async function startReview(window: Parameters<typeof editorTab>[0], workspace: string): Promise<void> {
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review-diff ${workspace}`);

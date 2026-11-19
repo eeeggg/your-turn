@@ -403,6 +403,7 @@ export class UnknownSession extends Error {
 }
 
 export interface AcpDriver {
+  readonly schema: AcpSchema;
   readonly agent: AgentDescription;
   /** The connection can close before the agent's exit is reported. */
   readonly closed: boolean;

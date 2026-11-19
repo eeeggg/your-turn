@@ -87,6 +87,24 @@ export class SessionInteractions {
     };
   }
 
+  hasPending(agentId: string, identity?: SessionIdentity): boolean {
+    const source = this.sources.get(agentId);
+    if (!source) { return false; }
+    const pending = identity ? this.pending(identity, agentId)
+      : { permissions: source.permissions?.snapshot() ?? [], elicitations: source.elicitations.snapshot() };
+    return pending.permissions.length > 0 || pending.elicitations.some(({ status }) => status === 'pending');
+  }
+
+  cancelSession(identity: SessionIdentity, agentId: string): void {
+    const source = this.sources.get(agentId);
+    if (source?.agentName !== identity.configuredName) { return; }
+    for (const interaction of source.elicitations.snapshot()) {
+      if (interaction.scope.sessionId === identity.sessionId && interaction.status === 'pending') {
+        source.elicitations.respond(interaction.interactionId, { action: 'cancel' });
+      }
+    }
+  }
+
   private visible(question: RetainedQuestion, identity: SessionIdentity | null): boolean {
     const sessionId = question.interaction.scope.sessionId;
     return sessionId === undefined || identity !== null && sessionId === identity.sessionId && question.agentName === identity.configuredName

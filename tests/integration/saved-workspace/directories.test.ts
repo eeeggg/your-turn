@@ -70,7 +70,7 @@ for (const version of [1, 2]) {
       );
       owned.push(() => manager.dispose(), () => updates.dispose());
 
-      const created = await manager.connectToAgent(agentName);
+      const created = await manager.newSession(agentName);
       const loadedId = '2cc68f2e-d950-4c2f-b0c3-ed600106ef52';
       const resumedId = '8ba00873-a5e3-443e-a60b-071ff4831878';
       const loaded = await manager.loadSession(agentName, loadedId);

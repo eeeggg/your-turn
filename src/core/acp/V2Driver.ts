@@ -49,6 +49,7 @@ export function v2InitializeRequest(clientVersion: string): Acp.InitializeReques
 
 /** Speaks ACP v2 over a connection, through the SDK's stable v2 client. */
 export class V2Driver implements AcpDriver {
+  readonly schema = 'v2';
   /** Connect the SDK's v2 client to the stream and initialize the connection. */
   static async connect(
     agentName: string,
@@ -175,7 +176,11 @@ export class V2Driver implements AcpDriver {
       const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.prompt, {
         sessionId,
         prompt: prompt.map(contentBlock),
-      }));
+      })).catch((error: unknown) => {
+        if (error instanceof Acp.RequestError && error.code === -32800) { return null; }
+        throw error;
+      });
+      if (!response) { return { stopReason: 'cancelled' }; }
       logDebug('Prompt accepted', { messageId: response.messageId });
       this.translator.accepted(sessionId, response.messageId);
       const idle = await turn.end();

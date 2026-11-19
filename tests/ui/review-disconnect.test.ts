@@ -19,7 +19,7 @@ test('disconnect retires a pending native review without losing unsaved editing 
   await quickInputRow(window, 'other.ts').click();
   await expect(plainFileTab(window, 'other.ts')).toHaveClass(/active/);
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
   await expect(promptInput(window)).toBeEnabled();
   await promptInput(window).fill(`review-diff ${workspace}`);
   await promptInput(window).press('Enter');

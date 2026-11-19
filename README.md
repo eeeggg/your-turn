@@ -79,7 +79,10 @@ authentication, permissions, and other agent-specific settings.
 3. Open **Your Turn** in the Activity Bar.
 4. Select **Your Turn: Add Agent Configuration**. Choose an agent from the ACP
    registry or enter a custom command and arguments.
-5. Select **Your Turn: Connect to Agent**, then send a prompt.
+5. Select **Your Turn: New Session**, choose an agent, then send a prompt.
+
+Use **Connect to Agent** to connect without opening a session. Open another
+session or select a live tab without stopping work in the other tabs.
 
 The ACP registry provides suggested launch commands—a starting point, not a
 requirement. You control the command, arguments, and environment variables in

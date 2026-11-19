@@ -10,7 +10,7 @@ import { expect, test } from '@tests/ui/window';
 
 test('usage has no pointer focus box and retains keyboard focus and native activation', async ({ window }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill('usage');
@@ -55,7 +55,7 @@ test('usage has no pointer focus box and retains keyboard focus and native activ
 
 test('dismissing usage restores the prior prompt focus and caret without overriding keyboard navigation', async ({ window }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await chooseAgentAction(window, 'fake-v1', 'Connect to Agent');
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill('usage');

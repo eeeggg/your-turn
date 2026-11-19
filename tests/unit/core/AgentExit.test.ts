@@ -91,7 +91,7 @@ describe('runtime prompt queue wiring', () => {
   it('preserves queue order through overlapping steering, an error, and repeated idle reports', async () => {
     const { manager, store, controller, prompts, replies, messages, prompt, nextPrompt, stateChanged, summary } = setup(true);
     await controller.handleMessage({ type: 'ready' });
-    const session = await manager.connectToAgent('fake');
+    const session = await manager.newSession('fake');
     const completed = (message: ExtensionToWebviewMessage) => message.type === 'promptEnd' || message.type === 'foregroundActivity' && !message.running;
     const firstSent = nextPrompt();
     prompt('first');
@@ -146,7 +146,7 @@ describe('an agent that exits during a turn', () => {
     it(`leaves the conversation in the chat view with why, and sends no queued prompt (${order})`, async () => {
       const { agents, manager, store, controller, prompts, turnInProgress, prompt, nextPrompt, stateChanged, summary } = setup();
       await controller.handleMessage({ type: 'ready' });
-      await manager.connectToAgent('fake');
+      await manager.newSession('fake');
       const firstSent = nextPrompt();
       const turnShown = stateChanged(() => store.getSnapshot().transcript.entries.some((entry) => entry.kind === 'turn'));
       prompt('first');

@@ -147,7 +147,7 @@ suite("The window's workspace target", () => {
   });
 
   test('records a session opened here as its reference and as the last active session of this workspace', async () => {
-    await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+    await vscode.commands.executeCommand('your-turn.newSession', agentName);
     await api.persistedStateSettled();
     const sessionId = workspaceState().lastActiveSession()?.sessionId;
     assert.ok(sessionId, 'the created session was persisted');
@@ -175,7 +175,7 @@ suite("The window's workspace target", () => {
     );
     owned.push(() => manager.dispose(), () => updates.dispose());
     manager.setPersistedState(references, state);
-    const session = await manager.connectToAgent(agentName);
+    const session = await manager.newSession(agentName);
     const sessionId = session.sessionId;
     const recorded = () => [
       references.get({ host: onDevenv().host, configuredName: agentName, sessionId }),

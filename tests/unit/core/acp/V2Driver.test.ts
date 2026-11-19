@@ -532,6 +532,26 @@ describe('V2Driver', () => {
       expect(await result).toEqual({ stopReason });
     });
 
+    it('treats a held prompt rejected by cancellation as a cancelled turn', async () => {
+      let received!: () => void;
+      let cancelled!: () => void;
+      const prompting = new Promise<void>((resolve) => { received = resolve; });
+      const cancellation = new Promise<void>((resolve) => { cancelled = resolve; });
+      const { driver } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.prompt, async () => {
+          received();
+          await cancellation;
+          throw new V2.RequestError(-32800, 'Request cancelled');
+        })
+        .onNotification(V2.methods.agent.session.cancel, () => { cancelled(); }), {
+        permissions: { requestPermission: async () => { throw new Error('Unexpected permission request'); }, cancelSession() {} },
+      });
+      const result = expect(driver.prompt(SESSION_ID, go)).resolves.toEqual({ stopReason: 'cancelled' });
+      await prompting;
+      await driver.cancel(SESSION_ID);
+      await result;
+    });
+
     it('ends nothing with an idle report while the session is already idle', async () => {
       const agent = await turnAgent();
       const outcome = outcomeOf(agent.driver.prompt(SESSION_ID, go));

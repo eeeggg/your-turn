@@ -50,7 +50,7 @@ for (const version of [1, 2]) {
 
     test('saves the options as the user changes them above the prompt, then as the agent changes them itself', async () => {
       await vscode.commands.executeCommand('your-turn.openChat');
-      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.newSession', agentName);
       await api.persistedStateSettled();
       const address = new WorkspaceState(api.storage.workspaceState).lastActiveSession();
       assert.ok(address, 'the created session was persisted');

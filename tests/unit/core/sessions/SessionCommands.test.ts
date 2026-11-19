@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { methods, RequestError } from '@agentclientprotocol/sdk';
+import { agent, methods, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentApp, InitializeResponse } from '@agentclientprotocol/sdk';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
+import { PermissionRequests } from '@/core/PermissionRequests';
 import {
   SessionReferences,
   StartupRequests,
@@ -15,12 +16,10 @@ import { SessionManager, type SessionEnvironment } from '@/core/sessions/Manager
 import { SessionStartup } from '@/core/sessions/Startup';
 import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { SessionTabs } from '@/core/sessions/Tabs';
-import type { ReviewDecision, ReviewDecisionResult } from '@/core/review/Reviews';
 import { ProgressLocation } from '@/core/VsCodeApi';
 import {
   fakeAgent,
   InProcessAgents,
-  unusedHandlers,
   work,
   type AgentScript
 } from '@tests/unit/core/InProcessAgents';
@@ -103,7 +102,10 @@ function setup(scripts: Record<string, AgentScript>, persistedTabs = false) {
   };
   const manager = new SessionManager(
     agents,
-    new ConnectionManager('0.0.0-test', () => unusedHandlers),
+    new ConnectionManager('0.0.0-test', () => {
+      const permissions = new PermissionRequests({ autoApprove: () => 'ask', choose: async () => undefined });
+      return { permissions, permissionInteractions: permissions };
+    }),
     environment,
     { chooseAuthMethod: async () => undefined },
     new SessionUpdateHandler(),
@@ -118,32 +120,16 @@ function setup(scripts: Record<string, AgentScript>, persistedTabs = false) {
     if (session) { tabs.open(session); }
   });
   const transcript = { hasRunningTurn: false, queuedPrompts: 0, clearTranscript: vi.fn(), sessionTabs: tabs, notifyTabsChanged: vi.fn() };
-  /** The session each Keep All was made in. */
-  const keptIn: (string | null)[] = [];
-  let resolutionBlocked = false;
-  class CapturedKeep implements ReviewDecision {
-    readonly action = 'keep-all';
-    constructor(readonly paths: readonly string[]) {}
-  }
   const review = {
     paths: [] as string[],
-    resolutionBlocked: () => resolutionBlocked,
-    blockResolution: () => { resolutionBlocked = true; },
-    reviewedPaths: () => review.paths,
-    captureKeepAll: (): ReviewDecision => new CapturedKeep([...review.paths]),
-    keepAll: async (decision?: ReviewDecision): Promise<ReviewDecisionResult> => {
-      const resolved = decision instanceof CapturedKeep ? [...decision.paths] : [...review.paths];
-      keptIn.push(manager.getActiveSessionId());
-      review.paths = review.paths.filter((path) => !resolved.includes(path));
-      return { kind: 'applied', saved: true, resolved };
-    },
+    unresolvedFileCount: () => review.paths.length,
   };
   const user = new ScriptedUser();
   const startup = new SessionStartup(manager, workspace, environment, new StartupRequests(globalState), persistedTabs ? tabs : undefined);
   const commands = new SessionCommands(manager, transcript, review, user, user, () => Object.keys(scripts), startup);
   /** Another window asks the window opening the address's workspace to load its session. */
   const request = (address: SessionAddress) => new StartupRequests(globalState).request(address);
-  return { agents, manager, references, workspace, transcript, review, keptIn, user, commands, request, tabs, environment };
+  return { agents, manager, references, workspace, transcript, review, user, commands, request, tabs, environment };
 }
 
 /** Where session `sessionId` of agent configuration `configuredName` lives in the test workspace. */
@@ -174,23 +160,196 @@ function refusingAgent(refusals = Infinity) {
   return { script, requested, loaded };
 }
 
-const underReview = (count: string) => `${count} still under review, kept until this session is opened again in this window.`;
-const asked = (question: string, detail: string, action: string, keepAll?: { label: string; detail: string }): Call => ({
-  call: 'showQuickPick',
-  items: [{ label: action, detail }, ...(keepAll ? [keepAll] : []), { label: 'Cancel' }],
-  options: { title: action, placeHolder: question },
-});
 
 describe('SessionCommands', () => {
-  it('creates distinct default sessions across agents and repeated restarts without a fixed creation limit', async () => {
+  it('does not attach content from a closed tab to a later Resume on the same connection', async () => {
+    const script: AgentScript = () => fakeAgent({ agentCapabilities: { sessionCapabilities: { resume: {}, list: {} } } })
+      .onRequest(methods.agent.session.new, () => ({ sessionId: ONE_FIRST_SESSION }))
+      .onRequest(methods.agent.session.resume, () => ({}))
+      .onRequest(methods.agent.session.list, async ({ client }) => {
+        await client.notify(methods.client.session.update, { sessionId: ONE_FIRST_SESSION,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Late closed output' } } });
+        return { sessions: [] };
+      });
+    const { commands, manager, tabs } = setup({ one: script });
+    onTestFinished(() => manager.dispose());
+    await commands.newSession('one');
+    const tabId = tabs.snapshot().selectedTabId;
+    if (!tabId) { throw new Error('Missing tab'); }
+    await commands.closeTab(tabId);
+    await manager.listSessions('one');
+    await commands.open('one', ONE_FIRST_SESSION);
+
+    expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
+    expect(manager.sessionState({ configuredName: 'one', sessionId: ONE_FIRST_SESSION })?.content.entries).toEqual([]);
+  });
+
+  it('keeps a working sibling tab open until its cancelled prompt settles', async () => {
+    let started!: () => void;
+    let finish!: () => void;
+    const received = new Promise<void>((resolve) => { started = resolve; });
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const prompts: string[] = [];
+    const one = sessionAgent('one', {}, (app) => app.onRequest(methods.agent.session.prompt, async ({ params }) => {
+      prompts.push(...params.prompt.flatMap((part) => part.type === 'text' ? [part.text] : []));
+      started();
+      await held;
+      return { stopReason: 'cancelled' };
+    }));
+    const { commands, manager, tabs, user } = setup({ one: one.script });
+    onTestFinished(() => manager.dispose());
+    const first = await manager.newSession('one');
+    const firstTab = tabs.snapshot().selectedTabId;
+    if (!firstTab) { throw new Error('Missing first tab'); }
+    const identity = { configuredName: 'one', sessionId: first.sessionId };
+    const turn = manager.sendPrompt(identity, 'Hold');
+    const generation = manager.sessionState(identity)?.generation;
+    if (generation === undefined) { throw new Error('Missing session state'); }
+    await manager.submitPrompt(identity, generation, 'Do not send');
+    await received;
+    const second = await manager.newSession('one');
+    user.answer('Stop Turn and Close Tab');
+    const closed = commands.closeTab(firstTab);
+    try {
+      await Promise.race([one.nextRequest(), closed]);
+      expect(one.requests).toEqual([{ method: 'session/cancel', params: { sessionId: first.sessionId } }]);
+      expect(tabs.snapshot().tabs).toHaveLength(2);
+      await commands.selectTab(firstTab);
+      expect(manager.getActiveSession()).toBe(first);
+      await commands.selectTab(tabs.snapshot().tabs[1]?.tabId ?? 'missing');
+    } finally { finish(); await turn; await closed; }
+    expect(manager.getSession(identity)).toBeUndefined();
+    expect(manager.sessionState(identity)).toBeUndefined();
+    expect(manager.getActiveSession()).toBe(second);
+    expect(manager.isConnected('one')).toBe(true);
+    expect(prompts).toEqual(['Hold']);
+  });
+
+  it('can disconnect the connection while Close waits for a held turn', async () => {
+    let finish!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const received = new Promise<void>((resolve) => { started = resolve; });
+    const one = sessionAgent('one', {}, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+      started();
+      await held;
+      return { stopReason: 'cancelled' };
+    }));
+    const { commands, manager, tabs, user } = setup({ one: one.script, two: sessionAgent('two').script });
+    onTestFinished(() => manager.dispose());
+    const first = await manager.newSession('one');
+    const firstTab = tabs.snapshot().selectedTabId;
+    if (!firstTab) { throw new Error('Missing first tab'); }
+    const identity = { configuredName: 'one', sessionId: first.sessionId };
+    const turn = manager.sendPrompt(identity, 'Hold');
+    const interrupted = expect(turn).rejects.toThrow('ACP connection closed');
+    try {
+      await received;
+      const second = await manager.newSession('two');
+      user.answer('Stop Turn and Close Tab');
+      const cancel = one.nextRequest();
+      const closing = commands.closeTab(firstTab);
+      try {
+        expect(await Promise.race([cancel, closing])).toMatchObject({ method: 'session/cancel' });
+        expect(tabs.snapshot().tabs).toHaveLength(2);
+        user.answer('Disconnect Agent');
+        await commands.disconnect('one');
+        await closing;
+        expect(manager.isConnected('one')).toBe(false);
+        expect(manager.sessionState(identity)).toBeUndefined();
+        expect(tabs.snapshot().tabs.map(({ agentName }) => agentName)).toEqual(['two']);
+        expect(manager.getActiveSession()).toBe(second);
+      } finally { finish(); await closing; }
+    } finally { finish(); await interrupted; }
+  });
+
+  it('closes without another cancel when the turn settles during confirmation', async () => {
+    let finish!: () => void;
+    let started!: () => void;
+    const held = new Promise<void>((resolve) => { finish = resolve; });
+    const received = new Promise<void>((resolve) => { started = resolve; });
+    const one = sessionAgent('one', {}, (app) => app.onRequest(methods.agent.session.prompt, async () => {
+      started();
+      await held;
+      return { stopReason: 'end_turn' };
+    }));
+    const { commands, manager, tabs, user } = setup({ one: one.script });
+    onTestFinished(() => manager.dispose());
+    const session = await manager.newSession('one');
+    const tabId = tabs.snapshot().selectedTabId;
+    if (!tabId) { throw new Error('Missing tab'); }
+    const turn = manager.sendPrompt({ configuredName: 'one', sessionId: session.sessionId }, 'Finish normally');
+    await received;
+    vi.spyOn(user, 'showQuickPick').mockImplementationOnce(async (items) => {
+      finish();
+      await turn;
+      return items[0];
+    });
+
+    await commands.closeTab(tabId);
+
+    expect(tabs.snapshot().tabs).toEqual([]);
+    expect(one.requests).toEqual([]);
+    expect(manager.isConnected('one')).toBe(true);
+  });
+
+  it('checks an unselected session for work before disconnecting its agent', async () => {
+    const { commands, manager, user } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    onTestFinished(() => manager.dispose());
+    const first = await manager.newSession('one');
+    manager.applyForegroundState({ configuredName: 'one', sessionId: first.sessionId }, 'running');
+    const selected = await manager.newSession('two');
+    user.answer('Keep Connected');
+
+    await commands.disconnect('one');
+
+    expect(manager.isConnected('one')).toBe(true);
+    expect(manager.getActiveSession()).toBe(selected);
+    expect(user.take().map(({ call }) => call)).toEqual(['showQuickPick']);
+  });
+
+  it('connects without creating a session or changing the selected tab', async () => {
+    const one = sessionAgent('one');
+    const two = sessionAgent('two');
+    const { commands, manager, tabs } = setup({ one: one.script, two: two.script });
+    onTestFinished(() => manager.dispose());
+    const selected = await manager.newSession('one');
+    const before = tabs.snapshot();
+
+    await commands.connect('two');
+
+    expect(manager.isConnected('two')).toBe(true);
+    expect(manager.hasSession('two')).toBe(false);
+    expect(manager.getActiveSession()).toBe(selected);
+    expect(tabs.snapshot()).toEqual(before);
+  });
+
+  it('selects an unselected live sibling without loading it', async () => {
+    const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+    const { commands, manager, tabs, agents } = setup({ one: one.script });
+    onTestFinished(() => manager.dispose());
+    const first = await manager.newSession('one');
+    const firstTab = tabs.snapshot().selectedTabId;
+    if (!firstTab) { throw new Error('Missing first tab'); }
+    await manager.newSession('one');
+
+    await commands.selectTab(firstTab);
+
+    expect(manager.getActiveSession()).toBe(first);
+    expect(tabs.snapshot().selectedTabId).toBe(firstTab);
+    expect(one.requests).toEqual([]);
+    expect(agents.launched).toHaveLength(1);
+  });
+
+  it('keeps distinct sessions across agents and targets the same selection after restart', async () => {
     const one = sessionAgent();
-    const two = sessionAgent();
+    const two = sessionAgent(undefined, { agentCapabilities: { loadSession: true } });
     const { commands, manager } = setup({ one: one.script, two: two.script });
     onTestFinished(() => manager.dispose());
-    await commands.connect('one');
+    await commands.newSession('one');
     const first = manager.getActiveSessionId();
     expect(first).not.toBeNull();
-    await commands.connect('two');
+    await commands.newSession('two');
     const second = manager.getActiveSessionId();
     expect(second).not.toBeNull();
     expect(second).not.toBe(first);
@@ -200,12 +359,11 @@ describe('SessionCommands', () => {
     expect(third).not.toBe(first);
     expect(third).not.toBe(second);
     await commands.restart();
-    const fourth = manager.getActiveSessionId();
-    expect(fourth).not.toBeNull();
-    expect([first, second, third]).not.toContain(fourth);
+    expect(manager.getActiveSessionId()).toBe(third);
+    expect(two.requests.map(({ method }) => method)).toEqual(['session/load', 'session/load']);
     const cancelled = two.nextRequest();
     await commands.cancelTurn();
-    expect(await cancelled).toEqual({ method: 'session/cancel', params: { sessionId: fourth } });
+    expect(await cancelled).toEqual({ method: 'session/cancel', params: { sessionId: third } });
   });
 
   it('selects the renamed tab of a live session without loading or reconnecting', async () => {
@@ -215,7 +373,7 @@ describe('SessionCommands', () => {
     const before = { one: { command: 'one' } };
     const after = { renamed: { command: 'one' } };
     environment.agentConfigs = () => before;
-    await commands.connect('one');
+    await commands.newSession('one');
     const tabId = tabs.snapshot().selectedTabId;
     if (!tabId) { throw new Error('missing active tab'); }
     environment.agentConfigs = () => after;
@@ -238,14 +396,14 @@ describe('SessionCommands', () => {
     const two = sessionAgent('two');
     const { commands, manager, tabs } = setup({ one: one.script, two: two.script });
     onTestFinished(() => manager.dispose());
-    await commands.connect('one');
+    await commands.newSession('one');
     const closing = tabs.snapshot().selectedTabId;
     if (!closing) { throw new Error('Missing tab'); }
     const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
     const retained = manager.sessionState(identity);
     expect(retained).toBeDefined();
     if (selection === 'unselected') {
-      await commands.connect('two');
+      await commands.newSession('two');
     } else {
       await manager.disconnectAgent('one');
     }
@@ -263,12 +421,12 @@ describe('SessionCommands', () => {
     }
   });
 
-  it('confirms closing a renamed live tab and disconnects its actual running agent only after acceptance', async () => {
-    const { commands, manager, tabs, transcript, environment, user } = setup({ one: sessionAgent('one').script }, true);
+  it('confirms closing a renamed live tab with unresolved review and keeps its connection', async () => {
+    const { commands, manager, tabs, review, environment, user } = setup({ one: sessionAgent('one').script }, true);
     onTestFinished(() => manager.dispose());
     const before = { one: { command: 'one' } };
     const after = { renamed: { command: 'one' } };
-    await commands.connect('one');
+    await commands.newSession('one');
     environment.agentConfigs = () => after;
     manager.agentsChanged(before, after);
     tabs.agentsChanged(before, after);
@@ -277,7 +435,7 @@ describe('SessionCommands', () => {
     const retained = manager.sessionState(identity);
     expect(retained).toBeDefined();
     if (!snapshot.selectedTabId) { throw new Error('missing active tab'); }
-    transcript.hasRunningTurn = true;
+    review.paths = ['/w/a.ts'];
     user.take();
     user.answer(undefined);
 
@@ -287,11 +445,11 @@ describe('SessionCommands', () => {
     expect(manager.sessionState(identity)).toBe(retained);
     expect(manager.isConnected('renamed')).toBe(true);
     expect(manager.isConnected('one')).toBe(false);
-    expect(user.take()).toEqual([asked('Close this session tab?', 'This stops the turn in progress.', 'Close Tab')]);
+    expect(user.take().map(({ call }) => call)).toEqual(['showQuickPick']);
     user.answer('Close Tab');
     await commands.closeTab(snapshot.selectedTabId);
     expect(manager.getActiveSessionId()).toBeNull();
-    expect(manager.isConnected('renamed')).toBe(false);
+    expect(manager.isConnected('renamed')).toBe(true);
     expect(manager.isConnected('one')).toBe(false);
     expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
     expect(manager.sessionState(identity)).toBeUndefined();
@@ -304,7 +462,7 @@ describe('SessionCommands', () => {
     const before = { one: { command: 'one' } };
     const after = { renamed: { command: 'one' } };
     environment.agentConfigs = () => before;
-    await commands.connect('one');
+    await commands.newSession('one');
     const tabId = tabs.snapshot().selectedTabId;
     environment.agentConfigs = () => after;
     manager.agentsChanged(before, after);
@@ -319,10 +477,12 @@ describe('SessionCommands', () => {
     expect(one.requests).toEqual([]);
   });
 
-  it('asks before a dormant-tab close opens an MRU session that would stop active work', async () => {
+  it('opens the dormant MRU fallback without stopping unrelated active work', async () => {
     const { commands, manager, tabs, transcript, agents, user } = setup({ one: sessionAgent('one').script, two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script }, true);
     onTestFinished(() => manager.dispose());
-    await commands.connect('one');
+    await commands.newSession('one');
+    const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+    manager.applyForegroundState(identity, 'running');
     tabs.open({ agentName: 'two', agentDisplayName: 'Two', sessionId: OLDER_SESSION, cwd: work.cwd });
     const dormant = tabs.open({ agentName: 'removed', agentDisplayName: 'Removed', sessionId: DORMANT_SESSION, cwd: work.cwd });
     transcript.hasRunningTurn = true;
@@ -331,11 +491,12 @@ describe('SessionCommands', () => {
 
     await commands.closeTab(dormant);
 
-    expect(manager.getActiveAgentName()).toBe('one');
-    expect(agents.launched).toHaveLength(1);
-    expect(tabs.snapshot().selectedTabId).toBeNull();
+    expect(manager.getActiveAgentName()).toBe('two');
+    expect(manager.hasForegroundWork(identity)).toBe(true);
+    expect(agents.launched).toHaveLength(2);
+    expect(tabs.snapshot().selectedTabId).toBe(tabs.snapshot().tabs[1]?.tabId);
     expect(tabs.snapshot().tabs.map((tab) => tab.agentName)).toEqual(['one', 'two']);
-    expect(user.take()).toEqual([asked('Open a different session?', 'This stops the turn in progress.', 'Open Session')]);
+    expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
   });
 
   it.each([
@@ -386,7 +547,7 @@ describe('SessionCommands', () => {
     const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
     const { commands, manager, tabs, agents } = setup({ one: one.script }, true);
     onTestFinished(() => manager.dispose());
-    await commands.connect('one');
+    await commands.newSession('one');
     const activeTab = tabs.snapshot().tabs[0];
     if (!activeTab) { throw new Error('missing active tab'); }
     const dormant = tabs.open({ agentName: 'removed', agentDisplayName: 'Removed', sessionId: DORMANT_SESSION, cwd: work.cwd });
@@ -427,7 +588,7 @@ describe('SessionCommands', () => {
       ], options: { title: 'Agent Actions: two' } },
       { call: 'executeCommand', command: 'your-turn.connectAgent', rest: ['two'] },
     ]);
-    await manager.connectToAgent('one');
+    await manager.newSession('one');
     user.answer('Restart Agent');
     await commands.agentActions('one');
     expect(user.take()).toEqual([
@@ -450,7 +611,7 @@ describe('SessionCommands', () => {
   it('restarts a sessionless connection without creating a session or replacing another agent session', async () => {
     const { commands, manager, agents, tabs } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
     onTestFinished(() => manager.dispose());
-    await commands.connect('one');
+    await commands.newSession('one');
     await manager.ensureConnected('two');
     const before = tabs.snapshot();
     await commands.restart('two');
@@ -465,16 +626,17 @@ describe('SessionCommands', () => {
     ]);
   });
 
-  it('does not create a targeted session when stopping foreground work is declined', async () => {
-    const { commands, manager, tabs, user, transcript, agents } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-    await commands.connect('one');
-    const before = tabs.snapshot();
-    transcript.hasRunningTurn = true;
-    user.answer(undefined);
+  it('creates a targeted session without stopping foreground work in another agent', async () => {
+    const { commands, manager, user, agents } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+    const first = await manager.newSession('one');
+    const identity = { configuredName: 'one', sessionId: first.sessionId };
+    manager.applyForegroundState(identity, 'running');
     await commands.newSession('two');
-    expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
-    expect(tabs.snapshot()).toEqual(before);
-    expect(agents.launched.map((agent) => agent.name)).toEqual(['one']);
+    expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
+    expect(manager.getSession(identity)).toBe(first);
+    expect(manager.hasForegroundWork(identity)).toBe(true);
+    expect(agents.launched.map((agent) => agent.name)).toEqual(['one', 'two']);
+    expect(user.take()).toEqual([progress('Starting new session with two...')]);
   });
 
   it('retains a retryable MRU reference without selection when reopening after close fails', async () => {
@@ -486,7 +648,8 @@ describe('SessionCommands', () => {
         return {};
       });
     const { commands, manager, tabs, user } = setup({ one: script });
-    await commands.connect('one');
+    await commands.newSession('one');
+    await manager.disconnectAgent('one');
     await commands.open('one', OLDER_SESSION);
     const [first, second] = tabs.snapshot().tabs;
     if (!first || !second) { throw new Error('missing tabs'); }
@@ -514,7 +677,8 @@ describe('SessionCommands', () => {
         return {};
       });
     const { commands, manager, tabs } = setup({ one: script });
-    await commands.connect('one');
+    await commands.newSession('one');
+    await manager.disconnectAgent('one');
     await commands.open('one', OLDER_SESSION);
     const first = tabs.snapshot().tabs[0];
     if (!first) { throw new Error('missing tab'); }
@@ -542,7 +706,7 @@ describe('SessionCommands', () => {
   it('selects through load and closes only references until closing the selection reopens MRU', async () => {
     const agent = sessionAgent('one', { agentCapabilities: { loadSession: true } });
     const { commands, manager, tabs, references } = setup({ one: agent.script });
-    await commands.connect('one');
+    await commands.newSession('one');
     await commands.open('one', OLDER_SESSION);
     const [first, second] = tabs.snapshot().tabs;
     if (!first || !second) { throw new Error('missing opened tabs'); }
@@ -558,33 +722,34 @@ describe('SessionCommands', () => {
     expect(tabs.snapshot()).toEqual({ tabs: [], selectedTabId: null });
   });
 
-  it('leaves navigation unchanged when departure is cancelled and closes unfocused references without a request', async () => {
+  it('leaves navigation unchanged when close is cancelled and closes an unfocused dormant reference', async () => {
     const agent = sessionAgent('one', { agentCapabilities: { loadSession: true } });
-    const { commands, manager, tabs, transcript, user, agents } = setup({ one: agent.script });
-    await commands.connect('one');
+    const { commands, manager, tabs, review, user, agents } = setup({ one: agent.script });
+    await commands.newSession('one');
+    await manager.disconnectAgent('one');
     await commands.open('one', OLDER_SESSION);
     const [first, second] = tabs.snapshot().tabs;
     if (!first || !second) { throw new Error('missing tabs'); }
-    transcript.queuedPrompts = 1;
+    review.paths = ['/w/a.ts'];
     const before = tabs.snapshot();
-    user.answer(undefined, undefined);
-    await commands.selectTab(first.tabId);
+    user.answer(undefined);
     await commands.closeTab(second.tabId);
     expect(tabs.snapshot()).toEqual(before);
     expect(manager.getActiveSessionId()).toBe(OLDER_SESSION);
+    review.paths = [];
     const requests = [...agent.requests];
     await commands.closeTab(first.tabId);
     expect(agent.requests).toEqual(requests);
-    expect(agents.launched).toHaveLength(1);
+    expect(agents.launched).toHaveLength(2);
     expect(tabs.snapshot().tabs.map((tab) => tab.tabId)).toEqual([second.tabId]);
   });
 
   it('creates a fresh session for an explicitly targeted agent without an intermediate session', async () => {
     const { commands, manager, agents, tabs } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-    await commands.connect('one');
+    await commands.newSession('one');
     await commands.newSession('two');
     expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
-    expect(manager.hasSession('one')).toBe(false);
+    expect(manager.hasSession('one')).toBe(true);
     expect(agents.launched.map((agent) => agent.name)).toEqual(['one', 'two']);
     await commands.newSession('two');
     expect(manager.getActiveSessionId()).toBe(TWO_SECOND_SESSION);
@@ -592,12 +757,13 @@ describe('SessionCommands', () => {
   });
 
   describe('connect', () => {
-    it('makes a session with the named agent the active session', async () => {
+    it('initializes the named agent and leaves Chat without a session', async () => {
       const { manager, user, commands } = setup({ one: sessionAgent('one').script });
 
       await commands.connect('one');
 
-      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
+      expect(manager.getActiveSessionId()).toBeNull();
+      expect(manager.isConnected('one')).toBe(true);
       expect(user.take()).toEqual([progress('Connecting to one...')]);
     });
 
@@ -607,7 +773,8 @@ describe('SessionCommands', () => {
 
       await commands.connect();
 
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
+      expect(manager.getActiveSessionId()).toBeNull();
+      expect(manager.isConnected('two')).toBe(true);
       expect(user.take()).toEqual([
         { call: 'showQuickPick', items: ['one', 'two'], options: { placeHolder: 'Select an agent to connect', title: 'Connect to Agent' } },
         progress('Connecting to two...'),
@@ -634,162 +801,88 @@ describe('SessionCommands', () => {
       ]);
     });
 
-    it('switches agents without asking when nothing would be lost, and clears the transcript', async () => {
+    it('connects another agent without clearing the transcript', async () => {
       const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
 
       await commands.connect('two');
 
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
-      expect(manager.hasSession('one')).toBe(false);
-      expect(transcript.clearTranscript).toHaveBeenCalledOnce();
+      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
+      expect(manager.hasSession('one')).toBe(true);
+      expect(transcript.clearTranscript).not.toHaveBeenCalled();
       expect(user.take()).toEqual([progress('Connecting to two...')]);
     });
 
-    it('asks before switching agents while a turn is running, as it stops the agent', async () => {
-      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
-      transcript.hasRunningTurn = true;
-      user.answer('Switch Agent');
+    it('connects another agent without asking or stopping a turn', async () => {
+      const { manager, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
+      const session = await manager.newSession('one');
+      const identity = { configuredName: 'one', sessionId: session.sessionId };
+      manager.applyForegroundState(identity, 'running');
 
       await commands.connect('two');
 
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
-      expect(user.take()).toEqual([
-        asked('Switch to two?', 'This stops the turn in progress.', 'Switch Agent'),
-        progress('Connecting to two...'),
-      ]);
+      expect(manager.getActiveSession()).toBe(session);
+      expect(manager.hasForegroundWork(identity)).toBe(true);
+      expect(user.take()).toEqual([progress('Connecting to two...')]);
     });
 
-    it('keeps the session and the transcript when the user declines to switch', async () => {
+    it('keeps the session and transcript when the user dismisses the agent picker', async () => {
       const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
       transcript.hasRunningTurn = true;
       user.answer(undefined);
 
-      await commands.connect('two');
+      await commands.connect();
 
       expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
       expect(transcript.clearTranscript).not.toHaveBeenCalled();
     });
 
-    it('asks while files are under review, and with Keep All keeps them before switching', async () => {
-      const { manager, review, keptIn, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
-      review.paths = ['/w/a.ts', '/w/b.ts'];
-      user.answer('Keep All and Switch');
-
-      await commands.connect('two');
-
-      expect(keptIn).toEqual([ONE_FIRST_SESSION]);
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
-      expect(user.take()).toEqual([
-        asked('Switch to two?', underReview('2 files are'), 'Switch Agent', {
-          label: 'Keep All and Switch', detail: 'Keep 2 files under review before continuing.',
-        }),
-        progress('Connecting to two...'),
-      ]);
-    });
-
-    it.each([
-      ['connect', 'Keep All and Switch'],
-      ['new-same', 'Keep All and Start'],
-      ['new-other', 'Keep All and Start'],
-      ['open', 'Keep All and Open'],
-      ['close', 'Keep All and Close'],
-    ] as const)('awaits Keep All and permits %s departure only for applied outcomes', async (departure, label) => {
-      for (const kind of ['blocked', 'stale', 'failed', 'applied'] as const) {
-        const { manager, review, user, commands, transcript, tabs } = setup({
-          one: sessionAgent('one', { agentCapabilities: { loadSession: true } }).script,
-          two: sessionAgent('two').script,
-        });
-        await manager.connectToAgent('one');
-        review.paths = ['/w/a.ts'];
-        const selected = tabs.snapshot().selectedTabId;
-        if (!selected) { throw new Error('Missing selected session tab'); }
-        let release = () => {};
-        let started = () => {};
-        const waiting = new Promise<void>((resolve) => { started = resolve; });
-        const gate = new Promise<void>((resolve) => { release = resolve; });
-        vi.spyOn(review, 'keepAll').mockImplementation(async () => {
-          started();
-          await gate;
-          return kind === 'applied' ? { kind, saved: true, resolved: ['/w/a.ts'] }
-            : kind === 'failed' ? { kind, reason: 'Cannot save', applied: ['/w/a.ts'], unsaved: ['/w/a.ts'] }
-              : { kind, reason: 'Not current' };
-        });
-        user.answer(label);
-        const leaving = departure === 'connect' ? commands.connect('two')
-          : departure === 'new-same' ? commands.newSession()
-            : departure === 'new-other' ? commands.newSession('two')
-              : departure === 'open' ? commands.open('one', OLD_SESSION) : commands.closeTab(selected);
-        try {
-          await waiting;
-          expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
-          expect(tabs.snapshot().selectedTabId).toBe(selected);
-          expect(transcript.clearTranscript).not.toHaveBeenCalled();
-          release();
-          await leaving;
-          expect(manager.getActiveSessionId()).toBe(kind !== 'applied' ? ONE_FIRST_SESSION
-            : departure === 'connect' || departure === 'new-other' ? TWO_FIRST_SESSION
-              : departure === 'new-same' ? ONE_SECOND_SESSION : departure === 'open' ? OLD_SESSION : null);
-          if (kind !== 'applied') {
-            expect(transcript.clearTranscript).not.toHaveBeenCalled();
-            expect(tabs.snapshot().selectedTabId).toBe(selected);
-          }
-          expect(review.paths).toEqual(['/w/a.ts']);
-        } finally { release(); await leaving; }
-      }
-    });
-
-    it.each(['blocked', 'stale', 'failed'] as const)('does not switch after a %s Keep All outcome', async (kind) => {
-      const { manager, review, user, commands, transcript } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
-      review.paths = ['/w/a.ts'];
-      vi.spyOn(review, 'keepAll').mockResolvedValue(kind === 'failed'
-        ? { kind, reason: 'Cannot save', applied: ['/w/a.ts'], unsaved: ['/w/a.ts'] }
-        : { kind, reason: 'Not current' });
-      user.answer('Keep All and Switch');
-      await commands.connect('two');
-      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
-      expect(transcript.clearTranscript).not.toHaveBeenCalled();
-      expect(review.paths).toEqual(['/w/a.ts']);
-    });
-
-    it('freezes departure Keep All before the picker can receive newer files', async () => {
+    it('leaves files under review when connecting another agent', async () => {
       const { manager, review, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
+      review.paths = ['/w/a.ts', '/w/b.ts'];
+
+      await commands.connect('two');
+
+      expect(review.paths).toEqual(['/w/a.ts', '/w/b.ts']);
+      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
+      expect(user.take()).toEqual([progress('Connecting to two...')]);
+    });
+
+    it('does not resolve review when files arrive while the close picker is open', async () => {
+      const { manager, review, user, commands, tabs } = setup({ one: sessionAgent('one').script });
+      await manager.newSession('one');
       review.paths = ['/w/a.ts'];
       const pick = user.showQuickPick.bind(user);
       vi.spyOn(user, 'showQuickPick').mockImplementation((items, options) => {
         review.paths.push('/w/newer.ts');
         return pick(items, options);
       });
-      user.answer('Keep All and Switch');
-      await commands.connect('two');
-      expect(review.paths).toEqual(['/w/newer.ts']);
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
+      user.answer('Close Tab');
+      await commands.closeTab(tabs.snapshot().selectedTabId ?? 'missing');
+      expect(review.paths).toEqual(['/w/a.ts', '/w/newer.ts']);
+      expect(manager.getActiveSessionId()).toBeNull();
     });
 
-    it('keeps ordinary departure available but omits Keep All while workspace resolution is blocked', async () => {
-      const { manager, review, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
+    it('offers only Close Tab and Keep Tab Open for an idle session with unresolved review', async () => {
+      const { manager, review, user, commands, tabs } = setup({ one: sessionAgent('one').script });
+      await manager.newSession('one');
       review.paths = ['/w/a.ts'];
-      review.blockResolution();
-      user.answer('Switch Agent');
-      await commands.connect('two');
+      user.answer('Close Tab');
+      await commands.closeTab(tabs.snapshot().selectedTabId ?? 'missing');
       const choices = user.take().find((call) => call.call === 'showQuickPick');
       expect(choices?.call === 'showQuickPick' ? choices.items : []).toEqual([
-        { label: 'Switch Agent', detail: '1 file is still under review, kept until this session is opened again in this window.' },
-        { label: 'Cancel' },
+        { label: 'Close Tab', detail: '1 file is still under review. Review stays available when you reopen this session.' },
+        { label: 'Keep Tab Open' },
       ]);
       expect(review.paths).toEqual(['/w/a.ts']);
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
+      expect(manager.getActiveSessionId()).toBeNull();
     });
 
     it('does not ask when connecting the agent that already has the active session', async () => {
       const { manager, transcript, review, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
       transcript.hasRunningTurn = true;
       transcript.queuedPrompts = 1;
       review.paths = ['/w/a.ts'];
@@ -802,7 +895,7 @@ describe('SessionCommands', () => {
 
     it('reports a failure to connect', async () => {
       const { user, commands } = setup({
-        broken: () => fakeAgent().onRequest(methods.agent.session.new, () => {
+        broken: () => agent({ name: 'broken' }).onRequest(methods.agent.initialize, () => {
           throw RequestError.internalError(undefined, 'no model configured');
         }),
       });
@@ -819,7 +912,7 @@ describe('SessionCommands', () => {
   describe('new session', () => {
     it("starts a new session with the active session's agent", async () => {
       const { manager, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
 
       await commands.newSession();
 
@@ -827,40 +920,36 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([progress('Starting new session with Fake Agent...')]);
     });
 
-    it('asks first while a turn is running', async () => {
-      const { agents, manager, transcript, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
-      transcript.hasRunningTurn = true;
-      user.answer(undefined);
+    it('preserves a running sibling without asking first', async () => {
+      const { agents, manager, user, commands } = setup({ one: sessionAgent('one').script });
+      await manager.newSession('one');
+      const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+      manager.applyForegroundState(identity, 'running');
 
       await commands.newSession();
 
       expect(agents.launched).toHaveLength(1);
-      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
-      expect(user.take()).toEqual([asked('Start a new session?', 'This stops the turn in progress.', 'New Session')]);
+      expect(manager.getActiveSessionId()).toBe(ONE_SECOND_SESSION);
+      expect(manager.hasForegroundWork(identity)).toBe(true);
+      expect(user.take()).toEqual([progress('Starting new session with Fake Agent...')]);
     });
 
-    it('names everything it would lose, and keeps every file when asked', async () => {
-      const { manager, transcript, review, keptIn, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
-      transcript.hasRunningTurn = true;
-      transcript.queuedPrompts = 1;
+    it('preserves queued prompts and unresolved review when creating a sibling', async () => {
+      const { manager, review, user, commands } = setup({ one: sessionAgent('one').script });
+      await manager.newSession('one');
+      const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+      manager.applyForegroundState(identity, 'running');
+      const generation = manager.sessionState(identity)?.generation;
+      if (generation === undefined) { throw new Error('Missing session state'); }
+      await manager.submitPrompt(identity, generation, 'queued');
       review.paths = ['/w/a.ts'];
-      user.answer('Keep All and Start');
 
       await commands.newSession();
 
-      expect(keptIn).toEqual([ONE_FIRST_SESSION]);
+      expect(review.paths).toEqual(['/w/a.ts']);
+      expect(manager.sessionState(identity)?.queue.map(({ text }) => text)).toEqual(['queued']);
       expect(manager.getActiveSessionId()).toBe(ONE_SECOND_SESSION);
-      expect(user.take()).toEqual([
-        asked(
-          'Start a new session?',
-          `This stops the turn in progress and discards 1 queued prompt. ${underReview('1 file is')}`,
-          'New Session',
-          { label: 'Keep All and Start', detail: 'This stops the turn in progress and discards 1 queued prompt. Keep 1 file under review before continuing.' },
-        ),
-        progress('Starting new session with Fake Agent...'),
-      ]);
+      expect(user.take()).toEqual([progress('Starting new session with Fake Agent...')]);
     });
 
     it('connects an agent when there is no active session', async () => {
@@ -883,7 +972,7 @@ describe('SessionCommands', () => {
           return { sessionId: randomUUID() };
         }),
       });
-      await manager.connectToAgent('flaky');
+      await manager.newSession('flaky');
 
       await commands.newSession();
 
@@ -894,58 +983,39 @@ describe('SessionCommands', () => {
     });
   });
 
-  describe.each([
-    { action: 'Switch Agent', transition: (commands: SessionCommands) => commands.connect('two'), destination: TWO_FIRST_SESSION },
+  it.each([
+    { action: 'Connect', transition: (commands: SessionCommands) => commands.connect('two'), destination: ONE_FIRST_SESSION },
     { action: 'New Session', transition: (commands: SessionCommands) => commands.newSession(), destination: ONE_SECOND_SESSION },
     { action: 'Open Session', transition: (commands: SessionCommands) => commands.open('two', OLD_SESSION), destination: OLD_SESSION },
-  ])('$action decisions', ({ action, transition, destination }) => {
-    it.each([
-      ['dismisses the confirmation', undefined],
-      ['chooses Cancel', 'Cancel'],
-    ])('leaves the session, transcript, queued prompts, and review unchanged when the user %s', async (_choice, answer) => {
-      const { agents, manager, transcript, review, keptIn, user, commands } = setup({
-        one: sessionAgent('one').script,
-        two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script,
-      });
-      await manager.connectToAgent('one');
-      transcript.hasRunningTurn = true;
-      transcript.queuedPrompts = 2;
-      review.paths = ['/w/a.ts'];
-      user.answer(answer);
-
-      await transition(commands);
-
-      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
-      expect(agents.running('one')).toHaveLength(1);
-      expect(agents.launched).toHaveLength(1);
-      expect(transcript.clearTranscript).not.toHaveBeenCalled();
-      expect(transcript.queuedPrompts).toBe(2);
-      expect(review.paths).toEqual(['/w/a.ts']);
-      expect(keptIn).toEqual([]);
-      expect(user.take()).toHaveLength(1);
+  ])('$action preserves prior work and review without confirmation', async ({ transition, destination }) => {
+    const { agents, manager, transcript, review, user, commands } = setup({
+      one: sessionAgent('one').script,
+      two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script,
     });
+    const original = await manager.newSession('one');
+    const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+    manager.applyForegroundState(identity, 'running');
+    const state = manager.sessionState(identity);
+    if (!state) { throw new Error('Missing original session state'); }
+    await manager.submitPrompt(identity, state.generation, 'queued');
+    review.paths = ['/w/a.ts'];
 
-    it('continues without Keep All and leaves review unresolved', async () => {
-      const { manager, review, keptIn, user, commands } = setup({
-        one: sessionAgent('one').script,
-        two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script,
-      });
-      await manager.connectToAgent('one');
-      review.paths = ['/w/a.ts'];
-      user.answer(action);
+    await transition(commands);
 
-      await transition(commands);
-
-      expect(manager.getActiveSessionId()).toBe(destination);
-      expect(review.paths).toEqual(['/w/a.ts']);
-      expect(keptIn).toEqual([]);
-    });
+    expect(manager.getActiveSessionId()).toBe(destination);
+    expect(manager.getSession(identity)).toBe(original);
+    expect(agents.running('one')).toHaveLength(1);
+    expect(transcript.clearTranscript).not.toHaveBeenCalled();
+    expect(manager.hasForegroundWork(identity)).toBe(true);
+    expect(manager.sessionState(identity)?.queue.map(({ text }) => text)).toEqual(['queued']);
+    expect(review.paths).toEqual(['/w/a.ts']);
+    expect(user.take().map(({ call }) => call)).not.toContain('showQuickPick');
   });
 
   describe('disconnect', () => {
     it("stops the active session's agent", async () => {
       const { agents, manager, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
 
       await commands.disconnect();
 
@@ -974,9 +1044,16 @@ describe('SessionCommands', () => {
   });
 
   describe('restart', () => {
-    it("restarts the active session's agent on a new process with a new session", async () => {
-      const { agents, manager, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
+    it('reloads all captured live siblings on the replacement without creating a session or changing tabs', async () => {
+      const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
+      const { agents, manager, user, commands, tabs } = setup({ one: one.script });
+      const original = await manager.newSession('one');
+      const selected = await manager.newSession('one');
+      const identity = { configuredName: 'one', sessionId: original.sessionId };
+      const generation = manager.sessionState(identity)?.generation;
+      if (generation === undefined) { throw new Error('Missing session state'); }
+      manager.editComposer(identity, generation, 1, 'Retain this draft');
+      const before = tabs.snapshot();
       const [first] = agents.launched;
 
       await commands.restart();
@@ -984,6 +1061,13 @@ describe('SessionCommands', () => {
       expect(first?.killed).toBe(true);
       expect(agents.running('one')).toHaveLength(1);
       expect(manager.getActiveSessionId()).toBe(ONE_SECOND_SESSION);
+      expect(manager.getActiveSession()?.agentId).not.toBe(selected.agentId);
+      expect(manager.getSession(identity)?.agentId).toBe(manager.getActiveSession()?.agentId);
+      expect(manager.sessionState(identity)?.composer.text).toBe('Retain this draft');
+      expect(tabs.snapshot()).toEqual(before);
+      expect(one.requests).toEqual([ONE_FIRST_SESSION, ONE_SECOND_SESSION].map((sessionId) => ({
+        method: 'session/load', params: { sessionId, cwd: work.cwd, mcpServers: [] },
+      })));
       expect(user.take()).toEqual([
         progress('Restarting Fake Agent...'),
         { call: 'showInformationMessage', message: 'Restarted one' },
@@ -991,12 +1075,15 @@ describe('SessionCommands', () => {
     });
 
     it('restarts the agent it is given', async () => {
-      const { manager, user, commands } = setup({ one: sessionAgent('one').script, two: sessionAgent('two').script });
-      await manager.connectToAgent('one');
+      const { manager, user, commands } = setup({ one: sessionAgent('one').script,
+        two: sessionAgent('two', { agentCapabilities: { loadSession: true } }).script });
+      const target = await manager.newSession('two');
+      const selected = await manager.newSession('one');
 
       await commands.restart('two');
 
-      expect(manager.getActiveAgentName()).toBe('two');
+      expect(manager.getActiveSession()).toBe(selected);
+      expect(manager.getSession({ configuredName: 'two', sessionId: target.sessionId })?.agentId).not.toBe(target.agentId);
       expect(user.take()).toEqual([
         progress('Restarting two...'),
         { call: 'showInformationMessage', message: 'Restarted two' },
@@ -1012,24 +1099,20 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([]);
     });
 
-    it('reports a failure to restart', async () => {
-      let created = 0;
-      const { manager, user, commands } = setup({
-        flaky: () => fakeAgent().onRequest(methods.agent.session.new, () => {
-          if (++created > 1) {
-            throw RequestError.internalError(undefined, 'out of quota');
-          }
-          return { sessionId: randomUUID() };
-        }),
-      });
-      await manager.connectToAgent('flaky');
+    it('reports unsupported full reload without falling back to Resume', async () => {
+      const one = sessionAgent('one', { agentCapabilities: { sessionCapabilities: { resume: {} } } });
+      const { manager, user, commands, tabs } = setup({ one: one.script });
+      await manager.newSession('one');
+      const before = tabs.snapshot();
 
       await commands.restart();
 
       expect(user.take()).toEqual([
         progress('Restarting Fake Agent...'),
-        { call: 'showErrorMessage', message: 'Failed to restart: Internal error: out of quota' },
+        { call: 'showErrorMessage', message: `Failed to restart: Could not reload ${ONE_FIRST_SESSION}: Full replay is not supported.` },
       ]);
+      expect(one.requests).toEqual([]);
+      expect(tabs.snapshot()).toEqual(before);
     });
   });
 
@@ -1041,7 +1124,7 @@ describe('SessionCommands', () => {
         .onRequest(methods.agent.session.load, () => ({}))
         .onRequest(methods.agent.session.setMode, ({ params }) => { requests.push(params); return {}; });
       const { manager, user, commands } = setup({ one: script });
-      const original = await manager.connectToAgent('one');
+      const original = await manager.newSession('one');
       let answer: (value: string) => void = () => {};
       const input = new Promise<string>((resolve) => { answer = resolve; });
       vi.spyOn(user, 'showInputBox').mockReturnValueOnce(input);
@@ -1059,7 +1142,7 @@ describe('SessionCommands', () => {
     it("cancels the active session's turn", async () => {
       const one = sessionAgent('one');
       const { manager, commands } = setup({ one: one.script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
       const cancelled = one.nextRequest();
 
       await commands.cancelTurn();
@@ -1071,7 +1154,7 @@ describe('SessionCommands', () => {
     it('sets the mode it is given', async () => {
       const one = sessionAgent('one');
       const { manager, user, commands } = setup({ one: one.script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
 
       await commands.setMode('plan');
 
@@ -1082,7 +1165,7 @@ describe('SessionCommands', () => {
     it('asks for the mode when none is given, and does nothing when dismissed', async () => {
       const one = sessionAgent('one');
       const { manager, user, commands } = setup({ one: one.script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
       user.answer('code', undefined);
 
       await commands.setMode();
@@ -1095,7 +1178,7 @@ describe('SessionCommands', () => {
 
     it('reports a model the agent cannot set', async () => {
       const { manager, user, commands } = setup({ one: sessionAgent('one').script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
       user.answer('gpt-9');
 
       await commands.setModel();
@@ -1167,7 +1250,7 @@ describe('SessionCommands', () => {
     it("opens another of the agent's sessions without asking while a turn is running, as the turn goes on", async () => {
       const one = sessionAgent('one', loads);
       const { manager, transcript, user, commands } = setup({ one: one.script });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
       transcript.hasRunningTurn = true;
 
       await commands.open('one', OLD_SESSION);
@@ -1176,51 +1259,51 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
     });
 
-    it("asks before opening another of the agent's sessions while prompts are queued, as they are discarded", async () => {
-      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one', loads).script });
-      await manager.connectToAgent('one');
-      transcript.hasRunningTurn = true;
-      transcript.queuedPrompts = 2;
-      user.answer('Open Session');
+    it("opens another of the agent's sessions without discarding queued prompts", async () => {
+      const { manager, user, commands } = setup({ one: sessionAgent('one', loads).script });
+      await manager.newSession('one');
+      const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+      manager.applyForegroundState(identity, 'running');
+      const state = manager.sessionState(identity);
+      if (!state) { throw new Error('Missing session state'); }
+      await manager.submitPrompt(identity, state.generation, 'queued');
 
       await commands.open('one', OLD_SESSION);
 
       expect(manager.getActiveSessionId()).toBe(OLD_SESSION);
+      expect(manager.sessionState(identity)?.queue.map(({ text }) => text)).toEqual(['queued']);
       expect(user.take()).toEqual([
-        asked('Open a different session?', 'This discards 2 queued prompts.', 'Open Session'),
         focusChatView,
         progress('Loading session…'),
       ]);
     });
 
-    it("asks before opening another agent's session while a turn is running, and stays when declined", async () => {
+    it("opens another agent's session without stopping a running turn", async () => {
       const two = sessionAgent('two', loads);
-      const { manager, transcript, user, commands } = setup({ one: sessionAgent('one').script, two: two.script });
-      await manager.connectToAgent('one');
-      transcript.hasRunningTurn = true;
-      user.answer(undefined);
+      const { manager, user, commands } = setup({ one: sessionAgent('one').script, two: two.script });
+      await manager.newSession('one');
+      const identity = { configuredName: 'one', sessionId: ONE_FIRST_SESSION };
+      manager.applyForegroundState(identity, 'running');
 
       await commands.open('two', OLD_SESSION);
 
-      expect(manager.getActiveSessionId()).toBe(ONE_FIRST_SESSION);
-      expect(two.requests).toEqual([]);
-      expect(user.take()).toEqual([asked('Open a different session?', 'This stops the turn in progress.', 'Open Session')]);
+      expect(manager.getActiveSessionId()).toBe(OLD_SESSION);
+      expect(manager.getActiveAgentName()).toBe('two');
+      expect(manager.hasForegroundWork(identity)).toBe(true);
+      expect(two.requests.map(({ method }) => method)).toEqual(['session/load']);
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
     });
 
-    it('asks while files are under review, and with Keep All keeps them before opening', async () => {
-      const { manager, review, keptIn, user, commands } = setup({ one: sessionAgent('one', loads).script });
-      await manager.connectToAgent('one');
+    it('opens a dormant session without resolving the previous session review', async () => {
+      const { manager, review, user, commands } = setup({ one: sessionAgent('one', loads).script });
+      await manager.newSession('one');
       review.paths = ['/w/a.ts'];
-      user.answer('Keep All and Open');
 
       await commands.open('one', OLD_SESSION);
 
-      expect(keptIn).toEqual([ONE_FIRST_SESSION]);
+      expect(review.paths).toEqual(['/w/a.ts']);
       expect(manager.getActiveSessionId()).toBe(OLD_SESSION);
       expect(user.take()).toEqual([
-        asked('Open a different session?', underReview('1 file is'), 'Open Session', {
-          label: 'Keep All and Open', detail: 'Keep 1 file under review before continuing.',
-        }),
         focusChatView,
         progress('Loading session…'),
       ]);
@@ -1354,9 +1437,9 @@ describe('SessionCommands', () => {
     });
 
     it.each<[string, (commands: SessionCommands) => Promise<void>, string[]]>([
-      ['connecting to another agent', (commands) => commands.connect('two'), [`two creates ${TWO_FIRST_SESSION}`]],
+      ['connecting to another agent', (commands) => commands.connect('two'), []],
       ['starting a new session', (commands) => commands.newSession(), [`one creates ${ONE_FIRST_SESSION}`]],
-      ['restarting the agent', (commands) => commands.restart(), [`one creates ${ONE_FIRST_SESSION}`]],
+      ['restarting the agent', (commands) => commands.restart(), [`one loads ${OLD_SESSION}`, `one answers ${OLD_SESSION}`]],
     ])('lets a load under way end before %s', async (_, act, after) => {
       const order: string[] = [];
       let release: () => void = () => {};
@@ -1490,20 +1573,24 @@ describe('SessionCommands', () => {
       expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
     });
 
-    it('asks before leaving what the shown session would lose, and stays when declined', async () => {
+    it('opens the requested session without discarding the previous session queue', async () => {
       const one = refusingAgent(0);
-      const { manager, transcript, user, commands, request } = setup({ one: one.script, two: sessionAgent('two').script });
+      const { manager, user, commands, request } = setup({ one: one.script, two: sessionAgent('two').script });
       await commands.revealRequested();
-      await manager.connectToAgent('two');
-      transcript.queuedPrompts = 1;
+      await manager.newSession('two');
+      const identity = { configuredName: 'two', sessionId: TWO_FIRST_SESSION };
+      manager.applyForegroundState(identity, 'running');
+      const state = manager.sessionState(identity);
+      if (!state) { throw new Error('Missing session state'); }
+      await manager.submitPrompt(identity, state.generation, 'queued');
       await request(addressOf('one', REQUESTED_SESSION));
-      user.answer('Cancel');
 
       await commands.openRequested();
 
-      expect(manager.getActiveSessionId()).toBe(TWO_FIRST_SESSION);
-      expect(one.requested).toEqual([]);
-      expect(user.take()).toEqual([asked('Open a different session?', 'This discards 1 queued prompt.', 'Open Session')]);
+      expect(manager.getActiveSessionId()).toBe(REQUESTED_SESSION);
+      expect(manager.sessionState(identity)?.queue.map(({ text }) => text)).toEqual(['queued']);
+      expect(one.requested).toEqual([REQUESTED_SESSION]);
+      expect(user.take()).toEqual([focusChatView, progress('Loading session…')]);
     });
 
     it('does not open again the request the window opened with', async () => {

@@ -183,7 +183,7 @@ describe('SessionList', () => {
         one: () => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: CREATED_SESSION_ID })),
         two: () => fakeAgent(),
       });
-      await manager.connectToAgent('one');
+      await manager.newSession('one');
 
       expect(list.agents()).toEqual([
         { name: 'one', hasSession: true, connected: true, expandable: true, canRefreshSessions: false },
@@ -343,7 +343,7 @@ describe('SessionList', () => {
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
 
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
 
         const sessions = await list.sessionsOf('fake');
         expect(ids(sessions)).toEqual([CREATED_SESSION_ID, HISTORICAL_SESSION_ID]);
@@ -368,11 +368,11 @@ describe('SessionList', () => {
           }));
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        const opening = manager.connectToAgent('fake');
+        const opening = manager.newSession('fake');
         await entered;
         try {
           // Start both requests before either is published as the active session.
-          await Promise.all([manager.connectToAgent('fake'), manager.connectToAgent('fake')]);
+          await Promise.all([manager.newSession('fake'), manager.newSession('fake')]);
         } finally { release(); await opening; }
 
         const rows = ids(await list.sessionsOf('fake'));
@@ -385,7 +385,7 @@ describe('SessionList', () => {
         const fake = creating([]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
 
         manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: CREATED_SESSION_ID }, { title: 'Named' });
 
@@ -397,7 +397,7 @@ describe('SessionList', () => {
         const fake = creating([session(HISTORICAL_SESSION_ID)]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
 
         list.invalidate('fake');
         expect(ids(await listed(list, 'fake'))).toEqual([CREATED_SESSION_ID, HISTORICAL_SESSION_ID]);
@@ -425,7 +425,7 @@ describe('SessionList', () => {
       it('is shown once, where the agent lists it, once it does', async () => {
         const fake = creating([session(CREATED_SESSION_ID, { title: 'Listed' }), session(HISTORICAL_SESSION_ID)]);
         const { manager, list } = setup({ fake: fake.script });
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
 
         const sessions = await listed(list, 'fake');
         expect(ids(sessions)).toEqual([CREATED_SESSION_ID, HISTORICAL_SESSION_ID]);
@@ -658,7 +658,7 @@ describe('SessionList', () => {
         const fake = changing([{ sessions: [] }, { sessions: page('created') }]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.connectToAgent('fake');
+        await manager.newSession('fake');
         await list.settled();
         expect(fake.requests).toEqual([undefined]);
 
@@ -949,7 +949,7 @@ describe('SessionList', () => {
     const changes = vi.fn();
     list.on('changed', changes);
 
-    await manager.connectToAgent('fake');
+    await manager.newSession('fake');
     const afterConnect = changes.mock.calls.length;
     expect(afterConnect).toBeGreaterThan(0);
 
