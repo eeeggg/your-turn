@@ -2518,7 +2518,7 @@ describe('SessionManager', () => {
         expect(await result).toBe('rejected');
         expect(requests).toEqual(['model']);
         expect(manager.getActiveSession()).toBe(replacement);
-        expect(manager.openSessionOf('fake')).toBe(replacement);
+        expect(manager.openSessionsOf('fake')).toEqual([replacement]);
         expect(replacement.configOptions?.map((option) => option.current)).toEqual(['b', true]);
         expect(reference(FIRST_SESSION)?.selections).toEqual(saved);
         expect(takeEvents()).toEqual(how === 'load' ? [['session-load-end', load, false]] : []);
@@ -2787,7 +2787,7 @@ describe('SessionManager', () => {
       const session = await manager.connectToAgent('fake');
       const renames: unknown[][] = [];
       manager.on('configuration-renamed', (from, to) => {
-        renames.push([from, to, session.agentName, manager.openSessionOf(to) === session,
+      renames.push([from, to, session.agentName, manager.openSessionsOf(to).includes(session),
           manager.isConnected(to), manager.hasSession(from), manager.isConnected(from)]);
       });
 
@@ -2851,7 +2851,7 @@ describe('SessionManager', () => {
       expect(outcome).not.toHaveProperty('error');
       if (!('session' in outcome)) { throw outcome.error; }
       const { session } = outcome;
-      expect(manager.openSessionOf('again')).toBe(session);
+      expect(manager.openSessionsOf('again')).toEqual([session]);
       expect(manager.hasSession('fake')).toBe(false);
       expect(session.agentName).toBe('again');
       expect(manager.getActiveSession()).toBe(session);
@@ -2908,7 +2908,7 @@ describe('SessionManager', () => {
       await workspace.settled();
 
       expect(session.agentName).toBe('again');
-      expect(manager.openSessionOf('again')).toBe(session);
+      expect(manager.openSessionsOf('again')).toEqual([session]);
       expect(manager.hasSession('fake')).toBe(false);
       expect(manager.isConnected('again')).toBe(true);
       expect(manager.isConnected('fake')).toBe(false);
@@ -2941,7 +2941,7 @@ describe('SessionManager', () => {
 
       expect(manager.getActiveSession()).toBe(session);
       expect(session.agentName).toBe('renamed');
-      expect(manager.openSessionOf('renamed')).toBe(session);
+      expect(manager.openSessionsOf('renamed')).toEqual([session]);
       expect(manager.hasSession('fake')).toBe(false);
       expect(manager.isConnected('renamed')).toBe(true);
       expect(manager.isConnected('fake')).toBe(false);

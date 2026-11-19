@@ -322,9 +322,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   private activityRevision = 0;
   private activeSessionId: string | null = null;
 
-  /** Maps agentName → sessionId for the one-session-per-agent model. */
-  private agentSessions = new Map<string, string>();
-
   /**
    * Buffers session/update payloads that arrive before the corresponding
    * session is registered in `this.sessions`. Drained when the session is
@@ -401,11 +398,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         this.sessions.set(renamed, session);
         if (this.activeSessionId === key) { this.activeSessionId = renamed; }
       }
-      const sessionId = this.agentSessions.get(from);
-      if (sessionId !== undefined) {
-        this.agentSessions.delete(from);
-        this.agentSessions.set(to, sessionId);
-      }
       const capabilities = this.capabilities.get(from);
       if (capabilities) {
         this.capabilities.delete(from);
@@ -442,12 +434,15 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
    * previous active session.
    */
   async connectToAgent(agentName: string): Promise<SessionInfo> {
-    const existing = this.sessionOf(agentName);
+    const active = this.getActiveSession();
+    const [only, sibling] = this.openSessionsOf(agentName);
+    const existing = active?.agentName === agentName ? active : sibling ? undefined : only;
     if (existing) {
       this.activeSessionId = JSON.stringify([existing.agentName, existing.sessionId]);
       this.emit('active-session-changed', existing);
       return existing;
     }
+    if (sibling) { throw new Error('Choose an existing session explicitly.'); }
 
     const currentAgent = this.getActiveAgentName();
     if (currentAgent) {
@@ -459,7 +454,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const agent = await this.ensureAgent(agentName);
     const sessionInfo = await this.createAcpSession(agent, this.environment.workspaceRoots());
 
-    this.agentSessions.set(agent.name, sessionInfo.sessionId);
     this.activeSessionId = JSON.stringify([sessionInfo.agentName, sessionInfo.sessionId]);
 
     this.emit('session-added', sessionInfo);
@@ -485,7 +479,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     return this.connectToAgent(agentName);
   }
 
-  /** Stop an agent, ending its connection, and drop its session if it has one. */
+  /** Stop an agent and remove the registrations owned by its connection. */
   async disconnectAgent(agentName: string): Promise<void> {
     this.launching.delete(agentName);
     for (const [process, lifetime] of this.processes) {
@@ -495,14 +489,14 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       }
     }
     const agent = this.agents.get(agentName);
-    const session = this.sessionOf(agentName);
-    if (session) { this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId: session.sessionId }, null); }
     if (agent) {
+      const sessions = this.sessionsOn(agent.process);
+      for (const session of sessions) {
+        this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId: session.sessionId }, null);
+      }
       logInfo('Disconnecting agent', { agentName });
       this.stopAgent(agent);
-    }
-    if (session && this.removeSession(session)) {
-      this.emit('active-session-changed', null);
+      this.removeSessions(sessions);
     }
   }
 
@@ -603,7 +597,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     return agent;
   }
 
-  /** Stop an agent's process and forget it; its session, if any, is the caller's to drop. */
+  /** Stop an agent's process and forget it; the caller handles its registrations. */
   private stopAgent(agent: RunningAgent): void {
     this.retireSource(agent.process);
     if (this.agents.get(agent.name) === agent) {
@@ -677,9 +671,11 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const running = [...this.agents.values()].find((agent) => agent.process === agentProcess);
     const currentName = running?.name ?? agentName;
     const unexpected = running !== undefined;
-    const session = [...this.sessions.values()].find((session) => session.agentId === agentProcess.id);
-    if (session && unexpected) {
-      this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId: session.sessionId }, 'failed');
+    const sessions = this.sessionsOn(agentProcess);
+    if (unexpected) {
+      for (const session of sessions) {
+        this.retained.setTurnOutcome({ configuredName: session.agentName, sessionId: session.sessionId }, 'failed');
+      }
     }
     this.retireSource(agentProcess);
     if (unexpected) {
@@ -692,16 +688,16 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       this.emit('connection-changed', currentName);
     }
 
-    // Only the session running on this process goes; a newer one for the same agent stays.
-    if (session?.agentId === agentProcess.id) {
-      if (unexpected) {
+    // A replacement process for the same configuration does not own these registrations.
+    if (unexpected) {
+      for (const session of sessions) {
         const reason = exitReason(session.agentDisplayName, code);
         this.retained.turnEnded(session, Date.now());
         this.retained.promptFailed(session, reason);
         this.emit('session-ended', session, reason);
       }
-      if (this.removeSession(session)) { this.emit('active-session-changed', null); }
     }
+    this.removeSessions(sessions);
     this.emit('agent-closed', agentProcess.id, code);
   }
 
@@ -715,7 +711,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     } catch (e) {
       if (!(e instanceof AuthRequired)) {
         logError('Failed to create session', e);
-        this.stopAgent(agent);
+        this.stopAgentWithoutSessions(agent);
         throw e;
       }
       await this.runAuthFlow(agent);
@@ -723,7 +719,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         response = await requestSession();
       } catch (retryErr) {
         logError('Failed to create session after authentication', retryErr);
-        this.stopAgent(agent);
+        this.stopAgentWithoutSessions(agent);
         throw retryErr;
       }
     }
@@ -773,12 +769,12 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
   /**
    * Run the interactive auth flow against an already-initialized connection.
-   * Stops the agent and throws if the user cancels or auth fails.
+   * On cancellation or failure, stop a connection only if it owns no sessions.
    */
   private async runAuthFlow(agent: RunningAgent): Promise<void> {
     const { authMethods } = agent.driver.agent;
     if (authMethods.length === 0) {
-      this.stopAgent(agent);
+      this.stopAgentWithoutSessions(agent);
       throw new Error(
         `Agent "${agent.name}" requires authentication but did not advertise any auth methods.`,
       );
@@ -788,7 +784,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
     const selectedMethod = await this.authPrompt.chooseAuthMethod(agent.name, authMethods);
     if (!selectedMethod) {
-      this.stopAgent(agent);
+      this.stopAgentWithoutSessions(agent);
       throw new AuthenticationCancelled();
     }
 
@@ -798,7 +794,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       logInfo('Authentication successful', { agentName: agent.name });
     } catch (authErr) {
       logError('Authentication failed', authErr);
-      this.stopAgent(agent);
+      this.stopAgentWithoutSessions(agent);
       throw new Error(`Authentication failed: ${messageOf(authErr)}`);
     }
   }
@@ -1111,7 +1107,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     if (persisted) {
       // Only a complete list of a cwd shows which sessions the agent no longer keeps there.
       const complete = opts.cwd !== undefined && !opts.cursor && !response.nextCursor
-        ? { cwd: opts.cwd, openInThisWindow: new Set([...this.sessions.values()].filter((session) => session.agentName === agentName).map((session) => session.sessionId)) }
+        ? { cwd: opts.cwd, openInThisWindow: new Set(this.openSessionsOf(agentName).map((session) => session.sessionId)) }
         : undefined;
       this.withTarget((target) => void persisted.references.observeListing({
         host: target.host,
@@ -1147,7 +1143,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     // Registered and made active before the request, so the transcript the
     // agent replays during the load reaches the webview.
     const session = this.registerSession(agent, sessionId, roots.cwd, NO_SESSION_STATE, reference);
-    this.agentSessions.set(agent.name, sessionId);
     this.activeSessionId = JSON.stringify([session.agentName, sessionId]);
     // Emit active-session-changed BEFORE session-load-start so the webview
     // first repaints from the new session state, then immediately enters
@@ -1171,9 +1166,8 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       await this.reapplySelections(session, reference?.selections);
       this.requireRegistration(session);
     } catch (e) {
-      const wasActive = this.getActiveSession() === session;
       this.retained.endLoad(load, false);
-      this.removeSession(session);
+      const wasActive = this.removeSession(session);
       this.emit('session-load-end', load, /*ok=*/false);
       if (wasActive) { this.emit('active-session-changed', null); }
       throw e;
@@ -1268,15 +1262,17 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
 
     const reference = this.referenceUsedThrough(agent.name, sessionId, usedThrough);
     const sessionInfo = this.registerSession(agent, sessionId, roots.cwd, response, reference);
-    this.agentSessions.set(agent.name, sessionId);
-    this.activeSessionId = JSON.stringify([sessionInfo.agentName, sessionId]);
     this.loading.set(sessionInfo, { registration: sessionInfo, origin: { identity: { configuredName: sessionInfo.agentName, sessionId }, sourceId: sessionInfo.agentId }, attempt: Symbol(sessionId) });
     try {
       await this.reapplySelections(sessionInfo, reference?.selections);
       this.requireRegistration(sessionInfo);
+    } catch (error) {
+      if (this.removeSession(sessionInfo)) { this.emit('active-session-changed', null); }
+      throw error;
     } finally {
       this.loading.delete(sessionInfo);
     }
+    this.activeSessionId = JSON.stringify([sessionInfo.agentName, sessionId]);
     this.emit('session-added', sessionInfo);
     this.emit('active-session-changed', sessionInfo);
 
@@ -1323,9 +1319,18 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     }
   }
 
-  private sessionOf(agentName: string): SessionInfo | undefined {
-    const sessionId = this.agentSessions.get(agentName);
-    return sessionId ? this.getSession({ configuredName: agentName, sessionId }) : undefined;
+  private sessionsOn(process: AgentProcess): SessionInfo[] {
+    return [...this.sessions.values()].filter((session) => session.agentId === process.id);
+  }
+
+  private stopAgentWithoutSessions(agent: RunningAgent): void {
+    if (this.sessionsOn(agent.process).length === 0) { this.stopAgent(agent); }
+  }
+
+  private removeSessions(sessions: readonly SessionInfo[]): void {
+    let removedActive = false;
+    for (const session of sessions) { removedActive = this.removeSession(session) || removedActive; }
+    if (removedActive && this.getActiveSession() === undefined) { this.emit('active-session-changed', null); }
   }
 
   /** Forget a session and report whether it was active. The caller announces the selection change. */
@@ -1333,9 +1338,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const key = JSON.stringify([session.agentName, session.sessionId]);
     if (this.sessions.get(key) !== session) { return false; }
     this.sessions.delete(key);
-    if (this.agentSessions.get(session.agentName) === session.sessionId) {
-      this.agentSessions.delete(session.agentName);
-    }
     const wasActive = this.activeSessionId === key;
     if (wasActive) {
       this.activeSessionId = null;
@@ -1480,7 +1482,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
   }
 
   hasSession(agentName: string): boolean {
-    return this.agentSessions.has(agentName);
+    return this.openSessionsOf(agentName).length > 0;
   }
 
   /** An initialized ACP connection, independently of whether it owns a session. */
@@ -1494,14 +1496,13 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     return this.agents.has(agentName);
   }
 
-  /** The agent's session open in this window, if it has one. */
-  openSessionOf(agentName: string): SessionInfo | undefined {
-    const sessionId = this.agentSessions.get(agentName);
-    return sessionId === undefined ? undefined : this.getSession({ configuredName: agentName, sessionId });
+  /** Registrations open through this agent configuration in this window. */
+  openSessionsOf(agentName: string): SessionInfo[] {
+    return [...this.sessions.values()].filter((session) => session.agentName === agentName);
   }
 
   getAgentNamesWithSessions(): string[] {
-    return Array.from(this.agentSessions.keys());
+    return [...new Set([...this.sessions.values()].map((session) => session.agentName))];
   }
 
   dispose(): Promise<void> {
@@ -1513,7 +1514,6 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     this.sessions.clear();
     const retainedDisposed = this.retained.dispose();
     this.activity.clear();
-    this.agentSessions.clear();
     this.disposal = (async () => {
       const results = await Promise.allSettled([...this.processes].map(async ([process, { exited }]) => {
         process.kill();

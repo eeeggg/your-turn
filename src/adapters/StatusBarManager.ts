@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionManager } from '@/core/sessions/Manager';
 
 /**
- * Manages the status bar item showing which agent has a session, if any.
+ * Manages the status bar item showing the selected session's agent.
  */
 export class StatusBarManager {
   private statusBarItem: vscode.StatusBarItem;
@@ -23,14 +23,11 @@ export class StatusBarManager {
 
   private updateStatus(): void {
     const activeSession = this.sessionManager.getActiveSession();
-    const agentsWithSessions = this.sessionManager.getAgentNamesWithSessions();
-
-    const firstAgent = agentsWithSessions[0];
-    if (firstAgent === undefined) {
+    if (!activeSession) {
       this.statusBarItem.text = '$(hubot) Your Turn: No session';
       this.statusBarItem.tooltip = 'Click to connect to an agent';
     } else {
-      const agentName = activeSession?.agentDisplayName || firstAgent;
+      const agentName = activeSession.agentDisplayName || activeSession.agentName;
       this.statusBarItem.text = `$(hubot) Your Turn: ${agentName}`;
       this.statusBarItem.tooltip = `In session with ${agentName}`;
     }

@@ -355,6 +355,32 @@ describe('SessionList', () => {
         expect(fake.requests).toEqual([undefined]);
       });
 
+      it('adds every unlisted live sibling and does not duplicate a listed one', async () => {
+        let enter!: () => void;
+        let release!: () => void;
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        let requests = 0;
+        const fake = listingAgent({ '': { sessions: [session(FIRST_SESSION_ID)] } }, (app) =>
+          app.onRequest(methods.agent.session.new, async () => {
+            if (++requests === 1) { enter(); await gate; return { sessionId: CREATED_SESSION_ID }; }
+            return { sessionId: requests === 2 ? SECOND_SESSION_ID : FIRST_SESSION_ID };
+          }));
+        const { manager, list } = setup({ fake: fake.script });
+        await listed(list, 'fake');
+        const opening = manager.connectToAgent('fake');
+        await entered;
+        try {
+          // Start both requests before either is published as the active session.
+          await Promise.all([manager.connectToAgent('fake'), manager.connectToAgent('fake')]);
+        } finally { release(); await opening; }
+
+        const rows = ids(await list.sessionsOf('fake'));
+        expect(rows).toHaveLength(3);
+        expect(rows).toEqual(expect.arrayContaining([CREATED_SESSION_ID, SECOND_SESSION_ID, FIRST_SESSION_ID]));
+        expect(fake.requests).toEqual([undefined]);
+      });
+
       it('takes the title it reports', async () => {
         const fake = creating([]);
         const { manager, list } = setup({ fake: fake.script });

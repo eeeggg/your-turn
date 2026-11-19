@@ -304,10 +304,9 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       }, source);
     };
     // An agent may not list a session never prompted, and lists one only once it is asked again.
-    const open = this.sessions.openSessionOf(agentName);
-    const unlisted = open && !listing.sessions.some((listed) => listed.sessionId === open.sessionId)
-      ? [row({ sessionId: open.sessionId, cwd: open.cwd, title: open.title ?? null, updatedAt: open.createdAt }, 'open')]
-      : [];
+    const listedIds = new Set(listing.sessions.map(({ sessionId }) => sessionId));
+    const unlisted = this.sessions.openSessionsOf(agentName).filter((open) => !listedIds.has(open.sessionId))
+      .map((open) => row({ sessionId: open.sessionId, cwd: open.cwd, title: open.title ?? null, updatedAt: open.createdAt }, 'open'));
     const rows = [...unlisted, ...listing.sessions.map((listed) => row(listed, 'agent'))];
     return { kind: 'listed', source: 'agent', rows, more: listing.more };
   }

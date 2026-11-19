@@ -190,6 +190,101 @@ describe('SessionManager', () => {
       .toMatchObject({ tabs: [{ status: ending === 'exit' ? 'failed' : 'quiet' }] });
   });
 
+  it.each(['disconnect', 'exit'] as const)('removes every registration on one connection on %s', async (ending) => {
+    let entered!: () => void;
+    let release!: () => void;
+    const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let requested = 0;
+    const { manager, agents, takeEvents } = setup({ fake: () => fakeAgent().onRequest(methods.agent.session.new, async () => {
+      if (++requested === 1) {
+        entered();
+        await gate;
+        return { sessionId: FIRST_SESSION };
+      }
+      return { sessionId: SECOND_SESSION };
+    }) });
+    const first = manager.connectToAgent('fake');
+    await firstEntered;
+    try { await manager.connectToAgent('fake'); }
+    finally { release(); await first; }
+    expect(agents.launched).toHaveLength(1);
+    expect(manager.getSession(address(FIRST_SESSION))).toBeDefined();
+    expect(manager.getSession(address(SECOND_SESSION))).toBeDefined();
+    takeEvents();
+
+    if (ending === 'disconnect') { await manager.disconnectAgent('fake'); }
+    else { await agents.running('fake')[0]?.crash(); }
+
+    expect(manager.getSession(address(FIRST_SESSION))).toBeUndefined();
+    expect(manager.getSession(address(SECOND_SESSION))).toBeUndefined();
+    expect(manager.getActiveSession()).toBeUndefined();
+    expect(takeEvents().filter(([event]) => event === 'active-session-changed')).toEqual([['active-session-changed', null]]);
+  });
+
+  it.each(['request failure', 'cancelled authentication', 'authentication failure', 'failed retry'] as const)(
+    'preserves a sibling when a new session encounters %s', async (failure) => {
+      let entered!: () => void;
+      let release!: () => void;
+      const firstEntered = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      let requested = 0;
+      const { manager, agents, authPrompt } = setup({ fake: () => fakeAgent({ authMethods: [{ id: 'test', name: 'Test' }] })
+        .onRequest(methods.agent.authenticate, () => {
+          if (failure === 'authentication failure') { throw RequestError.internalError(undefined, 'Cannot authenticate'); }
+          return {};
+        })
+        .onRequest(methods.agent.session.new, async () => {
+          if (++requested === 2) { return { sessionId: SECOND_SESSION }; }
+          if (requested === 1) { entered(); await gate; }
+          if (failure === 'request failure' || requested > 2) { throw RequestError.internalError(undefined, 'Cannot create session'); }
+          throw RequestError.authRequired();
+        })
+        .onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })) });
+      if (failure !== 'cancelled authentication') { authPrompt.chooseAuthMethod.mockResolvedValue({ id: 'test', name: 'Test', description: null }); }
+      const first = manager.connectToAgent('fake');
+      const rejected = expect(first).rejects.toThrow(failure === 'cancelled authentication' ? AuthenticationCancelled
+        : failure === 'authentication failure' ? 'Cannot authenticate' : 'Cannot create session');
+      await firstEntered;
+      try { await manager.connectToAgent('fake'); }
+      finally { release(); await rejected; }
+
+      expect(agents.launched).toHaveLength(1);
+      expect(manager.getActiveSession()?.sessionId).toBe(SECOND_SESSION);
+      await expect(manager.sendPrompt(address(SECOND_SESSION), 'Keep working')).resolves.toBeUndefined();
+    },
+  );
+
+  it.each(['load', 'resume'] as const)('keeps an unselected sibling usable after a rejected %s', async (how) => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let requests = 0;
+    const reject = () => { throw RequestError.internalError(undefined, 'Cannot open session'); };
+    const { manager, agents } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } })
+      .onRequest(methods.agent.session.new, async () => {
+        if (++requests === 1) { enter(); await gate; return { sessionId: FIRST_SESSION }; }
+        return { sessionId: SECOND_SESSION };
+      })
+      .onRequest(methods.agent.session.load, reject)
+      .onRequest(methods.agent.session.resume, reject)
+      .onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })) });
+    const opening = manager.connectToAgent('fake');
+    await entered;
+    let sibling;
+    try { sibling = await manager.connectToAgent('fake'); }
+    finally { release(); await opening; }
+
+    const attempt = how === 'load' ? manager.loadSession('fake', OLD_SESSION) : manager.resumeSession('fake', OLD_SESSION);
+    await expect(attempt).rejects.toThrow('Cannot open session');
+
+    expect(manager.getSession(address(OLD_SESSION))).toBeUndefined();
+    expect(manager.getSession(address(SECOND_SESSION))).toBe(sibling);
+    expect(agents.launched).toHaveLength(1);
+    await expect(manager.sendPrompt(address(SECOND_SESSION), 'Keep working')).resolves.toBeUndefined();
+  });
+
   it('keeps another agent opening snapshot when an unrelated connection exits', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -1794,14 +1889,9 @@ describe('SessionManager', () => {
       const stops: [string, (manager: SessionManager) => Promise<unknown>][] = [
         ['disconnect', (manager) => manager.disconnectAgent('fake')],
         ['new session', (manager) => manager.newSession()],
-        // The session outlives the stop until the exit drops it.
-        ['authentication cancelled while listing', (manager) => manager.listSessions('fake').catch(() => {})],
       ];
       for (const [name, stop] of stops) {
-        const init = { agentCapabilities: { sessionCapabilities: { list: {} } }, authMethods: [{ id: 'login', name: 'Log in' }] };
-        const fake = sessionAgent(undefined, (app) => app.onRequest(methods.agent.session.list, () => {
-          throw RequestError.authRequired();
-        }), init);
+        const fake = sessionAgent();
         const { manager, takeEvents } = setup({ fake: fake.script });
         await manager.connectToAgent('fake');
         const closed = new Promise<void>((resolve) => manager.once('agent-closed', () => resolve()));
@@ -1813,6 +1903,23 @@ describe('SessionManager', () => {
         expect(events, name).toContain('session-removed');
         expect(events, name).not.toContain('session-ended');
       }
+    });
+
+    it('does not retire a live connection when authentication for listing is cancelled', async () => {
+      const fake = sessionAgent(FIRST_SESSION, (app) => app
+        .onRequest(methods.agent.session.list, () => { throw RequestError.authRequired(); })
+        .onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' })), {
+        agentCapabilities: { sessionCapabilities: { list: {} } }, authMethods: [{ id: 'login', name: 'Log in' }],
+      });
+      const { manager, takeEvents } = setup({ fake: fake.script });
+      const session = await manager.connectToAgent('fake');
+      takeEvents();
+
+      await expect(manager.listSessions('fake')).rejects.toThrow(AuthenticationCancelled);
+
+      expect(manager.getActiveSession()).toBe(session);
+      await expect(manager.sendPrompt(address(FIRST_SESSION), 'Keep working')).resolves.toBeUndefined();
+      expect(takeEvents().map(([event]) => event)).not.toContain('session-removed');
     });
 
     it('fails a prompt in flight only once the exit has ended its session, whichever the agent reports first', async () => {
