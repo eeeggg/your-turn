@@ -237,6 +237,137 @@ describe('SessionManager', () => {
     await queuedTurn.promise;
   });
 
+  it.each([[1, 1], [2, 2], [1, 2], [2, 1]] as const)(
+    'closes one sibling and advances the other while a separate agent stays busy (ACP v%i / v%i)',
+    async (sharedVersion, otherVersion) => {
+      const hold = () => ({ started: deferred<undefined>(), finish: deferred<undefined>() });
+      const first = hold();
+      const sibling = hold();
+      const other = hold();
+      const next = hold();
+      const cancelled = deferred<string>();
+      const prompts: [string, string, unknown][] = [];
+      const cancellations: [string, string][] = [];
+      const script = (version: 1 | 2, name: string, ids: readonly string[]): AgentScript => {
+        let created = 0;
+        const create = () => {
+          const sessionId = ids[created++];
+          if (!sessionId) { throw new Error('Unexpected session creation'); }
+          return { sessionId };
+        };
+        const begin = (sessionId: string, text: unknown) => {
+          prompts.push([name, sessionId, text]);
+          const turn = name === 'other' && sessionId === FIRST_SESSION && text === 'other' ? other
+            : name === 'fake' && sessionId === FIRST_SESSION && text === 'first' ? first
+            : name === 'fake' && sessionId === SECOND_SESSION && text === 'sibling' ? sibling
+            : name === 'fake' && sessionId === SECOND_SESSION && text === 'queued sibling' ? next : undefined;
+          if (!turn) { throw new Error(`Unexpected prompt for ${name}/${sessionId}: ${String(text)}`); }
+          return turn;
+        };
+        const cancel = (sessionId: string) => {
+          cancellations.push([name, sessionId]);
+          cancelled.resolve(sessionId);
+        };
+        if (version === 1) {
+          return () => fakeAgent().onRequest(methods.agent.session.new, create)
+            .onRequest(methods.agent.session.prompt, async ({ params }) => {
+              const part = params.prompt[0];
+              const turn = begin(params.sessionId, part?.type === 'text' ? part.text : undefined);
+              turn.started.resolve(undefined);
+              await turn.finish.promise;
+              return { stopReason: turn === first ? 'cancelled' : 'end_turn' };
+            })
+            .onNotification(methods.agent.session.cancel, ({ params }) => cancel(params.sessionId));
+        }
+        return () => fakeV2Agent().onRequest(V2.methods.agent.session.new, create)
+          .onRequest(V2.methods.agent.session.prompt, async ({ client, params }) => {
+            const part = params.prompt[0];
+            const turn = begin(params.sessionId, part?.type === 'text' ? part.text : undefined);
+            if (turn !== first) {
+              await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId,
+                update: { sessionUpdate: 'state_update', state: 'running' } });
+            }
+            turn.started.resolve(undefined);
+            await turn.finish.promise;
+            if (turn === first) { throw new V2.RequestError(-32800, 'Request cancelled'); }
+            await client.notify(V2.methods.client.session.update, { sessionId: params.sessionId,
+              update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+            return { messageId: params.sessionId };
+          })
+          .onNotification(V2.methods.agent.session.cancel, ({ params }) => cancel(params.sessionId));
+      };
+
+      const { manager, agents } = setup({ fake: script(sharedVersion, 'fake', [FIRST_SESSION, SECOND_SESSION]),
+        other: script(otherVersion, 'other', [FIRST_SESSION]) });
+      const firstIdentity = address(FIRST_SESSION);
+      const siblingIdentity = address(SECOND_SESSION);
+      const otherIdentity = { configuredName: 'other', sessionId: FIRST_SESSION };
+      const firstSession = await manager.newSession('fake');
+      const siblingSession = await manager.newSession('fake');
+      const otherSession = await manager.newSession('other');
+      const turns: Promise<void>[] = [];
+      const send = (identity: Parameters<SessionManager['sendPrompt']>[0], text: string) => {
+        const turn = manager.sendPrompt(identity, text);
+        turns.push(turn);
+        void turn.catch(() => {});
+        return turn;
+      };
+      const queue = async (identity: Parameters<SessionManager['submitPrompt']>[0], text: string) => {
+        const generation = manager.sessionState(identity)?.generation;
+        if (generation === undefined) { throw new Error('Missing session state'); }
+        await manager.submitPrompt(identity, generation, text);
+        expect(manager.sessionState(identity)?.queue.map((entry) => entry.text)).toEqual([text]);
+      };
+      let closing: ReturnType<SessionManager['closeSession']> | undefined;
+      try {
+        const firstTurn = send(firstIdentity, 'first');
+        await Promise.race([first.started.promise, firstTurn]);
+        const siblingTurn = send(siblingIdentity, 'sibling');
+        await Promise.race([sibling.started.promise, siblingTurn]);
+        const otherTurn = send(otherIdentity, 'other');
+        await Promise.race([other.started.promise, otherTurn]);
+        expect([firstIdentity, siblingIdentity, otherIdentity].map((identity) => manager.hasForegroundWork(identity))).toEqual([true, true, true]);
+
+        expect(manager.selectSession(firstSession)).toBe(true);
+        await queue(firstIdentity, 'do not send');
+        expect(manager.selectSession(siblingSession)).toBe(true);
+        await queue(siblingIdentity, 'queued sibling');
+        expect(manager.selectSession(otherSession)).toBe(true);
+
+        closing = manager.closeSession(firstSession);
+        expect(await Promise.race([cancelled.promise, closing])).toBe(FIRST_SESSION);
+        expect(manager.getSession(firstIdentity)).toBe(firstSession);
+        first.finish.resolve(undefined);
+        expect(await closing).toEqual({ kind: 'closed' });
+        expect(manager.getSession(firstIdentity)).toBeUndefined();
+        expect(manager.hasForegroundWork(siblingIdentity)).toBe(true);
+        expect(manager.hasForegroundWork(otherIdentity)).toBe(true);
+
+        sibling.finish.resolve(undefined);
+        await siblingTurn;
+        expect(manager.hasForegroundWork(siblingIdentity)).toBe(true);
+        await next.started.promise;
+        expect(manager.sessionState(siblingIdentity)?.queue).toEqual([]);
+        expect(manager.getActiveSession()).toBe(otherSession);
+        expect(manager.hasForegroundWork(otherIdentity)).toBe(true);
+        expect(cancellations).toEqual([['fake', FIRST_SESSION]]);
+        expect(prompts).toEqual([
+          ['fake', FIRST_SESSION, 'first'], ['fake', SECOND_SESSION, 'sibling'],
+          ['other', FIRST_SESSION, 'other'], ['fake', SECOND_SESSION, 'queued sibling'],
+        ]);
+        expect(agents.running('fake')).toHaveLength(1);
+        expect(agents.running('other')).toHaveLength(1);
+        const nextEnded = new Promise<void>((resolve) => { manager.once('turn-ended', () => resolve()); });
+        next.finish.resolve(undefined);
+        await nextEnded;
+        expect(manager.hasForegroundWork(otherIdentity)).toBe(true);
+      } finally {
+        for (const turn of [first, sibling, other, next]) { turn.finish.resolve(undefined); }
+        await Promise.allSettled([...turns, closing]);
+      }
+    },
+  );
+
   it('retains a background completion until its tab is selected', async () => {
     const { manager, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION, (app) =>
       app.onRequest(methods.agent.session.prompt, () => ({ stopReason: 'end_turn' }))).script });

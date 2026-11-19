@@ -1,5 +1,7 @@
 import * as assert from 'assert';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
+import { tmpdir } from 'node:os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AcpDriver } from '@/core/acp/AcpDriver';
@@ -164,6 +166,45 @@ for (const version of [1, 2]) {
       assert.ok(texts.includes('perm:allow'), `updates: ${JSON.stringify(texts)}`);
       assert.deepStrictEqual(textSessionIds, [created.sessionId, created.sessionId]);
     });
+
+    if (version === 1) {
+      test('Routes a sibling turn over stdio while the first prompt response is held', async () => {
+        const directory = await mkdtemp(path.join(tmpdir(), 'acp-sibling-'));
+        const trigger = path.join(directory, 'background-review.trigger');
+        let held: ReturnType<AcpDriver['prompt']> | undefined;
+        try {
+          await writeFile(path.join(directory, 'm.ts'), 'l1\nl2\n');
+          const first = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+          const second = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+          const recordsBefore = trafficRecords().length;
+          const armed = nextText('Background review armed.');
+          held = driver.prompt(first.sessionId, [{ kind: 'text', text: `review-after-trigger ${directory}` }]);
+          const early = await Promise.race([armed.then(() => 'armed'), held.then(() => 'settled')]);
+          assert.strictEqual(early, 'armed');
+          assert.strictEqual(textSessionIds.at(-1), first.sessionId);
+
+          const sibling = await driver.prompt(second.sessionId, [{ kind: 'text', text: 'hi' }]);
+          assert.strictEqual(sibling.stopReason, 'end_turn');
+          assert.deepStrictEqual(textSessionIds.slice(-2), [second.sessionId, second.sessionId]);
+          const requests = trafficRecords().slice(recordsBefore).filter(({ direction, message }) => direction === 'send' && at(message, 'method') === 'session/prompt');
+          assert.deepStrictEqual(requests.map(({ message }) => at(message, 'params', 'sessionId')), [first.sessionId, second.sessionId]);
+          const firstRequestId = at(requests[0]?.message, 'id');
+          assert.notStrictEqual(firstRequestId, undefined);
+          assert.ok(!trafficRecords().slice(recordsBefore).some(({ direction, message }) => direction === 'recv' && at(message, 'id') === firstRequestId && at(message, 'method') === undefined));
+
+          await writeFile(trigger, 'complete');
+          assert.strictEqual((await held).stopReason, 'end_turn');
+          held = undefined;
+        } finally {
+          try {
+            if (held) {
+              await writeFile(trigger, 'complete');
+              await Promise.allSettled([held]);
+            }
+          } finally { await rm(directory, { recursive: true, force: true }); }
+        }
+      });
+    }
 
     test('Sends cancel as a notification', async () => {
       const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });

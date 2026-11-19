@@ -32,6 +32,7 @@ async function duringTeardown<T>(signal: AbortSignal, action: () => Promise<T>):
 
 interface UiFixtures {
   agentVersion: 'v1' | 'v2';
+  mixedAgents: boolean;
   reviewPresentation: 'diffEditor' | 'quickDiff' | undefined;
   workspaceFiles: Record<string, string>;
   gitRepository: boolean;
@@ -177,6 +178,7 @@ async function captureFailure(
 
 export const test = base.extend<UiFixtures>({
   agentVersion: ['v1', { option: true }],
+  mixedAgents: [false, { option: true }],
   reviewPresentation: [undefined, { option: true }],
   workspaceFiles: [{}, { option: true }],
   gitRepository: [false, { option: true }],
@@ -257,7 +259,7 @@ export const test = base.extend<UiFixtures>({
     }
   },
 
-  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, loadsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, display, treeRefresh, reviewPresentationControl, nativeDiffControl }, use, testInfo) => {
+  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, loadsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, mixedAgents, display, treeRefresh, reviewPresentationControl, nativeDiffControl }, use, testInfo) => {
     const closeControls = async () => { await Promise.all([treeRefresh?.close(), reviewPresentationControl?.close(), nativeDiffControl?.close()]); };
     const executablePath = process.env['UI_VSCODE_EXECUTABLE'];
     if (!executablePath) {
@@ -329,6 +331,13 @@ export const test = base.extend<UiFixtures>({
               ...(authenticationQuestion ? { ACP_TEST_AUTHENTICATION_QUESTION: '1' } : {}),
             },
           },
+          ...(mixedAgents ? {
+            [`fake-${agentVersion === 'v1' ? 'v2' : 'v1'}`]: {
+              command: process.execPath,
+              args: [join(extensionPath, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion === 'v1' ? 'v2' : 'v1'}.js`)],
+              env: { ELECTRON_RUN_AS_NODE: '1' },
+            },
+          } : {}),
         },
       }, undefined, 2));
 

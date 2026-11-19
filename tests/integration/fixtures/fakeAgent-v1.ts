@@ -528,6 +528,19 @@ agent({ name: 'fake-agent' })
       await changeDiffReview(client, params.sessionId, text.slice('review-diff '.length));
       return { stopReason: 'end_turn' };
     }
+    if (text.startsWith('review-after-trigger ')) {
+      const directory = text.slice('review-after-trigger '.length);
+      let release!: () => void;
+      const triggered = new Promise<void>((resolve) => { release = resolve; });
+      const watcher = watch(directory, (_event, name) => { if (name === 'background-review.trigger') { release(); } });
+      try {
+        await client.notify(methods.client.session.update, { sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Background review armed.' } } });
+        await triggered;
+        await changeDiffReview(client, params.sessionId, directory);
+        return { stopReason: 'end_turn' };
+      } finally { watcher.close(); }
+    }
     if (text === 'run') {
       await run(client, params.sessionId);
       return { stopReason: 'end_turn' };
