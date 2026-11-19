@@ -149,6 +149,38 @@ async function replayCompaction(client: AgentContext, sessionId: string): Promis
   });
 }
 
+async function streamTools(client: AgentContext, sessionId: string): Promise<void> {
+  const say = (text: string) => client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  });
+  const checkpoint = async (name: string) => {
+    const response = await client.request(methods.client.session.requestPermission, {
+      sessionId, toolCall: { toolCallId: 'stream-checkpoint', title: name, status: 'pending' },
+      options: [{ optionId: 'continue', name, kind: 'allow_once' }],
+    });
+    if (response.outcome.outcome !== 'selected' || response.outcome.optionId !== 'continue') {
+      throw RequestError.invalidParams(undefined, 'Tool stream checkpoint not acknowledged');
+    }
+  };
+  await say(Array.from({ length: 60 }, (_, index) => `History line ${index}.`).join('\n\n'));
+  await checkpoint('Stream first batch');
+  for (const batch of [1, 2]) {
+    for (let index = 0; index < 30; index++) {
+      const toolCallId = `stream-${batch}-${index}`;
+      await client.notify(methods.client.session.update, {
+        sessionId, update: { sessionUpdate: 'tool_call', toolCallId, title: `Stream tool ${batch}-${index}`, status: 'pending' },
+      });
+      for (const status of ['in_progress', 'completed'] as const) {
+        await client.notify(methods.client.session.update, {
+          sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId, status },
+        });
+      }
+    }
+    await say(`Batch ${batch} finished.`);
+    await checkpoint(batch === 1 ? 'Stream second batch' : 'Finish tool stream');
+  }
+}
+
 async function compact(client: AgentContext, sessionId: string): Promise<void> {
   const say = (text: string) => client.notify(methods.client.session.update, {
     sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
@@ -452,6 +484,10 @@ agent({ name: 'fake-agent' })
       await client.notify(methods.client.session.update, {
         sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `Received question response: ${JSON.stringify(response)}` } },
       });
+      return { stopReason: 'end_turn' };
+    }
+    if (text === 'stream-tools') {
+      await streamTools(client, params.sessionId);
       return { stopReason: 'end_turn' };
     }
     if (COMPACTION && text === 'compact') {

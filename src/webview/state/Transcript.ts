@@ -3,7 +3,6 @@ import type {
   ExitStatus,
   ImagePresentation,
   PlanStep,
-  PlanStepStatus,
   QuestionRecord,
   SessionUsage,
   ToolCallContent,
@@ -267,30 +266,6 @@ export function compactionBlocks(summary: Compaction['summary']): ({ kind: 'text
   return blocks.filter((block) => block.kind !== 'text' || block.text.trim() !== '');
 }
 
-export function statusGlyph(status: ToolCallStatus): string {
-  switch (status) {
-    case 'running':
-      return '⟳';
-    case 'completed':
-      return '✓';
-    case 'failed':
-      return '✗';
-    default:
-      return '…';
-  }
-}
-
-export function planStepIcon(status: PlanStepStatus): string {
-  switch (status) {
-    case 'completed':
-      return '✅';
-    case 'running':
-      return '🔄';
-    default:
-      return '⬜';
-  }
-}
-
 /** A command runs until its terminal says how it ended, or until its session ends first. */
 type CommandStatus = 'running' | 'disconnected' | 'ended';
 
@@ -321,18 +296,17 @@ export interface ContentContext {
 /**
  * The tool call's content as shown, in the order reported: at most `TOOL_CALL_CONTENT_LIMIT` characters of text across
  * its blocks, `truncated` when there was more; commands' output, each cut already, and its terminals once reported;
- * and, only `withDiffs`, its diffs' files, cut already. `running` while a command of its terminals runs.
+ * and, only `withDiffs`, its diffs' files, cut already.
  */
 export function shownContent(
   content: readonly ToolCallContent[],
   { terminals, sessionEnded }: ContentContext,
   withDiffs: boolean,
-): { blocks: ShownBlock[]; truncated: boolean; running: boolean } {
+): { blocks: ShownBlock[]; truncated: boolean } {
   const blocks: ShownBlock[] = [];
   let textRoom = TOOL_CALL_CONTENT_LIMIT;
   let fileCount = 0;
   let truncated = false;
-  let running = false;
   for (const item of content) {
     if (item.kind === 'image') {
       blocks.push({ ...item });
@@ -354,7 +328,6 @@ export function shownContent(
           failure: failure(terminal.exitStatus),
           terminalId: item.terminalId,
         });
-        running ||= status === 'running';
       }
       continue;
     }
@@ -374,7 +347,7 @@ export function shownContent(
     textRoom -= text.length;
     truncated ||= text.length < item.text.length;
   }
-  return { blocks, truncated, running };
+  return { blocks, truncated };
 }
 
 function commandStatus(terminal: Terminal, sessionEnded: boolean): CommandStatus {

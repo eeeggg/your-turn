@@ -14,6 +14,7 @@ import {
   questionRecords,
   questionSurface,
   queuedPrompts,
+  quickInput,
   quickInputRow,
   sessionUsage,
   sessionUsageDetails
@@ -151,7 +152,9 @@ test.describe('v2 concurrent questions', () => {
     await questionNotification(window).click();
     const surface = questionSurface(window);
     await surface.getByRole('form', { name: 'Surviving settings', exact: true }).getByLabel('Answer *', { exact: true }).fill('preserved draft');
-    await window.getByRole('button', { name: 'Your Turn: Cancel Current Turn', exact: true }).click();
+    await window.keyboard.press('F1');
+    await quickInput(window).fill('>Your Turn: Cancel Current Turn');
+    await quickInputRow(window, 'Your Turn: Cancel Current Turn').click();
     await expect(chatTranscript(window)).toContainText('cancel-ack');
     await expect(questionNotification(window)).toHaveAccessibleName('Two elicitations are awaiting your response');
     await expect(surface.getByRole('form', { name: 'Surviving settings', exact: true }).getByLabel('Answer *', { exact: true })).toHaveValue('preserved draft');

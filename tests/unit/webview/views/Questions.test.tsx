@@ -58,17 +58,23 @@ function setup(initial: RootState = initialState) {
 }
 
 describe('question surface', () => {
-  it.each(['up', 'down', 'left', 'right'] as const)('renders the %s chevron without rotation and preserves shared styling', (direction) => {
+  it.each([
+    ['up', 'm18 15-6-6-6 6'],
+    ['down', 'm6 9 6 6 6-6'],
+    ['left', 'm15 18-6-6 6-6'],
+    ['right', 'm9 18 6-6-6-6'],
+  ] as const)('renders the %s chevron without rotation and preserves shared styling', (direction, path) => {
     const { container } = render(<Chevron direction={direction} size={12} className="mt-0.5" />);
     const icon = container.querySelector('svg');
-    expect(icon?.classList.contains(`lucide-chevron-${direction}`)).toBe(true);
+    expect(icon).not.toBeNull();
     expect(icon?.getAttribute('class')).not.toMatch(/rotate-/);
     expect(icon?.classList.contains('flex-none')).toBe(true);
     expect(icon?.classList.contains('mt-0.5')).toBe(true);
     expect(icon?.getAttribute('width')).toBe('12');
     expect(icon?.getAttribute('height')).toBe('12');
-    expect(icon?.getAttribute('stroke-width')).toBe('2.25');
+    expect(icon?.getAttribute('stroke-width')).toBe('2');
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.querySelector('path')?.getAttribute('d')).toBe(path);
   });
 
   it('keeps disclosure and navigation icons decorative at their existing sizes', () => {

@@ -79,7 +79,7 @@ function FileLink({ path, toolCallId, index, hasLines }: { path: string; toolCal
   return (
     <button
       type="button"
-      className="tc-diff-link cursor-pointer text-left wrap-anywhere hover:text-link hover:underline focus-visible:text-link"
+      className="tc-diff-link cursor-pointer rounded-sm text-left wrap-anywhere hover:text-link hover:underline focus-visible:text-link focus-visible:outline-1 focus-visible:outline-ring"
       title="Open the file; right-click for more"
       data-vscode-context={JSON.stringify(context)}
       onClick={() => dispatch({ type: 'diffFileClicked', toolCallId, file: index })}

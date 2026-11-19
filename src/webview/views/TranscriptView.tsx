@@ -10,10 +10,18 @@ import {
   type RefObject
 } from 'react';
 import ArrowDown from 'lucide-react/icons/arrow-down';
+import ArrowRight from 'lucide-react/icons/arrow-right';
 import Check from 'lucide-react/icons/check';
+import CircleDashed from 'lucide-react/icons/circle-dashed';
+import CircleDot from 'lucide-react/icons/circle-dot';
 import Copy from 'lucide-react/icons/copy';
+import Square from 'lucide-react/icons/square';
+import SquareCheck from 'lucide-react/icons/square-check';
+import X from 'lucide-react/icons/x';
+import type { LucideIcon } from 'lucide-react';
 import { useStickToBottom } from 'use-stick-to-bottom';
-import type { PresentationTarget, QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
+import { Chevron } from '@/webview/views/elements/Chevron';
+import type { PlanStepStatus, PresentationTarget, QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
 import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
 import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
@@ -21,10 +29,8 @@ import {
   compactionBlocks,
   compactionSummary,
   partShown,
-  planStepIcon,
   showsEmptyState,
   shownContent,
-  statusGlyph,
   thoughtSummary,
   turnShown,
   type AgentMessage,
@@ -88,7 +94,7 @@ function JumpToEnd({ onClick }: { onClick: () => void }) {
       type="button"
       aria-label="Jump to the end"
       title="Jump to the end"
-      className="jump-to-end absolute bottom-3 left-1/2 flex size-8 -translate-x-1/2 cursor-pointer items-center justify-center rounded-full border border-popover-border bg-popover text-popover-foreground shadow-popover hover:bg-linear-to-b hover:from-hover hover:to-hover"
+      className="jump-to-end absolute bottom-3 left-1/2 flex size-8 -translate-x-1/2 cursor-pointer items-center justify-center rounded-full border border-popover-border bg-popover text-popover-foreground shadow-popover hover:bg-linear-to-b hover:from-hover hover:to-hover focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring"
       id="jumpToEnd"
       onClick={onClick}
     >
@@ -212,7 +218,10 @@ const QuestionRecordBlock = memo(function QuestionRecordBlock({ record, open }: 
       dispatch({ type: 'questionRecordToggled', interactionId: record.interactionId, open: event.currentTarget.open });
     }
   }}>
-    <summary className="cursor-pointer rounded-sm px-2 py-1 text-sm text-muted-foreground focus-visible:outline-1 focus-visible:outline-ring">Elicitation — {outcome}{record.title === null ? '' : `: ${record.title}`}</summary>
+    <summary className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground focus-visible:outline-1 focus-visible:outline-ring list-none">
+      <Chevron direction={open ? 'down' : 'right'} />
+      Elicitation — {outcome}{record.title === null ? '' : `: ${record.title}`}
+    </summary>
     <div className="mt-1 space-y-2 rounded-md border border-border bg-muted px-3 py-2 text-sm whitespace-pre-wrap wrap-anywhere">
       <p className="text-muted-foreground">{record.agentName}</p>
       <p>{record.message}</p>
@@ -237,16 +246,12 @@ const CompactionBlock = memo(function CompactionBlock({ compaction }: { compacti
   const blocks = useMemo(() => compactionBlocks(compaction.summary), [compaction.summary]);
   const progressing = compaction.status === 'in_progress';
   const header = <>
-    {progressing && <span aria-hidden="true" className="compaction-indicator inline-block size-1.5 flex-none animate-thought-pulse rounded-full bg-progress" />}
+    {progressing && <span aria-hidden="true" className="compaction-indicator inline-block size-1.5 flex-none animate-pulse motion-reduce:animate-none rounded-full bg-progress forced-colors:border forced-colors:border-current" />}
     {compactionSummary(compaction)}
   </>;
-  const headerClass = 'compaction-header flex items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground';
-  const error = compaction.error !== null && compaction.error !== '' ? <details className="compaction-error mt-1 text-sm text-muted-foreground">
-    <summary className="cursor-pointer px-2 py-1">Reported error</summary>
-    <pre className={`rounded-md border border-border bg-muted px-3 py-2 ${plainText}`}>{compaction.error}</pre>
-  </details> : null;
+      const error = compaction.error !== null && compaction.error !== '' ? <CompactionError error={compaction.error} /> : null;
   if (blocks.length === 0) {
-    return <div className="compaction-block mb-1 w-full max-w-full"><div className={headerClass}>{header}</div>{error}</div>;
+    return <div className="compaction-block mb-1 w-full max-w-full"><div className="compaction-header flex items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground">{header}</div>{error}</div>;
   }
   return <><details
     className="compaction-block group mb-1 w-full max-w-full"
@@ -257,7 +262,10 @@ const CompactionBlock = memo(function CompactionBlock({ compaction }: { compacti
       }
     }}
   >
-    <summary className={`${headerClass} cursor-pointer select-none before:text-[0.9em] before:content-['▸'] group-open:before:content-['▾'] hover:text-foreground`}>{header}</summary>
+    <summary className="compaction-header flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground select-none hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring list-none">
+      <Chevron direction={compaction.open ? 'down' : 'right'} />
+      {header}
+    </summary>
     <div className="compaction-content mt-1 rounded-md border border-border bg-muted px-3 py-2 text-[0.88em] leading-normal wrap-anywhere">
       {blocks.map((block, index) => block.kind === 'text'
         ? <div key={index}><Markdown text={block.text} streaming={progressing} /></div>
@@ -265,6 +273,23 @@ const CompactionBlock = memo(function CompactionBlock({ compaction }: { compacti
     </div>
   </details>{error}</>;
 });
+
+function CompactionError({ error }: { error: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      className="compaction-error mt-1 text-sm text-muted-foreground"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 focus-visible:outline-1 focus-visible:outline-ring list-none">
+        <Chevron direction={open ? 'down' : 'right'} />
+        Reported error
+      </summary>
+      <pre className={`rounded-md border border-border bg-muted px-3 py-2 ${plainText}`}>{error}</pre>
+    </details>
+  );
+}
 
 const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { turnId: EntryId; index: PartIndex; thought: Thought }) {
   const dispatch = useDispatch();
@@ -275,10 +300,11 @@ const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { tu
       open={thought.open}
       onToggle={(event) => dispatch({ type: 'thoughtToggled', turnId, part: index, open: event.currentTarget.open })}
     >
-      <summary className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground select-none before:text-[0.9em] before:content-['▸'] group-open:before:content-['▾'] hover:text-foreground">
+      <summary className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1 text-sm text-muted-foreground select-none hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring list-none">
+        <Chevron direction={thought.open ? 'down' : 'right'} />
         {thinking ? (
           <>
-            <span className="thought-indicator inline-block size-1.5 flex-none animate-thought-pulse rounded-full bg-progress" />{' '}
+            <span aria-hidden="true" className="thought-indicator inline-block size-1.5 flex-none animate-pulse motion-reduce:animate-none rounded-full bg-progress forced-colors:border forced-colors:border-current" />{' '}
             Thinking…
           </>
         ) : (
@@ -452,13 +478,17 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
   const count = toolCalls.length;
   return (
     <div className="turn-tools my-0.5 flex flex-col gap-0.5 border-l-2 border-border pl-2.5">
-      <div
-        className="turn-tools-summary cursor-pointer py-0.5 text-xs text-muted-foreground select-none hover:text-foreground"
+      <button
+        type="button"
+        className="turn-tools-summary flex cursor-pointer items-center gap-1.5 py-0.5 text-xs text-muted-foreground select-none hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring"
+        aria-expanded={!collapsed}
+        aria-controls={`tc-list-${turnId}-${index}`}
         onClick={() => dispatch({ type: 'toolCallsToggled', turnId, part: index })}
       >
-        {`${collapsed ? '▸' : '▾'} ${count} tool call${count === 1 ? '' : 's'}`}
-      </div>
-      <div className={collapsed ? 'turn-tools-list collapsed hidden' : 'turn-tools-list'}>
+        <Chevron direction={collapsed ? 'right' : 'down'} />
+        {`${count} tool call${count === 1 ? '' : 's'}`}
+      </button>
+      <div id={`tc-list-${turnId}-${index}`} className={collapsed ? 'turn-tools-list collapsed hidden' : 'turn-tools-list'}>
         {toolCalls.map((call) => (
           <ToolCallView key={call.toolCallId} turnId={turnId} call={call} />
         ))}
@@ -474,12 +504,13 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
   const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
   const identity = useSelector((state) => state.transcript.projection?.target);
   const title = call.title || 'Tool Call';
-  const { blocks, truncated, running } = useMemo(
+  const { blocks, truncated } = useMemo(
     () => shownContent(call.content, { terminals, sessionEnded }, call.open),
     [call.content, terminals, sessionEnded, call.open],
   );
   const { scrollRef, contentRef } = useStickToBottom({ initial: 'instant', resize: 'instant' });
   const command = blocks.find((block): block is CommandBlock => block.kind === 'command');
+  const StatusIcon = statusIcon[call.status];
   return (
     <details
       className="tool-call-inline rounded-sm bg-muted px-1.5 py-0.75 text-sm opacity-85 open:opacity-100"
@@ -490,19 +521,20 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
       }
     >
       <summary
-        className="tc-summary flex cursor-pointer items-center gap-1.5 select-none"
+        className="tc-summary flex cursor-pointer items-center gap-1.5 rounded-sm select-none focus-visible:outline-1 focus-visible:outline-ring list-none"
         data-vscode-context={command && commandOutputContext(command, identity, call.toolCallId, title)}
       >
-        <span className={`tc-icon ${call.status} w-3.5 flex-none text-center ${statusColor[call.status]}`}>
-          {statusGlyph(call.status)}
-        </span>
-        <span className="tc-title flex-1 truncate">{title}</span>
-        {running && (
-          <span
-            className="tc-running spinner inline-block size-3 flex-none animate-spin rounded-full border-2 border-foreground border-t-transparent opacity-60"
-            title="Command running"
+        <span
+          className={`tc-icon ${call.status} inline-flex size-3.5 flex-none items-center justify-center ${statusColor[call.status]}`}
+          aria-hidden="true"
+        >
+          <StatusIcon
+            size={14}
+            className={call.status === 'running' ? 'animate-pulse motion-reduce:animate-none' : undefined}
           />
-        )}
+        </span>
+        <span className="sr-only">{`${statusLabel[call.status]}: `}</span>
+        <span className={`tc-title min-w-0 flex-1 ${call.open ? 'whitespace-pre-wrap wrap-anywhere' : 'truncate'}`}>{title}</span>
       </summary>
       <div className="tc-body mt-1 border-t border-border pt-1" style={blocks.length === 0 ? { display: 'none' } : undefined}>
         <div ref={scrollRef} className="tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90">
@@ -563,6 +595,20 @@ function CommandOutputView({ block, identity, toolCallId, title }: {
   );
 }
 
+const statusIcon: Record<ToolCallStatus, LucideIcon> = {
+  pending: CircleDashed,
+  running: CircleDot,
+  completed: Check,
+  failed: X,
+};
+
+const statusLabel: Record<ToolCallStatus, string> = {
+  pending: 'Pending',
+  running: 'Running',
+  completed: 'Completed',
+  failed: 'Failed',
+};
+
 const statusColor: Record<ToolCallStatus, string> = {
   pending: 'text-pending',
   running: 'text-progress',
@@ -570,18 +616,48 @@ const statusColor: Record<ToolCallStatus, string> = {
   failed: 'text-failure',
 };
 
+const planStepIcon: Record<PlanStepStatus, LucideIcon> = {
+  pending: Square,
+  running: ArrowRight,
+  completed: SquareCheck,
+};
+
+const planStepColor: Record<PlanStepStatus, string> = {
+  pending: 'text-muted-foreground',
+  running: 'text-progress',
+  completed: 'text-success',
+};
+
+const planStepLabel: Record<PlanStepStatus, string> = {
+  pending: 'Pending',
+  running: 'In progress',
+  completed: 'Completed',
+};
+
 function PlanView({ plan }: { plan: Plan }) {
   return (
     <div className="plan rounded-lg border border-border bg-muted px-3 py-2">
       <div className="plan-title mb-1.5 font-semibold">Plan</div>
-      {plan.steps.map((step, index) => (
-        <div
-          key={index}
-          className={`plan-entry flex items-center gap-1.5 py-0.5 ${step.status === 'completed' ? 'completed text-muted-foreground line-through' : ''}`}
-        >
-          {`${planStepIcon(step.status)} ${step.text}`}
-        </div>
-      ))}
+      <ul className="m-0 list-none p-0">
+        {plan.steps.map((step, index) => {
+          const StepIcon = planStepIcon[step.status];
+          return (
+            <li
+              key={index}
+              className={`plan-entry flex items-start gap-1.5 py-0.5 ${step.status === 'completed' ? 'completed text-muted-foreground line-through' : ''}`}
+            >
+              <span
+                className={`plan-icon mt-0.5 inline-flex size-3.5 flex-none items-center justify-center ${planStepColor[step.status]}`}
+                aria-hidden="true"
+              >
+                <StepIcon size={14} />
+              </span>
+              <span className="sr-only">{`${planStepLabel[step.status]}: `}</span>
+              <span>{step.text}</span>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

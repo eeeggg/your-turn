@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import type { Picker, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import {
-  categoryIcon,
   currentValue,
   isOpen,
   tooltipText,
@@ -235,10 +234,6 @@ describe('the tooltip', () => {
 });
 
 describe('what a picker shows', () => {
-  it("shows the category's icon, and a gear for other categories", () => {
-    expect((['mode', 'model', 'thought_level', 'other'] as const).map(categoryIcon)).toEqual(['⚡', '🧠', '💭', '⚙']);
-  });
-
   it('finds the current value inside groups', () => {
     expect(currentValue({ ...effort, current: 'high' })?.name).toBe('High');
     expect(currentValue({ ...effort, current: 'none' })).toBeUndefined();

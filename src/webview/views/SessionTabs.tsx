@@ -1,5 +1,20 @@
+import CircleCheck from 'lucide-react/icons/circle-check';
+import CircleDot from 'lucide-react/icons/circle-dot';
+import CircleExclamationPoint from 'lucide-react/icons/circle-exclamation-point';
+import CircleQuestionMark from 'lucide-react/icons/circle-question-mark';
+import X from 'lucide-react/icons/x';
+import type { LucideIcon } from 'lucide-react';
 import { useId, useLayoutEffect, useRef } from 'react';
+import type { SessionTabsSnapshot } from '@/shared/WebviewMessages';
 import { useDispatch, useSelector } from '@/webview/views/StoreContext';
+
+type TabStatus = SessionTabsSnapshot['tabs'][number]['status'];
+
+interface StatusMarker {
+  icon: LucideIcon;
+  label: string;
+  style: string;
+}
 
 const reviewMarkers = [
   { key: 'modified', glyph: 'M', label: 'Modified files', color: 'text-review-modified' },
@@ -7,13 +22,13 @@ const reviewMarkers = [
   { key: 'deleted', glyph: 'D', label: 'Deleted files', color: 'text-review-deleted' },
 ] as const;
 
-const statusMarkers = {
+const statusMarkers: Record<TabStatus, StatusMarker | null> = {
   quiet: null,
-  working: { glyph: '', label: 'Actively working', style: 'activity-dot size-2 rounded-full bg-success' },
-  needsInput: { glyph: '?', label: 'Needs your input', style: 'font-semibold text-warning' },
-  failed: { glyph: '!', label: 'Interrupted or failed', style: 'font-semibold text-failure' },
-  completed: { glyph: '✓', label: 'Finished while unselected', style: 'text-muted-foreground' },
-} as const;
+  working: { icon: CircleDot, label: 'Actively working', style: 'activity-dot text-success' },
+  needsInput: { icon: CircleQuestionMark, label: 'Needs your input', style: 'text-warning' },
+  failed: { icon: CircleExclamationPoint, label: 'Interrupted or failed', style: 'text-failure' },
+  completed: { icon: CircleCheck, label: 'Finished while unselected', style: 'text-muted-foreground' },
+};
 
 /** Manual-activation tabs: arrow keys move focus; Enter or Space requests an open. */
 export function SessionTabs() {
@@ -46,7 +61,7 @@ export function SessionTabs() {
           const current = tab.tabId === navigation.selectedTabId;
           const descriptionId = `${descriptionPrefix}-${tab.tabId}`;
           const markers = reviewMarkers.filter(({ key }) => tab.review[key]);
-          const status = statusMarkers[tab.status];
+          const status = tab.status === 'completed' && current ? null : statusMarkers[tab.status];
           const description = [
             ...(status ? [status.label] : []),
             ...markers.map(({ label }) => label),
@@ -77,7 +92,11 @@ export function SessionTabs() {
                 event.preventDefault();
                 strip.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
               }}>
-              {status && <span aria-hidden="true" aria-label={status.label} className={`flex-none ${status.style}`}>{status.glyph}</span>}
+              {status && (
+                <span aria-hidden="true" aria-label={status.label} className={`inline-flex size-3.5 flex-none items-center justify-center ${status.style}`}>
+                  <status.icon size={14} />
+                </span>
+              )}
               {markers.length > 0 && <span aria-hidden="true" className="session-tab-markers flex flex-none gap-0.5">
                 {markers.map(({ key, glyph, color }) => <span key={key} className={color}>{glyph}</span>)}
               </span>}
@@ -87,7 +106,9 @@ export function SessionTabs() {
             <button type="button" aria-label={`Close ${label}`} title={`Close ${label}`}
               onFocus={() => { focusedTab.current = tab.tabId; }}
               className="mr-1 flex size-6 flex-none cursor-pointer items-center justify-center rounded-sm text-base hover:bg-hover focus-visible:outline-2 focus-visible:outline-ring"
-              onClick={() => dispatch({ type: 'sessionTabClosed', tabId: tab.tabId })}>×</button>
+              onClick={() => dispatch({ type: 'sessionTabClosed', tabId: tab.tabId })}>
+              <X size={14} aria-hidden="true" />
+            </button>
           </div>;
         })}
       </div>

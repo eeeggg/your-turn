@@ -58,11 +58,11 @@ describe('pickers', () => {
     expect(pickerIds()).toEqual(['mode', 'model']);
     const model = picker('model');
     expect(label(model)).toBe('Model A');
-    expect(model.querySelector('.picker-icon')?.textContent).toBe('🧠');
+    expect(model.querySelector('.picker-icon')).toBeNull();
     expect(model.querySelector<HTMLButtonElement>('.picker-btn')?.title).toBe('Fast');
     const mode = picker('mode');
     expect(label(mode)).toBe('Ask');
-    expect(mode.querySelector('.picker-icon')?.textContent).toBe('⚡');
+    expect(mode.querySelector('.picker-icon')).toBeNull();
     expect(mode.querySelector<HTMLButtonElement>('.picker-btn')?.title).toBe('Questions only');
   });
 

@@ -81,10 +81,8 @@ export function chatWebview(window: Page): Locator {
   return window.locator(`iframe.webview[src*="extensionId=${extensionId}"]`);
 }
 
-/** VS Code's private pane DOM identifies the chat view by its header icon; its webview is in an overlay outside it. */
 export function chatStop(window: Page): Locator {
-  return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-comment-discussion') })
-    .locator('.pane-header .actions').getByRole('button', { name: 'Your Turn: Cancel Current Turn', exact: true });
+  return chatFrame(window).getByRole('button', { name: 'Cancel current turn', exact: true });
 }
 
 export function promptInput(window: Page): Locator {
@@ -145,6 +143,14 @@ export function chatUserMessages(window: Page): Locator {
 
 export function chatTranscript(window: Page): Locator {
   return chatFrame(window).locator('#messages');
+}
+
+export function chatTranscriptScroll(window: Page): Locator {
+  return chatFrame(window).locator('#transcriptScroll');
+}
+
+export function jumpToEnd(window: Page): Locator {
+  return chatFrame(window).getByRole('button', { name: 'Jump to the end', exact: true });
 }
 
 export function chatCompactions(window: Page): Locator {

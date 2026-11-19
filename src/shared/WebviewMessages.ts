@@ -82,8 +82,6 @@ export interface SlashCommand {
   hint: string | null;
 }
 
-export type PickerCategory = 'mode' | 'model' | 'thought_level' | 'other';
-
 export interface PickerValue {
   id: string;
   name: string;
@@ -100,7 +98,7 @@ export interface PickerValueGroup {
 export interface Picker {
   /** Unique among the session's pickers; the extension knows what it stands for. */
   id: string;
-  category: PickerCategory;
+  category: 'mode' | 'model' | 'thought_level' | 'other';
   name: string;
   description: string | null;
   /** The ID of the chosen value. */

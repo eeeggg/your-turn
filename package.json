@@ -543,11 +543,6 @@
           "command": "your-turn.newSession",
           "when": "view == your-turn-chat",
           "group": "navigation@1"
-        },
-        {
-          "command": "your-turn.cancelTurn",
-          "when": "view == your-turn-chat && your-turn.turnInProgress",
-          "group": "navigation@3"
         }
       ],
       "view/item/context": [

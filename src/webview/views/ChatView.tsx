@@ -102,8 +102,7 @@ function LoadOverlay() {
       role="status"
       aria-live="polite"
     >
-      <div className="spinner inline-block size-5.5 animate-spin rounded-full border-3 border-foreground border-t-transparent opacity-90" />
-      <div className="label opacity-85">Loading transcript…</div>
+      <div className="label animate-pulse opacity-85 motion-reduce:animate-none">Loading transcript…</div>
     </div>
   );
 }

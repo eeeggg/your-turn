@@ -98,7 +98,7 @@ function ValidatedImage({ source, alt }: { source: string; alt: string }) {
         <strong>{new URL(source).hostname}</strong> — {source}<br />
         Loading contacts an external server from the {origin ?? 'extension host (location unknown)'}. The destination may redirect.
       </span>}
-      {(presentation?.status === 'consent' || presentation?.status === 'retry') && <button type="button" className="text-link" onClick={() => dispatch({ type: 'markdownImageLoad', occurrence })}>
+      {(presentation?.status === 'consent' || presentation?.status === 'retry') && <button type="button" className="cursor-pointer rounded-sm text-link focus-visible:outline-1 focus-visible:outline-ring" onClick={() => dispatch({ type: 'markdownImageLoad', occurrence })}>
         {presentation.status === 'consent' ? 'Load image' : 'Retry'}
       </button>}
     </span>;
@@ -134,7 +134,7 @@ function CopyLinkButton({ href }: { href: string }) {
       type="button"
       aria-label="Copy link"
       title="Copy link"
-      className="ml-0.5 inline-flex cursor-pointer align-middle text-muted-foreground hover:text-foreground"
+      className="ml-0.5 inline-flex cursor-pointer rounded-sm align-middle text-muted-foreground hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring"
       onClick={() => void navigator.clipboard.writeText(href).then(() => setCopied(true))}
     >
       {copied ? (

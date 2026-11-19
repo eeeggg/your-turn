@@ -239,6 +239,15 @@ describe('the chat view', () => {
     view.connect();
     view.send({ type: 'loadSessionStart' });
     expect(hookClasses(overlay)).toBe('load-overlay visible');
+    expect(overlay.getAttribute('role')).toBe('status');
+    expect(overlay.getAttribute('aria-live')).toBe('polite');
+    expect(overlay.querySelector('.spinner, .animate-spin, .load-indicator')).toBeNull();
+    const label = overlay.querySelector('.label');
+    expect(label?.textContent).toBe('Loading transcript…');
+    expect(Array.from(label?.classList ?? [])).toEqual(expect.arrayContaining([
+      'animate-pulse',
+      'motion-reduce:animate-none',
+    ]));
 
     view.send({ type: 'loadSessionEnd', ok: true });
     expect(hookClasses(overlay)).toBe('load-overlay');
@@ -557,11 +566,28 @@ describe('transcript entries', () => {
       return `${hookClasses(entry)}: ${text.textContent}`;
     })).toEqual([
       'message user: question',
-      'turn: answerPlan✅ done⬜ <b>next</b>',
+      'turn: answerPlanCompleted: donePending: <b>next</b>',
       'message error: boom',
     ]);
     expect(view.container.querySelector('.turn > .plan')).not.toBeNull();
-    expect(view.all('.plan-entry').map((entry) => hookClasses(entry))).toEqual(['plan-entry completed', 'plan-entry']);
+    expect(view.container.querySelector('.plan ul')).not.toBeNull();
+    const planEntries = view.all('.plan-entry');
+    expect(planEntries.map((entry) => entry.tagName)).toEqual(['LI', 'LI']);
+    expect(planEntries.map((entry) => hookClasses(entry))).toEqual(['plan-entry completed', 'plan-entry']);
+    expect(planEntries[0]?.classList.contains('line-through')).toBe(true);
+    expect(planEntries[1]?.classList.contains('text-muted-foreground')).toBe(false);
+    expect(planEntries[1]?.querySelector('.plan-icon')?.classList.contains('text-muted-foreground')).toBe(true);
+    for (const entry of planEntries) {
+      expect(entry.classList.contains('items-start')).toBe(true);
+      const icon = entry.querySelector('.plan-icon');
+      expect(icon?.classList.contains('mt-0.5')).toBe(true);
+      expect(icon?.getAttribute('aria-hidden')).toBe('true');
+      const svg = icon?.querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-pulse');
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-spin');
+    }
+    expect(new Set(planEntries.map((entry) => entry.querySelector('.plan-icon svg')?.innerHTML)).size).toBe(2);
     expect(view.container.querySelector('.plan b')).toBeNull();
   });
 
@@ -624,7 +650,7 @@ describe('a compaction', () => {
     view.send(report('completed'));
     expect(view.all('#messages > .compaction-block')).toHaveLength(1);
     expect(view.all('.turn > *').map((element) => element.classList[0])).toEqual(['message', 'turn-tools', 'compaction-block', 'turn-tools', 'message']);
-    expect(view.all('.turn-tools-summary').map((element) => element.textContent)).toEqual(['▾ 1 tool call', '▾ 1 tool call']);
+    expect(view.all('.turn-tools-summary').map((element) => element.textContent)).toEqual(['1 tool call', '1 tool call']);
     expect(view.all('.compaction-header').map((element) => element.textContent)).toEqual(['Compaction completed', 'Compaction completed']);
   });
 
@@ -634,7 +660,14 @@ describe('a compaction', () => {
     const details = view.part<HTMLDetailsElement>('.compaction-block');
     expect(details.open).toBe(true);
     expect(view.part('.compaction-header').textContent).toBe('Compacting…');
-    expect(view.all('.compaction-indicator')).toHaveLength(1);
+    const indicator = view.part('.compaction-indicator');
+    expect(indicator.getAttribute('aria-hidden')).toBe('true');
+    expect(Array.from(indicator.classList)).toEqual(expect.arrayContaining([
+      'animate-pulse',
+      'motion-reduce:animate-none',
+      'forced-colors:border',
+      'forced-colors:border-current',
+    ]));
     expect(view.part('.compaction-content [data-streamdown="strong"]').textContent).toBe('Summary');
     await toggle(details);
     view.send(chunk(' more'));
@@ -713,6 +746,22 @@ describe('a compaction', () => {
     const error = '{"identifier":9007199254740993,"data":{"arbitrary":true}}';
     view.send(report('failed', { error: { present: true, value: error } }));
     expect(view.part('.compaction-error pre').textContent).toBe(error);
+  });
+
+  it('toggles the compaction error disclosure chevron when opened and closed', async () => {
+    const view = renderChatView();
+    view.send(report('failed', { error: { present: true, value: 'boom' } }));
+    const details = view.part<HTMLDetailsElement>('.compaction-error');
+    const summary = view.part('.compaction-error summary');
+    const closedPath = summary.querySelector('svg path')?.getAttribute('d');
+    expect(details.open).toBe(false);
+    expect(closedPath).toBeTruthy();
+
+    await toggle(details);
+    expect(details.open).toBe(true);
+    const openPath = summary.querySelector('svg path')?.getAttribute('d');
+    expect(openPath).toBeTruthy();
+    expect(openPath).not.toBe(closedPath);
   });
 
   it('joins adjacent streamed text into continuous Markdown and replaces it with the final summary', async () => {
@@ -815,7 +864,15 @@ describe('a thought', () => {
     const thought = view.part<HTMLDetailsElement>('.thought-block');
     expect(hookClasses(thought)).toBe('thought-block streaming');
     expect(thought.open).toBe(true);
-    expect(thought.querySelector('summary .thought-indicator')).not.toBeNull();
+    const indicator = thought.querySelector('summary .thought-indicator');
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute('aria-hidden')).toBe('true');
+    expect(Array.from(indicator?.classList ?? [])).toEqual(expect.arrayContaining([
+      'animate-pulse',
+      'motion-reduce:animate-none',
+      'forced-colors:border',
+      'forced-colors:border-current',
+    ]));
     expect(thought.querySelector('summary')?.textContent).toBe(' Thinking…');
     expect(thought.querySelector('.thought-content')?.textContent).toBe('let me think');
 
@@ -841,24 +898,79 @@ describe('a thought', () => {
 });
 
 describe('tool calls', () => {
-  it('shows the status, the title and the text content of each tool call', () => {
+  it('reveals a running command in the header before output arrives and keeps it expanded through completion', async () => {
+    const view = renderChatView();
+    view.connect();
+    const command = `python --input ${'long-path/'.repeat(30)}data.json\n  --format json`;
+    view.toolCall({ toolCallId: 'long-command', title: command, status: 'running', content: [] });
+    const details = view.part<HTMLDetailsElement>('#tc-long-command');
+    const header = view.part('.tc-title');
+    expect(details.open).toBe(false);
+    expect(header.textContent).toBe(command);
+    expect(header.classList.contains('truncate')).toBe(true);
+    expect(view.part('.tc-body').style.display).toBe('none');
+
+    await toggle(details);
+    expect(details.open).toBe(true);
+    expect(header.classList.contains('truncate')).toBe(false);
+    expect(Array.from(header.classList)).toEqual(expect.arrayContaining(['min-w-0', 'whitespace-pre-wrap', 'wrap-anywhere']));
+    expect(header.textContent).toBe(command);
+    expect(view.part('.tc-body').style.display).toBe('none');
+
+    view.toolCall({ toolCallId: 'long-command', content: [{ kind: 'commandOutput', text: 'Working…', truncated: false }] });
+    expect(details.open).toBe(true);
+    expect(view.part('.tc-command-text').textContent).toBe('Working…');
+    expect(view.part('.tc-body').textContent).not.toContain(command);
+    view.toolCall({ toolCallId: 'long-command', status: 'completed' });
+    expect(details.open).toBe(true);
+    expect(header.classList.contains('truncate')).toBe(false);
+
+    await toggle(details);
+    expect(details.open).toBe(false);
+    expect(header.classList.contains('truncate')).toBe(true);
+    expect(header.textContent).toBe(command);
+  });
+
+  it('shows a distinct non-spinning icon, accessible status, title, and text content for each tool call', () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'Run', status: 'running', content: [{ kind: 'text', text: 'one' }, { kind: 'text', text: 'two' }] });
     view.toolCall({ toolCallId: 't2' });
+    view.toolCall({ toolCallId: 't3', title: 'Done', status: 'completed' });
+    view.toolCall({ toolCallId: 't4', title: 'Fail', status: 'failed' });
 
-    const [run, untitled] = view.all('.tool-call-inline');
+    const [run, untitled, done, fail] = view.all('.tool-call-inline');
     assert.exists(run);
     assert.exists(untitled);
+    assert.exists(done);
+    assert.exists(fail);
     expect(run.id).toBe('tc-t1');
     expect(hookClasses(run.querySelector('.tc-icon'))).toBe('tc-icon running');
-    expect(run.querySelector('.tc-icon')?.textContent).toBe('⟳');
+    expect(run.querySelector('.tc-icon')?.getAttribute('aria-hidden')).toBe('true');
+    expect(run.querySelector('.tc-icon')?.textContent).toBe('');
+    expect(Array.from(run.querySelector('.tc-summary')?.classList ?? [])).toEqual(expect.arrayContaining([
+      'focus-visible:outline-1',
+      'focus-visible:outline-ring',
+    ]));
+    expect(run.querySelector('.tc-summary .sr-only')?.textContent).toBe('Running: ');
     expect(run.querySelector('.tc-title')?.textContent).toBe('Run');
     expect([...run.querySelectorAll('.tc-body-block')].map((block) => block.textContent)).toEqual(['one', 'two']);
     expect(run.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
     expect(run.querySelector('.tc-body-truncated')).toBeNull();
     expect(untitled.querySelector('.tc-title')?.textContent).toBe('Tool Call');
+    expect(untitled.querySelector('.tc-summary .sr-only')?.textContent).toBe('Pending: ');
     expect(untitled.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
+    expect(done.querySelector('.tc-summary .sr-only')?.textContent).toBe('Completed: ');
+    expect(fail.querySelector('.tc-summary .sr-only')?.textContent).toBe('Failed: ');
+
+    const svgs = [untitled, run, done, fail].map((el) => el.querySelector('.tc-icon svg'));
+    for (const svg of svgs) {
+      expect(svg).not.toBeNull();
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-spin');
+    }
+    expect(new Set(svgs.map((svg) => svg?.innerHTML)).size).toBe(4);
+    expect(Array.from(svgs[1]?.classList ?? [])).toEqual(expect.arrayContaining(['animate-pulse', 'motion-reduce:animate-none']));
+    expect(Array.from(svgs[0]?.classList ?? [])).not.toContain('animate-pulse');
   });
 
   it('draws no diffs while a tool call is closed, and once the user opens it draws each where it was reported among the texts', async () => {
@@ -968,14 +1080,14 @@ describe('tool calls', () => {
     expect(contexts('.tc-summary')).toEqual([...expected, null]);
   });
 
-  it("spins in a tool call's summary while a command of its terminals runs, and stops once it ends", () => {
+  it("shows a command's terminal in its tool call as it updates and ends without a summary spinner", () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
     expect(view.container.querySelector('.tc-body .tc-command')).toBeNull();
 
     view.send({ type: 'terminal', terminalId: 'term', text: 'running tests', truncated: false, exitStatus: null });
-    expect(view.part('#tc-t1 summary .tc-running').title).toBe('Command running');
+    expect(view.container.querySelector('.tc-running')).toBeNull();
     expect(view.part('.tc-command-text').textContent).toBe('running tests');
 
     view.send({ type: 'terminal', terminalId: 'term', text: 'all passed', truncated: false, exitStatus: { exitCode: 0, signal: null } });
@@ -997,7 +1109,7 @@ describe('tool calls', () => {
     expect(view.container.querySelector('.tc-body-truncated')).toBeNull();
   });
 
-  it("shows a command's text sent as text the same way, with no spinner", () => {
+  it("shows a command's text sent as text the same way", () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'ls', status: 'running', content: [{ kind: 'commandOutput', text: 'a.ts\nb.ts', truncated: true }] });
@@ -1049,17 +1161,17 @@ describe('tool calls', () => {
     view.toolCall({ toolCallId: 't1', title: 'Read' });
     const summary = view.part('.turn-tools-summary');
     const list = view.part('.turn-tools-list');
-    expect(summary.textContent).toBe('▾ 1 tool call');
+    expect(summary.textContent).toBe('1 tool call');
 
     for (const id of ['t2', 't3', 't4']) {
       view.toolCall({ toolCallId: id, title: 'Read' });
     }
     view.send({ type: 'promptEnd' });
-    expect(summary.textContent).toBe('▸ 4 tool calls');
+    expect(summary.textContent).toBe('4 tool calls');
     expect(hookClasses(list)).toBe('turn-tools-list collapsed');
 
     fireEvent.click(summary);
-    expect(summary.textContent).toBe('▾ 4 tool calls');
+    expect(summary.textContent).toBe('4 tool calls');
     expect(hookClasses(list)).toBe('turn-tools-list');
   });
 });

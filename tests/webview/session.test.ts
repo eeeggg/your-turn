@@ -17,7 +17,8 @@ describe('session state', () => {
     const tab = page.byId('sessionTabs').querySelector<HTMLElement>('[aria-label="Build"]');
     const live = page.byId('sessionTabStatus');
     if (!tab) { throw new Error('Missing tab'); }
-    expect(tab.textContent).toBe('?MUDBuild');
+    expect(tab.textContent).toBe('MUDBuild');
+    expect(tab.querySelector('[aria-label="Needs your input"] svg')).not.toBeNull();
     expect(page.byId(tab.getAttribute('aria-describedby') ?? '').textContent).toBe('Needs your input. Modified files. Created files. Deleted files.');
     expect(live.getAttribute('aria-live')).toBe('polite');
     expect(live.textContent).toBe('');

@@ -48,6 +48,7 @@ export interface RootState {
 
 /** What the store is dispatched: webview messages from the extension, and user actions. */
 export type Action = ExtensionToWebviewMessage | PickerAction | PromptBoxAction | TranscriptAction | QuestionAction
+  | { type: 'cancelTurnRequested' }
   | { type: 'sessionTabSelected' | 'sessionTabClosed'; tabId: string };
 
 export const initialState: RootState = {
@@ -61,6 +62,11 @@ export const initialState: RootState = {
 };
 
 export function update(state: RootState, action: Action, now: number): Transition<RootState, WebviewToExtensionMessage> {
+  if (action.type === 'cancelTurnRequested') {
+    const target = state.transcript.projection?.target;
+    return { state, outgoing: target && state.activeSession?.turnRunning && state.activeSession.sessionId === target.sessionId
+      ? [{ type: 'cancelTurn', target }] : [] };
+  }
   if (action.type === 'viewSnapshot') {
     if (action.content && state.transcript.projection && action.content.target.projection <= state.transcript.projection.target.projection) {
       return { state, outgoing: [] };

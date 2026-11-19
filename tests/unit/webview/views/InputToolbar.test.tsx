@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Picker, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
@@ -86,6 +86,68 @@ it('refuses to render outside a StoreContext', () => {
 });
 
 describe('pickers', () => {
+  it('keeps cancel at the right of the pickers, disabled when idle, without a tooltip', () => {
+    const { container, takePosted } = renderToolbar({ pickers: [modelPicker] });
+    const stop = screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel current turn' });
+    expect(stop.disabled).toBe(true);
+    expect(stop.hasAttribute('title')).toBe(false);
+    expect(stop.classList.contains('text-muted-foreground')).toBe(true);
+    expect(stop.classList.contains('focus-visible:outline-ring')).toBe(true);
+    expect(stop.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    expect(element(container, '.toolbar-spacer').nextElementSibling).toBe(stop);
+    fireEvent.click(stop);
+    expect(takePosted()).toEqual([]);
+  });
+
+  it('cancels the displayed session during foreground work and disables again at idle', () => {
+    const { send, takePosted } = renderToolbar({});
+    const stop = screen.getByRole<HTMLButtonElement>('button', { name: 'Cancel current turn' });
+    send({ type: 'foregroundActivity', running: true });
+    expect(stop.disabled).toBe(false);
+    expect(stop.classList.contains('text-failure')).toBe(true);
+    fireEvent.click(stop);
+    expect(takePosted()).toEqual([{ type: 'cancelTurn', target }]);
+    send({ type: 'foregroundActivity', running: false });
+    expect(stop.disabled).toBe(true);
+    send({ type: 'cancelTurnRequested' });
+    expect(takePosted()).toEqual([]);
+    send({ type: 'state', activeSessionId: null, session: null });
+    expect(stop.disabled).toBe(true);
+  });
+
+  it('moves focus into the menu and navigates values without choosing them', () => {
+    const { container, takePosted } = renderToolbar({ pickers: [modelPicker] });
+    const trigger = element(container, '.picker-btn');
+    trigger.focus();
+    fireEvent.click(trigger, { detail: 0 });
+    expect(document.activeElement).toBe(item(container, 'Model A'));
+    let focused = item(container, 'Model A');
+    for (const [key, label] of [
+      ['ArrowDown', 'Model B'], ['End', 'c'], ['ArrowDown', 'Model A'],
+      ['ArrowUp', 'c'], ['Home', 'Model A'],
+    ] as const) {
+      fireEvent.keyDown(focused, { key });
+      focused = item(container, label);
+      expect(document.activeElement).toBe(focused);
+    }
+    expect(takePosted()).toEqual([]);
+    fireEvent.keyDown(focused, { key: 'Escape' });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it('restores trigger focus after choosing a menu value', () => {
+    const { container, takePosted } = renderToolbar({ pickers: [modelPicker] });
+    const trigger = element(container, '.picker-btn');
+    fireEvent.click(trigger);
+    const choice = item(container, 'Model B');
+    choice.focus();
+    fireEvent.click(choice, { detail: 0 });
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(takePosted()).toEqual([{ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' }]);
+  });
+
   it("shows the session's pickers in order, and none for a session without any", () => {
     const pickerIds = (container: HTMLElement) =>
       [...element(container, '#pickers').querySelectorAll<HTMLElement>('[data-picker-id]')].map((el) => el.dataset['pickerId']);
@@ -95,17 +157,20 @@ describe('pickers', () => {
     expect(pickerIds(renderToolbar({}).container)).toEqual([]);
   });
 
-  it("shows the current value's name and description, and the category's icon", () => {
+  it("shows the current value's name and description without category icons", () => {
     const { container } = renderToolbar({ pickers: [modePicker, modelPicker] });
 
     const model = element(container, '[data-picker-id="model"] .picker-btn');
     expect(model.title).toBe('Fast');
-    expect(element(model, '.picker-icon').textContent).toBe('🧠');
+    expect(model.querySelector('.picker-icon')).toBeNull();
+    expect(model.getAttribute('aria-haspopup')).toBe('menu');
+    expect(model.getAttribute('aria-expanded')).toBe('false');
+    expect(model.querySelector('.picker-chevron')?.getAttribute('aria-hidden')).toBe('true');
     expect(element(model, '.picker-label').textContent).toBe('Model A');
 
     const mode = element(container, '[data-picker-id="mode"] .picker-btn');
     expect(mode.title).toBe('Questions only');
-    expect(element(mode, '.picker-icon').textContent).toBe('⚡');
+    expect(mode.querySelector('.picker-icon')).toBeNull();
     expect(element(mode, '.picker-label').textContent).toBe('Ask');
   });
 
@@ -116,7 +181,7 @@ describe('pickers', () => {
 
     send({ type: 'pickers', pickers: [{ ...modelPicker, current: 'c', category: 'other' }] });
     expect(element(container, '.picker-btn').title).toBe('Model');
-    expect(element(container, '.picker-icon').textContent).toBe('⚙');
+    expect(container.querySelector('.picker-icon')).toBeNull();
 
     send({ type: 'pickers', pickers: [{ ...modelPicker, current: 'c', name: '' }] });
     expect(element(container, '.picker-label').textContent).toBe('Option');
@@ -126,10 +191,17 @@ describe('pickers', () => {
     const { container } = renderToolbar({ pickers: [modelPicker] });
 
     const items = [...container.querySelectorAll<HTMLElement>('.picker-dropdown-item')];
-    expect(items.map((el) => [el.dataset['value'], el.textContent, el.classList.contains('selected')])).toEqual([
-      ['a', '✓Model A', true],
-      ['b', 'Model B', false],
-      ['c', 'c', false],
+    expect(items.map((el) => [
+      el.dataset['value'],
+      el.textContent,
+      el.classList.contains('selected'),
+      el.getAttribute('role'),
+      el.getAttribute('aria-checked'),
+      el.querySelector('.check svg')?.classList.contains('invisible'),
+    ])).toEqual([
+      ['a', 'Model A', true, 'menuitemradio', 'true', false],
+      ['b', 'Model B', false, 'menuitemradio', 'false', true],
+      ['c', 'c', false, 'menuitemradio', 'false', true],
     ]);
     expect(items[0]?.title).toBe('Fast');
   });
@@ -146,7 +218,8 @@ describe('pickers', () => {
     });
 
     const dropdown = element(container, '.picker-dropdown');
-    expect([...dropdown.children].map((el) => el.textContent)).toEqual(['Fast models', '✓Model A', 'Smart models', 'Model B']);
+    expect(dropdown.getAttribute('role')).toBe('menu');
+    expect([...dropdown.children].map((el) => el.textContent)).toEqual(['Fast models', 'Model A', 'Smart models', 'Model B']);
   });
 
   it('opens from its button without the click reaching the document, and posts the chosen value', () => {

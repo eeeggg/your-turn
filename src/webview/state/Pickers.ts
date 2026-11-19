@@ -1,6 +1,5 @@
 import type {
   Picker,
-  PickerCategory,
   PickerValue,
   PresentationTarget,
   WebviewToExtensionMessage
@@ -47,19 +46,6 @@ export function tooltipText(state: PickersState): string | null {
 
 export function currentValue(picker: Picker): PickerValue | undefined {
   return values(picker).find((value) => value.id === picker.current);
-}
-
-export function categoryIcon(category: PickerCategory): string {
-  switch (category) {
-    case 'mode':
-      return '⚡';
-    case 'model':
-      return '🧠';
-    case 'thought_level':
-      return '💭';
-    default:
-      return '⚙';
-  }
 }
 
 export function updatePickers(

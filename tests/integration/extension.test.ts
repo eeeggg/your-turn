@@ -139,7 +139,8 @@ suite('Extension Test Suite', () => {
 		const chatTitles = (menus['view/title'] ?? []).filter(({ when }) => when?.includes('view == your-turn-chat'));
 		assert.deepStrictEqual(chatTitles.map(({ command, when, group }) => [command, when, group]), [
 			['your-turn.newSession', 'view == your-turn-chat', 'navigation@1'],
-			['your-turn.cancelTurn', 'view == your-turn-chat && your-turn.turnInProgress', 'navigation@3'],
 		]);
+		assert.ok(commands.some(({ command }) => command === 'your-turn.cancelTurn'));
+		assert.strictEqual(menus['commandPalette']?.find(({ command }) => command === 'your-turn.cancelTurn')?.when, '!your-turn.workspaceUnavailable');
 	});
 });

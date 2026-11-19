@@ -97,7 +97,6 @@ class InfoTreeItem extends vscode.TreeItem {
     }
     switch (kind) {
       case 'loading':
-        this.iconPath = new vscode.ThemeIcon('loading~spin');
         this.contextValue = 'session-info-loading';
         break;
       case 'empty':

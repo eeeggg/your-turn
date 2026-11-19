@@ -55,14 +55,31 @@ describe('session tabs', () => {
   });
 
   it.each([
-    ['needsInput', '?', 'Needs your input'], ['failed', '!', 'Interrupted or failed'], ['completed', '✓', 'Finished while unselected'],
-  ] as const)('shows the %s marker and describes it independently of selection', (status, glyph, description) => {
+    ['needsInput', 'text-warning', 'Needs your input'],
+    ['failed', 'text-failure', 'Interrupted or failed'],
+    ['completed', 'text-muted-foreground', 'Finished while unselected'],
+  ] as const)('shows the %s icon and describes it when unselected', (status, colorClass, description) => {
     const { send } = renderTabs();
     const tabs = [{ tabId: 'a', title: 'A session', agentName: 'Agent', cwd: '/work', additionalDirectories: [], review, status }];
     send({ type: 'sessionTabs', selectedTabId: null, tabs });
     const tab = screen.getByRole('tab', { name: 'A session', description: `${description}.` });
-    expect(tab.textContent).toBe(`${glyph}A session`);
+    const indicator = screen.getByLabelText(description);
+    expect(tab.contains(indicator)).toBe(true);
+    expect(indicator.getAttribute('aria-hidden')).toBe('true');
+    expect(indicator.classList.contains(colorClass)).toBe(true);
+    expect(indicator.querySelector('svg')).not.toBeNull();
+    expect(tab.textContent).toBe('A session');
     expect(tab.getAttribute('aria-selected')).toBe('false');
+  });
+
+  it('hides the completed icon when the tab is selected', () => {
+    const { send } = renderTabs();
+    const tabs = [{ tabId: 'a', title: 'A session', agentName: 'Agent', cwd: '/work', additionalDirectories: [], review, status: 'completed' as const }];
+    send({ type: 'sessionTabs', selectedTabId: 'a', tabs });
+    const tab = screen.getByRole('tab', { name: 'A session' });
+    expect(tab.getAttribute('aria-selected')).toBe('true');
+    expect(tab.hasAttribute('aria-describedby')).toBe(false);
+    expect(screen.queryByLabelText('Finished while unselected')).toBeNull();
   });
 
   it('describes review markers in fixed order without changing the tab or close name', () => {
@@ -73,7 +90,9 @@ describe('session tabs', () => {
     const tab = screen.getByRole('tab', { name: 'Review files', description: 'Actively working. Modified files. Created files. Deleted files.' });
     expect(part('.session-tab-markers').textContent).toBe('MUD');
     expect(tab.contains(screen.getByLabelText('Actively working'))).toBe(true);
-    expect(screen.getByRole('button', { name: 'Close Review files' })).toBeTruthy();
+    const close = screen.getByRole('button', { name: 'Close Review files' });
+    expect(close.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(close.textContent).toBe('');
     send({ type: 'sessionTabs', selectedTabId: null, tabs });
     expect(part('.session-tab-markers').textContent).toBe('MUD');
   });
@@ -129,12 +148,16 @@ describe('session tabs', () => {
     expect(screen.getByRole('tab', { name: 'Fix the build' }).title).toBe('Fix the build\nOpenCode\n/work/project');
   });
 
-  it('shows an activity dot only while the snapshot reports work', () => {
+  it('shows a steady activity icon only while the snapshot reports work', () => {
     const { connect, send } = renderTabs();
     connect();
 
     send({ type: 'sessionTabs', selectedTabId: 'a', tabs: [{ tabId: 'a', title: null, agentName: 'OpenCode', cwd: '/work/project', additionalDirectories: [], status: 'working', review }] });
-    expect(screen.getByLabelText('Actively working').classList.contains('bg-success')).toBe(true);
+    const indicator = screen.getByLabelText('Actively working');
+    expect(indicator.classList.contains('activity-dot')).toBe(true);
+    expect(indicator.classList.contains('text-success')).toBe(true);
+    expect(indicator.classList.contains('animate-pulse')).toBe(false);
+    expect(indicator.querySelector('svg')).not.toBeNull();
 
     connect();
     expect(screen.queryByLabelText('Actively working')).toBeNull();

@@ -138,7 +138,7 @@ describe('thinking', () => {
 });
 
 describe('plans', () => {
-  it('renders plan steps with status icons and escapes their text', () => {
+  it('renders plan steps as a list with distinct steady status icons, accessible labels, and escaped text', () => {
     plan(
       page,
       { text: 'done step', status: 'completed' },
@@ -146,9 +146,25 @@ describe('plans', () => {
       { text: '<b>next</b>', status: 'pending' },
     );
 
+    expect(page.document.querySelector('.plan ul')).not.toBeNull();
     const entries = [...page.document.querySelectorAll('.plan .plan-entry')];
-    expect(entries.map((el) => el.textContent)).toEqual(['✅ done step', '🔄 current step', '⬜ <b>next</b>']);
+    expect(entries.map((el) => el.tagName)).toEqual(['LI', 'LI', 'LI']);
+    expect(entries.map((el) => el.textContent)).toEqual([
+      'Completed: done step',
+      'In progress: current step',
+      'Pending: <b>next</b>',
+    ]);
     expect(entries.map((el) => el.classList.contains('completed'))).toEqual([true, false, false]);
+    const svgs = entries.map((el) => {
+      const icon = el.querySelector('.plan-icon');
+      expect(icon?.getAttribute('aria-hidden')).toBe('true');
+      const svg = icon?.querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-pulse');
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-spin');
+      return svg?.innerHTML;
+    });
+    expect(new Set(svgs).size).toBe(3);
     expect(page.document.querySelector('.plan b')).toBeNull();
   });
 
@@ -157,7 +173,7 @@ describe('plans', () => {
     plan(page, { text: 'a', status: 'pending' });
     plan(page, { text: 'a', status: 'completed' }, { text: 'b', status: 'pending' });
 
-    expect(plans()).toEqual([['✅ a', '⬜ b']]);
+    expect(plans()).toEqual([['Completed: a', 'Pending: b']]);
   });
 
   it('starts a new plan in the next turn', () => {
@@ -167,7 +183,7 @@ describe('plans', () => {
       page.send({ type: 'promptEnd' });
     }
 
-    expect(plans()).toEqual([['⬜ first'], ['⬜ second']]);
+    expect(plans()).toEqual([['Pending: first'], ['Pending: second']]);
   });
 });
 

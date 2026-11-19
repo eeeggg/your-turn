@@ -72,17 +72,6 @@
 
   --shadow-popover: 0 2px 8px var(--vscode-widget-shadow);
   --shadow-popup: 0 -4px 12px var(--vscode-widget-shadow);
-
-  --animate-thought-pulse: thought-pulse 1.2s ease-in-out infinite;
-  @keyframes thought-pulse {
-    0%,
-    100% {
-      opacity: 0.4;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
 }
 
 .session-tab-selected {
@@ -103,6 +92,10 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
   }
 }
 
