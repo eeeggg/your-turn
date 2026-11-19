@@ -5,6 +5,7 @@ import {
   SESSION_ID,
   OTHER_SESSION_ID,
   setup,
+  sessionInfo,
   sendPrompt,
   issuedTarget,
   FakeEnvironment,
@@ -401,7 +402,7 @@ describe('ChatViewController', () => {
         const turn = sendPrompt(controller, sessions, 'hello');
         environment.take();
 
-        controller.notifySessionEnded(SESSION_ID, 'Fake Agent exited unexpectedly (code 1).');
+        controller.notifySessionEnded(sessions.requireSession(), 'Fake Agent exited unexpectedly (code 1).');
 
         expect(environment.take()).toEqual([{ type: 'sessionEnded', message: 'Fake Agent exited unexpectedly (code 1).' }]);
         sessions.fail(new Error('ACP connection closed'));
@@ -412,7 +413,7 @@ describe('ChatViewController', () => {
         const { sessions, environment, controller } = setup();
         await controller.handleMessage({ type: 'ready' });
         const turn = sendPrompt(controller, sessions, 'hello');
-        controller.notifySessionEnded(SESSION_ID, 'Fake Agent exited unexpectedly (code 1).');
+        controller.notifySessionEnded(sessions.requireSession(), 'Fake Agent exited unexpectedly (code 1).');
         sessions.activeId = null;
         controller.notifyActiveSessionChanged();
         environment.take();
@@ -429,7 +430,7 @@ describe('ChatViewController', () => {
         const turn = sendPrompt(controller, sessions, 'hello');
 
         sessions.retireSession(SESSION_ID);
-        controller.notifySessionEnded(SESSION_ID, 'Fake Agent exited unexpectedly (code 1).');
+        controller.notifySessionEnded(sessions.requireSession(), 'Fake Agent exited unexpectedly (code 1).');
         environment.take();
         await controller.handleMessage({ type: 'ready' });
 
@@ -444,7 +445,7 @@ describe('ChatViewController', () => {
         await controller.handleMessage({ type: 'ready' });
         environment.take();
 
-        controller.notifySessionEnded(OTHER_SESSION_ID, 'Other exited unexpectedly (code 1).');
+        controller.notifySessionEnded(sessionInfo({ sessionId: OTHER_SESSION_ID }), 'Other exited unexpectedly (code 1).');
 
         expect(environment.take()).toEqual([]);
       });

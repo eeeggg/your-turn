@@ -171,7 +171,7 @@ interface UsedThrough {
 
 /** The events a {@link SessionManager} emits, with the arguments each passes its listeners. */
 export interface SessionManagerEvents {
-  'activity-changed': [retiredSource?: string, promptOwner?: SessionInfo];
+  'activity-changed': [retiredSource?: string, promptOwner?: SessionInfo, foregroundOrigin?: SessionOrigin];
   'connection-changed': [agentName: string];
   'source-retired': [sourceId: string];
   'configuration-renamed': [from: string, to: string];
@@ -501,8 +501,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       logInfo('Disconnecting agent', { agentName });
       this.stopAgent(agent);
     }
-    if (session) {
-      this.removeSession(session);
+    if (session && this.removeSession(session)) {
       this.emit('active-session-changed', null);
     }
   }
@@ -701,8 +700,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         this.retained.promptFailed(session, reason);
         this.emit('session-ended', session, reason);
       }
-      this.removeSession(session);
-      this.emit('active-session-changed', null);
+      if (this.removeSession(session)) { this.emit('active-session-changed', null); }
     }
     this.emit('agent-closed', agentProcess.id, code);
   }
@@ -1330,18 +1328,20 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     return sessionId ? this.getSession({ configuredName: agentName, sessionId }) : undefined;
   }
 
-  /** Forget a session; the caller announces any change to the active session. */
-  private removeSession(session: SessionInfo): void {
+  /** Forget a session and report whether it was active. The caller announces the selection change. */
+  private removeSession(session: SessionInfo): boolean {
     const key = JSON.stringify([session.agentName, session.sessionId]);
-    if (this.sessions.get(key) !== session) { return; }
+    if (this.sessions.get(key) !== session) { return false; }
     this.sessions.delete(key);
     if (this.agentSessions.get(session.agentName) === session.sessionId) {
       this.agentSessions.delete(session.agentName);
     }
-    if (this.activeSessionId === key) {
+    const wasActive = this.activeSessionId === key;
+    if (wasActive) {
       this.activeSessionId = null;
     }
     this.emit('session-removed', session);
+    return wasActive;
   }
 
   private requireRegistration(session: SessionInfo): void {
@@ -1402,7 +1402,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
       || activity.foreground === 'running' || activity.foreground === 'requiresAction');
   }
 
-  onChanged(listener: (retiredSource?: string, promptOwner?: SessionInfo) => void): () => void {
+  onChanged(listener: (...args: SessionManagerEvents['activity-changed']) => void): () => void {
     this.on('activity-changed', listener);
     return () => { this.off('activity-changed', listener); };
   }
@@ -1446,7 +1446,7 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         this.retained.setTurnOutcome(identity, outcome === 'failed' ? 'failed' : outcome === 'cancelled' ? null : 'completed');
       }
     }
-    this.emit('activity-changed');
+    this.emit('activity-changed', undefined, undefined, agentId === undefined ? undefined : { identity, sourceId: agentId });
     if (session && session.agentId === agentId) { this.releaseQueued(session); }
   }
 

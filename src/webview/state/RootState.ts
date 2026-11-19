@@ -95,14 +95,22 @@ export function update(state: RootState, action: Action, now: number): Transitio
       : state.transcript.sessionId === action.target.sessionId && state.activeSession?.sessionId === action.target.sessionId;
     const initialDraft = !projection && (sameSession || state.transcript.sessionId === null) && state.promptBox.text !== '' && action.composer.text === '' && action.composer.revision === 0;
     const promptBox = initialDraft ? { ...state.promptBox, revision: 1 } : projectedComposer(state.promptBox, action.composer, sameSession);
+    const keepImages = sameSession && state.transcript.markdownImageEpoch === action.markdownImageEpoch;
+    const outgoing: WebviewToExtensionMessage[] = initialDraft ? [{ type: 'composerEdited', target: action.target, revision: 1, text: promptBox.text }] : [];
+    if (keepImages && projection?.target.projection !== action.target.projection && state.transcript.markdownContext === null
+      && state.transcript.markdownContextRequested) {
+      outgoing.push({ type: 'markdownImageContext', target: action.target });
+    }
     return { state: { ...state, promptBox, transcript: {
       ...(sameSession ? state.transcript : initialTranscript), sessionId: action.target.sessionId,
+      markdownImageEpoch: action.markdownImageEpoch,
+      ...(!keepImages ? { markdownContext: null, markdownContextRequested: false, markdownOrigin: null, markdownImages: initialTranscript.markdownImages } : {}),
       followRequests: state.transcript.followRequests,
       projection: { target: action.target, revision: action.revision },
       queued: projectedQueue(sameSession ? state.transcript.queued : [], action.queue),
       entries: action.entries, currentTurn: action.currentTurn, nextId: sameSession ? Math.max(state.transcript.nextId, action.nextId) : action.nextId, usage: action.usage,
       terminals: new Map(action.terminals.map(({ terminalId, ...terminal }) => [terminalId, terminal])),
-    } }, outgoing: initialDraft ? [{ type: 'composerEdited', target: action.target, revision: 1, text: promptBox.text }] : [] };
+    } }, outgoing };
   }
   if (action.type === 'contentPatch') {
     const projection = state.transcript.projection;

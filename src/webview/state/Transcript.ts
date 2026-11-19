@@ -149,6 +149,7 @@ export interface TranscriptState {
   readonly thoughtOverrides: ReadonlyMap<string, boolean>;
   readonly projection: { readonly target: PresentationTarget; readonly revision: number } | null;
   readonly markdownContext: number | null;
+  readonly markdownImageEpoch: number | undefined;
   readonly markdownContextRequested: boolean;
   readonly markdownOrigin: string | null;
   readonly markdownImages: ReadonlyMap<number, { source: string; presentation: (ImagePresentation & { status?: 'consent' | 'loading' | 'retry' }) | null }>;
@@ -195,6 +196,7 @@ export const initialTranscript: TranscriptState = {
   thoughtOverrides: new Map(),
   projection: null,
   markdownContext: null,
+  markdownImageEpoch: undefined,
   markdownContextRequested: false,
   markdownOrigin: null,
   markdownImages: new Map(),
@@ -397,11 +399,15 @@ export function updateTranscript(
       return { state: { ...transcript, markdownImages: images }, outgoing: transcript.markdownContext === null ? []
         : [{ type: 'releaseMarkdownImage', context: transcript.markdownContext, occurrence: action.occurrence }] };
     }
-    case 'markdownImageContext':
-      if (action.sessionId !== transcript.sessionId || !transcript.markdownContextRequested || transcript.markdownContext !== null) { return stateOnly(transcript); }
+    case 'markdownImageContext': {
+      const target = transcript.projection?.target;
+      if (action.target.projection !== target?.projection || action.target.generation !== target.generation
+        || action.target.sessionId !== target.sessionId || action.target.configuredName !== target.configuredName
+        || !transcript.markdownContextRequested || transcript.markdownContext !== null) { return stateOnly(transcript); }
       return { state: { ...transcript, markdownContext: action.context, markdownOrigin: action.origin ?? null }, outgoing: [...transcript.markdownImages].map(([occurrence, image]) => ({
         type: 'resolveMarkdownImage', context: action.context, occurrence, source: image.source,
       })) };
+    }
     case 'markdownImage': {
       const image = transcript.markdownImages.get(action.occurrence);
       if (action.context !== transcript.markdownContext || !image) { return stateOnly(transcript); }

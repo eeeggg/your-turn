@@ -122,13 +122,50 @@ describe('ChatViewController', () => {
     const signal = await started.promise;
     if (change === 'remove') { await controller.handleMessage({ type: 'releaseMarkdownImage', context, occurrence: 1 }); }
     else if (change === 'clear') { controller.clearTranscript(); }
-    else if (change === 'close') { controller.notifySessionRemoved(SESSION_ID); }
+    else if (change === 'close') { controller.notifySessionRemoved(sessions.requireSession()); }
     else { sessions.activeId = OTHER_SESSION_ID; sessions.session = sessionInfo({ sessionId: OTHER_SESSION_ID }); controller.notifyActiveSessionChanged(); }
     expect(signal.aborted).toBe(true);
     environment.take();
     reply.resolve({ status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([Buffer.from(rasterUri.split(',')[1] ?? '', 'base64')]) });
     await loading;
     expect(environment.take()).toEqual([]);
+  });
+
+  it.each(['other configuration', 'replacement connection'] as const)('keeps image reads on their registration across an equal-ID %s', async (change) => {
+    const reply = deferred<{ status: number; headers: Record<string, string>; body: Readable }>();
+    const started = deferred<AbortSignal>();
+    const { controller, environment, sessions } = setup({
+      lookup: async () => [{ address: '93.184.216.34', family: 4 }],
+      request: (_url, _address, signal) => { started.resolve(signal); return reply.promise; },
+    });
+    const context = await imageContext(controller, environment, sessions);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 1, source: 'https://images.example/a' });
+    const loading = controller.handleMessage({ type: 'loadMarkdownImage', context, occurrence: 1 });
+    const signal = await started.promise;
+    try {
+      const replacement = sessionInfo({ agentName: change === 'other configuration' ? 'other' : 'fake', agentId: 'replacement' });
+      controller.notifySessionRemoved(replacement);
+      expect(signal.aborted).toBe(false);
+      environment.take();
+      // The result can settle after the manager changes selection and before the controller receives notice.
+      sessions.session = replacement;
+      const target = environment.transcript().projection?.target;
+      if (!target) { throw new Error('Missing preceding projection'); }
+      await controller.handleMessage({ type: 'markdownImageContext', target });
+      expect(environment.take()).toEqual([]);
+    } finally {
+      reply.resolve({ status: 200, headers: { 'content-type': 'image/gif' }, body: Readable.from([Buffer.from(rasterUri.split(',')[1] ?? '', 'base64')]) });
+      await loading;
+    }
+    expect(environment.take()).toEqual([]);
+    controller.notifyActiveSessionChanged();
+    environment.take();
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context, occurrence: 2, source: rasterUri });
+    expect(environment.take()).toEqual([]);
+    const fresh = await imageContext(controller, environment, sessions);
+    expect(fresh).not.toBe(context);
+    await controller.handleMessage({ type: 'resolveMarkdownImage', context: fresh, occurrence: 2, source: rasterUri });
+    expect(environment.take()).toEqual([{ type: 'markdownImage', context: fresh, occurrence: 2, src: rasterUri }]);
   });
 
   it('charges asynchronous images in completion order without evicting native images', async () => {
@@ -370,7 +407,7 @@ describe('ChatViewController', () => {
     const { controller, sessions, environment } = setup();
     controller.notifyActiveSessionChanged();
     expect(environment.take().filter((message) => message.type === 'sessionTabs')).toEqual([]);
-    controller.notifySessionOpened({ configuredName: 'fake', sessionId: SESSION_ID });
+    controller.notifySessionOpened(sessions.requireSession());
     const first = environment.take();
     const snapshot = first.find((message) => message.type === 'sessionTabs');
     expect(snapshot).toEqual({ type: 'sessionTabs', selectedTabId: 'tab-1', tabs: [
@@ -390,20 +427,33 @@ describe('ChatViewController', () => {
     expect(ready.map((message) => message.type)).toEqual(['viewSnapshot']);
     expect(ready[0]?.type === 'viewSnapshot' && ready[0].tabs).toEqual({ selectedTabId: snapshot.selectedTabId, tabs: snapshot.tabs });
 
-    controller.notifySessionOpened({ configuredName: 'fake', sessionId: OTHER_SESSION_ID });
+    controller.notifySessionOpened(sessions.requireSession());
     const second = environment.take().find((message) => message.type === 'sessionTabs');
     expect(second?.type === 'sessionTabs' && second.tabs).toEqual([
       snapshot.tabs[0],
       { tabId: 'tab-2', title: 'Second', agentName: 'Fake Agent', cwd: '/work/project', additionalDirectories: ['/other'], status: 'quiet',
         review: { modified: false, created: false, deleted: false } },
     ]);
-    controller.notifySessionOpened({ configuredName: 'fake', sessionId: OTHER_SESSION_ID });
+    controller.notifySessionOpened(sessions.requireSession());
     expect(environment.take()).toEqual([second]);
+  });
+
+  it('does not select a replacement from an obsolete open notification', () => {
+    const { controller, sessions, environment } = setup();
+    const first = sessionInfo({ sessionId: OTHER_SESSION_ID });
+    controller.sessionTabs.open(first);
+    const obsolete = sessionInfo({ agentId: 'old-source' });
+    sessions.session = sessionInfo({ agentId: 'replacement-source' });
+
+    controller.notifySessionOpened(obsolete);
+
+    expect(controller.sessionTabs.snapshot()).toMatchObject({ selectedTabId: 'tab-1', tabs: [{ sessionId: OTHER_SESSION_ID }] });
+    expect(environment.take()).toEqual([]);
   });
 
   it('updates tab labels and foreground indicators without creating content or prompt boundaries', async () => {
     const { controller, sessions, environment } = setup();
-    controller.notifySessionOpened({ configuredName: 'fake', sessionId: SESSION_ID });
+    controller.notifySessionOpened(sessions.requireSession());
     const initial = environment.take().find((message) => message.type === 'sessionTabs');
     if (initial?.type !== 'sessionTabs') { throw new Error('missing tab snapshot'); }
     const tab = initial.tabs[0];
@@ -434,14 +484,14 @@ describe('ChatViewController', () => {
     expect(controller.hasRunningTurn).toBe(true);
     expect(environment.take().some((message) => message.type === 'promptEnd')).toBe(false);
     sessions.retireSession(SESSION_ID);
-    controller.notifySessionRemoved(SESSION_ID);
+    controller.notifySessionRemoved(registration);
     const removed = environment.take();
     expect(removed).toEqual([initial]);
   });
 
   it('keeps the running indicator attached to a live tab after its configuration is renamed', () => {
     const { controller, environment, sessions } = setup();
-    controller.notifySessionOpened({ configuredName: 'fake', sessionId: SESSION_ID });
+    controller.notifySessionOpened(sessions.requireSession());
     controller.sessionTabs.agentsChanged({ fake: { command: 'agent' } }, { renamed: { command: 'agent' } });
     if (!sessions.session) { throw new Error('Missing session'); }
     sessions.session.agentName = 'renamed';
@@ -1623,8 +1673,9 @@ describe('ChatViewController', () => {
     });
 
     describe('retained output belongs to the open tab, not the controller', () => {
-      function shown() {
-        const { sessions, controller } = setup();
+    function shown() {
+      const { sessions, controller } = setup();
+      const selected = sessions.requireSession();
         for (const sessionId of [SESSION_ID, OTHER_SESSION_ID]) {
           const registration = { agentName: 'fake', agentId: 'source', sessionId };
           sessions.retained.attach(registration);
@@ -1632,21 +1683,21 @@ describe('ChatViewController', () => {
         }
         controller.notifyActiveSessionChanged();
         /** The session is removed, as the session manager removes it, and no session is shown. */
-        const removed = (sessionId: string) => {
+      const removed = () => {
           sessions.retained.retireSource('source');
-          controller.notifySessionRemoved(sessionId);
+        controller.notifySessionRemoved(selected);
           sessions.activeId = null;
           controller.notifyActiveSessionChanged();
         };
         const retained = (sessionId: string) => sessions.retained.openCommandOutput({ configuredName: 'fake', sessionId }, { kind: 'terminal', terminalId: 't1' }, 'Output');
-        return { sessions, retained, controller, removed };
+      return { sessions, retained, controller, removed, selected };
       }
 
       it('stays after exit and selection changes until its tab closes', () => {
-        const { sessions, retained, controller, removed } = shown();
+      const { sessions, retained, controller, removed, selected } = shown();
 
-        controller.notifySessionEnded(SESSION_ID, 'Fake exited unexpectedly (code 1).');
-        removed(SESSION_ID);
+      controller.notifySessionEnded(selected, 'Fake exited unexpectedly (code 1).');
+      removed();
         expect(retained(SESSION_ID)).toBe(true);
 
         sessions.activeId = OTHER_SESSION_ID;
@@ -1660,7 +1711,7 @@ describe('ChatViewController', () => {
       it('stays after disconnect until its tab closes without releasing another tab', () => {
         const { sessions, retained, removed } = shown();
 
-        removed(SESSION_ID);
+      removed();
 
         expect(retained(SESSION_ID)).toBe(true);
         sessions.retained.release({ configuredName: 'fake', sessionId: SESSION_ID });
@@ -1669,9 +1720,9 @@ describe('ChatViewController', () => {
       });
 
       it('does not release retained output when the presentation is cleared', () => {
-        const { retained, controller, removed } = shown();
-        controller.notifySessionEnded(SESSION_ID, 'Fake exited unexpectedly (code 1).');
-        removed(SESSION_ID);
+      const { retained, controller, removed, selected } = shown();
+      controller.notifySessionEnded(selected, 'Fake exited unexpectedly (code 1).');
+      removed();
 
         controller.clearTranscript();
 
@@ -1684,7 +1735,7 @@ describe('ChatViewController', () => {
       sessions.session = sessionInfo();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', toolKind: 'execute' });
 
-      controller.notifySessionRemoved(SESSION_ID);
+    controller.notifySessionRemoved(sessions.session);
       controller.notifyLoadSessionStart(SESSION_ID);
       environment.take();
       controller.handleSessionUpdate(SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [{ kind: 'text', text: 'ran' }] });
@@ -1954,7 +2005,7 @@ describe('ChatViewController', () => {
 
     it("retains a removed session's files and replaces them after successful load", async () => {
       const removed = withFiles();
-      removed.controller.notifySessionRemoved(SESSION_ID);
+      removed.controller.notifySessionRemoved(removed.sessions.requireSession());
       await removed.controller.handleMessage({ type: 'openFile', target: removed.target, toolCallId: 't1', file: 0 });
 
       const reloaded = withFiles();

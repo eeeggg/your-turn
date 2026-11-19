@@ -1363,12 +1363,12 @@ describe('SessionManager', () => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
       });
-      await manager.connectToAgent('fake');
+      const registration = await manager.connectToAgent('fake');
       sinks.get('fake')?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'edit', content: [
         { kind: 'diff', diff: { kind: 'wholeFile', path: '/work/first.ts', oldText: 'a', newText: 'b' } },
       ] }, 'v1');
       await manager.disconnectAgent('fake');
-      chatView.notifySessionRemoved(FIRST_SESSION);
+      chatView.notifySessionRemoved(registration);
       await chatView.handleMessage({ type: 'ready' });
       expect(contentSnapshots(posted).at(-1)).toMatchObject({ entries: [
         { kind: 'turn', parts: [{ kind: 'toolCalls', toolCalls: [{ content: [{ kind: 'diff', files: [{ path: 'first.ts' }] }] }] }] },

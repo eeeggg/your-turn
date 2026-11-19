@@ -83,7 +83,7 @@ describe('SessionManager', () => {
     const tabs = () => posted.flatMap((message) => message.type === 'sessionTabs' ? message.tabs : []);
     await expect(manager.sendPrompt(address(FIRST_SESSION), 'Continue')).rejects.toThrow('Prompt rejected');
     expect(tabs().at(-1)).toMatchObject({ status: 'failed' });
-    chatView.notifySessionOpened(address(registration.sessionId));
+    chatView.notifySessionOpened(registration);
     expect(tabs().at(-1)).toMatchObject({ status: 'failed' });
 
     posted.length = 0;
@@ -173,8 +173,8 @@ describe('SessionManager', () => {
   it.each(['disconnect', 'exit'] as const)('resets Stop and review context through the extension lifecycle on %s', async (ending) => {
     const { manager, chatView, agents, executeCommand, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
     manager.on('active-session-changed', () => chatView.notifyActiveSessionChanged());
-    manager.on('session-removed', ({ sessionId }) => chatView.notifySessionRemoved(sessionId));
-    manager.on('session-ended', ({ sessionId }, reason) => chatView.notifySessionEnded(sessionId, reason));
+    manager.on('session-removed', (registration) => chatView.notifySessionRemoved(registration));
+    manager.on('session-ended', (registration, reason) => chatView.notifySessionEnded(registration, reason));
     const registration = await manager.connectToAgent('fake');
     manager.applyForegroundState(address(FIRST_SESSION), 'running');
     chatView.handleSessionUpdate({ input: {
@@ -209,6 +209,119 @@ describe('SessionManager', () => {
     } finally { release(); }
     await opening;
     expect(chatView.hasRunningTurn).toBe(true);
+  });
+
+  it.each([
+    ['disconnect', FIRST_SESSION], ['exit', FIRST_SESSION],
+    ['disconnect', SECOND_SESSION], ['exit', SECOND_SESSION],
+  ] as const)('keeps the selected chat and review on unrelated %s (other session ID: %s)', async (ending, otherId) => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { manager, agents, chatView, posted, takeEvents } = setup({
+      fake: sessionAgent(FIRST_SESSION).script,
+      other: () => fakeAgent().onRequest(methods.agent.session.new, async () => {
+        enter();
+        await gate;
+        return { sessionId: otherId };
+      }),
+    });
+    const reviews = new Reviews({ read: async () => 'B', restore: async () => {}, watch: () => ({ dispose() {} }), snapshot: () => undefined,
+      applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
+    }, manager);
+    onTestFinished(() => reviews.dispose());
+    manager.on('active-session-changed', (registration) => {
+      reviews.activeSessionChanged(registration);
+      chatView.notifyActiveSessionChanged();
+    });
+    manager.on('session-removed', (registration) => {
+      reviews.sessionRemoved(registration);
+      chatView.notifySessionRemoved(registration);
+    });
+    manager.on('session-ended', (registration, reason) => chatView.notifySessionEnded(registration, reason));
+
+    // Overlap the initial opens so both registrations exist without a new navigation policy.
+    const opening = manager.connectToAgent('other');
+    await entered;
+    try { await manager.connectToAgent('fake'); }
+    finally { release(); await opening; }
+    const selected = await manager.connectToAgent('fake');
+    await reviews.handleSessionUpdate({ origin: { identity: address(FIRST_SESSION), sourceId: selected.agentId }, schema: 'v1',
+      update: { kind: 'toolCall', toolCallId: 'edit', status: 'completed',
+        content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: '/w/b.ts', oldText: 'b', newText: 'B' } }],
+      },
+    });
+    const shown = reviews.shown();
+    expect(shown?.files().map(({ path }) => path)).toEqual(['/w/b.ts']);
+    takeEvents();
+    posted.length = 0;
+
+    if (ending === 'disconnect') { await manager.disconnectAgent('other'); }
+    else { await agents.running('other')[0]?.crash(); }
+
+    expect(manager.getSession({ configuredName: 'other', sessionId: otherId })).toBeUndefined();
+    expect(manager.getActiveSession()).toBe(selected);
+    expect(reviews.shown()).toBe(shown);
+    expect(takeEvents().map(([name]) => name)).not.toContain('active-session-changed');
+    expect(posted.map(({ type }) => type)).not.toContain('viewSnapshot');
+    expect(posted.map(({ type }) => type)).not.toContain('sessionEnded');
+  });
+
+  it('updates the unselected tab without publishing selected title, foreground or buffered text', async () => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { manager, connections, chatView, posted, executeCommand } = setup({
+      fake: sessionAgent(FIRST_SESSION).script,
+      other: () => fakeAgent().onRequest(methods.agent.session.new, async () => {
+        enter();
+        await gate;
+        return { sessionId: FIRST_SESSION };
+      }),
+    });
+    const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+    const connect = connections.connect.bind(connections);
+    vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, sink, closed) => {
+      sinks.set(name, sink);
+      return connect(name, streams, id, sink, closed);
+    });
+    const opening = manager.connectToAgent('other');
+    await entered;
+    try { await manager.connectToAgent('fake'); }
+    finally { release(); await opening; }
+    const selected = await manager.connectToAgent('fake');
+    chatView.notifySessionOpened(selected);
+    await chatView.handleMessage({ type: 'ready' });
+    const foreground = vi.fn();
+    chatView.addTurnListener(foreground);
+    const selectedSink = sinks.get('fake');
+    const otherSink = sinks.get('other');
+    if (!selectedSink || !otherSink) { throw new Error('Missing session update sinks'); }
+    posted.length = 0;
+    executeCommand.mockClear();
+
+    selectedSink.handleUpdate(FIRST_SESSION, { kind: 'agentText', text: 'Buffered selected text', messageId: null }, 'v1');
+    otherSink.handleUpdate(FIRST_SESSION, { kind: 'sessionInfo', title: 'Other title' }, 'v1');
+    otherSink.handleUpdate(FIRST_SESSION, { kind: 'foreground', state: 'running' }, 'v2');
+
+    expect(posted.filter(({ type }) => type === 'sessionTabs').at(-1)).toMatchObject({
+      selectedTabId: 'tab-1', tabs: [{ title: null, status: 'quiet' }, { title: 'Other title', status: 'working' }],
+    });
+    expect(posted.filter(({ type }) => type === 'sessionInfoUpdate' || type === 'foregroundActivity' || type === 'contentPatch')).toEqual([]);
+    expect(chatView.hasRunningTurn).toBe(false);
+    expect(executeCommand).not.toHaveBeenCalled();
+    expect(foreground).not.toHaveBeenCalled();
+    expect(manager.resolutionBlocked()).toBe(true);
+
+    selectedSink.handleUpdate(FIRST_SESSION, { kind: 'sessionInfo', title: 'Selected title' }, 'v1');
+    selectedSink.handleUpdate(FIRST_SESSION, { kind: 'foreground', state: 'running' }, 'v2');
+    expect(posted).toContainEqual({ type: 'sessionInfoUpdate', title: 'Selected title' });
+    expect(posted).toContainEqual({ type: 'foregroundActivity', running: true });
+    expect(posted.some(({ type }) => type === 'contentPatch')).toBe(true);
+    expect(executeCommand).toHaveBeenCalledWith('setContext', 'your-turn.turnInProgress', true);
+    expect(foreground).toHaveBeenCalledExactlyOnceWith(true);
   });
 
   it('does not reuse foreground snapshots from a failed opening after its connection exits', async () => {
@@ -1011,10 +1124,10 @@ describe('SessionManager', () => {
         return { stopReason: 'end_turn' };
       }));
       const { manager, chatView } = setup({ fake: fake.script });
-      await manager.connectToAgent('fake');
+      const registration = await manager.connectToAgent('fake');
       const turn = manager.sendPrompt(address(FIRST_SESSION), 'go');
       try {
-        chatView.notifySessionRemoved(FIRST_SESSION);
+        chatView.notifySessionRemoved(registration);
         expect(manager.resolutionBlocked()).toBe(true);
       } finally { release(); await turn; }
       expect(manager.resolutionBlocked()).toBe(false);

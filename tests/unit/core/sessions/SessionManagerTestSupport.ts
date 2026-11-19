@@ -129,7 +129,7 @@ export function setup(scripts: Record<string, AgentScript>, presentation?: { edi
     presentation?.editor ?? unusedEditor,
     environment,
   );
-  manager.on('session-opened', ({ sessionId, agentName }) => chatView.notifySessionOpened({ configuredName: agentName, sessionId }));
+  manager.on('session-opened', (registration) => chatView.notifySessionOpened(registration));
   onTestFinished(async () => { updates.dispose(); await chatView.dispose(); });
   const received: [string, SessionUpdate][] = [];
   const receivedWaiters: { count: number; resolve: () => void }[] = [];

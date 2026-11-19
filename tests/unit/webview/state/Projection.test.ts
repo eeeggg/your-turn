@@ -12,6 +12,18 @@ const snapshot: ExtensionToWebviewMessage = { type: 'contentSnapshot', queue: []
   ] },
 ] };
 
+it('reissues pending image context after a snapshot refreshes the same projection owner', () => {
+  const state = update(initialState, snapshot, 0).state;
+  const mounted = update(state, { type: 'markdownImageMounted', occurrence: 1, source: './tiny.gif' }, 0);
+  expect(mounted.outgoing).toEqual([{ type: 'markdownImageContext', target }]);
+  const next = { ...target, projection: 2 };
+  const refreshed = update(mounted.state, { ...snapshot, target: next }, 0);
+  expect(refreshed.outgoing).toEqual([{ type: 'markdownImageContext', target: next }]);
+  expect(update(refreshed.state, { type: 'markdownImageContext', target, context: 1 }, 0).outgoing).toEqual([]);
+  expect(update(refreshed.state, { type: 'markdownImageContext', target: next, context: 1 }, 0).outgoing)
+    .toEqual([{ type: 'resolveMarkdownImage', context: 1, occurrence: 1, source: './tiny.gif' }]);
+});
+
 it.each(['agentText', 'thoughtText', 'promptText', 'toolCall', 'plan', 'usage', 'compactionSummaryChunk'])('ignores obsolete %s content traffic instead of maintaining a second content authority', (type) => {
   const state = update(initialState, snapshot, 0).state;
   const obsolete = { type, messageId: 'obsolete', text: 'obsolete', toolCallId: 'obsolete', steps: [], usage: { used: 5, size: 10, cost: null }, compactionId: 'obsolete', content: 'obsolete' } as unknown as Parameters<typeof update>[1];

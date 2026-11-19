@@ -203,6 +203,8 @@ interface ContentSnapshot {
   readonly queue: readonly { readonly id: number; readonly text: string; readonly draft: string | null; readonly revision?: number }[];
   readonly composer: { readonly text: string; readonly revision: number };
   readonly target: PresentationTarget;
+  /** Changes when image consent and pending reads are invalidated, not on every snapshot. */
+  readonly markdownImageEpoch?: number;
   readonly revision: number;
   readonly entries: readonly PresentedEntry[];
   readonly currentTurn: number | null;
@@ -218,7 +220,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'contentPatch'; target: PresentationTarget; base: number; revision: number; patches: readonly ContentPatch[];
     currentTurn: number | null; nextId: number; usage: SessionUsage | null; composer?: { readonly text: string; readonly revision: number };
     queue?: ContentSnapshot['queue'] }
-  | { type: 'markdownImageContext'; sessionId: string; context: number; origin?: string }
+  | { type: 'markdownImageContext'; target: PresentationTarget; context: number; origin?: string }
   | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)
   | ({ type: 'sessionTabs' } & SessionTabsSnapshot)
   | { type: 'sessionTabAnnouncement'; revision: number; text: string }

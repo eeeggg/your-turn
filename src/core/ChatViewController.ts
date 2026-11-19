@@ -153,14 +153,14 @@ export class ChatViewController {
     };
   }
   /** The session the chat view was last told about; reporting the same one again would split its running turn. */
-  private shownSessionId: string | null = null;
+  private shownSession: SessionRegistration | undefined;
   /** The shown session's agent exited on its own, so the chat view keeps its transcript until another is shown. */
   private shownSessionEnded = false;
   private reportedRunning = false;
   private shownLoad: SessionLoad | undefined;
   private readonly imageBytes = new Map<string, number>();
   private markdownImageContext = 0;
-  private markdownImageSession: string | null = null;
+  private markdownImageOwner: { target: PresentationTarget; registration: SessionInfo | undefined } | undefined;
   private readonly markdownImages = new Set<number>();
   private readonly markdownReads = new Map<number, AbortController>();
   private readonly localImageLoads = new ImageLoads(10000);
@@ -168,7 +168,7 @@ export class ChatViewController {
   private readonly markdownSources = new Map<number, { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }>();
   private projectionSequence = 0;
   private presentedCalls = new WeakMap<object, PresentedCall>();
-  private projected: { snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>; state: SessionStateView } | undefined;
+  private projected: { snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>; state: SessionStateView; registration: SessionInfo | undefined } | undefined;
   private projectionTimer: ReturnType<typeof setTimeout> | undefined;
   private presented = new WeakMap<object, Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number]
     | Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'turn' }>['parts'][number]>();
@@ -241,9 +241,14 @@ export class ChatViewController {
         void this.discoverQuestion(created.interaction, created.agentName, created.agentId);
       }
     });
-    this.stopActivity = sessions.onChanged((retiredSource, promptOwner) => {
+    this.stopActivity = sessions.onChanged((retiredSource, promptOwner, foregroundOrigin) => {
       const activeId = sessions.getActiveSessionId();
       const registration = sessions.getActiveSession();
+      if (foregroundOrigin && (registration?.agentId !== foregroundOrigin.sourceId
+        || registration.agentName !== foregroundOrigin.identity.configuredName || registration.sessionId !== foregroundOrigin.identity.sessionId)) {
+        this.sendTabs();
+        return;
+      }
       const retired = activeId !== null && retiredSource !== undefined && registration?.agentId === retiredSource;
       if (retiredSource === undefined) { this.sendContentPatch(); }
       const running = this.hasRunningTurn;
@@ -265,9 +270,10 @@ export class ChatViewController {
     this.turnListeners.add(listener);
   }
 
-  /** Whether the active session has a prompt in flight. */
+  /** Whether the active session has foreground work. */
   get hasRunningTurn(): boolean {
-    return this.isRunning(this.sessions.getActiveSessionId());
+    const session = this.sessions.getActiveSession();
+    return session !== undefined && this.sessions.hasForegroundWork({ configuredName: session.agentName, sessionId: session.sessionId });
   }
 
   /** Unsent prompts retained by the selected session. */
@@ -301,16 +307,15 @@ export class ChatViewController {
           }
         }
         break;
-      case 'markdownImageContext':
-        if (this.currentTarget(message.target)) {
-          if (message.target.sessionId !== this.markdownImageSession) {
-            this.resetMarkdownImages();
-            this.markdownImageSession = message.target.sessionId;
-          }
-          this.post({ type: 'markdownImageContext', sessionId: message.target.sessionId, context: this.markdownImageContext,
+      case 'markdownImageContext': {
+        const registration = this.sessions.getActiveSession();
+        if (registration === this.projected?.registration && this.currentTarget(message.target)) {
+          this.markdownImageOwner = { target: message.target, registration };
+          this.post({ type: 'markdownImageContext', target: message.target, context: this.markdownImageContext,
             ...(this.environment.imageRequestOrigin ? { origin: this.environment.imageRequestOrigin() } : {}) });
         }
         break;
+      }
       case 'resolveMarkdownImage':
         if (this.currentMarkdownContext(message.context) && !this.markdownImages.has(message.occurrence)) {
           this.markdownImages.add(message.occurrence);
@@ -432,31 +437,34 @@ export class ChatViewController {
   handleSessionUpdate({ input: { origin, update }, registration }: SessionDelivery): void {
     if (this.disposed) { return; }
     const { sessionId } = origin.identity;
-    if (!registration || this.sessions.getSession(origin.identity) !== registration) { return; }
+    const session = this.sessions.getSession(origin.identity);
+    if (!session || session !== registration) { return; }
+    const selected = session === this.sessions.getActiveSession();
     switch (update.kind) {
-      case 'foreground': {
-        this.sendContentPatch();
-        const running = this.isRunning(sessionId);
-        if (sessionId === this.sessions.getActiveSessionId() && this.reportedRunning !== running) {
-          this.setTurnInProgress(running);
-          this.post({ type: 'foregroundActivity', running });
+    case 'foreground': {
+        if (selected) {
+          this.sendContentPatch();
+          const running = this.hasRunningTurn;
+          if (this.reportedRunning !== running) {
+            this.setTurnInProgress(running);
+            this.post({ type: 'foregroundActivity', running });
+          }
         }
         this.sendTabs();
         return;
       }
       case 'sessionInfo':
-        {
-           const session = this.sessions.getSession(origin.identity);
-          if (session) { this.tabs.update(session); }
-          this.sendTabs();
+        this.tabs.update(session);
+        this.sendTabs();
+        if (selected) {
+          this.post({ type: 'sessionInfoUpdate', title: session.title ?? null });
         }
-        this.sendTitle(sessionId);
         break;
       default:
         break;
     }
 
-    if (registration !== this.sessions.getActiveSession()) { return; }
+    if (!selected) { return; }
     if (this.sessions.sessionState(origin.identity) && contentUpdate(update)) {
       if (this.projected?.snapshot.target.configuredName !== origin.identity.configuredName || this.projected.snapshot.target.sessionId !== sessionId) {
         this.sendContentSnapshot();
@@ -472,36 +480,35 @@ export class ChatViewController {
   }
 
   /** Only the successful-open event commits a reference and its selection. */
-  notifySessionOpened(identity: SessionIdentity): void {
-    const session = this.sessions.getSession(identity);
-    if (!session || this.disposed) { return; }
+  notifySessionOpened(registration: SessionRegistration): void {
+    const session = this.sessions.getSession({ configuredName: registration.agentName, sessionId: registration.sessionId });
+    if (this.disposed || session !== registration) { return; }
     this.tabs.open(session);
     this.sendTabs();
   }
 
   /** Tell the webview the active session changed. */
   notifyActiveSessionChanged(): void {
-    const changed = this.sessions.getActiveSessionId() !== this.shownSessionId;
-    if (changed) {
+    const selected = this.sessions.getActiveSession();
+    if (selected !== this.shownSession) {
       this.setTurnInProgress(this.hasRunningTurn);
       // The chat view clears the transcript, unless it has no session to show and keeps the one whose agent exited.
-      if (this.sessions.getActiveSessionId() !== null || !this.shownSessionEnded) {
+      if (selected || !this.shownSessionEnded) {
         this.imageBytes.clear();
         this.resetMarkdownImages();
         this.shownSessionEnded = false;
       }
     }
     this.sendContentSnapshot(true);
-    const selected = this.sessions.getActiveSession() ?? null;
-    if (selected !== this.reviewSelection) {
-      this.reviewSelection = selected;
+    if ((selected ?? null) !== this.reviewSelection) {
+      this.reviewSelection = selected ?? null;
       if (selected) { this.tryReviewOpening(selected, true); }
     }
   }
 
   /** The session is gone, whether its agent exited or the user disconnected it. */
-  notifySessionRemoved(sessionId: string): void {
-    if (sessionId === this.markdownImageSession) {
+  notifySessionRemoved(registration: SessionRegistration): void {
+    if (registration === this.markdownImageOwner?.registration) {
       for (const read of this.markdownReads.values()) { read.abort(); }
       this.markdownReads.clear();
     }
@@ -512,9 +519,9 @@ export class ChatViewController {
    * The session's agent exited on its own, ending any turn in it. Called before the session is dropped, so the chat
    * view keeps the transcript and shows why.
    */
-  notifySessionEnded(sessionId: string, reason: string): void {
+  notifySessionEnded(registration: SessionRegistration, reason: string): void {
     this.sendTabs();
-    if (sessionId === this.shownSessionId) {
+    if (registration === this.shownSession && registration === this.sessions.getActiveSession()) {
       this.sendContentPatch();
       this.shownSessionEnded = true;
       this.post({ type: 'sessionEnded', message: reason });
@@ -585,11 +592,6 @@ export class ChatViewController {
     }
   }
 
-  private isRunning(sessionId: string | null): boolean {
-    const session = this.sessions.getActiveSession();
-    return session?.sessionId === sessionId && this.sessions.hasForegroundWork({ configuredName: session.agentName, sessionId: session.sessionId });
-  }
-
   private sendActivity(): void {
     const running = this.hasRunningTurn;
     if (running) { this.post({ type: 'foregroundActivity', running }); }
@@ -639,16 +641,10 @@ export class ChatViewController {
     this.post({ type: 'pickers', pickers: pickersOf(session) });
   }
 
-  /** The session's resulting title, not the update: an update without a title leaves it unchanged. */
-  private sendTitle(sessionId: string): void {
-    if (sessionId !== this.sessions.getActiveSessionId()) { return; }
-    this.post({ type: 'sessionInfoUpdate', title: this.sessions.getActiveSession()?.title ?? null });
-  }
-
   private currentState(): Extract<ExtensionToWebviewMessage, { type: 'viewSnapshot' }>['state'] {
     const activeId = this.sessions.getActiveSessionId();
     const session = this.sessions.getActiveSession();
-    this.shownSessionId = activeId;
+    this.shownSession = session;
     return {
       activeSessionId: activeId,
       session: session ? {
@@ -709,8 +705,13 @@ export class ChatViewController {
   }
 
   private currentMarkdownContext(context: number): boolean {
-    return context === this.markdownImageContext && this.markdownImageSession !== null
-      && (this.markdownImageSession === this.sessions.getActiveSessionId() || this.shownSessionEnded);
+    const owner = this.markdownImageOwner;
+    if (!owner || context !== this.markdownImageContext) { return false; }
+    const active = this.sessions.getActiveSession();
+    if (active) { return active === owner.registration && this.sessions.sessionState(owner.target)?.generation === owner.target.generation; }
+    const target = this.projected?.snapshot.target;
+    return this.shownSessionEnded && target?.configuredName === owner.target.configuredName
+      && target.sessionId === owner.target.sessionId && target.generation === owner.target.generation;
   }
 
   private async loadMarkdownSource(context: number, occurrence: number, slot: { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }, announce = true): Promise<void> {
@@ -720,7 +721,8 @@ export class ChatViewController {
     if (announce) { this.post({ type: 'markdownImage', context, occurrence, src: null, status: 'loading' }); }
     try {
       const remote = /^https:/i.test(slot.source);
-      const root = this.sessions.getActiveSession()?.cwd;
+      const registration = this.markdownImageOwner?.registration;
+      const root = registration === this.sessions.getActiveSession() ? registration?.cwd : undefined;
       const result = await (remote ? this.networkImageLoads : this.localImageLoads).run(cancellation.signal, (signal) => remote
         ? fetchMarkdownImage(slot.source, signal, this.imageNetwork) : readMarkdownImage(root, slot.source, signal));
       if (!this.currentMarkdownContext(context) || cancellation.signal.aborted || this.markdownSources.get(occurrence) !== slot) { return; }
@@ -744,7 +746,7 @@ export class ChatViewController {
       this.imageBytes.delete(imageKey('markdown', String(occurrence)));
     }
     this.markdownImages.clear();
-    this.markdownImageSession = null;
+    this.markdownImageOwner = undefined;
     this.markdownImageContext++;
   }
 
@@ -810,10 +812,16 @@ export class ChatViewController {
       } else if (content) { this.post(content); }
     };
     const tabs = this.tabs.snapshot();
-    const registration = this.sessions.getActiveSession() ?? tabs.tabs.find((tab) => tab.tabId === tabs.selectedTabId);
-    if (!registration) { publish(null); return; }
-    const state = this.sessions.sessionState({ configuredName: registration.agentName, sessionId: registration.sessionId });
+    const registration = this.sessions.getActiveSession();
+    const owner = registration ?? tabs.tabs.find((tab) => tab.tabId === tabs.selectedTabId);
+    if (!owner) { publish(null); return; }
+    const state = this.sessions.sessionState({ configuredName: owner.agentName, sessionId: owner.sessionId });
     if (!state) { publish(null); return; }
+    const images = this.markdownImageOwner;
+    if (images && (images.target.configuredName !== owner.agentName || images.target.sessionId !== owner.sessionId
+      || images.target.generation !== state.generation || (registration && registration !== images.registration))) {
+      this.resetMarkdownImages();
+    }
     this.presented = new WeakMap();
     this.presentedCalls = new WeakMap();
     for (const key of this.imageBytes.keys()) {
@@ -821,15 +829,16 @@ export class ChatViewController {
     }
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); this.projectionTimer = undefined; }
     const snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> = {
-      type: 'contentSnapshot', target: { configuredName: registration.agentName, sessionId: registration.sessionId, generation: state.generation, projection: ++this.projectionSequence },
-      revision: 0, entries: this.presentContent(state, registration), currentTurn: state.content.currentTurn,
+      type: 'contentSnapshot', target: { configuredName: owner.agentName, sessionId: owner.sessionId, generation: state.generation, projection: ++this.projectionSequence },
+      markdownImageEpoch: this.markdownImageContext,
+      revision: 0, entries: this.presentContent(state, owner), currentTurn: state.content.currentTurn,
       composer: { ...state.composer },
       queue: state.queue.map((entry) => ({ ...entry })),
       nextId: state.content.nextId, usage: state.usage,
       terminals: [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal })),
 
     };
-    this.projected = { state, snapshot };
+    this.projected = { state, snapshot, registration };
     publish(snapshot);
   }
 
@@ -854,7 +863,7 @@ export class ChatViewController {
       queue: state.queue.map((entry) => ({ ...entry })),
       entries, revision, currentTurn: state.content.currentTurn, nextId: state.content.nextId, usage: state.usage,
       terminals: [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal })) };
-    this.projected = { state, snapshot };
+    this.projected = { ...previous, state, snapshot };
     this.post({ type: 'contentPatch', target: snapshot.target, base: previous.snapshot.revision, revision, patches,
       currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage,
       ...(state.composer === previous.state.composer ? {} : { composer: snapshot.composer }),

@@ -261,10 +261,9 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const reviewSourceControl = new ReviewSourceControl(reviewControls, reviews);
   const reviewTakeovers = new ReviewTakeovers(reviews, reviewControls);
   sessionManager.on('session-removed', (registration) => {
-    const { sessionId } = registration;
     sessionManager.endSessionOutput(registration);
     reviews.sessionRemoved(registration);
-    chatViewController.notifySessionRemoved(sessionId);
+    chatViewController.notifySessionRemoved(registration);
   });
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
     ChatWebviewProvider.viewType,
@@ -278,11 +277,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     reviews.activeSessionChanged(registration);
     chatViewController.notifyActiveSessionChanged();
   });
-  sessionManager.on('session-opened', ({ sessionId, agentName }) => {
-    chatViewController.notifySessionOpened({ configuredName: agentName, sessionId });
+  sessionManager.on('session-opened', (registration) => {
+    chatViewController.notifySessionOpened(registration);
   });
-  sessionManager.on('session-ended', ({ sessionId }, reason) => {
-    chatViewController.notifySessionEnded(sessionId, reason);
+  sessionManager.on('session-ended', (registration, reason) => {
+    chatViewController.notifySessionEnded(registration, reason);
   });
   sessionManager.on('turn-ended', (registration) => {
     chatViewController.notifyTurnEnded(registration);

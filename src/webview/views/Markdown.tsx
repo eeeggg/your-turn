@@ -67,6 +67,10 @@ export function Markdown({ text, streaming }: { text: string; streaming: boolean
 let nextOccurrence = 1;
 
 function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
+  const owner = useSelector((state) => {
+    const target = state.transcript.projection?.target;
+    return JSON.stringify([target?.configuredName, target?.sessionId, target?.generation, state.transcript.markdownImageEpoch]);
+  });
   let source: string | null = null;
   if (typeof src === 'string' && src.startsWith(imageSourcePrefix)) {
     try {
@@ -74,7 +78,7 @@ function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
       source = decoded;
     } catch { /* An agent can supply malformed URLs in raw HTML. */ }
   }
-  return source ? <ValidatedImage source={source} alt={alt ?? ''} />
+  return source ? <ValidatedImage key={owner} source={source} alt={alt ?? ''} />
     : <span>{alt ? `${alt} — image not displayed` : 'Image not displayed'}</span>;
 }
 

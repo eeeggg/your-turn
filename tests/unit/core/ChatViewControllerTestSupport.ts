@@ -96,6 +96,10 @@ export class FakeSessions implements ChatSessions {
   acknowledgeCompletion: ChatSessions['acknowledgeCompletion'] = () => {};
   activeId: string | null = SESSION_ID;
   session: SessionInfo | undefined = sessionInfo();
+  requireSession(): SessionInfo {
+    if (!this.session) { throw new Error('Missing test session'); }
+    return this.session;
+  }
   readonly prompts: { text: string; reply: Deferred<undefined> }[] = [];
 
   getActiveSessionId = () => this.activeId;

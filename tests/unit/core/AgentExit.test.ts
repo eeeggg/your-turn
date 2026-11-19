@@ -60,11 +60,11 @@ function setup(controlledPrompts = false) {
   }, unusedEditor);
   onTestFinished(async () => { updates.dispose(); await controller.dispose(); });
   updates.addListener((delivery) => controller.handleSessionUpdate(delivery));
-  manager.on('session-removed', ({ sessionId }) => {
-    controller.notifySessionRemoved(sessionId);
+  manager.on('session-removed', (registration) => {
+    controller.notifySessionRemoved(registration);
   });
   manager.on('active-session-changed', () => controller.notifyActiveSessionChanged());
-  manager.on('session-ended', ({ sessionId }, reason) => controller.notifySessionEnded(sessionId, reason));
+  manager.on('session-ended', (registration, reason) => controller.notifySessionEnded(registration, reason));
 
   const prompt = (text: string) => {
     store.dispatch({ type: 'promptEdited', text });
