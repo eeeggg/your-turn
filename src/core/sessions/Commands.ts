@@ -38,7 +38,7 @@ export class SessionCommands {
   selectTab(tabId: string): Promise<void> {
     return this.serial(async () => {
       const tab = this.chatView.sessionTabs.snapshot().tabs.find((tab) => tab.tabId === tabId);
-      if (tab) { await this.openSession(tab.agentName, tab.sessionId, this.chatView.sessionTabs.address(tabId)); }
+      if (tab) { await this.openSession(tab.agentName, tab.sessionId, 'keep-focus', this.chatView.sessionTabs.address(tabId)); }
     });
   }
 
@@ -84,7 +84,7 @@ export class SessionCommands {
       const next = this.chatView.sessionTabs.close(tabId);
       this.sessions.releaseSessionState(identity());
       this.chatView.notifyTabsChanged();
-      if (next) { await this.openSession(next.agentName, next.sessionId, this.chatView.sessionTabs.address(next.tabId)); }
+      if (next) { await this.openSession(next.agentName, next.sessionId, 'focus-chat', this.chatView.sessionTabs.address(next.tabId)); }
     });
   }
   constructor(
@@ -305,17 +305,17 @@ export class SessionCommands {
 
   /** Show a past session in the chat view, loading it when the agent can, otherwise resuming it. */
   open(agentName: string | undefined, sessionId: string | undefined): Promise<void> {
-    return this.serial(() => this.openSession(agentName, sessionId));
+    return this.serial(() => this.openSession(agentName, sessionId, 'focus-chat'));
   }
 
-  private async openSession(agentName: string | undefined, sessionId: string | undefined, address?: SessionAddress): Promise<void> {
+  private async openSession(agentName: string | undefined, sessionId: string | undefined, focus: 'focus-chat' | 'keep-focus', address?: SessionAddress): Promise<void> {
     if (!agentName || !sessionId) {
       void this.window.showErrorMessage('Open Session: missing agentName/sessionId.');
       return;
     }
     await this.startup.forgo();
 
-    await this.focusChatView();
+    if (focus === 'focus-chat') { await this.focusChatView(); }
     await this.openThrough(agentName, sessionId, address);
   }
 

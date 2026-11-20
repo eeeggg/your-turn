@@ -40,6 +40,8 @@ Benchmarks always use one worker and ignore `.env.test.local`, including
 `UI_JOBS`. Add `*.benchmark.ts` files under `tests/ui/`. They can reuse the
 isolated desktop fixture. The [benchmark config](playwright.benchmark.config.mts)
 discovers them separately from the journey tests.
+Find each invocation under `test-results/benchmarks/<timestamp>-<suffix>/`.
+Each `run-NN/` keeps its samples and Playwright diagnostics separate from other runs.
 
 Hosted CI currently verifies Linux. Reports from macOS and Windows are welcome.
 

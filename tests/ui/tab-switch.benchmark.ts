@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { arch, cpus, platform } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { Page } from '@playwright/test';
@@ -19,6 +19,8 @@ const fixture = {
 const repeatCount = 9;
 
 async function benchmark(window: Page, id: string, size: 'long' | 'reallyLong', outbound: string, inbound: string) {
+  const batch = process.env['BENCHMARK_BATCH_DIR'];
+  if (!batch) { throw new Error('Benchmark output directory is not prepared; use npm run benchmark'); }
   const long = fixture[size];
   const results = resolve(__dirname, '../../test-results');
   const editor = JSON.parse(await readFile(join(results, 'ui-editor.json'), 'utf8')) as { version: string; commit: string };
@@ -57,11 +59,10 @@ async function benchmark(window: Page, id: string, size: 'long' | 'reallyLong', 
     [outbound]: summarize(samples.shortToLong),
     [inbound]: summarize(samples.longToShort),
   };
-  const outputRoot = join(results, 'benchmarks');
+  const outputRoot = join(batch, 'samples');
   await mkdir(outputRoot, { recursive: true });
-  const run = await mkdtemp(join(outputRoot, 'tab-switch-'));
-  const path = join(run, 'samples.json');
-  await writeFile(path, `${JSON.stringify(output, null, 2)}\n`);
+  const path = join(outputRoot, `${id}.json`);
+  await writeFile(path, `${JSON.stringify(output, null, 2)}\n`, { flag: 'wx' });
   console.log(`Tab-switch samples: ${path}`);
 }
 

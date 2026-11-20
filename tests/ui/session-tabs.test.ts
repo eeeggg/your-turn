@@ -63,6 +63,11 @@ test('clicking listed sessions opens the intended tabs and returning selects the
   await expect(first).toHaveAttribute('aria-selected', 'true');
   await expect(tabs).toHaveCount(2);
   await expect(promptInput(window)).toBeEnabled();
+
+  const second = sessionTabs(window).getByRole('tab', { name: 'Another session with a deliberately long title for tab overflow', exact: true });
+  await second.click();
+  await expect(second).toHaveAttribute('aria-selected', 'true');
+  await expect(second).toBeFocused();
 });
 
 test('Refresh Sessions is offered in both menus only after the agent session list is fetched', async ({ window }, testInfo) => {
@@ -177,7 +182,7 @@ test('arrow navigation requires keyboard activation before switching the selecte
   await expect(first).toHaveAttribute('aria-selected', 'true');
   await expect(second).toHaveAttribute('aria-selected', 'false');
   await expect(promptInput(window)).toBeEnabled();
-  await first.focus();
+  await expect(first).toBeFocused();
   await first.press('ArrowRight');
   await expect(second).toBeFocused();
   await expect(first).toHaveAttribute('aria-selected', 'true');
@@ -186,6 +191,7 @@ test('arrow navigation requires keyboard activation before switching the selecte
   await expect(first).toHaveAttribute('aria-selected', 'false');
   await expect(strip.getByRole('tab')).toHaveCount(2);
   await expect(promptInput(window)).toBeEnabled();
+  await expect(second).toBeFocused();
 });
 
 test('selected tab remains distinct when focus leaves Chat in dark, light, and high-contrast themes', async ({ window, workspace }, testInfo) => {

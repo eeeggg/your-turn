@@ -366,7 +366,7 @@ describe('SessionCommands', () => {
     expect(await cancelled).toEqual({ method: 'session/cancel', params: { sessionId: third } });
   });
 
-  it('selects the renamed tab of a live session without loading or reconnecting', async () => {
+  it('selects the renamed tab of a live session without refocusing Chat, loading, or reconnecting', async () => {
     const one = sessionAgent('one', { agentCapabilities: { loadSession: true } });
     const { commands, manager, tabs, agents, environment, user } = setup({ one: one.script, renamed: one.script }, true);
     onTestFinished(() => manager.dispose());
@@ -388,7 +388,7 @@ describe('SessionCommands', () => {
     expect(tabs.snapshot().tabs).toHaveLength(1);
     expect(agents.launched).toHaveLength(1);
     expect(one.requests).toEqual([]);
-    expect(user.take()).toEqual([focusChatView]);
+    expect(user.take()).toEqual([]);
   });
 
   it.each(['selected', 'unselected'] as const)('releases retained content only when its %s tab closes', async (selection) => {
@@ -513,7 +513,7 @@ describe('SessionCommands', () => {
 
     expect(agents.launched).toEqual([]);
     expect(tabs.snapshot().selectedTabId).toBe(tabId);
-    expect(user.take()).toEqual([focusChatView, failedToOpen(`The session belongs to ${WORKSPACE.uri} on ${WORKSPACE.host}, but this workspace is ${target.uri} on ${target.host}.`)]);
+    expect(user.take()).toEqual([failedToOpen(`The session belongs to ${WORKSPACE.uri} on ${WORKSPACE.host}, but this workspace is ${target.uri} on ${target.host}.`)]);
   });
 
   it('rejects a restored tab whose cwd changed before launching its agent', async () => {
@@ -526,7 +526,7 @@ describe('SessionCommands', () => {
 
     expect(agents.launched).toEqual([]);
     expect(tabs.snapshot().selectedTabId).toBe(tabId);
-    expect(user.take()).toEqual([focusChatView, failedToOpen("The session was used in /previous, but this workspace's agents run in /work.", ['Choose Session'])]);
+    expect(user.take()).toEqual([failedToOpen("The session was used in /previous, but this workspace's agents run in /work.", ['Choose Session'])]);
   });
 
   it('rebinds a restored tab after recovering through another configuration', async () => {

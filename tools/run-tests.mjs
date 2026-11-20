@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { parseEnv } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -163,6 +163,7 @@ delete env['FILES'];
 delete env['REPEAT'];
 delete env['JOBS'];
 delete env['UI_VSCODE_EXECUTABLE'];
+delete env['BENCHMARK_BATCH_DIR'];
 
 /** @type {import('node:child_process').ChildProcess | undefined} */
 let active;
@@ -260,12 +261,22 @@ try {
     if (code === 0) { code = await vitest([]); }
     if (code === 0) { code = await run(process.execPath, [join(root, 'tools', 'run-integration.mjs')], true); }
   } else if (settings.layers.length > 0 || benchmark) {
+    let benchmarkRun;
+    if (benchmark && code === 0) {
+      const output = join(root, 'test-results', 'benchmarks');
+      await mkdir(output, { recursive: true });
+      benchmarkRun = await mkdtemp(join(output, `${new Date().toISOString().replaceAll(':', '-')}-`));
+      console.log(`Benchmark results: ${benchmarkRun}`);
+    }
     for (let iteration = 1; code === 0 && iteration <= repeat; iteration += 1) {
       console.log(`Test batch: ${target}, run ${iteration}/${repeat}, files: ${files.join(' ') || 'all'}`);
       if (integration) {
         code = await node('tools/run-integration.mjs', settings.coverage ? ['--coverage'] : [], true);
       } else if (desktop) {
         const config = benchmark ? 'playwright.benchmark.config.mts' : 'playwright.config.mts';
+        if (benchmarkRun !== undefined) {
+          env['BENCHMARK_BATCH_DIR'] = join(benchmarkRun, `run-${String(iteration).padStart(2, '0')}`);
+        }
         code = await node('node_modules/@playwright/test/cli.js', ['test', '--config', config, ...(uiJobsText !== undefined ? ['--workers', uiJobsText] : []), ...files]);
       } else {
         code = await vitest([...(settings.vitestArgs ?? []), ...files]);
