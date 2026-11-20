@@ -30,6 +30,10 @@ import { Readable, Writable } from 'node:stream';
 
 const COMPACTION_SESSION = '0717894d-6488-4fa1-9cc9-9d859cd1a914';
 const OTHER_COMPACTION_SESSION = 'd59bb150-ee82-4e47-ab32-74ecf761b471';
+const SHORT_BENCHMARK_SESSION = '51982598-8fec-4d32-ae6b-53a913692bc1';
+const LONG_BENCHMARK_SESSION = '463ca85f-3fd4-4d11-b816-687d9df999fc';
+const REALLY_LONG_BENCHMARK_SESSION = 'fca54590-70da-49b7-8186-c02ccd8164ee';
+const TAB_SWITCH_BENCHMARK = process.env['ACP_TEST_TAB_SWITCH_BENCHMARK'] === '1';
 const LISTS_SESSIONS = process.env['ACP_TEST_LISTS_SESSIONS'] !== undefined;
 const RECORDS = process.env['ACP_TEST_RECORDS'];
 const COMPACTION = process.env['ACP_TEST_COMPACTION'] !== undefined;
@@ -112,6 +116,29 @@ async function replay(client: AgentContext, sessionId: string): Promise<void> {
     client.notify(methods.client.session.update, { sessionId, update: { sessionUpdate, content: { type: 'text', text } } });
   await update('user_message_chunk', 'earlier question');
   await update('agent_message_chunk', 'earlier answer');
+}
+
+async function replayBenchmark(client: AgentContext, sessionId: string): Promise<void> {
+  const size = sessionId === REALLY_LONG_BENCHMARK_SESSION ? 'Really Long' : sessionId === LONG_BENCHMARK_SESSION ? 'Long' : 'Short';
+  const turns = size === 'Short' ? 4 : 120 * (size === 'Really Long' ? 6 : 1);
+  const toolsPerTurn = size === 'Short' ? 2 : 10;
+  for (let turn = 1; turn <= turns; turn++) {
+    await client.notify(methods.client.session.update, { sessionId, update: {
+      sessionUpdate: 'user_message_chunk', content: { type: 'text', text: `Inspect component ${turn}.` },
+    } });
+    for (let call = 1; call <= toolsPerTurn; call++) {
+      await client.notify(methods.client.session.update, { sessionId, update: {
+        sessionUpdate: 'tool_call', toolCallId: `${turn}-${call}`, title: `Read component ${turn}, section ${call}`,
+        status: 'completed', content: [{ type: 'content', content: { type: 'text',
+          text: `Component ${turn}, section ${call}\n\n${'| key | value | status |\n'.repeat(100)}` } }],
+      } });
+    }
+    const text = `**Component ${turn}:** Reviewed API boundaries and error handling.\n\n- Confirmed callers.\n- Checked failure behavior.`;
+    const marker = turn === turns ? `\n\n${size} benchmark transcript complete.` : '';
+    await client.notify(methods.client.session.update, { sessionId, update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: text + marker },
+    } });
+  }
 }
 
 async function images(client: AgentContext, sessionId: string): Promise<void> {
@@ -384,7 +411,7 @@ agent({ name: 'fake-agent' })
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
-        loadSession: RECORDS !== undefined || COMPACTION,
+        loadSession: RECORDS !== undefined || COMPACTION || TAB_SWITCH_BENCHMARK,
         sessionCapabilities: {
           ...(LISTS_SESSIONS ? { list: {} } : {}),
           ...(RECORDS ? { additionalDirectories: {}, resume: {} } : {}),
@@ -395,6 +422,14 @@ agent({ name: 'fake-agent' })
     };
   })
   .onRequest(methods.agent.session.list, ({ params }) => {
+    if (TAB_SWITCH_BENCHMARK) {
+      const cwd = params.cwd ?? process.cwd();
+      return { sessions: [
+        { sessionId: SHORT_BENCHMARK_SESSION, cwd, title: 'Short benchmark session' },
+        { sessionId: LONG_BENCHMARK_SESSION, cwd, title: 'Long benchmark session' },
+        { sessionId: REALLY_LONG_BENCHMARK_SESSION, cwd, title: 'Really Long session (benchmark)' },
+      ] };
+    }
     if (COMPACTION) {
       if (initializes.join(',') !== '2,1') { throw RequestError.invalidParams(undefined, 'Missing v1 initialize'); }
       return { sessions: [
@@ -425,7 +460,8 @@ agent({ name: 'fake-agent' })
   .onRequest(methods.agent.session.load, async ({ params, client }) => {
     record('session/load', params);
     const configOptions = restore(params.sessionId);
-    if (COMPACTION) { await replayCompaction(client, params.sessionId); }
+    if (TAB_SWITCH_BENCHMARK) { await replayBenchmark(client, params.sessionId); }
+    else if (COMPACTION) { await replayCompaction(client, params.sessionId); }
     else { await replay(client, params.sessionId); }
     return { configOptions };
   })

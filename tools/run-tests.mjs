@@ -9,7 +9,7 @@ const root = resolve(import.meta.dirname, '..');
 const windowDirectories = new Set(windowKinds.map(({ directory }) => directory));
 const target = process.argv[2] ?? '';
 const testOnly = ['test:unit:only', 'test:webview:only', 'test:integration:only', 'test:ui:only'].includes(target);
-/** @typedef {{ mode: 'full' | 'integration' | 'vitest' | 'ui' | 'check' | 'compile', layers: string[], bundle: boolean, vitestArgs?: string[], coverage?: boolean }} Target */
+/** @typedef {{ mode: 'full' | 'integration' | 'vitest' | 'ui' | 'benchmark' | 'check' | 'compile', layers: string[], bundle: boolean, vitestArgs?: string[], coverage?: boolean }} Target */
 /** @type {Record<string, Target>} */
 const targets = {
   test: { mode: 'full', layers: [], bundle: true },
@@ -20,6 +20,7 @@ const targets = {
   'test:webview': { mode: 'vitest', layers: ['webview'], bundle: true, vitestArgs: ['--project', 'webview'] },
   coverage: { mode: 'vitest', layers: ['unit'], bundle: false, vitestArgs: ['--project', 'unit', '--coverage'] },
   'test:ui': { mode: 'ui', layers: ['ui'], bundle: true },
+  benchmark: { mode: 'benchmark', layers: [], bundle: true },
   check: { mode: 'check', layers: [], bundle: false },
   compile: { mode: 'compile', layers: [], bundle: true },
 };
@@ -67,7 +68,7 @@ function validateControls(settings, { files, repeatText, jobsText, displayText }
   if (['FILES', 'REPEAT', 'JOBS', 'TEST_FILES', 'TEST_JOBS', 'TEST_DISPLAY'].some((name) => process.env[name])) {
     throw new Error('Use positional test paths, --repeat and --jobs instead of legacy environment controls');
   }
-  if (settings.layers.length === 0 && (files.length > 0 || repeatText !== undefined || jobsText !== undefined || displayText !== undefined)) {
+  if (settings.layers.length === 0 && (files.length > 0 || (repeatText !== undefined && settings.mode !== 'benchmark') || jobsText !== undefined || displayText !== undefined)) {
     throw new Error(`${target} is unfiltered; use a test layer for file selection, --repeat or --jobs`);
   }
   if (jobsText !== undefined && settings.mode !== 'integration') { throw new Error('--jobs is supported only for integration targets'); }
@@ -141,6 +142,8 @@ const { jobsText, displayText, uiJobsText } = await loadPreferences(settings, co
 await validateFiles(settings, files);
 const integration = settings.mode === 'integration';
 const full = settings.mode === 'full';
+const benchmark = settings.mode === 'benchmark';
+const desktop = settings.mode === 'ui' || benchmark;
 
 const env = { ...process.env };
 delete env['TEST_FILES'];
@@ -155,7 +158,7 @@ if (integration || full) {
   if (jobsText !== undefined) { env['TEST_JOBS'] = jobsText; }
   if (displayText !== undefined) { env['TEST_DISPLAY'] = displayText; }
 }
-if (integration || settings.mode === 'ui' || full) { delete env['ELECTRON_RUN_AS_NODE']; }
+if (integration || desktop || full) { delete env['ELECTRON_RUN_AS_NODE']; }
 delete env['FILES'];
 delete env['REPEAT'];
 delete env['JOBS'];
@@ -229,7 +232,7 @@ const lint = async () => {
   const code = await node('node_modules/eslint/bin/eslint.js', ['.', '--max-warnings', '0']);
   return code || await node('node_modules/knip/bin/knip.js');
 };
-const bundle = () => node('esbuild.mjs', settings.mode === 'ui' ? ['--ui'] : []);
+const bundle = () => node('esbuild.mjs', desktop ? ['--ui'] : []);
 /** @param {string[]} args */
 const vitest = (args) => node('node_modules/vitest/vitest.mjs', ['run', ...args]);
 
@@ -252,17 +255,18 @@ try {
   let code = testOnly ? 0 : await checkTypes();
   if (code === 0 && !testOnly && settings.mode !== 'compile') { code = await lint(); }
   if (code === 0 && settings.bundle) { code = await bundle(); }
-  if (code === 0 && settings.mode === 'ui') { code = await prepareUiEditor(); }
+  if (code === 0 && desktop) { code = await prepareUiEditor(); }
   if (full) {
     if (code === 0) { code = await vitest([]); }
     if (code === 0) { code = await run(process.execPath, [join(root, 'tools', 'run-integration.mjs')], true); }
-  } else if (settings.layers.length > 0) {
+  } else if (settings.layers.length > 0 || benchmark) {
     for (let iteration = 1; code === 0 && iteration <= repeat; iteration += 1) {
       console.log(`Test batch: ${target}, run ${iteration}/${repeat}, files: ${files.join(' ') || 'all'}`);
       if (integration) {
         code = await node('tools/run-integration.mjs', settings.coverage ? ['--coverage'] : [], true);
-      } else if (settings.mode === 'ui') {
-        code = await node('node_modules/@playwright/test/cli.js', ['test', '--config', 'playwright.config.mts', ...(uiJobsText !== undefined ? ['--workers', uiJobsText] : []), ...files]);
+      } else if (desktop) {
+        const config = benchmark ? 'playwright.benchmark.config.mts' : 'playwright.config.mts';
+        code = await node('node_modules/@playwright/test/cli.js', ['test', '--config', config, ...(uiJobsText !== undefined ? ['--workers', uiJobsText] : []), ...files]);
       } else {
         code = await vitest([...(settings.vitestArgs ?? []), ...files]);
       }

@@ -27,7 +27,7 @@ vi.mock('@playwright/test', () => ({
 
 interface WindowFixture {
   window(
-    input: { workspace: string; reviewPresentation: undefined; gitRepository: boolean; display: undefined; treeRefresh?: { port: number; close(): Promise<void> } },
+    input: { workspace: string; reviewPresentation: undefined; gitRepository: boolean; display: undefined; desktopDiagnostics: boolean; treeRefresh?: { port: number; close(): Promise<void> } },
     use: () => Promise<void>,
     info: { testId: string; status: string; expectedStatus: string; outputPath(name: string): string },
   ): Promise<void>;
@@ -206,7 +206,7 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
   const { test } = await import('@tests/ui/window');
   const window = (test as unknown as WindowFixture).window;
   const run = (use: () => Promise<void>, treeRefresh?: { port: number; close(): Promise<void> }) => window(
-    { workspace: directory, reviewPresentation: undefined, gitRepository: false, display: undefined, ...(treeRefresh ? { treeRefresh } : {}) },
+    { workspace: directory, reviewPresentation: undefined, gitRepository: false, display: undefined, desktopDiagnostics: true, ...(treeRefresh ? { treeRefresh } : {}) },
     use,
     { testId: 'owned-cleanup', status: 'passed', expectedStatus: 'passed', outputPath: (name) => join(directory, name) },
   );
@@ -227,7 +227,7 @@ it('rejects an unprepared editor before launching a window', async () => {
   const { test } = await import('@tests/ui/window');
   const window = (test as unknown as WindowFixture).window;
   await expect(window(
-    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined },
+    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined, desktopDiagnostics: true },
     async () => { throw new Error('Unprepared fixture reached the test body'); },
     { testId: 'unprepared', status: 'passed', expectedStatus: 'passed', outputPath: (name) => name },
   )).rejects.toThrow('UI editor is not prepared; use npm run test:ui');
@@ -273,7 +273,7 @@ it.each([
   else { boundary.manifest.mockRejectedValue(new Error('missing manifest')); }
   const { test } = await import('@tests/ui/window');
   await expect((test as unknown as WindowFixture).window(
-    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined },
+    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined, desktopDiagnostics: true },
     async () => { throw new Error('Invalid artifact reached the test body'); },
     { testId: 'artifact', status: 'passed', expectedStatus: 'passed', outputPath: (name) => name },
   )).rejects.toThrow('Desktop extension artifact is not prepared; use npm run test:ui');

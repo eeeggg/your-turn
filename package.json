@@ -670,6 +670,7 @@
     "test:webview": "node tools/run-tests.mjs test:webview",
     "test:integration": "node tools/run-tests.mjs test:integration",
     "test:ui": "node tools/run-tests.mjs test:ui",
+    "benchmark": "node tools/run-tests.mjs benchmark",
     "test:unit:only": "node tools/run-tests.mjs test:unit:only",
     "test:webview:only": "node tools/run-tests.mjs test:webview:only",
     "test:integration:only": "node tools/run-tests.mjs test:integration:only",
@@ -734,7 +735,9 @@
   "knip": {
     "entry": [
       ".vscode-test.mjs",
+      "playwright.benchmark.config.mts",
       "src/extension.ts",
+      "tests/ui/*.benchmark.ts",
       "tests/ui/instrumentation/*.ts",
       "tools/run-integration.mjs",
       "tools/vscode-test.mjs"

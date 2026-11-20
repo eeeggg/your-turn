@@ -145,6 +145,51 @@ export function chatTranscript(window: Page): Locator {
   return chatFrame(window).locator('#messages');
 }
 
+export async function measureTranscriptSwitch(window: Page, tabName: string, marker: string): Promise<number> {
+  const tab = sessionTabs(window).getByRole('tab', { name: tabName, exact: true });
+  const probe = await tab.evaluateHandle((button, target) => {
+    const transcript = button.ownerDocument.querySelector('#messages');
+    if (!transcript || transcript.textContent.includes(target) || button.getAttribute('aria-selected') !== 'false') {
+      throw new Error(`Cannot measure switch to ${target}: expected an inactive tab and an absent marker`);
+    }
+    let startedAt: number | undefined;
+    const start = (event: Event) => { startedAt = event.timeStamp; };
+    button.addEventListener('click', start, { capture: true, once: true });
+    const observer = new MutationObserver(() => {
+      const observedAt = performance.now();
+      if (startedAt !== undefined && transcript.textContent.includes(target)) {
+        disconnect();
+        finish(observedAt - startedAt);
+      }
+    });
+    const disconnect = () => {
+      observer.disconnect();
+      button.removeEventListener('click', start, true);
+      clearTimeout(deadline);
+    };
+    const deadline = setTimeout(() => {
+      disconnect();
+      finish(null);
+    }, 10_000);
+    let finish!: (ms: number | null) => void;
+    const promise = new Promise<number | null>((resolve) => { finish = resolve; });
+    observer.observe(transcript, { childList: true, subtree: true, characterData: true });
+    return { promise, disconnect };
+  }, marker);
+  try {
+    await tab.click();
+    const ms = await probe.evaluate(({ promise }) => promise);
+    if (ms === null) { throw new Error(`Did not observe ${marker} after clicking ${tabName}`); }
+    return ms;
+  } finally {
+    try {
+      await probe.evaluate(({ disconnect }) => { disconnect(); });
+    } finally {
+      await probe.dispose();
+    }
+  }
+}
+
 export function chatTranscriptScroll(window: Page): Locator {
   return chatFrame(window).locator('#transcriptScroll');
 }

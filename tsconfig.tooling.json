@@ -12,6 +12,7 @@
     "eslint.config.mjs",
     ".vscode-test.mjs",
     "playwright.config.mts",
+    "playwright.benchmark.config.mts",
     "vitest.config.mts",
     "tools/integration-windows.mjs",
     "tools/icons.mjs",

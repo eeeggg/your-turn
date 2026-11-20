@@ -371,6 +371,19 @@ it('applies local UI jobs to each Playwright execution without integration contr
   }
 });
 
+it('runs the benchmark suite separately without applying local UI jobs', async () => {
+  const { root, run } = await fixture();
+  await writeFile(join(root, '.env.test.local'), 'UI_JOBS=2\n');
+  const result = await run('benchmark', ['--repeat', '2']);
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor', 'playwright', 'playwright']);
+  expect(result.calls[3]?.args).toEqual(['--ui']);
+  for (const call of result.calls.slice(5)) {
+    expect(call.args).toEqual(['test', '--config', 'playwright.benchmark.config.mts']);
+    expect(call.executable).toBe(join(root, 'prepared-code'));
+  }
+});
+
 it('CI ignores local UI jobs and keeps Playwright configuration defaults', async () => {
   const { root, run } = await fixture();
   await writeFile(join(root, '.env.test.local'), 'UI_JOBS=bad\nUNKNOWN=bad\n');
