@@ -11,9 +11,9 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { SessionReferences, StartupRequests, WorkspaceState, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionStartup, type StartupOutcome } from '@/core/SessionStartup';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionStartup, type StartupOutcome } from '@/core/sessions/Startup';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { cleanup } from '@tests/integration/cleanup';
 
 function memoryStore(): KeyValueStore {
@@ -62,9 +62,10 @@ for (const version of [1, 2]) {
       const updates = new SessionUpdateHandler();
       const manager = new SessionManager(
         new AgentManager(),
-        new ConnectionManager(updates, '0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
+        new ConnectionManager('0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
         environment,
         { chooseAuthMethod: async () => undefined },
+        updates,
       );
       manager.setPersistedState(references, workspace);
       owned.push(() => manager.dispose(), () => updates.dispose());
@@ -76,7 +77,7 @@ for (const version of [1, 2]) {
       await workspace.setLastActiveSession(address);
 
       const texts: string[] = [];
-      updates.addListener((id, update) => {
+      updates.addListener(({ input: { origin: { identity: { sessionId: id } }, update } }) => {
         if (id === sessionId && (update.kind === 'promptText' || update.kind === 'agentText')) {
           texts.push(`${update.kind}: ${update.text}`);
         }
@@ -87,7 +88,7 @@ for (const version of [1, 2]) {
       const request = (requested: SessionAddress) => new StartupRequests(globalState).request(requested);
       /** What another window opening the workspace would be given. */
       const taken = () => new StartupRequests(globalState).take(address.workspaceUri);
-      return { address, references, workspace, texts, startup: restarted(), restarted, request, taken };
+      return { manager, address, references, workspace, texts, startup: restarted(), restarted, request, taken };
     }
 
     function loaded(outcome: StartupOutcome) {
@@ -104,6 +105,22 @@ for (const version of [1, 2]) {
     }
 
     const stringType = version === 1 ? undefined : 'id';
+
+    test('creates distinct sessions across process relaunches and reopens the requested prior session', async () => {
+      const { manager, address, startup } = await starting('0cf9748d-8cb9-4f45-82b5-fd82ea081d5f');
+      const first = await manager.newSession(agentName);
+      await manager.disconnectAgent(agentName);
+      const second = await manager.newSession(agentName);
+      assert.notStrictEqual(second.sessionId, first.sessionId);
+      await manager.disconnectAgent(agentName);
+      const other = await manager.newSession(otherName);
+      assert.notStrictEqual(other.sessionId, first.sessionId);
+      assert.notStrictEqual(other.sessionId, second.sessionId);
+
+      const reopened = loaded(await startup.loadThrough(address, agentName));
+      assert.strictEqual(reopened.sessionId, address.sessionId);
+      assert.deepStrictEqual(currents(reopened.configOptions), { model: 'model-b', effort: 'high', fast: true });
+    });
 
     test('replays it and sets its saved options again, high effort only once model B offers it', async () => {
       const sessionId = `startup-v${version}`;

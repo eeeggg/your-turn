@@ -5,7 +5,7 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it, onTestFinished } from 'vitest';
 
-interface Invocation { command: string; args: string[]; files?: string; jobs?: string; electron?: string; display?: string; executable?: string }
+interface Invocation { command: string; args: string[]; files?: string; jobs?: string; electron?: string; display?: string; executable?: string; benchmarkBatch?: string }
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'npm-tests-'));
@@ -37,7 +37,7 @@ async function fixture() {
 import('node:fs').then(({ appendFileSync }) => {
 const command = ${JSON.stringify(command)};
 const args = process.argv.slice(2);
-appendFileSync(process.env.TRACE, JSON.stringify({ command, args, files: process.env.TEST_FILES, jobs: process.env.TEST_JOBS, display: process.env.TEST_DISPLAY || undefined, electron: process.env.ELECTRON_RUN_AS_NODE, executable: process.env.UI_VSCODE_EXECUTABLE }) + '\\n');
+appendFileSync(process.env.TRACE, JSON.stringify({ command, args, files: process.env.TEST_FILES, jobs: process.env.TEST_JOBS, display: process.env.TEST_DISPLAY || undefined, electron: process.env.ELECTRON_RUN_AS_NODE, executable: process.env.UI_VSCODE_EXECUTABLE, benchmarkBatch: process.env.BENCHMARK_BATCH_DIR }) + '\\n');
 process.exitCode = process.env.FAIL_COMMAND === command ? 7 : 0;
 });
 `);
@@ -369,6 +369,35 @@ it('applies local UI jobs to each Playwright execution without integration contr
     expect(call.jobs).toBeUndefined();
     expect(call.display).toBeUndefined();
   }
+});
+
+it('runs the benchmark suite separately without applying local UI jobs', async () => {
+  const { root, run } = await fixture();
+  await writeFile(join(root, '.env.test.local'), 'UI_JOBS=2\n');
+  const result = await run('benchmark', ['--repeat', '2']);
+  expect(result.code, result.output).toBe(0);
+  expect(result.calls.map(({ command }) => command)).toEqual(['types', 'eslint', 'knip', 'bundle', 'editor', 'playwright', 'playwright']);
+  expect(result.calls[3]?.args).toEqual(['--ui']);
+  for (const call of result.calls.slice(5)) {
+    expect(call.args).toEqual(['test', '--config', 'playwright.benchmark.config.mts']);
+    expect(call.executable).toBe(join(root, 'prepared-code'));
+  }
+});
+
+it('gives each benchmark invocation a timestamped directory and each repetition its own batch', async () => {
+  const { root, run } = await fixture();
+  const first = await run('benchmark', ['--repeat', '2']);
+  expect(first.code, first.output).toBe(0);
+  const batches = first.calls.filter(({ command }) => command === 'playwright').map(({ benchmarkBatch }) => benchmarkBatch);
+  const [initial] = batches;
+  expect(initial).toBeDefined();
+  const invocation = dirname(initial ?? '');
+  expect(dirname(invocation)).toBe(join(root, 'test-results', 'benchmarks'));
+  expect(invocation).toMatch(/\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-[^/\\]+$/);
+  expect(batches).toEqual(['run-01', 'run-02'].map((batch) => join(invocation, batch)));
+  const next = await run('benchmark');
+  expect(next.code, next.output).toBe(0);
+  expect(dirname(next.calls.at(-1)?.benchmarkBatch ?? '')).not.toBe(invocation);
 });
 
 it('CI ignores local UI jobs and keeps Playwright configuration defaults', async () => {

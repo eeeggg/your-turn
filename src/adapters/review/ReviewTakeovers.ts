@@ -2,14 +2,14 @@ import { readFileSync } from 'node:fs';
 import * as vscode from 'vscode';
 import { logError } from '@/core/Log';
 import type { ReviewControls } from '@/core/review/ReviewControls';
-import type { DocumentEdit, EditSource, Takeovers } from '@/core/review/Takeovers';
+import type { Reviews, ReviewDocumentObservation } from '@/core/review/Reviews';
 
 /** How long the view's cursor has to report where it was typed before the editor is given it. */
 const VIEW_SELECTION_WAIT_MS = 100;
 /** How long a save is taken to last when VS Code never says it ended, as when it failed. */
 const SAVE_LIMIT_MS = 10_000;
 
-const reviewEditing = new Set<string>();
+const reviewEditing = new Map<string, { before: string; after: string }>();
 const saving = new Map<string, ReturnType<typeof setTimeout>>();
 
 function saveStarted(path: string, ended: () => void = () => {}): ReturnType<typeof setTimeout> {
@@ -25,8 +25,8 @@ function saveEnded(path: string): void {
 }
 
 /** Applies the review's own edit to an open document, which the takeover does not take for the user's. */
-export async function applyReviewEdit(path: string, edit: vscode.WorkspaceEdit): Promise<boolean> {
-  reviewEditing.add(path);
+export async function applyReviewEdit(path: string, edit: vscode.WorkspaceEdit, expected?: { before: string; after: string }): Promise<boolean> {
+  if (expected) { reviewEditing.set(path, expected); }
   try {
     return await vscode.workspace.applyEdit(edit);
   } finally {
@@ -56,7 +56,7 @@ function matchesDisk(path: string, text: string): boolean {
   }
 }
 
-function editOf({ range, rangeOffset, rangeLength, text }: vscode.TextDocumentContentChangeEvent): DocumentEdit {
+function editOf({ range, rangeOffset, rangeLength, text }: vscode.TextDocumentContentChangeEvent): ReviewDocumentObservation['edits'][number] {
   const wholeLines = range.end.line > range.start.line && range.end.character === 0;
   return {
     first: range.start.line,
@@ -91,7 +91,7 @@ export class ReviewTakeovers implements vscode.Disposable {
   private disposed = false;
   private disposal: Promise<void> | undefined;
 
-  constructor(private readonly takeovers: Takeovers, private readonly controls: ReviewControls) {
+  constructor(private readonly reviews: Reviews, private readonly controls: ReviewControls) {
     for (const document of vscode.workspace.textDocuments) { this.opened(document); }
     this.activated(vscode.window.activeTextEditor);
     this.subscriptions = [
@@ -151,15 +151,16 @@ export class ReviewTakeovers implements vscode.Disposable {
     const before = this.texts.get(path);
     const after = document.getText();
     this.texts.set(path, after);
-    if (before === undefined || this.controls.baseline(path) === undefined) { return; }
-    const source = this.sourceOf(path, reason, after, wasDirty);
-    if (source === 'user' || source === 'undo') { this.closeView(path, document); }
-    this.takeovers.edited(path, source, before, after, contentChanges.map(editOf));
+    if (before === undefined) { return; }
+    const source = this.sourceOf(path, reason, before, after, wasDirty);
+    if ((source === 'user' || source === 'undo') && this.controls.baseline(path) !== undefined) { this.closeView(path, document); }
+    this.track(this.reviews.observeDocument({ path, source, before, after, edits: contentChanges.map(editOf) }), 'Observing the review document failed');
   }
 
   /** VS Code reloads only a document with no unsaved edits, so the disk's text over unsaved edits is a revert. */
-  private sourceOf(path: string, reason: vscode.TextDocumentChangeReason | undefined, after: string, wasDirty: boolean): EditSource {
-    if (reviewEditing.has(path)) { return 'review'; }
+  private sourceOf(path: string, reason: vscode.TextDocumentChangeReason | undefined, before: string, after: string, wasDirty: boolean): ReviewDocumentObservation['source'] {
+    const expected = reviewEditing.get(path);
+    if (expected?.before === before && expected.after === after) { reviewEditing.delete(path); return 'review'; }
     if (saving.has(path)) { return 'save'; }
     if (reason !== undefined) { return 'undo'; }
     if (!matchesDisk(path, after)) { return 'user'; }
@@ -178,12 +179,12 @@ export class ReviewTakeovers implements vscode.Disposable {
     this.track(this.handOver(active, this.editors.get(path)));
   }
 
-  private track(running: Promise<unknown>): void {
+  private track(running: Promise<unknown>, failure = 'Closing the review view failed'): void {
     const completion = running.then(() => {});
     this.pending.add(completion);
     void completion.then(() => this.pending.delete(completion), (error: unknown) => {
       this.pending.delete(completion);
-      logError('Closing the review view failed', error);
+      logError(failure, error);
     });
   }
 

@@ -5,6 +5,10 @@
  * requests through `ClientHandlers`.
  */
 
+export interface SessionUpdateSink {
+  handleUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): void;
+}
+
 /** Which past sessions the agent can work with. */
 export interface AgentCapabilities {
   list: boolean;
@@ -205,7 +209,7 @@ export type ForegroundState = 'idle' | 'running' | 'requiresAction';
  * not the webview messages' `type`, so an update cannot be posted to the webview as it is.
  */
 export type SessionUpdate =
-  | { kind: 'foreground'; state: ForegroundState }
+  | { kind: 'foreground'; state: ForegroundState; outcome?: 'cancelled' | 'failed' }
   | { kind: 'agentText'; messageId: string | null; text: string }
   | { kind: 'agentImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
   | { kind: 'thoughtImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
@@ -399,6 +403,7 @@ export class UnknownSession extends Error {
 }
 
 export interface AcpDriver {
+  readonly schema: AcpSchema;
   readonly agent: AgentDescription;
   /** The connection can close before the agent's exit is reported. */
   readonly closed: boolean;
@@ -408,7 +413,7 @@ export interface AcpDriver {
   loadSession(sessionId: string, roots: SessionRoots): Promise<SessionState>;
   resumeSession(sessionId: string, roots: SessionRoots): Promise<SessionState>;
   /** Resolves when the turn ends. */
-  prompt(sessionId: string, prompt: PromptPart[]): Promise<void>;
+  prompt(sessionId: string, prompt: PromptPart[]): Promise<{ stopReason: string | null }>;
   cancel(sessionId: string): Promise<void>;
   setMode(sessionId: string, modeId: string): Promise<void>;
   /** The session's full set of config options after the change, or null when the agent returned none. */

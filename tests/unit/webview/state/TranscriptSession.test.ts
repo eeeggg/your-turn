@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { Action } from '@/webview/state/RootState';
-import { chatView, promptEnd, queuedPrompts } from '@tests/unit/webview/state/TranscriptTestSupport';
+import type { FixtureAction as Action } from '@tests/ContentProjection';
+import { retainedChatView as chatView, promptEnd, TRANSCRIPT_SESSION_ID, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('the transcript session', () => {
   it('leaves room for the empty state only without a session and an empty transcript', () => {
@@ -17,13 +17,13 @@ describe('the transcript session', () => {
 
   it('keeps the transcript for the same session and clears it for another', () => {
     const view = chatView();
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: TRANSCRIPT_SESSION_ID });
     view.prompt('hello');
 
-    view.connect({ sessionId: 's1', title: 'Renamed' });
+    view.connect({ sessionId: TRANSCRIPT_SESSION_ID, title: 'Renamed' });
     expect(view.summary()).toEqual(['prompt: hello']);
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     expect(view.summary()).toEqual([]);
   });
 
@@ -62,19 +62,20 @@ describe('the transcript session', () => {
     expect(view.transcript()).toBe(before);
   });
 
-  it('never reuses an entry ID after clearing the transcript', () => {
+  it('qualifies entry IDs by the session after clearing the transcript', () => {
     const view = chatView();
-    view.connect({ sessionId: 's1' });
+    view.connect({ sessionId: TRANSCRIPT_SESSION_ID });
     view.send({ type: 'promptStart' });
     view.answer('old');
     view.send(promptEnd);
-    const oldId = view.lastTurn().id;
+    const oldTarget = view.transcript().projection?.target;
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     view.send({ type: 'promptStart' });
     view.answer('new');
 
-    expect(view.lastTurn().id).not.toBe(oldId);
+    expect(view.lastTurn().parts).toEqual([{ kind: 'message', messageId: null, text: 'new' }]);
+    expect(view.transcript().projection?.target.sessionId).not.toBe(oldTarget?.sessionId);
   });
 });
 
@@ -132,7 +133,7 @@ describe('session usage', () => {
   });
 
   it.each([
-    ['another session', { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
+    ['another session', { type: 'state', activeSessionId: OTHER_TRANSCRIPT_SESSION_ID, session: { sessionId: OTHER_TRANSCRIPT_SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } }],
     ['a disconnect', { type: 'state', activeSessionId: null, session: null }],
     ['a load', { type: 'loadSessionStart' }],
     ['an explicit clear', { type: 'clearTranscript' }],
@@ -217,7 +218,7 @@ describe('a session whose agent exited', () => {
     expect(view.summary()).toEqual(['prompt: first', 'turn: working', 'error: Fake exited unexpectedly (code 1).']);
     expect(view.transcript().currentTurn).toBeNull();
     expect(view.transcript().queued).toEqual([]);
-    expect(view.takePosted()).toEqual([queuedPrompts(0)]);
+    expect(view.takePosted()).toEqual([]);
     expect(view.store.getSnapshot().activeSession).toBeNull();
     expect(view.emptyState()).toBe(false);
   });
@@ -247,7 +248,7 @@ describe('a session whose agent exited', () => {
     const view = midTurn();
     view.send(ended, noSession);
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     view.send(noSession);
 
     expect(view.summary()).toEqual([]);
@@ -267,6 +268,7 @@ describe('loading session', () => {
     view.answer('a1');
     view.replayed('q2');
     view.answer('a2');
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(view.summary()).toEqual(['prompt: hello', 'turn: a1', 'prompt: q2', 'turn: a2']);
   });
@@ -284,6 +286,7 @@ describe('loading session', () => {
     view.replayed(' now');
     view.wholePrompt('q3', 'u2');
     view.answer('a3');
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(view.summary()).toEqual(['prompt: Fix the build', 'turn: a1 more', 'prompt: q2 now', 'prompt: q3', 'turn: a3']);
   });
@@ -297,6 +300,7 @@ describe('loading session', () => {
     view.replayed('llo', 'u1');
     view.replayed('q2', 'u2');
     view.replayed(' now', null);
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(view.summary()).toEqual(['prompt: hello', 'prompt: q2 now']);
   });
@@ -313,6 +317,7 @@ describe('loading session', () => {
     view.wholePrompt('', 'u2');
     view.wholePrompt('', 'u3');
     view.replayed('q3', 'u3');
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(view.summary()).toEqual(['prompt: Hello', 'turn: Hi!', 'prompt: q3']);
   });

@@ -5,7 +5,7 @@ import { ElicitationRequests } from '@/core/ElicitationRequests';
 import { attachUrlElicitations } from '@/core/UrlElicitations';
 import { v1Elicitation, v2Elicitation } from '@/core/acp/Elicitation';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import type { Elicitations, ElicitationInteractions } from '@/core/ClientHandlers';
 import {
   connectedDriver,
@@ -16,10 +16,12 @@ import {
   work
 } from '@tests/unit/core/InProcessAgents';
 
+const SESSION_ID = 'e17c4a95-0ce6-4a99-8b93-06c4a9bc7392';
+
 describe('versioned elicitation translation', () => {
   it('v2 preserves future string formats as unconstrained text', async () => {
     const requests = new ElicitationRequests();
-    const answer = v2Elicitation({ mode: 'form', sessionId: 's1', message: 'Question', requestedSchema: { properties: { text: { type: 'string', format: 'future' } } } }, 1, new AbortController().signal, requests);
+    const answer = v2Elicitation({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', properties: { text: { type: 'string', format: 'future' } } } }, 1, new AbortController().signal, requests);
     const interaction = requests.snapshot()[0];
     expect(interaction).toMatchObject({ form: { fields: [{ name: 'text', format: 'future' }] } });
     requests.respond(interaction?.interactionId ?? '', { action: 'accept', content: { text: 'anything' } });
@@ -46,7 +48,7 @@ describe('versioned elicitation translation', () => {
       await (client as V2.ClientConnection).agent.request(V2.methods.agent.initialize, { protocolVersion: 2, info: { name: 'internal-test', version: '1' }, capabilities: { elicitation: { form: {} } } });
     }
     const controller = new AbortController();
-    const params = { mode: 'form' as const, sessionId: 's1', message: 'Question', requestedSchema: {} };
+    const params = { mode: 'form' as const, sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object' as const, properties: {} } };
     const response = version === 1
       ? (agent as V1.AgentConnection).client.request(V1.methods.client.elicitation.create, params, { cancellationSignal: controller.signal })
       : (agent as V2.AgentConnection).client.request(V2.methods.client.elicitation.create, params, { cancellationSignal: controller.signal });
@@ -69,7 +71,7 @@ describe('versioned elicitation translation', () => {
         create: () => Promise.resolve({ action: 'accept', content: {} }),
         complete() {}, close() {},
       };
-      const request = { mode: 'form' as const, sessionId: 's1', message: 'Question', requestedSchema: { properties: { count: { type: 'number' as const, minimum: 'not numeric' as unknown as number } } } };
+      const request = { mode: 'form' as const, sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object' as const, properties: { count: { type: 'number' as const, minimum: 'not numeric' as unknown as number } } } };
       const answer = translate(request, 1, new AbortController().signal, requests);
       await expect(answer).rejects.toMatchObject({ code: -32602 });
     });
@@ -77,8 +79,8 @@ describe('versioned elicitation translation', () => {
     it(`v${version} translates every supported field without losing constraints, labels or typed answers`, async () => {
       const requests = new ElicitationRequests();
       const request = {
-        mode: 'form' as const, sessionId: 's1', message: 'Settings', requestedSchema: {
-          title: 'Profile', description: 'Details', required: ['choice'], properties: {
+        mode: 'form' as const, sessionId: SESSION_ID, message: 'Settings', requestedSchema: {
+          type: 'object' as const, title: 'Profile', description: 'Details', required: ['choice'], properties: {
             text: { type: 'string' as const, minLength: 1, maxLength: 8, pattern: '^a', default: 'abc' },
             choice: { type: 'string' as const, oneOf: [{ const: 'a', title: 'Alpha', description: 'First' }] },
             count: { type: 'number' as const, minimum: 0, maximum: 2, default: 0 },
@@ -109,15 +111,15 @@ describe('versioned elicitation translation', () => {
 
     it(`v${version} rejects unknown modes and unknown required fields at translation or validation`, async () => {
       const requests = new ElicitationRequests();
-      await expect(translate({ mode: '_future', sessionId: 's1', message: 'Question' }, 1, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
-      await expect(translate({ mode: 'form', sessionId: 's1', message: 'Question', requestedSchema: { required: ['future'], properties: { future: { type: '_future' } } } }, 2, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
+      await expect(translate({ mode: '_future', sessionId: SESSION_ID, message: 'Question' }, 1, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
+      await expect(translate({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', required: ['future'], properties: { future: { type: '_future' } } } }, 2, new AbortController().signal, requests)).rejects.toMatchObject({ code: -32602 });
       expect(requests.snapshot()).toEqual([]);
     });
 
     it.each(['accept', 'decline', 'cancel'] as const)(`v${version} translates form scope and %s`, async (action) => {
       const requests = new ElicitationRequests((id) => id === 'parent');
       const signal = new AbortController().signal;
-      const answer = translate({ mode: 'form', requestId: 'parent', message: 'Question', requestedSchema: { properties: { count: { type: 'integer' } } } }, 'incoming', signal, requests);
+      const answer = translate({ mode: 'form', requestId: 'parent', message: 'Question', requestedSchema: { type: 'object', properties: { count: { type: 'integer' } } } }, 'incoming', signal, requests);
       const interaction = requests.snapshot()[0];
       expect(interaction).toMatchObject({ rpcId: 'incoming', scope: { requestId: 'parent' }, form: { fields: [{ name: 'count', type: 'integer' }] } });
       const response = action === 'accept' ? { action, content: { count: 0 } } : { action };
@@ -128,15 +130,15 @@ describe('versioned elicitation translation', () => {
     it(`v${version} translates URL session scope and maps individual cancellation to -32800`, async () => {
       const requests = new ElicitationRequests();
       const controller = new AbortController();
-      const answer = translate({ mode: 'url', sessionId: 's1', toolCallId: 'tool', message: 'Authorize', elicitationId: 'external', url: 'https://example.org' }, 42, controller.signal, requests);
-      expect(requests.snapshot()).toMatchObject([{ rpcId: 42, scope: { sessionId: 's1', toolCallId: 'tool' }, elicitationId: 'external' }]);
+      const answer = translate({ mode: 'url', sessionId: SESSION_ID, toolCallId: 'tool', message: 'Authorize', elicitationId: 'external', url: 'https://example.org' }, 42, controller.signal, requests);
+      expect(requests.snapshot()).toMatchObject([{ rpcId: 42, scope: { sessionId: SESSION_ID, toolCallId: 'tool' }, elicitationId: 'external' }]);
       const check = expect(answer).rejects.toMatchObject({ code: -32800 });
       controller.abort();
       await check;
     });
 
     it(`v${version} returns invalid params for unrenderable forms instead of a user refusal`, async () => {
-      await expect(translate({ mode: 'form', sessionId: 's1', message: 'Question', requestedSchema: { required: ['absent'] } }, 1, new AbortController().signal, new ElicitationRequests())).rejects.toMatchObject({ code: -32602 });
+      await expect(translate({ mode: 'form', sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', properties: {}, required: ['absent'] } }, 1, new AbortController().signal, new ElicitationRequests())).rejects.toMatchObject({ code: -32602 });
     });
   }
 });
@@ -160,7 +162,7 @@ describe('elicitation wire behavior', () => {
       ? () => fakeAgent().onRequest(V1.methods.agent.authenticate, ({ client, requestId }) => duringAuth(client, requestId))
       : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ client, requestId }) => duringAuth(client, requestId)) });
     const updates = new SessionUpdateHandler();
-    const manager = new ConnectionManager(updates, 'test', ({ elicitations }) => {
+    const manager = new ConnectionManager('test', ({ elicitations }) => {
       requests = elicitations;
       const detach = attachUrlElicitations('fake', elicitations, {
         choose: (_agent, interaction) => {
@@ -173,7 +175,7 @@ describe('elicitation wire behavior', () => {
       return { ...unusedHandlers, close: () => { void detach(); } };
     });
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     await driver.authenticate('browser');
     expect(opened).toEqual(['http://localhost:3000/connect?state=abc']);
     expect(requests?.snapshot()).toEqual([]);
@@ -183,7 +185,7 @@ describe('elicitation wire behavior', () => {
     let interactions: ElicitationInteractions | undefined;
     const duringAuth = async (client: V1.AgentContext | V2.AgentContext, requestId: string | number | null) => {
       if (requestId === null || !interactions) { throw new Error('Missing authentication ownership'); }
-      const params = { mode: 'form' as const, requestId, message: 'Setup', requestedSchema: { properties: { enabled: { type: 'boolean' as const } } } };
+      const params = { mode: 'form' as const, requestId, message: 'Setup', requestedSchema: { type: 'object' as const, properties: { enabled: { type: 'boolean' as const } } } };
       if (version === 1) {
         await expect((client as V1.AgentContext).request(V1.methods.client.elicitation.create, { ...params, requestId: 'stale' })).rejects.toMatchObject({ code: -32602 });
       } else {
@@ -199,7 +201,7 @@ describe('elicitation wire behavior', () => {
       ? () => fakeAgent().onRequest(V1.methods.agent.authenticate, ({ client, requestId }) => duringAuth(client, requestId))
       : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ client, requestId }) => duringAuth(client, requestId)) });
     const updates = new SessionUpdateHandler();
-    const manager = new ConnectionManager(updates, 'test', ({ elicitations }) => {
+    const manager = new ConnectionManager('test', ({ elicitations }) => {
       interactions = elicitations;
       elicitations.subscribe((change) => {
         if (change.kind === 'created') { elicitations.respond(change.interaction.interactionId, { action: 'accept', content: { enabled: false } }); }
@@ -207,7 +209,7 @@ describe('elicitation wire behavior', () => {
       return { ...unusedHandlers, elicitations };
     });
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     await driver.authenticate('browser');
   });
 
@@ -217,9 +219,9 @@ describe('elicitation wire behavior', () => {
     }) });
     const updates = new SessionUpdateHandler();
     let releases = 0;
-    const manager = new ConnectionManager(updates, 'test', () => ({ ...unusedHandlers, close: () => { releases++; } }));
+    const manager = new ConnectionManager('test', () => ({ ...unusedHandlers, close: () => { releases++; } }));
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    await expect(manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }))).rejects.toThrow('Initialization refused');
+    await expect(manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} })).rejects.toThrow('Initialization refused');
     expect(releases).toBe(1);
     await agents.launched[0]?.crash();
     expect(releases).toBe(1);
@@ -229,12 +231,12 @@ describe('elicitation wire behavior', () => {
     const agents = new InProcessAgents({ fake: version === 1 ? fakeAgent : fakeV2Agent });
     const updates = new SessionUpdateHandler();
     const attached = new Set<string>();
-    const manager = new ConnectionManager(updates, 'test', ({ agentName }) => {
+    const manager = new ConnectionManager('test', ({ agentName }) => {
       attached.add(agentName);
       return { ...unusedHandlers, close: () => { attached.delete(agentName); } };
     });
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     expect([...attached]).toEqual(['fake']);
     await agents.launched[0]?.crash();
     expect([...attached]).toEqual([]);
@@ -258,12 +260,12 @@ describe('elicitation wire behavior', () => {
       : () => fakeV2Agent().onRequest(V2.methods.agent.auth.login, ({ requestId }) => duringAuth(requestId)) });
     const updates = new SessionUpdateHandler();
     onTestFinished(async () => { updates.dispose(); await Promise.all(agents.launched.map((agent) => agent.crash())); });
-    const manager = new ConnectionManager(updates, 'test', (context) => {
+    const manager = new ConnectionManager('test', (context) => {
       expect(context.agentName).toBe('fake');
       requests = context.elicitations;
       return unusedHandlers;
     });
-    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
+    const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }), 'fake', { handleUpdate() {} });
     await driver.authenticate('browser');
     if (!requests || observed.parent === null) { throw new Error('Authentication did not run'); }
     await expect(requests.create({ mode: 'form', rpcId: 'late', scope: { requestId: observed.parent }, message: 'Question', requestedSchema: {} })).rejects.toMatchObject({ kind: 'invalid' });
@@ -273,17 +275,17 @@ describe('elicitation wire behavior', () => {
   for (const [version, agent] of [[1, fakeAgent], [2, fakeV2Agent]] as const) {
     it(`v${version} routes agent URL completion independently of consent`, async () => {
       const elicitations = new ElicitationRequests();
-      const answer = elicitations.create({ mode: 'url', rpcId: 2, scope: { sessionId: 's1' }, message: 'Authorize', elicitationId: 'external', url: 'https://example.org' });
+      const answer = elicitations.create({ mode: 'url', rpcId: 2, scope: { sessionId: SESSION_ID }, message: 'Authorize', elicitationId: 'external', url: 'https://example.org' });
       elicitations.respond(elicitations.snapshot()[0]?.interactionId ?? '', { action: 'accept' });
       await answer;
       const script = version === 1
         ? () => fakeAgent().onRequest(V1.methods.agent.session.new, async ({ client }) => {
           await client.notify(V1.methods.client.elicitation.complete, { elicitationId: 'external' });
-          return { sessionId: 's1' };
+          return { sessionId: SESSION_ID };
         })
         : () => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
           await client.notify(V2.methods.client.elicitation.complete, { elicitationId: 'external' });
-          return { sessionId: 's1' };
+          return { sessionId: SESSION_ID };
         });
       const { driver } = await connectedDriver(script, { ...unusedHandlers, elicitations });
       await driver.newSession(work);
@@ -293,9 +295,9 @@ describe('elicitation wire behavior', () => {
     it(`v${version} closes connection-owned pending and accepted URL state on disconnect`, async () => {
       const elicitations = new ElicitationRequests();
       const { exit } = await connectedDriver(agent, { ...unusedHandlers, elicitations });
-      const answer = elicitations.create({ mode: 'form', rpcId: 1, scope: { sessionId: 's1' }, message: 'Question', requestedSchema: {} });
+      const answer = elicitations.create({ mode: 'form', rpcId: 1, scope: { sessionId: SESSION_ID }, message: 'Question', requestedSchema: {} });
       const rejected = expect(answer).rejects.toMatchObject({ kind: 'closed' });
-      const accepted = elicitations.create({ mode: 'url', rpcId: 2, scope: { sessionId: 's1' }, message: 'Authorize', elicitationId: 'external', url: 'https://example.org' });
+      const accepted = elicitations.create({ mode: 'url', rpcId: 2, scope: { sessionId: SESSION_ID }, message: 'Authorize', elicitationId: 'external', url: 'https://example.org' });
       elicitations.respond(elicitations.snapshot()[1]?.interactionId ?? '', { action: 'accept' });
       await accepted;
       await exit();
@@ -310,9 +312,9 @@ describe('elicitation wire behavior', () => {
       ? () => fakeAgent().onNotification(V1.methods.agent.session.cancel, () => {})
       : () => fakeV2Agent().onNotification(V2.methods.agent.session.cancel, () => {});
     const { driver } = await connectedDriver(script, { permissions: { requestPermission: () => { throw new Error('Unexpected permission'); }, cancelSession: () => {} }, elicitations });
-    const answer = elicitations.create({ mode: 'form', rpcId: 'incoming', scope: { sessionId: 's1' }, message: 'Question', requestedSchema: {} });
+    const answer = elicitations.create({ mode: 'form', rpcId: 'incoming', scope: { sessionId: SESSION_ID }, message: 'Question', requestedSchema: {} });
     const before = elicitations.snapshot();
-    await driver.cancel('s1');
+    await driver.cancel(SESSION_ID);
     expect(elicitations.snapshot()).toEqual(before);
     elicitations.respond(before[0]?.interactionId ?? '', { action: 'decline' });
     expect(await answer).toEqual({ action: 'decline' });
@@ -322,10 +324,10 @@ describe('elicitation wire behavior', () => {
     let received: unknown;
     const { driver } = await connectedDriver(() => fakeAgent().onRequest(V1.methods.agent.session.new, async ({ client }) => {
       const request: V1.CreateElicitationRequest = mode === 'form'
-        ? { mode, sessionId: 's1', message: 'Question', requestedSchema: { required: ['missing'] } }
-        : { mode, sessionId: 's1', message: 'Authorize', elicitationId: 'external', url: 'file:///tmp/login' };
+        ? { mode, sessionId: SESSION_ID, message: 'Question', requestedSchema: { required: ['missing'] } }
+        : { mode, sessionId: SESSION_ID, message: 'Authorize', elicitationId: 'external', url: 'file:///tmp/login' };
       received = await client.request(V1.methods.client.elicitation.create, request).catch((error: unknown) => error);
-      return { sessionId: 's1' };
+      return { sessionId: SESSION_ID };
     }));
     await driver.newSession(work);
     expect(received).toMatchObject({ code: -32602 });
@@ -335,10 +337,10 @@ describe('elicitation wire behavior', () => {
     let received: unknown;
     const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
       const request: V2.CreateElicitationRequest = mode === 'form'
-        ? { mode, sessionId: 's1', message: 'Question', requestedSchema: { required: ['missing'] } }
-        : { mode, sessionId: 's1', message: 'Authorize', elicitationId: 'external', url: 'file:///tmp/login' };
+        ? { mode, sessionId: SESSION_ID, message: 'Question', requestedSchema: { type: 'object', properties: {}, required: ['missing'] } }
+        : { mode, sessionId: SESSION_ID, message: 'Authorize', elicitationId: 'external', url: 'file:///tmp/login' };
       received = await client.request(V2.methods.client.elicitation.create, request).catch((error: unknown) => error);
-      return { sessionId: 's1' };
+      return { sessionId: SESSION_ID };
     }));
     await driver.newSession(work);
     expect(received).toMatchObject({ code: -32602 });

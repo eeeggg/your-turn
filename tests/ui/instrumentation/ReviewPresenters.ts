@@ -15,8 +15,8 @@ export function createReviewEditors(...args: Parameters<typeof originalCreateRev
     return result;
   }));
   const show = editors.showChange;
-  editors.showChange = (path) => {
-    return scheduling.accept(() => show(path));
+  editors.showChange = (...args) => {
+    return scheduling.accept(() => show(...args));
   };
   const showOf = editors.showChangeOf;
   editors.showChangeOf = (...values) => scheduling.accept(() => showOf(...values));

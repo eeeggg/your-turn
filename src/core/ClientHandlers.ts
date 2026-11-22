@@ -13,6 +13,11 @@ export interface Permissions {
   cancelSession(sessionId: string): void;
 }
 
+export interface PermissionInteractions {
+  snapshot(): readonly Readonly<PermissionRequest>[];
+  subscribe(listener: () => void): () => void;
+}
+
 export interface Elicitations {
   create(request: ElicitationRequest, signal?: AbortSignal): Promise<ElicitationResponse>;
   complete(elicitationId: string): void;
@@ -29,6 +34,7 @@ export interface ElicitationInteractions {
 /** What one connection's client requests are answered by; each connection gets its own. */
 export interface ClientHandlers {
   permissions: Permissions;
+  permissionInteractions?: PermissionInteractions;
   elicitations?: Elicitations;
   /** Release connection-specific presentation subscriptions, without answering requests. */
   close?(): void;

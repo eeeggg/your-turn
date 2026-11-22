@@ -14,6 +14,7 @@ opening a public issue.
 3. Install the locked dependencies with `npm ci`.
 4. Read [AGENTS.md](AGENTS.md) for repository conventions and
    [GLOSSARY.md](GLOSSARY.md) for project terminology.
+5. Use [ARCHITECTURE.md](ARCHITECTURE.md) to find where to make your change.
 
 Keep changes focused and follow the surrounding code's structure and style.
 
@@ -30,9 +31,18 @@ for prerequisites, test layers, and options for running individual tests.
 | `npm run test:integration` | Checked tests in isolated VS Code instances. |
 | `npm test` | Unfiltered checked unit, webview, and integration gate. |
 | `npm run test:ui` | Separate checked desktop UI suite. |
+| `npm run benchmark` | Opt-in desktop performance benchmarks; not a correctness gate. |
 
 Run `npm test` for code changes and `npm run test:ui` for rendered workbench
 behavior. Add tests for new behavior and regression coverage for bug fixes.
+
+Run `npm run benchmark -- --repeat 2` for two sequential benchmark batches.
+Benchmarks always use one worker and ignore `.env.test.local`, including
+`UI_JOBS`. Add `*.benchmark.ts` files under `tests/ui/`. They can reuse the
+isolated desktop fixture. The [benchmark config](playwright.benchmark.config.mts)
+discovers them separately from the journey tests.
+Find each invocation under `test-results/benchmarks/<timestamp>-<suffix>/`.
+Each `run-NN/` keeps its samples and Playwright diagnostics separate from other runs.
 
 Hosted CI currently verifies Linux. Reports from macOS and Windows are welcome.
 

@@ -12,7 +12,6 @@ import type {
 } from '@/core/AgentManager';
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import type { FileEditor } from '@/core/ReportedFiles';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 
 /** Builds the SDK agent a launch talks to, of either version; called once per launch. */
 export type AgentScript = () => AgentConnector;
@@ -153,20 +152,17 @@ export async function connectedDriver(
   handlers: ClientHandlers = unusedHandlers,
 ): Promise<{ driver: AcpDriver; updates: [string, SessionUpdate][]; schemas: AcpSchema[]; exit: () => Promise<void> }> {
   const agents = new InProcessAgents({ fake: script });
-  const sessionUpdates = new SessionUpdateHandler();
   const exit = async () => {
-    sessionUpdates.dispose();
     await Promise.all(agents.launched.map((agent) => agent.crash()));
   };
   onTestFinished(exit);
   const updates: [string, SessionUpdate][] = [];
   const schemas: AcpSchema[] = [];
-  sessionUpdates.addListener((sessionId, update, schema) => {
-    updates.push([sessionId, update]);
-    schemas.push(schema);
+  const manager = new ConnectionManager('0.0.0-test', () => handlers);
+  const process = agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} });
+  const driver = await manager.connect('fake', process, process.id, {
+    handleUpdate(sessionId, update, schema) { updates.push([sessionId, update]); schemas.push(schema); },
   });
-  const manager = new ConnectionManager(sessionUpdates, '0.0.0-test', () => handlers);
-  const driver = await manager.connect('fake', agents.launch('fake', { command: 'fake' }, '/work', { error() {}, exit() {} }));
   return { driver, updates, schemas, exit };
 }
 

@@ -4,6 +4,7 @@ import { logError } from '@/core/Log';
 import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
+import type { ReviewDecision } from '@/core/review/Reviews';
 import { createReviewEditors } from '@/adapters/review/ReviewPresenters';
 
 const SCHEME = 'your-turn-review-diff';
@@ -25,6 +26,9 @@ interface LensChange {
   readonly baseline: string;
   readonly document: string;
   readonly index: number;
+  readonly change: Change;
+  readonly keep: ReviewDecision;
+  readonly undo: ReviewDecision;
 }
 
 /** Existing files stay editable; deleted files compare the retained baseline with a read-only virtual absence. */
@@ -102,47 +106,50 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     return input instanceof vscode.TabInputTextDiff && this.pathOf(input.original) !== undefined
       ? this.pathOf(input.modified) : this.editors.activePath();
   }
+  captureNavigation(): () => boolean { return this.editors.captureNavigation(); }
   isOpen(path: string): boolean {
     return vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
       input instanceof vscode.TabInputTextDiff && this.baselines.get(path)?.uri.toString() === input.original.toString()))
       || this.editors.isOpen(path);
   }
   text(path: string): string | undefined { return this.editors.text(path); }
-  applyEdit(path: string, edit: Parameters<ReviewEditors['applyEdit']>[1]): Promise<boolean> { return this.editors.applyEdit(path, edit); }
-  save(path: string): Promise<void> { return this.editors.save(path); }
   showError(message: string): void { this.editors.showError(message); }
 
-  open(path: string): Promise<void> {
+  open(path: string, stillCurrent?: () => boolean): Promise<void> {
     return this.present(async () => {
-      if ((enabled() || this.controls?.deleted(path)) && this.controls?.baseline(path) !== undefined) { await this.showChange(path); }
-      else { await this.editors.open(path); }
+      if (stillCurrent && !stillCurrent()) { return; }
+      if ((enabled() || this.controls?.deleted(path)) && this.controls?.baseline(path) !== undefined) { await this.showChange(path, stillCurrent); }
+      else { await this.editors.open(path, stillCurrent); }
     });
   }
 
-  showChange(path: string): Promise<void> {
+  showChange(path: string, stillCurrent?: () => boolean): Promise<void> {
     return this.present(async () => {
-      if (!enabled() && !this.controls?.deleted(path)) { await this.editors.showChange(path); return; }
+      if (stillCurrent && !stillCurrent()) { return; }
+      if (!enabled() && !this.controls?.deleted(path)) { await this.editors.showChange(path, stillCurrent); return; }
       if (!this.controls?.deleted(path)) { await vscode.workspace.openTextDocument(vscode.Uri.file(path)); }
-      if (this.disposed) { return; }
+      if (this.disposed || (stillCurrent && !stillCurrent())) { return; }
       const changes = this.controls?.changes(path) ?? [];
-      if (changes.length > 0) { await this.showChangeOf(path, changes, 0); }
+      if (changes.length > 0) { await this.showChangeOf(path, changes, 0, stillCurrent); }
       // Disk evidence can precede VS Code's reload of an already-open document.
-      else { await this.showDiff(path, 0); }
+      else { await this.showDiff(path, 0, {}, stillCurrent); }
     });
   }
 
-  showChangeOf(path: string, changes: readonly Change[], index: number): Promise<void> {
+  showChangeOf(path: string, changes: readonly Change[], index: number, stillCurrent?: () => boolean): Promise<void> {
     return this.present(async () => {
-      if (this.controls?.deleted(path)) { await this.showDiff(path, 0); return; }
-      if (!enabled()) { await this.editors.showChangeOf(path, changes, index); return; }
+      if (stillCurrent && !stillCurrent()) { return; }
+      if (this.controls?.deleted(path)) { await this.showDiff(path, 0, {}, stillCurrent); return; }
+      if (!enabled()) { await this.editors.showChangeOf(path, changes, index, stillCurrent); return; }
       const change = changes[index];
       if (!change) { return; }
       const line = Math.max(0, change.modified.start - (change.modified.start === change.modified.end ? 1 : 0));
-      await this.showDiff(path, line);
+      await this.showDiff(path, line, {}, stillCurrent);
     });
   }
 
-  private async showDiff(path: string, line: number, options: vscode.TextDocumentShowOptions = {}): Promise<void> {
+  private async showDiff(path: string, line: number, options: vscode.TextDocumentShowOptions = {}, stillCurrent?: () => boolean): Promise<void> {
+    if (stillCurrent && !stillCurrent()) { return; }
     const baseline = this.controls?.baseline(path);
     if (baseline === undefined) { return; }
     let entry = this.baselines.get(path);
@@ -155,7 +162,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     entry.text = baseline ?? '';
     const target = entry;
     const opening = (entry.opening ?? Promise.resolve()).then(async () => {
-      if (this.baselines.get(path) !== target) { return; }
+      if (this.baselines.get(path) !== target || (stillCurrent && !stillCurrent())) { return; }
       // Tab decorations depend on workbench settings and diff-label rendering; the title remains explicit without them.
       const title = `${basename(path)}${target.deleted ? ' (Deleted)' : ''} — Review`;
       await this.openDiff(target.uri, target.deleted ? target.absent : vscode.Uri.file(path), title, {
@@ -188,7 +195,10 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       const side = original ? change.original : change.modified;
       const line = Math.min(document.lineCount - 1, Math.max(0, side.start - (side.end === side.start ? 1 : 0)));
       const range = new vscode.Range(line, 0, line, 0);
-      const snapshot: LensChange = { review: String(this.generation), path, baseline: baseline ?? '', document: text, index };
+      const keep = this.reviews.captureDecision({ action: 'keep-change', path, change });
+      const undo = this.reviews.captureDecision({ action: 'undo-change', path, change });
+      if (!keep || !undo) { return []; }
+      const snapshot: LensChange = { review: String(this.generation), path, baseline: baseline ?? '', document: text, index, change, keep, undo };
       return [
         new vscode.CodeLens(range, { title: `Change ${index + 1} of ${changes.length}`, command: '' }),
         new vscode.CodeLens(range, { title: 'Keep Change', command: 'your-turn.keepDiffChange', arguments: [snapshot] }),
@@ -202,13 +212,17 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     if (this.disposed || !enabled() || !this.controls) { return; }
     let path: string;
     let change: Change | undefined;
-    if (argument && typeof argument === 'object' && 'review' in argument) {
+    let captured: ReviewDecision | undefined;
+    if (argument !== undefined) {
+      if (!argument || typeof argument !== 'object' || !('review' in argument)) { return; }
       const snapshot = argument as Partial<LensChange>;
       if (snapshot.review !== String(this.generation) || typeof snapshot.path !== 'string'
         || typeof snapshot.index !== 'number' || !Number.isInteger(snapshot.index)) { return; }
       path = snapshot.path;
       if ((this.controls.baseline(path) ?? '') !== snapshot.baseline || this.text(path) !== snapshot.document) { return; }
-      change = this.controls.changes(path)[snapshot.index];
+      change = snapshot.change;
+      captured = action === 'keep' ? snapshot.keep : snapshot.undo;
+      if (!captured) { return; }
     } else {
       const selected = this.selectedChange();
       if (!selected) { return; }
@@ -216,8 +230,8 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
       change = selected.change;
     }
     if (change) {
-      if (action === 'keep') { await this.controls.keepChange(path, change); }
-      else { await this.controls.undoChange(path, change); }
+      if (action === 'keep') { await this.controls.keepChange(path, change, captured); }
+      else { await this.controls.undoChange(path, change, captured); }
       await this.latest;
     }
   }

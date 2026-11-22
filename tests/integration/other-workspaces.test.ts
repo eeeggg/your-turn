@@ -7,9 +7,9 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { SessionReferences, type KeyValueStore, type SessionAddress } from '@/core/PersistedState';
 import { WorkspaceState } from '@/core/PersistedState';
-import { SessionList, type AgentSessions } from '@/core/SessionList';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionList, type AgentSessions } from '@/core/sessions/List';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { cleanup } from '@tests/integration/cleanup';
 
 function memoryStore(): KeyValueStore {
@@ -52,21 +52,30 @@ suite('The Agents view', () => {
 
   const shown = (item: vscode.TreeItem) => ({ label: item.label, description: item.description, collapsible: item.collapsibleState, command: item.command });
 
-  test('session-history updates preserve agent targets while child loading is pending', async () => {
-    const references = new SessionReferences(memoryStore());
+  function sessionManager() {
     const workspace = new WorkspaceState(memoryStore());
     const environment = createWorkspaceEnvironment(workspace);
     const updates = new SessionUpdateHandler();
     const manager = new SessionManager(
       new AgentManager(),
-      new ConnectionManager(updates, '0.0.0-test', () => { throw new Error('No agent should start for a history update'); }),
+      new ConnectionManager('0.0.0-test', () => { throw new Error('No agent should start for a history update'); }),
       environment,
       { chooseAuthMethod: async () => undefined },
+      updates,
     );
     owned.push(() => manager.dispose(), () => updates.dispose());
+    return manager;
+  }
+
+  test('session-history updates preserve agent targets while child loading is pending', async () => {
+    const references = new SessionReferences(memoryStore());
+    const manager = sessionManager();
     let resolveChildren!: (sessions: AgentSessions) => void;
     const children = new Promise<AgentSessions>((resolve) => { resolveChildren = resolve; });
     class PendingSessionList extends SessionList {
+      hasSession = false;
+      connected = false;
+      override agents() { return super.agents().map((agent) => ({ ...agent, hasSession: this.hasSession, connected: this.connected })); }
       override sessionsOf(): Promise<AgentSessions> { return children; }
     }
     const list = new PendingSessionList(manager, references, () => ['Claude', 'Codex'], () => '/home/me/work', () => ({ uri: THIS_WORKSPACE, host: LOCAL }));
@@ -92,9 +101,81 @@ suite('The Agents view', () => {
     assert.strictEqual(refreshed[0], roots[0], 'the selected agent retains its command-argument identity');
     assert.strictEqual(refreshed[1], roots[1], 'an unrelated agent retains its command-argument identity');
     assert.strictEqual(selected.agentName, 'Claude', 'the pending refresh preserves the explicit command target');
-    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-without-session');
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-disconnected-without-session');
+    list.connected = true;
+    provider.refresh();
+    assert.strictEqual((await provider.getChildren())[0], selected);
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-connected-without-session');
+    assert.strictEqual((provider.getTreeItem(selected).iconPath as vscode.ThemeIcon).id, 'circle-filled');
+    assert.strictEqual(provider.getTreeItem(selected).command, undefined, 'a connection without a session does not add the open-chat action');
     resolveChildren({ kind: 'unsupported' });
     assert.deepStrictEqual((await pending).map((item) => provider.getTreeItem(item).contextValue), ['session-info-unsupported']);
+    list.hasSession = true;
+    provider.refresh();
+    assert.strictEqual((await provider.getChildren())[0], selected);
+    assert.strictEqual(provider.getTreeItem(selected).description, undefined, 'agent names have no vague session-presence description');
+    assert.strictEqual((provider.getTreeItem(selected).iconPath as vscode.ThemeIcon).id, 'circle-filled', 'removing the description preserves the existing indicator');
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-connected-with-session');
+    list.connected = false;
+    provider.refresh();
+    assert.strictEqual(provider.getTreeItem(selected).contextValue, 'agent-disconnected-with-session');
+    assert.strictEqual((provider.getTreeItem(selected).iconPath as vscode.ThemeIcon).id, 'circle-outline');
+    assert.strictEqual(provider.getTreeItem(selected).command?.command, 'your-turn.openChat', 'a session retains its open-chat action after disconnection');
+  });
+
+  test('renders projected tab membership and refreshes children without replacing agent roots', async () => {
+    const references = new SessionReferences(memoryStore());
+    const manager = sessionManager();
+    class ProjectedSessionList extends SessionList {
+      open = false;
+      override sessionsOf(): Promise<AgentSessions> {
+        return Promise.resolve({
+          kind: 'listed',
+          source: 'agent',
+          rows: [
+            { sessionId: 'first', label: 'First', tooltip: 'First', hasOpenTab: this.open },
+            { sessionId: 'second', label: 'Second', tooltip: 'Second', hasOpenTab: this.open },
+            { sessionId: 'closed', label: 'Closed', tooltip: 'Closed', hasOpenTab: false },
+          ],
+          more: { kind: 'none' },
+        });
+      }
+    }
+    const list = new ProjectedSessionList(manager, references, () => ['Claude', 'Codex'], () => '/home/me/work', () => ({ uri: THIS_WORKSPACE, host: LOCAL }));
+    const provider = new SessionTreeProvider(list, references, () => THIS_WORKSPACE);
+    owned.push(() => provider.dispose(), () => list.dispose());
+    const roots = await provider.getChildren();
+    const changes: unknown[] = [];
+    const subscription = provider.onDidChangeTreeData((element) => { changes.push(element); });
+    owned.push(() => subscription.dispose());
+    const icons = async () => (await provider.getChildren(roots[0])).map((session) => {
+      const icon = provider.getTreeItem(session).iconPath as vscode.ThemeIcon;
+      return { id: icon.id, color: icon.color?.id };
+    });
+    assert.deepStrictEqual(await icons(), [
+      { id: 'comment-discussion', color: 'list.deemphasizedForeground' },
+      { id: 'comment-discussion', color: 'list.deemphasizedForeground' },
+      { id: 'comment-discussion', color: 'list.deemphasizedForeground' },
+    ]);
+
+    list.open = true;
+    list.emit('changed');
+
+    assert.deepStrictEqual(changes, [roots], 'tab changes refresh the existing roots rather than invalidating the tree');
+    const refreshed = await provider.getChildren();
+    assert.strictEqual(refreshed[0], roots[0]);
+    assert.strictEqual(refreshed[1], roots[1]);
+    assert.deepStrictEqual(await icons(), [
+      { id: 'comment-discussion', color: undefined },
+      { id: 'comment-discussion', color: undefined },
+      { id: 'comment-discussion', color: 'list.deemphasizedForeground' },
+    ]);
+
+    list.open = false;
+    list.emit('changed');
+    assert.deepStrictEqual((await icons()).map(({ color }) => color), [
+      'list.deemphasizedForeground', 'list.deemphasizedForeground', 'list.deemphasizedForeground',
+    ]);
   });
 
   test("lists other workspaces, the configurations their sessions were used through, and those sessions", async () => {

@@ -5,13 +5,18 @@ import { expect, onTestFinished } from 'vitest';
 import { JSDOM, VirtualConsole, type DOMWindow } from 'jsdom';
 import type { WebviewApi } from 'vscode-webview';
 import { renderChatHtml } from '@/adapters/ChatHtml';
-import type { ExtensionToWebviewMessage, PlanStep, SessionSnapshot, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PlanStep, PresentationTarget, SessionSnapshot, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import { setup as retainedSession, sessionInfo } from '@tests/unit/core/ChatViewControllerTestSupport';
+import { ContentProjection, isContentReport, type ContentReport, type FixtureMessage } from '@tests/ContentProjection';
+import { initialState, update } from '@/webview/state/RootState';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const bundlePath = join(repoRoot, 'dist', 'webview', 'chat.js');
 const sourceDir = join(repoRoot, 'src', 'webview');
 const nonce = 'test-nonce';
 const scriptUri = 'chat.js';
+export const DEFAULT_SESSION_ID = 'ad95961b-770b-4c48-bde9-5869ab4086bd';
+const DEFAULT_TAB_ID = 'tab-primary';
 
 export interface ChatPage {
   readonly window: DOMWindow;
@@ -20,10 +25,12 @@ export interface ChatPage {
   readonly errors: string[];
   /** Messages posted to the extension since the last call. */
   takePosted(): WebviewToExtensionMessage[];
+  takeComposerEdits(): Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[];
   /** The value most recently passed to `setState`. */
   savedState(): unknown;
+  target(): PresentationTarget;
   /** Deliver a message from the extension. */
-  send(message: ExtensionToWebviewMessage): void;
+  send(message: FixtureMessage): void;
   byId<T extends HTMLElement = HTMLElement>(id: string): T;
   typePrompt(text: string): void;
   /** Press a key in the prompt box; false when the page prevented what the textarea itself would do. */
@@ -62,7 +69,11 @@ function readBundle(): string {
  * `renderChatHtml`, with the compiled bundle inlined where the webview would
  * load it, and a fake `acquireVsCodeApi`.
  */
-export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
+export function loadChatPage(options: { savedState?: unknown; retained?: boolean } = {}): ChatPage {
+  const runtime = options.retained ? retainedSession(undefined, (sessions) => { for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); } }) : undefined;
+  const submissions: WebviewToExtensionMessage[] = [];
+  const content = new ContentProjection();
+  let projection = initialState;
   const scriptTag = `<script nonce="${nonce}" src="${scriptUri}"></script>`;
   const html = renderChatHtml({ cspSource: 'test-csp', nonce, styleUri: 'chat.css', scriptUri });
   if (!html.includes(scriptTag)) {
@@ -74,9 +85,19 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   // VS Code serializes everything crossing the webview boundary; cloning keeps
   // the page and the test from sharing objects.
   let posted: WebviewToExtensionMessage[] = [];
+  const composerEdits: Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[] = [];
   let state = structuredClone(options.savedState);
   const api: WebviewApi<unknown> = {
-    postMessage: (message) => posted.push(structuredClone(message as WebviewToExtensionMessage)),
+    postMessage: (message) => {
+      const input = structuredClone(message as WebviewToExtensionMessage);
+      if (input.type === 'composerEdited') {
+        composerEdits.push(input);
+        if (runtime) { runtime.sessions.editComposer(input.target, input.target.generation, input.revision, input.text); }
+        return;
+      }
+      posted.push(input);
+      if (input.type === 'sendPrompt' || input.type === 'queueChanged') { submissions.push(input); }
+    },
     getState: () => structuredClone(state),
     setState: (next) => {
       state = structuredClone(next);
@@ -113,7 +134,54 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
   const { document } = window;
 
   const deliver = (message: ExtensionToWebviewMessage): void => {
+    projection = update(projection, message, Date.now()).state;
     window.dispatchEvent(new window.MessageEvent('message', { data: structuredClone(message) }));
+  };
+  if (runtime) {
+    const post = runtime.environment.post.bind(runtime.environment);
+    runtime.environment.post = (message) => {
+      post(message);
+      if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot' || message.type === 'contentPatch') { deliver(message); }
+    };
+  }
+  const accept = () => {
+    if (!runtime?.sessions.session) { return; }
+    for (const message of submissions.splice(0)) {
+      void runtime.controller.handleMessage(message);
+    }
+  };
+  let target: PresentationTarget | undefined;
+  const send = (message: FixtureMessage) => {
+    if (message.type === 'contentSnapshot') { target = message.target; }
+    if (message.type === 'viewSnapshot' && message.content) { target = message.content.target; }
+    if (runtime) {
+      if (message.type === 'state' && message.session) {
+        runtime.sessions.activeId = message.session.sessionId;
+        runtime.sessions.session = sessionInfo({ sessionId: message.session.sessionId, agentName: message.session.agentName, availableCommands: message.session.commands });
+        runtime.sessions.retained.attach(runtime.sessions.session);
+      }
+      if (message.type === 'loadSessionStart') { runtime.controller.notifyLoadSessionStart(runtime.sessions.activeId ?? ''); }
+      if (message.type === 'loadSessionEnd') { runtime.controller.notifyLoadSessionEnd(message.ok); }
+      if (message.type === 'promptStart') { runtime.sessions.applyForegroundState(runtime.sessions.activeId ?? '', 'running'); }
+      if (message.type === 'promptEnd' && runtime.sessions.session) { runtime.sessions.finishProjectedTurn(Date.now()); }
+      if (message.type === 'promptMessage') {
+        runtime.controller.handleSessionUpdate(runtime.sessions.activeId ?? '', { kind: 'promptMessage', messageId: message.messageId, text: message.text });
+        return;
+      }
+      if (message.type === 'agentText' || message.type === 'promptText') {
+        runtime.controller.handleSessionUpdate(runtime.sessions.activeId ?? '', { kind: message.type, messageId: message.messageId, text: message.text });
+        runtime.controller.notifyActiveSessionChanged();
+        return;
+      }
+    }
+    const projected = !runtime ? content.project(message, projection.transcript, window.Date.now(), projection.activeSession?.turnRunning, projection.activeSession?.loading) : undefined;
+    if (projected) { deliver(projected); }
+    if (!isContentReport(message)) { deliver(message); }
+    if (runtime && message.type === 'state' && message.session) {
+      runtime.controller.notifyActiveSessionChanged();
+      target = runtime.environment.transcript().projection?.target;
+    }
+    accept();
   };
 
   const byId = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -129,12 +197,19 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
     document,
     errors,
     takePosted() {
+      accept();
       const taken = posted;
       posted = [];
       return taken;
     },
+    takeComposerEdits: () => composerEdits.splice(0),
     savedState: () => state,
-    send: deliver,
+    target: () => {
+      const issued = runtime?.environment.transcript().projection?.target ?? target;
+      if (!issued) { throw new Error('Missing issued projection'); }
+      return issued;
+    },
+    send,
     byId,
     typePrompt(text) {
       const input = byId<HTMLTextAreaElement>('promptInput');
@@ -144,9 +219,11 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
       input.dispatchEvent(new window.Event('input', { bubbles: true }));
     },
     pressKey(key, init = {}) {
-      return byId('promptInput').dispatchEvent(
+      const unhandled = byId('promptInput').dispatchEvent(
         new window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }),
       );
+      accept();
+      return unhandled;
     },
     close: () => window.close(),
   };
@@ -154,7 +231,7 @@ export function loadChatPage(options: { savedState?: unknown } = {}): ChatPage {
 
 function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
   return {
-    sessionId: 's1',
+    sessionId: DEFAULT_SESSION_ID,
     agentName: 'Fake Agent',
     cwd: '/work/project',
     pickers: [],
@@ -164,11 +241,12 @@ function sessionSnapshot(session: Partial<SessionSnapshot> = {}): SessionSnapsho
 }
 
 /** Send a `state` message describing the active session, as the extension does on connect. */
-export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}): void {
+export function connect(page: ChatPage, session: Partial<SessionSnapshot> = {}, tabId = DEFAULT_TAB_ID): void {
   const full = sessionSnapshot(session);
   page.send({ type: 'state', activeSessionId: full.sessionId, session: full });
-  page.send({ type: 'sessionTabs', selectedTabId: full.sessionId, tabs: [{
-    tabId: full.sessionId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], running: false,
+  page.send({ type: 'sessionTabs', selectedTabId: tabId, tabs: [{
+    tabId, title: full.title ?? null, agentName: full.agentName, cwd: full.cwd, additionalDirectories: [], status: 'quiet',
+    review: { modified: false, created: false, deleted: false },
   }] });
 }
 
@@ -185,7 +263,7 @@ export function replayed(page: ChatPage, text: string, messageId: string | null 
   page.send({ type: 'promptText', messageId, text });
 }
 
-export function toolCall(page: ChatPage, report: Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>): void {
+export function toolCall(page: ChatPage, report: Omit<Extract<ContentReport, { type: 'toolCall' }>, 'type'>): void {
   page.send({ type: 'toolCall', ...report });
 }
 
@@ -201,4 +279,14 @@ export function plan(page: ChatPage, ...steps: PlanStep[]): void {
 /** The text an element shows; for a message, its content without the labels of its copy controls. */
 export function shownText(element: Element): string {
   return (element.querySelector(':scope > .message-content') ?? element).textContent;
+}
+
+/** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
+export async function toggle(details: HTMLDetailsElement | null): Promise<void> {
+  if (!details) {
+    throw new Error('no details element to toggle');
+  }
+  const toggled = new Promise((resolve) => details.addEventListener('toggle', resolve, { once: true }));
+  details.querySelector('summary')?.click();
+  await toggled;
 }

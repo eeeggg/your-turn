@@ -18,6 +18,8 @@ const v2Request = {
   info: { name: 'vscode-your-turn', version: '0.0.0-test' },
   capabilities: { elicitation: { form: {}, url: {} } },
 };
+const SESSION_ID = '85eb88ba-ae93-484b-ad8b-1d880a190a3b';
+const OTHER_SESSION_ID = 'db7fc281-5112-45ee-8a84-dde39f60ca3a';
 const v1Request = {
   protocolVersion: 1,
   clientInfo: { name: 'vscode-your-turn', version: '0.0.0-test' },
@@ -33,7 +35,7 @@ function strictV1Agent(refusal: () => Error): AgentScript {
       }
       return { protocolVersion: 1 };
     })
-    .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' }));
+    .onRequest(methods.agent.session.new, () => ({ sessionId: SESSION_ID }));
 }
 
 const unsupported = (...supported: number[]) => () => new RequestError(-32022, 'Unsupported protocol version', { requested: 2, supported });
@@ -57,11 +59,11 @@ describe('negotiation', () => {
     .map((record) => record.message.params);
 
   it('speaks v1 with an agent that speaks only v1, which answers the request for v2', async () => {
-    const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
+    const { driver } = await connectedDriver(() => fakeAgent().onRequest(methods.agent.session.new, () => ({ sessionId: SESSION_ID })));
 
     expect(driver).toBeInstanceOf(V1Driver);
     expect(initializes()).toEqual([v2Request, v1Request]);
-    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: SESSION_ID });
   });
 
   it('uses the second initialize response and delivers v1 capabilities before creating a session on the same connection', async () => {
@@ -81,7 +83,7 @@ describe('negotiation', () => {
           };
         })
         .onRequest(methods.agent.session.new, () => {
-          return { sessionId: 's1' };
+          return { sessionId: SESSION_ID };
         });
     });
 
@@ -89,7 +91,7 @@ describe('negotiation', () => {
     expect(driver.agent.capabilities.load).toBe(true);
     expect(initialized).toBe(2);
     expect(capabilities).toMatchObject({ session: { compaction: {}, configOptions: { boolean: {} } } });
-    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: SESSION_ID });
     expect(initializes()).toEqual([v2Request, v1Request]);
     expect(launches).toBe(1);
   });
@@ -107,11 +109,11 @@ describe('negotiation', () => {
   });
 
   it('speaks v2 with an agent that speaks only v2', async () => {
-    const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1' })));
+    const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: SESSION_ID })));
 
     expect(driver).toBeInstanceOf(V2Driver);
     expect(initializes()).toEqual([v2Request]);
-    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: SESSION_ID });
   });
 
   it('uses the v2 answer without sending another initialize to the agent', async () => {
@@ -121,10 +123,10 @@ describe('negotiation', () => {
         info: { name: 'v2-agent', version: '0.0.1' },
         capabilities: { session: {} },
       }))
-      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's2' })));
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: OTHER_SESSION_ID })));
 
     expect(driver).toBeInstanceOf(V2Driver);
-    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's2' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: OTHER_SESSION_ID });
     expect(initializes()).toEqual([v2Request]);
   });
 
@@ -136,10 +138,10 @@ describe('negotiation', () => {
         }
         return { protocolVersion: 1 };
       })
-      .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
+      .onRequest(methods.agent.session.new, () => ({ sessionId: SESSION_ID })));
 
     expect(driver).toBeInstanceOf(V1Driver);
-    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: SESSION_ID });
     expect(initializes()).toEqual([v2Request, v1Request]);
   });
 
@@ -151,7 +153,7 @@ describe('negotiation', () => {
 
     expect(driver).toBeInstanceOf(V1Driver);
     expect(initializes()).toEqual([v2Request, v1Request]);
-    expect(await driver.newSession(work)).toMatchObject({ sessionId: 's1' });
+    expect(await driver.newSession(work)).toMatchObject({ sessionId: SESSION_ID });
   });
 
   it.each([
@@ -180,12 +182,12 @@ describe('negotiation', () => {
     const { driver, updates } = await connectedDriver(() => agent({ name: 'early-agent' })
       .onRequest(methods.agent.initialize, async ({ client }) => {
         await client.notify(methods.client.session.update, {
-          sessionId: 's1',
+          sessionId: SESSION_ID,
           update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'early' } },
         });
         return { protocolVersion: 1 };
       })
-      .onRequest(methods.agent.session.new, () => ({ sessionId: 's1' })));
+      .onRequest(methods.agent.session.new, () => ({ sessionId: SESSION_ID })));
 
     await driver.newSession(work);
 

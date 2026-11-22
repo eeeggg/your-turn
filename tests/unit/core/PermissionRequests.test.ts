@@ -12,13 +12,15 @@ const allowAlways: PermissionOption = { id: 'always', name: 'Always allow', kind
 const requestOnce: PermissionOption = { id: 'reject', name: 'Reject once', kind: 'reject_once' };
 const rejectAlways: PermissionOption = { id: 'reject-always', name: 'Always reject', kind: 'reject_always' };
 const sandboxed: PermissionOption = { id: 'sandbox', name: 'Run in the sandbox', kind: 'other' };
+const SESSION_ID = '2d35490f-b717-45df-81f1-185b12570c2c';
+const OTHER_SESSION_ID = '408944d2-0e14-4724-924b-08e0216e6398';
 
 function request(
   title: string | null,
   options: PermissionOption[] = [requestOnce, allowOnce],
   about: Partial<Pick<PermissionRequest, 'subject' | 'description'>> = {},
 ): PermissionRequest {
-  return { sessionId: 's1', title, description: null, subject: null, options, ...about };
+  return { sessionId: SESSION_ID, title, description: null, subject: null, options, ...about };
 }
 
 const selected = (optionId: string) => ({ kind: 'selected', optionId });
@@ -68,6 +70,27 @@ function manualRequests(autoApprove: AutoApprove = 'ask') {
 }
 
 describe('PermissionRequests', () => {
+  it('observes active and queued permission lifetimes without changing chooser order or cancellation', async () => {
+    const { requests, ask, pending } = manualRequests();
+    const seen: (readonly PermissionRequest[])[] = [];
+    const unsubscribe = requests.subscribe(() => { seen.push(requests.snapshot()); });
+    const firstRequest = request('First');
+    const secondRequest = request('Second');
+    const first = ask(firstRequest);
+    const second = ask(secondRequest);
+    expect(requests.snapshot()).toEqual([firstRequest, secondRequest]);
+    expect(pending.map((choice) => choice.prompt.title)).toEqual(['First']);
+    requests.cancelSession(SESSION_ID);
+    expect(await Promise.all([first, second])).toEqual([cancelled, cancelled]);
+    expect(requests.snapshot()).toEqual([]);
+    expect(seen.map((entries) => entries.map((entry) => entry.title))).toEqual([['First'], ['First', 'Second'], ['Second'], []]);
+    unsubscribe();
+    const detached = ask(request('Detached', [allowOnce]));
+    requests.cancelSession(SESSION_ID);
+    await detached;
+    expect(seen).toHaveLength(4);
+  });
+
   it("returns the option the user chooses, showing the request's title", async () => {
     const { ask, pending, nextChoice } = manualRequests();
     const shown = nextChoice();
@@ -153,11 +176,11 @@ describe('PermissionRequests', () => {
     const firstShown = nextChoice();
     const active = ask(request('active'));
     const queued = ask(request('queued'));
-    const otherSession = ask({ ...request('other session'), sessionId: 's2' });
+    const otherSession = ask({ ...request('other session'), sessionId: OTHER_SESSION_ID });
 
     await firstShown;
     const otherShown = nextChoice();
-    requests.cancelSession('s1');
+    requests.cancelSession(SESSION_ID);
 
     expect(await Promise.all([active, queued])).toEqual([cancelled, cancelled]);
     const otherChoice = await otherShown;

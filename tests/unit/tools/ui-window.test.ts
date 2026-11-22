@@ -27,13 +27,14 @@ vi.mock('@playwright/test', () => ({
 
 interface WindowFixture {
   window(
-    input: { workspace: string; reviewPresentation: undefined; gitRepository: boolean; display: undefined; treeRefresh?: { port: number; close(): Promise<void> } },
+    input: { workspace: string; reviewPresentation: undefined; gitRepository: boolean; display: undefined; desktopDiagnostics: boolean; treeRefresh?: { port: number; close(): Promise<void> } },
     use: () => Promise<void>,
     info: { testId: string; status: string; expectedStatus: string; outputPath(name: string): string },
   ): Promise<void>;
 }
 
 interface RecordedDiagnostics {
+  extensionLogs: Record<string, string>;
   timeline: { event: string; at: string; elapsedMs: number; phase: string; code?: number | null; signal?: string | null }[];
   stdout: { text: string; truncated: boolean };
   stderr: { text: string; truncated: boolean };
@@ -41,39 +42,21 @@ interface RecordedDiagnostics {
 
 afterEach(() => { vi.useRealTimers(); vi.resetAllMocks(); vi.unstubAllEnvs(); });
 
-it('leaves the agent and awaits hover dismissal before selecting a listed session', async () => {
+it('waits for the requested session row before clicking without a tooltip prerequisite', async () => {
   const events: string[] = [];
-  let dismiss: () => void = () => { throw new Error('Hover dismissal has not started'); };
-  let observed: () => void = () => {};
-  const observing = new Promise<void>((resolve) => { observed = resolve; });
-  const hidden = new Promise<void>((resolve) => { dismiss = resolve; });
+  let show: () => void = () => { throw new Error('Visibility wait has not started'); };
+  const visible = new Promise<void>((resolve) => { show = resolve; });
   const row = {
-    waitFor: async (options: unknown) => { expect(options).toEqual({ state: 'visible' }); events.push('row visible'); },
-    click: async () => { events.push('click'); observed(); },
-  };
-  const title = { hover: async () => { events.push('leave agent'); } };
-  const pane = { locator: (selector: string) => {
-    expect(selector).toBe('.pane-header > .title');
-    return title;
-  } };
-  const page = {
-    locator: (selector: string) => {
-      if (selector === '.pane') { return { filter: () => pane }; }
-      expect(selector).toBe('.pane-header > .codicon-hubot');
-      return {};
+    waitFor: async (options: unknown) => {
+      expect(options).toEqual({ state: 'visible' });
+      events.push('await visibility');
+      await visible;
+      events.push('row visible');
     },
+    click: async (...args: unknown[]) => { expect(args).toEqual([]); events.push('click'); },
+  };
+  const page = {
     getByRole: (role: string, options?: unknown) => {
-      if (role === 'tooltip') {
-        return { waitFor: async (options: unknown) => {
-          expect(options).toEqual({ state: 'hidden' });
-          events.push('observe hover');
-          observed();
-          await hidden;
-        } };
-      }
-      if (role === 'main') {
-        return { hover: async () => { events.push('leave agent'); } };
-      }
       expect([role, options]).toEqual(['tree', { name: 'Agents', exact: true }]);
       return { getByRole: (role: string) => {
         expect(role).toBe('treeitem');
@@ -83,11 +66,10 @@ it('leaves the agent and awaits hover dismissal before selecting a listed sessio
   } as unknown as Page;
 
   const selection = selectListedSession(page, 'Compaction session');
-  await observing;
-  expect(events).toEqual(['leave agent', 'observe hover']);
-  dismiss();
+  expect(events).toEqual(['await visibility']);
+  show();
   await selection;
-  expect(events).toEqual(['leave agent', 'observe hover', 'row visible', 'click']);
+  expect(events).toEqual(['await visibility', 'row visible', 'click']);
 });
 
 async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: boolean; setupFailure?: boolean; statusFailure?: boolean; launchFailure?: boolean; detachedDescendant?: boolean; hang?: 'diagnostics' | 'trace' | 'close' } = {}) {
@@ -224,7 +206,7 @@ async function fixture(options: { diagnosticFailure?: boolean; closeFailure?: bo
   const { test } = await import('@tests/ui/window');
   const window = (test as unknown as WindowFixture).window;
   const run = (use: () => Promise<void>, treeRefresh?: { port: number; close(): Promise<void> }) => window(
-    { workspace: directory, reviewPresentation: undefined, gitRepository: false, display: undefined, ...(treeRefresh ? { treeRefresh } : {}) },
+    { workspace: directory, reviewPresentation: undefined, gitRepository: false, display: undefined, desktopDiagnostics: true, ...(treeRefresh ? { treeRefresh } : {}) },
     use,
     { testId: 'owned-cleanup', status: 'passed', expectedStatus: 'passed', outputPath: (name) => join(directory, name) },
   );
@@ -245,7 +227,7 @@ it('rejects an unprepared editor before launching a window', async () => {
   const { test } = await import('@tests/ui/window');
   const window = (test as unknown as WindowFixture).window;
   await expect(window(
-    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined },
+    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined, desktopDiagnostics: true },
     async () => { throw new Error('Unprepared fixture reached the test body'); },
     { testId: 'unprepared', status: 'passed', expectedStatus: 'passed', outputPath: (name) => name },
   )).rejects.toThrow('UI editor is not prepared; use npm run test:ui');
@@ -291,7 +273,7 @@ it.each([
   else { boundary.manifest.mockRejectedValue(new Error('missing manifest')); }
   const { test } = await import('@tests/ui/window');
   await expect((test as unknown as WindowFixture).window(
-    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined },
+    { workspace: '/unused', reviewPresentation: undefined, gitRepository: false, display: undefined, desktopDiagnostics: true },
     async () => { throw new Error('Invalid artifact reached the test body'); },
     { testId: 'artifact', status: 'passed', expectedStatus: 'passed', outputPath: (name) => name },
   )).rejects.toThrow('Desktop extension artifact is not prepared; use npm run test:ui');
@@ -304,6 +286,7 @@ it('records startup and normal shutdown timing for a passing test', async () => 
   await state.run(async () => {});
   const after = Date.now();
   const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.extensionLogs).toEqual({});
   expect(diagnostics.timeline.map(({ event, phase }) => [event, phase])).toEqual([
     ['launch started', 'setup'],
     ['launch completed', 'setup'],
@@ -411,6 +394,28 @@ it('awaits the complete process group before removing files after graceful close
 
   await expect(state.run(async () => {})).rejects.toBe(state.closeError);
 
+  expect(state.closed()).toBe(true);
+  expect(await state.descendantRunning()).toBe(false);
+  for (const path of state.paths) { expect(existsSync(path)).toBe(false); }
+});
+
+it.each(['rejects', 'hangs'] as const)('retains final main-process logs when only graceful close %s', async (ending) => {
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  const state = await fixture(ending === 'hangs' ? { hang: 'close' } : { closeFailure: true });
+  const close = state.application.close;
+  state.application.close = async () => {
+    await writeFile(join(state.paths[0] ?? '', 'logs', '20261108T015857/main.log'), 'Final main-process shutdown context');
+    await close();
+  };
+  const result = expect(state.run(async () => {})).rejects.toThrow(ending === 'hangs' ? 'UI teardown watchdog expired' : state.closeError);
+  if (ending === 'hangs') {
+    await state.blocked;
+    await vi.advanceTimersByTimeAsync(5000);
+  }
+  await result;
+
+  const diagnostics = JSON.parse(await readFile(join(state.directory, 'diagnostics.json'), 'utf8')) as RecordedDiagnostics;
+  expect(diagnostics.extensionLogs['20261108T015857/main.log']).toBe('Final main-process shutdown context');
   expect(state.closed()).toBe(true);
   expect(await state.descendantRunning()).toBe(false);
   for (const path of state.paths) { expect(existsSync(path)).toBe(false); }

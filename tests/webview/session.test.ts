@@ -1,9 +1,54 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
-import { connect, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
+import { connect, DEFAULT_SESSION_ID, loadChatPage, type ChatPage } from '@tests/webview/chatPage';
 
 let page: ChatPage;
+const OTHER_SESSION_ID = '6d6f181f-5cfa-48d7-bc38-1d687e385d55';
 
 describe('session state', () => {
+  it('reconstructs tab status and review markers without announcing on a fresh page', () => {
+    page = loadChatPage();
+    const tabs = { selectedTabId: 'selected', tabs: [
+      { tabId: 'selected', title: 'Selected', agentName: 'Agent', cwd: '/work', additionalDirectories: [], status: 'quiet',
+        review: { modified: false, created: false, deleted: false } },
+      { tabId: 'answer', title: 'Build', agentName: 'Agent', cwd: '/work', additionalDirectories: [], status: 'needsInput',
+        review: { modified: true, created: true, deleted: true } },
+    ] } as const;
+    page.send({ type: 'viewSnapshot', state: { activeSessionId: null, session: null }, tabs, running: false, loading: false, questions: [], content: null });
+    const tab = page.byId('sessionTabs').querySelector<HTMLElement>('[aria-label="Build"]');
+    const live = page.byId('sessionTabStatus');
+    if (!tab) { throw new Error('Missing tab'); }
+    expect(tab.textContent).toBe('MUDBuild');
+    expect(tab.querySelector('[aria-label="Needs your input"] svg')).not.toBeNull();
+    expect(page.byId(tab.getAttribute('aria-describedby') ?? '').textContent).toBe('Needs your input. Modified files. Created files. Deleted files.');
+    expect(live.getAttribute('aria-live')).toBe('polite');
+    expect(live.textContent).toBe('');
+    tab.focus();
+    page.send({ type: 'sessionTabAnnouncement', revision: 1, text: 'Build: Needs your input.' });
+    const announced = live.firstChild;
+    page.send({ type: 'sessionTabs', ...tabs });
+    expect(announced?.textContent).toBe('Build: Needs your input.');
+    expect(live.firstChild).toBe(announced);
+    expect(page.document.activeElement).toBe(tab);
+    expect(page.takePosted()).toEqual([{ type: 'ready' }]);
+  });
+
+  it('posts the presentation tab ID rather than the session ID when closing a tab', () => {
+    page = loadChatPage();
+    const sessionId = '5a089aee-37da-46ab-9b04-097b16d5cf52';
+    const tabId = 'tab-close-target';
+    connect(page, { sessionId }, tabId);
+    page.takePosted();
+
+    const close = page.document.querySelector<HTMLButtonElement>('#sessionTabs button[aria-label="Close Fake Agent"]');
+    expect(close).not.toBeNull();
+    close?.click();
+    const posted = page.takePosted();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ type: 'closeSessionTab' });
+    expect(posted[0]).not.toEqual({ type: 'closeSessionTab', tabId: sessionId });
+    expect(posted).toEqual([{ type: 'closeSessionTab', tabId }]);
+  });
+
   it('closes every test-owned page after the test finishes', () => {
     const opened: ChatPage[] = [];
     const heard: string[] = [];
@@ -57,13 +102,15 @@ describe('session state', () => {
   it('updates the title from sessionInfoUpdate and falls back to the agent name when cleared', () => {
     page = loadChatPage();
     connect(page, { agentName: 'OpenCode', title: 'Old' });
+    const tab = { tabId: 'tab', agentName: 'OpenCode', cwd: '/work', additionalDirectories: [], status: 'quiet' as const,
+      review: { modified: false, created: false, deleted: false } };
 
     page.send({ type: 'sessionInfoUpdate', title: 'New' });
-    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ tabId: 'tab', title: 'New', agentName: 'OpenCode', cwd: '/work', additionalDirectories: [], running: false }] });
+    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ ...tab, title: 'New' }] });
     expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('New');
 
     page.send({ type: 'sessionInfoUpdate', title: null });
-    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ tabId: 'tab', title: null, agentName: 'OpenCode', cwd: '/work', additionalDirectories: [], running: false }] });
+    page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ ...tab, title: null }] });
     expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
   });
 
@@ -100,11 +147,11 @@ describe('session state', () => {
 
   it('clears the transcript when the host reports a different session', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
-    connect(page, { sessionId: 's2', agentName: 'OpenCode' });
+    connect(page, { sessionId: OTHER_SESSION_ID, agentName: 'OpenCode' }, 'tab-other');
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
     expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
@@ -112,19 +159,19 @@ describe('session state', () => {
   });
 
   it('keeps the transcript when the host reports the same session again', () => {
-    page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    page = loadChatPage({ retained: true });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
 
     expect([...page.document.querySelectorAll('.message.user')].map((el) => el.textContent)).toEqual(['hello']);
   });
 
   it('clears the transcript on disconnect, leaving only the empty state', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
     page.send({ type: 'promptStart' });
@@ -139,12 +186,12 @@ describe('session state', () => {
 
   it('keeps the transcript cleared when the same session reconnects', () => {
     page = loadChatPage();
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
     page.typePrompt('hello');
     page.pressKey('Enter');
 
     page.send({ type: 'state', activeSessionId: null, session: null });
-    connect(page, { sessionId: 's1' });
+    connect(page, { sessionId: DEFAULT_SESSION_ID });
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
   });

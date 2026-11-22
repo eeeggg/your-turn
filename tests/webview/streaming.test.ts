@@ -6,6 +6,7 @@ import {
   plan,
   shownText,
   thought,
+  toggle,
   type ChatPage
 } from '@tests/webview/chatPage';
 
@@ -23,16 +24,18 @@ function agentMessages(): string[] {
 
 describe('streaming a turn', () => {
   it('shows the tab activity indicator while core reports foreground work', () => {
+    const tab = { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [],
+      review: { modified: false, created: false, deleted: false } };
     page.send({ type: 'promptStart' });
     page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [
-      { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [], running: true },
+      { ...tab, status: 'working' },
     ] });
 
     expect(page.byId('sessionTabs').querySelector('.activity-dot')?.getAttribute('aria-label')).toBe('Actively working');
 
     page.send({ type: 'promptEnd' });
     page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [
-      { tabId: 'tab', title: null, agentName: 'Agent', cwd: '/work', additionalDirectories: [], running: false },
+      { ...tab, status: 'quiet' },
     ] });
     expect(page.byId('sessionTabs').querySelector('.activity-dot')).toBeNull();
   });
@@ -40,6 +43,7 @@ describe('streaming a turn', () => {
   it('accumulates the text of a turn into one agent message', () => {
     page.send({ type: 'promptStart' });
     answer(page, 'hello ');
+    expect(agentMessages()).toEqual(['hello']);
     answer(page, 'world');
 
     expect(agentMessages()).toEqual(['hello world']);
@@ -135,7 +139,7 @@ describe('thinking', () => {
 });
 
 describe('plans', () => {
-  it('renders plan steps with status icons and escapes their text', () => {
+  it('renders plan steps as a list with distinct steady status icons, accessible labels, and escaped text', () => {
     plan(
       page,
       { text: 'done step', status: 'completed' },
@@ -143,9 +147,25 @@ describe('plans', () => {
       { text: '<b>next</b>', status: 'pending' },
     );
 
+    expect(page.document.querySelector('.plan ul')).not.toBeNull();
     const entries = [...page.document.querySelectorAll('.plan .plan-entry')];
-    expect(entries.map((el) => el.textContent)).toEqual(['✅ done step', '🔄 current step', '⬜ <b>next</b>']);
+    expect(entries.map((el) => el.tagName)).toEqual(['LI', 'LI', 'LI']);
+    expect(entries.map((el) => el.textContent)).toEqual([
+      'Completed: done step',
+      'In progress: current step',
+      'Pending: <b>next</b>',
+    ]);
     expect(entries.map((el) => el.classList.contains('completed'))).toEqual([true, false, false]);
+    const svgs = entries.map((el) => {
+      const icon = el.querySelector('.plan-icon');
+      expect(icon?.getAttribute('aria-hidden')).toBe('true');
+      const svg = icon?.querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-pulse');
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-spin');
+      return svg?.innerHTML;
+    });
+    expect(new Set(svgs).size).toBe(3);
     expect(page.document.querySelector('.plan b')).toBeNull();
   });
 
@@ -154,7 +174,7 @@ describe('plans', () => {
     plan(page, { text: 'a', status: 'pending' });
     plan(page, { text: 'a', status: 'completed' }, { text: 'b', status: 'pending' });
 
-    expect(plans()).toEqual([['✅ a', '⬜ b']]);
+    expect(plans()).toEqual([['Completed: a', 'Pending: b']]);
   });
 
   it('starts a new plan in the next turn', () => {
@@ -164,7 +184,7 @@ describe('plans', () => {
       page.send({ type: 'promptEnd' });
     }
 
-    expect(plans()).toEqual([['⬜ first'], ['⬜ second']]);
+    expect(plans()).toEqual([['Pending: first'], ['Pending: second']]);
   });
 });
 
@@ -172,14 +192,4 @@ function plans(): string[][] {
   return [...page.document.querySelectorAll('.plan')].map((block) =>
     [...block.querySelectorAll('.plan-entry')].map((entry) => entry.textContent),
   );
-}
-
-/** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
-async function toggle(details: HTMLDetailsElement | null): Promise<void> {
-  if (!details) {
-    throw new Error('no details element to toggle');
-  }
-  const toggled = new Promise((resolve) => details.addEventListener('toggle', resolve, { once: true }));
-  details.querySelector('summary')?.click();
-  await toggled;
 }

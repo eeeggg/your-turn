@@ -2,13 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { Picker, SessionSnapshot, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { initialState, update, type Action } from '@/webview/state/RootState';
 import {
-  categoryIcon,
   currentValue,
   isOpen,
   tooltipText,
   type PickersState
 } from '@/webview/state/Pickers';
 import { createStore } from '@/webview/state/Store';
+const SESSION_ID = '52068c99-3a94-44bd-9016-174fe795ecbb';
+const OTHER_SESSION_ID = 'e05a5881-4ea2-46b0-9cd3-b40f6dbfb78b';
+const target = { configuredName: 'fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
 
 const model: Picker = {
   id: 'model',
@@ -32,7 +34,7 @@ const effort: Picker = {
 };
 
 function snapshot(session: Partial<SessionSnapshot> = {}): SessionSnapshot {
-  return { sessionId: 's1', agentName: 'Fake Agent', cwd: '/work', pickers: [], commands: [], ...session };
+  return { sessionId: SESSION_ID, agentName: 'Fake Agent', cwd: '/work', pickers: [], commands: [], ...session };
 }
 
 function chatView() {
@@ -41,8 +43,10 @@ function chatView() {
   return {
     pickers: (): PickersState => store.getSnapshot().pickers,
     send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
-    connect: (pickers: Picker[]) =>
-      store.dispatch({ type: 'state', activeSessionId: 's1', session: snapshot({ pickers }) }),
+    connect: (pickers: Picker[], sessionId = SESSION_ID) => {
+      store.dispatch({ type: 'state', activeSessionId: sessionId, session: snapshot({ pickers, sessionId }) });
+      store.dispatch({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target: { ...target, sessionId }, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+    },
     takePosted: () => posted.splice(0),
   };
 }
@@ -67,7 +71,7 @@ describe('which pickers are shown', () => {
     const view = chatView();
     view.connect([model]);
 
-    view.connect([]);
+    view.connect([], OTHER_SESSION_ID);
 
     expect(view.pickers().pickers).toEqual([]);
   });
@@ -88,7 +92,8 @@ describe('which pickers are shown', () => {
     view.connect([model]);
     const before = view.pickers();
 
-    view.send({ type: 'promptStart' }, { type: 'error', message: 'x' }, { type: 'agentText', messageId: null, text: 'hi' });
+    view.send({ type: 'promptStart' }, { type: 'error', message: 'x' }, { type: 'contentPatch', target, base: 0, revision: 1, currentTurn: 1, nextId: 2, usage: null,
+      patches: [{ kind: 'insert', index: 0, entries: [{ kind: 'turn', id: 1, parts: [{ kind: 'message', messageId: null, text: 'hi' }] }] }] });
 
     expect(view.pickers()).toBe(before);
   });
@@ -152,7 +157,7 @@ describe('choosing a value', () => {
 
     view.send({ type: 'pickerValueChosen', pickerId: 'model', value: 'b' });
 
-    expect(view.takePosted()).toEqual([{ type: 'pickerValueChosen', pickerId: 'model', value: 'b' }]);
+    expect(view.takePosted()).toEqual([{ type: 'pickerValueChosen', target, pickerId: 'model', value: 'b' }]);
     expect(view.pickers().pickers).toEqual([{ ...model, current: 'b' }, effort]);
     expect(view.pickers().open).toBeNull();
 
@@ -229,10 +234,6 @@ describe('the tooltip', () => {
 });
 
 describe('what a picker shows', () => {
-  it("shows the category's icon, and a gear for other categories", () => {
-    expect((['mode', 'model', 'thought_level', 'other'] as const).map(categoryIcon)).toEqual(['⚡', '🧠', '💭', '⚙']);
-  });
-
   it('finds the current value inside groups', () => {
     expect(currentValue({ ...effort, current: 'high' })?.name).toBe('High');
     expect(currentValue({ ...effort, current: 'none' })).toBeUndefined();

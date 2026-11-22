@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   yourTurnContainerControl,
+  chooseAgentAction,
   chatTranscript,
   chatUserMessages,
   promptInput,
@@ -19,9 +20,7 @@ const newest = 'noted newest';
 
 async function connectFakeAgent(window: Page): Promise<void> {
   await yourTurnContainerControl(window).click();
-  const agent = window.getByRole('treeitem', { name: /fake-v1/ });
-  await agent.hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
 }
 
 /** The prompt box's text and caret; the webview handles each key before Playwright's press returns. */
@@ -134,8 +133,8 @@ test('queued controls preserve inline focus, composer drafts and queue order acr
   await prompt.press('ArrowUp');
   await expect(prompt).toHaveValue('noted edited head');
   await prompt.press('ArrowUp');
-  await expect(prompt).toHaveValue('noted duplicate');
+  await expect(prompt).toHaveValue(`question-hidden ${workspace}`);
   await prompt.press('ArrowUp');
-  await expect(prompt).toHaveValue('noted duplicate');
+  await expect(prompt).toHaveValue(`question-hidden ${workspace}`);
   await expect(chatUserMessages(window)).toHaveCount(2);
 });

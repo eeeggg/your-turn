@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import type { WorkspaceState, WorkspaceTarget } from '@/core/PersistedState';
 import { logInfo } from '@/core/Log';
-import type { SessionEnvironment } from '@/core/SessionManager';
+import type { SessionEnvironment } from '@/core/sessions/Manager';
 import { getAgentConfigs } from '@/adapters/AgentConfig';
 
 /** The scheme and authority of `uri`, as VS Code parses them. */

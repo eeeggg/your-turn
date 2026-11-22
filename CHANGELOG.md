@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 — 2026-11-22 — Beta
+
+### Sessions and chat
+
+- Keep multiple sessions live at once, across agents or on the same agent
+  connection. Switch tabs without reloading live sessions or interrupting
+  their work. Queued prompts can advance while their session is unselected.
+- See which tabs are working, need input, finished, or failed, and which have
+  files under review. Tab order and selection are restored after a window reload.
+- Use **New Session** to start work and **Connect to Agent** to connect without
+  opening a session. Find connection actions in the Agents view. Closing a
+  working tab asks whether to stop its turn before closing it.
+- Switch tabs faster. Collapsed tool groups and closed tool calls, thoughts,
+  and compaction summaries no longer render their contents until opened.
+
+### Review
+
+- Review the same pending file across sessions without maintaining separate
+  baselines. Keeping or undoing a shared change updates every affected session.
+- Inspect files under review while sessions are working. Keep and Undo wait
+  until no session in the workspace is running, waiting for input, or has an
+  outstanding prompt submission.
+
+### Changes to defaults and commands
+
+- Automatic active-file context and ACP traffic capture are now off by default.
+  Opt in with `your-turn.includeActiveFile` and `your-turn.logTraffic`.
+  Use `your-turn.activeFileExcludes` to exclude files from automatic context.
+- Removed the **Attach File to Prompt** command. Automatic active-file context
+  remains available as a separate setting.
+
 ## 0.4.0 — 2026-11-07 — First public beta
 
 Your Turn brings ACP agents into VS Code, with streamed conversations,

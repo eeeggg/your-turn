@@ -2,12 +2,14 @@
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
-import { initialState, update, type Action, type RootState } from '@/webview/state/RootState';
+import { initialState, update, type RootState } from '@/webview/state/RootState';
+import { ContentProjection, isContentReport, type FixtureAction as Action } from '@tests/ContentProjection';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { Questions } from '@/webview/views/Questions';
 import { InputArea } from '@/webview/views/InputArea';
 import { Chevron } from '@/webview/views/elements/Chevron';
+const SESSION_ID = '27d8dff1-4e7c-47a1-8e60-61c1410901b8';
 
 type Question = Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number];
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
@@ -42,25 +44,37 @@ function setup(initial: RootState = initialState) {
   const posted: WebviewToExtensionMessage[] = [];
   const store = createStore(initial, update, (message: WebviewToExtensionMessage) => posted.push(message));
   render(<StoreContext value={store}><Questions><div aria-label="Queued prompts">Queued</div><InputArea /></Questions></StoreContext>);
-  const send = (action: Action) => act(() => store.dispatch(action));
+  const content = new ContentProjection();
+  const send = (action: Action) => act(() => {
+    const state = store.getSnapshot();
+    const projected = content.project(action, state.transcript, 0, state.activeSession?.turnRunning, state.activeSession?.loading);
+    if (projected) { store.dispatch(projected); }
+    if (!isContentReport(action)) { store.dispatch(action); }
+  });
   const arrive = (questions = [question]) => send({ type: 'questions', questions });
   const prompt = screen.getByRole<HTMLTextAreaElement>('textbox');
-  const connect = () => send({ type: 'state', activeSessionId: 's1', session: { sessionId: 's1', agentName: 'Agent', cwd: '/work', pickers: [], commands: [] } });
+  const connect = () => send({ type: 'state', activeSessionId: SESSION_ID, session: { sessionId: SESSION_ID, agentName: 'Agent', cwd: '/work', pickers: [], commands: [] } });
   return { send, arrive, prompt, connect, take: () => posted.splice(0) };
 }
 
 describe('question surface', () => {
-  it.each(['up', 'down', 'left', 'right'] as const)('renders the %s chevron without rotation and preserves shared styling', (direction) => {
+  it.each([
+    ['up', 'm18 15-6-6-6 6'],
+    ['down', 'm6 9 6 6 6-6'],
+    ['left', 'm15 18-6-6 6-6'],
+    ['right', 'm9 18 6-6-6-6'],
+  ] as const)('renders the %s chevron without rotation and preserves shared styling', (direction, path) => {
     const { container } = render(<Chevron direction={direction} size={12} className="mt-0.5" />);
     const icon = container.querySelector('svg');
-    expect(icon?.classList.contains(`lucide-chevron-${direction}`)).toBe(true);
+    expect(icon).not.toBeNull();
     expect(icon?.getAttribute('class')).not.toMatch(/rotate-/);
     expect(icon?.classList.contains('flex-none')).toBe(true);
     expect(icon?.classList.contains('mt-0.5')).toBe(true);
     expect(icon?.getAttribute('width')).toBe('12');
     expect(icon?.getAttribute('height')).toBe('12');
-    expect(icon?.getAttribute('stroke-width')).toBe('2.25');
+    expect(icon?.getAttribute('stroke-width')).toBe('2');
     expect(icon?.getAttribute('aria-hidden')).toBe('true');
+    expect(icon?.querySelector('path')?.getAttribute('d')).toBe(path);
   });
 
   it('keeps disclosure and navigation icons decorative at their existing sizes', () => {
@@ -129,7 +143,7 @@ describe('question surface', () => {
     expect(view.take()).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit without answers' }));
-    expect(view.take()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: {} }]);
+    expect(view.take()).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: {} }]);
   });
 
   it('disables submission for invalid answers and shows no form-button tooltips on focus or hover', () => {
@@ -199,7 +213,7 @@ describe('question surface', () => {
     fireEvent.click(screen.getByLabelText('First'));
     expect(view.take().every((message) => message.type === 'questionDraft')).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    expect(view.take()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { text: 'hello', count: 0, ratio: 1.25, enabled: false, color: 'b', tags: ['y'] } }]);
+    expect(view.take()).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: { text: 'hello', count: 0, ratio: 1.25, enabled: false, color: 'b', tags: ['y'] } }]);
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Submit' }).disabled).toBe(true);
     view.send({ type: 'questionErrors', interactionId: 'q1', errors: { text: 'Invalid value' } });
     expect(screen.getByLabelText('Written answer').getAttribute('aria-invalid')).toBe('true');
@@ -254,11 +268,11 @@ describe('question surface', () => {
     expect(document.activeElement).toBe(next);
     expect(second).toBeDefined();
     expect(scroll.scrollTop).toBe(175);
-    expect(view.take()).toEqual([{ type: 'questionDraft', interactionId: 'q1', draft: { text: 'draft', count: 0, enabled: false } }]);
+    expect(view.take()).toEqual([{ type: 'questionDraft', target: null, interactionId: 'q1', draft: { text: 'draft', count: 0, enabled: false } }]);
     const forms = screen.getAllByRole('form');
     fireEvent.click(within(forms[0] as HTMLElement).getByRole('button', { name: 'Decline' }));
     fireEvent.click(within(forms[1] as HTMLElement).getByRole('button', { name: 'Cancel' }));
-    expect(view.take()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'decline' }, { type: 'questionResponse', interactionId: 'q2', action: 'cancel' }]);
+    expect(view.take()).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'decline' }, { type: 'questionResponse', target: null, interactionId: 'q2', action: 'cancel' }]);
     view.arrive([]);
     expect(screen.queryByRole('region', { name: 'Elicitations' })).toBeNull();
     expect(screen.queryByRole('button', { name: /awaiting your response/ })).toBeNull();
@@ -281,7 +295,7 @@ describe('question surface', () => {
     expect(screen.getByLabelText<HTMLInputElement>('Written answer').value).toBe('draft');
     fireEvent.click(screen.getByRole('button', { name: 'Collapse elicitations' }));
     expect(screen.queryByRole('region', { name: 'Elicitations' })).toBeNull();
-    expect(view.take()).toEqual([{ type: 'questionDraft', interactionId: 'q1', draft: { text: 'draft', count: 0, enabled: false } }]);
+    expect(view.take()).toEqual([{ type: 'questionDraft', target: null, interactionId: 'q1', draft: { text: 'draft', count: 0, enabled: false } }]);
   });
 
   it('clears optional defaults and retains explicitly empty text and multi-selection', () => {
@@ -294,7 +308,7 @@ describe('question surface', () => {
     fireEvent.click(screen.getByLabelText('First'));
     view.take();
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    expect(view.take()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { text: '', count: 0, tags: [] } }]);
+    expect(view.take()).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: { text: '', count: 0, tags: [] } }]);
   });
 
   it('shows text constraints and supplied formats without turning URLs into links', () => {
@@ -380,11 +394,11 @@ describe('question surface', () => {
     fireEvent.change(select, { target: { value: within(select).getByRole<HTMLOptionElement>('option', { name: 'Empty answer' }).value } });
     view.take();
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
-    expect(view.take()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { text: '' } }]);
+    expect(view.take()).toEqual([{ type: 'questionResponse', target: null, interactionId: 'q1', action: 'accept', content: { text: '' } }]);
     view.arrive([{ ...question, interactionId: 'empty', fields: [] }]);
     fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
     expect(view.take()).toEqual([]);
     fireEvent.click(screen.getByRole('button', { name: 'Submit without answers' }));
-    expect(view.take()).toEqual([{ type: 'questionResponse', interactionId: 'empty', action: 'accept', content: {} }]);
+    expect(view.take()).toEqual([{ type: 'questionResponse', target: null, interactionId: 'empty', action: 'accept', content: {} }]);
   });
 });

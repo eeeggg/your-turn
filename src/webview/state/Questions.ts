@@ -1,4 +1,4 @@
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PresentationTarget, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
 import type { Transition } from '@/webview/state/Store';
 
@@ -25,7 +25,7 @@ export type QuestionAction =
   | { type: 'questionDismissed'; interactionId: string; action: 'decline' | 'cancel' };
 
 export const initialQuestions: QuestionsState = { items: [], requestedOpen: null };
-export function updateQuestions(state: QuestionsState, action: Action): Transition<QuestionsState, WebviewToExtensionMessage> {
+export function updateQuestions(state: QuestionsState, action: Action, selectedTarget: PresentationTarget | undefined): Transition<QuestionsState, WebviewToExtensionMessage> {
   if (action.type === 'questionOpen') {
     return { state: state.items.some((item) => item.question.interactionId === action.interactionId)
       ? { ...state, requestedOpen: { interactionId: action.interactionId } } : state, outgoing: [] };
@@ -61,6 +61,8 @@ export function updateQuestions(state: QuestionsState, action: Action): Transiti
   }
   const item = state.items.find((entry) => entry.question.interactionId === action.interactionId);
   if (!item || (item.submitting && action.type !== 'questionErrors')) { return { state, outgoing: [] }; }
+  const target = item.question.sessionId === null ? null : selectedTarget;
+  if (target === undefined || target !== null && target.sessionId !== item.question.sessionId) { return { state, outgoing: [] }; }
   const outgoing: WebviewToExtensionMessage[] = [];
   let changed: QuestionItem;
   switch (action.type) {
@@ -75,7 +77,7 @@ export function updateQuestions(state: QuestionsState, action: Action): Transiti
         : { ...item.draft, [action.name]: action.value };
       const errors = Object.fromEntries(Object.entries(item.errors).filter(([name]) => name !== action.name));
       changed = { ...item, draft, errors, confirmingEmpty: false };
-      outgoing.push({ type: 'questionDraft', interactionId: action.interactionId, draft });
+      outgoing.push({ type: 'questionDraft', target, interactionId: action.interactionId, draft });
       break;
     }
     case 'questionEditingContinued':
@@ -89,12 +91,12 @@ export function updateQuestions(state: QuestionsState, action: Action): Transiti
       const confirmingEmpty = valid && Object.keys(content).length === 0 && action.type !== 'questionEmptyConfirmed';
       const submitting = valid && !confirmingEmpty;
       changed = { ...item, errors, submitting, confirmingEmpty };
-      if (submitting) { outgoing.push({ type: 'questionResponse', interactionId: action.interactionId, action: 'accept', content }); }
+      if (submitting) { outgoing.push({ type: 'questionResponse', target, interactionId: action.interactionId, action: 'accept', content }); }
       break;
     }
     case 'questionDismissed':
       changed = { ...item, submitting: true };
-      outgoing.push({ type: 'questionResponse', interactionId: action.interactionId, action: action.action });
+      outgoing.push({ type: 'questionResponse', target, interactionId: action.interactionId, action: action.action });
       break;
   }
   return { state: { ...state, items: state.items.map((entry) => entry === item ? changed : entry) }, outgoing };

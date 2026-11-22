@@ -17,12 +17,14 @@ export function agentsViewRow(window: Page, label: string): Locator {
   return window.getByRole('tree', { name: 'Agents', exact: true }).getByRole('treeitem').filter({ hasText: label });
 }
 
-export function connectAgentAction(window: Page): Locator {
-  return window.getByRole('button', { name: 'Your Turn: Connect to Agent', exact: true });
+export function agentMoreActions(window: Page, agentName: string): Locator {
+  return agentsViewRow(window, agentName).getByRole('button', { name: 'Your Turn: More Actions', exact: true });
 }
 
-export function disconnectAgentAction(window: Page): Locator {
-  return agentsViewRow(window, 'fake-v1').getByRole('button', { name: 'Your Turn: Disconnect Agent', exact: true });
+export async function chooseAgentAction(window: Page, agentName: string, action: string): Promise<void> {
+  await agentsViewRow(window, agentName).hover();
+  await agentMoreActions(window, agentName).click();
+  await quickInputRow(window, action).click();
 }
 
 export function reviewTabs(window: Page): Locator {
@@ -30,9 +32,6 @@ export function reviewTabs(window: Page): Locator {
 }
 
 export async function selectListedSession(window: Page, label: string): Promise<void> {
-  // Moving off the row to a tooltip-free target cancels its hover without triggering the title's own.
-  await window.getByRole('main').hover();
-  await window.getByRole('tooltip').waitFor({ state: 'hidden' });
   const session = agentsViewRow(window, label);
   await session.waitFor({ state: 'visible' });
   await session.click();
@@ -82,10 +81,8 @@ export function chatWebview(window: Page): Locator {
   return window.locator(`iframe.webview[src*="extensionId=${extensionId}"]`);
 }
 
-/** VS Code's private pane DOM identifies the chat view by its header icon; its webview is in an overlay outside it. */
 export function chatStop(window: Page): Locator {
-  return window.locator('.pane').filter({ has: window.locator('.pane-header > .codicon-comment-discussion') })
-    .locator('.pane-header .actions').getByRole('button', { name: 'Your Turn: Cancel Current Turn', exact: true });
+  return chatFrame(window).getByRole('button', { name: 'Cancel current turn', exact: true });
 }
 
 export function promptInput(window: Page): Locator {
@@ -94,6 +91,10 @@ export function promptInput(window: Page): Locator {
 
 export function sessionTabs(window: Page): Locator {
   return chatFrame(window).getByRole('tablist', { name: 'Sessions', exact: true });
+}
+
+export function chatTheme(window: Page): Locator {
+  return chatFrame(window).locator('body');
 }
 
 /** The chat view's header uses VS Code's private pane DOM, identified by its contributed icon. */
@@ -142,6 +143,59 @@ export function chatUserMessages(window: Page): Locator {
 
 export function chatTranscript(window: Page): Locator {
   return chatFrame(window).locator('#messages');
+}
+
+export async function measureTranscriptSwitch(window: Page, tabName: string, marker: string): Promise<number> {
+  const tab = sessionTabs(window).getByRole('tab', { name: tabName, exact: true });
+  const probe = await tab.evaluateHandle((button, target) => {
+    const transcript = button.ownerDocument.querySelector('#messages');
+    if (!transcript || transcript.textContent.includes(target) || button.getAttribute('aria-selected') !== 'false') {
+      throw new Error(`Cannot measure switch to ${target}: expected an inactive tab and an absent marker`);
+    }
+    let startedAt: number | undefined;
+    const start = (event: Event) => { startedAt = event.timeStamp; };
+    button.addEventListener('click', start, { capture: true, once: true });
+    const observer = new MutationObserver(() => {
+      const observedAt = performance.now();
+      if (startedAt !== undefined && transcript.textContent.includes(target)) {
+        disconnect();
+        finish(observedAt - startedAt);
+      }
+    });
+    const disconnect = () => {
+      observer.disconnect();
+      button.removeEventListener('click', start, true);
+      clearTimeout(deadline);
+    };
+    const deadline = setTimeout(() => {
+      disconnect();
+      finish(null);
+    }, 10_000);
+    let finish!: (ms: number | null) => void;
+    const promise = new Promise<number | null>((resolve) => { finish = resolve; });
+    observer.observe(transcript, { childList: true, subtree: true, characterData: true });
+    return { promise, disconnect };
+  }, marker);
+  try {
+    await tab.click();
+    const ms = await probe.evaluate(({ promise }) => promise);
+    if (ms === null) { throw new Error(`Did not observe ${marker} after clicking ${tabName}`); }
+    return ms;
+  } finally {
+    try {
+      await probe.evaluate(({ disconnect }) => { disconnect(); });
+    } finally {
+      await probe.dispose();
+    }
+  }
+}
+
+export function chatTranscriptScroll(window: Page): Locator {
+  return chatFrame(window).locator('#transcriptScroll');
+}
+
+export function jumpToEnd(window: Page): Locator {
+  return chatFrame(window).getByRole('button', { name: 'Jump to the end', exact: true });
 }
 
 export function chatCompactions(window: Page): Locator {

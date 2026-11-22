@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { assert, beforeEach, describe, expect, it } from 'vitest';
 import { hookClasses } from '@tests/hookClasses';
 import {
   answer,
@@ -84,7 +84,7 @@ describe('loading a session', () => {
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
   });
 
-  it('collapses more than three tool calls in a replayed turn, as in a live one', () => {
+  it('mounts tool calls in collapsed replayed groups only when expanded', () => {
     page.send({ type: 'loadSessionStart' });
     for (const prompt of ['q1', 'q2']) {
       replayed(page, prompt);
@@ -96,6 +96,13 @@ describe('loading a session', () => {
 
     const lists = [...page.document.querySelectorAll('.turn-tools-list')];
     expect(lists.map((list) => list.classList.contains('collapsed'))).toEqual([true, true]);
+    const mountedCalls = () => lists.map((list) => [...list.querySelectorAll('.tool-call-inline')].map((call) => call.id));
+    expect(mountedCalls()).toEqual([[], []]);
+
+    const firstSummary = page.document.querySelector<HTMLButtonElement>('.turn-tools-summary');
+    assert.exists(firstSummary);
+    firstSummary.click();
+    expect(mountedCalls()).toEqual([['tc-q1-1', 'tc-q1-2', 'tc-q1-3', 'tc-q1-4'], []]);
   });
 
   it('reports a failed load', () => {

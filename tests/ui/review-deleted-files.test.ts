@@ -2,6 +2,7 @@ import { access, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   yourTurnContainerControl,
+  chooseAgentAction,
   editorTab,
   modifiedReviewEditor,
   promptInput,
@@ -18,8 +19,7 @@ test.use({ workspaceFiles: { 'a.ts': 'one\ntwo\n', 'gone.ts': 'removed content\n
 
 test('SCM deletion clicks show removed content and deletion identity while review navigation preserves absence', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();
-  await window.getByRole('treeitem', { name: /fake-v1/ }).hover();
-  await window.getByRole('button', { name: 'Connect to Agent' }).click();
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
   const prompt = promptInput(window);
   await expect(prompt).toBeEnabled();
   await prompt.fill(`review ${workspace}`);

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk/experimental/v2';
 import type { AgentContext, ContentBlock, SessionConfigOption, SessionUpdate, StateUpdate } from '@agentclientprotocol/sdk/experimental/v2';
 import { appendFileSync, readFileSync, unlinkSync, watch, writeFileSync } from 'node:fs';
@@ -24,7 +25,6 @@ import { Readable, Writable } from 'node:stream';
  * and refuses `busy` as in use.
  */
 
-const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
 const RECORDS = process.env['ACP_TEST_RECORDS'];
 let listings = 0;
 let setupResponse: unknown;
@@ -68,7 +68,11 @@ function restoredOptions({ model, effort, fast }: Choices): SessionConfigOption[
   ];
 }
 
-/** Open a session it is asked to resume, which starts out with model A at low effort and not fast. */
+/**
+ * Open a session it is asked to resume, which starts out with model A at low effort and not fast.
+ * shortcut: historical resumes are scripted, not backed by a database. Seed known sessions and validate request IDs
+ * when Slice 1 authority or Slice 2 routing tests need it; do not tie session lifetime to process lifetime.
+ */
 function restore(sessionId: string): SessionConfigOption[] {
   if (sessionId === 'gone') {
     throw new RequestError(-32002, 'Resource not found', { sessionId });
@@ -458,7 +462,7 @@ agent({ name: 'fake-agent' })
   }))
   .onRequest(methods.agent.session.list, ({ params }) => {
     listings += 1;
-    return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
+    return { sessions: [{ sessionId: randomUUID(), cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
   .onRequest(methods.agent.auth.login, async ({ client, requestId }) => {
     if (requestId === null) { throw new Error('Authentication needs a parent request ID'); }
@@ -483,7 +487,7 @@ agent({ name: 'fake-agent' })
       });
       setupResponse = { action: response.action, ...(response.action === 'accept' ? { content: response.content } : {}) };
     }
-    return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
+    return { sessionId: randomUUID(), configOptions: [modelOption('model-a')] };
   })
   .onRequest(methods.agent.session.resume, async ({ params, client }) => {
     record('session/resume', params);

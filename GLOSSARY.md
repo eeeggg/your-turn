@@ -104,6 +104,15 @@ _Avoid_: current conversation
 The extension's own link between a session and the agent configuration and workspace it was used through, kept for each session the user created, loaded or resumed with the extension, with when it was last used and the last title the agent reported. Shared by every window of one VS Code application, local or remote; the session itself stays the agent's.
 _Avoid_: saved session, session entry, history entry
 
+**Session tab**:
+An open navigation reference to a session in the Chat view. A tab has a
+selection state, a session status, and pending review markers. The runtime
+retains the tab's session content in memory; the agent owns persistence.
+
+**Session status**:
+The tab's indication that its session is quiet, working, needs input, failed,
+or finished while unselected. Selection and pending review are separate facts.
+
 **Session history**:
 The session references of one agent configuration in the window's host and cwd, which are the session list when the agent cannot list its sessions itself.
 _Avoid_: history (unqualified), recent sessions
@@ -203,15 +212,15 @@ The extension's Source Control entry for the shown session's review. Its Files U
 _Avoid_: staging area, index, changeset
 
 **Review**:
-A session's files whose net change the user has yet to keep or undo, each from its baseline to what it holds now, whoever changed it since. Only evidence of an agent's change puts a file under review.
+A session's associated files whose net change the user has yet to keep or undo. Sessions associated with the same file share one baseline and current comparison, whoever changed it since. Only evidence of an agent's change puts a file under review. Full resolution removes the file from every associated session.
 _Avoid_: diff (a tool call's, which is history), changeset, pending changes
 
 **Baseline**:
-What a file under review held when the review first saw it change; nothing, for a file the agent created. A file back at its baseline leaves the review.
+What a file under review held when the extension first admitted evidence of its pending change; nothing, for a file the agent created. All associated sessions share that baseline. A file back at its baseline leaves every associated session's review.
 _Avoid_: original, before
 
 **Evidence**:
-A report, trusted by a guard, that a path held one content and now holds another.
+A report, trusted by a guard, that a path held one content and now holds another. Admitted evidence associates its session with the pending file; it does not establish exclusive authorship.
 _Avoid_: event, edit
 
 **Keep**:

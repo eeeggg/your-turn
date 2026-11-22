@@ -4,6 +4,9 @@ import * as vscode from 'vscode';
 import { ChatWebviewProvider } from '@/adapters/ChatWebviewProvider';
 import type { ExtensionTestApi } from '@/extension';
 
+const FIRST_SESSION_ID = '0625321e-4d7e-4c86-9ac4-4e421eff8b7a';
+const SECOND_SESSION_ID = '709453fc-91b3-49d2-9322-b4c79ca92da8';
+
 suite('Chat View Test Suite', () => {
   test('Boots when focused: its script loads and its first message reaches the extension', async () => {
     const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
@@ -33,11 +36,11 @@ suite('Chat View Test Suite', () => {
     };
     const view = { webview, onDidDispose: disposed.event } as unknown as vscode.WebviewView;
     try {
-      provider.post({ type: 'state', activeSessionId: 's1', session: { sessionId: 's1', agentName: 'First Agent', cwd: '/work', pickers: [], commands: [] } });
+      provider.post({ type: 'state', activeSessionId: FIRST_SESSION_ID, session: { sessionId: FIRST_SESSION_ID, agentName: 'First Agent', cwd: '/work', pickers: [], commands: [] } });
       provider.resolveWebviewView(view, { state: undefined }, tokens.token);
       assert.strictEqual(view.title, 'Chat First Agent');
       const html = webview.html;
-      provider.post({ type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Second Agent', cwd: '/work', pickers: [], commands: [] } });
+      provider.post({ type: 'state', activeSessionId: SECOND_SESSION_ID, session: { sessionId: SECOND_SESSION_ID, agentName: 'Second Agent', cwd: '/work', pickers: [], commands: [] } });
       assert.strictEqual(view.title, 'Chat Second Agent');
       assert.strictEqual(webview.html, html, 'changing the title must not reload the webview');
       assert.strictEqual(given.length, 1);

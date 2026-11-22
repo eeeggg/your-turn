@@ -1,7 +1,7 @@
 import type {
   Picker,
-  PickerCategory,
   PickerValue,
+  PresentationTarget,
   WebviewToExtensionMessage
 } from '@/shared/WebviewMessages';
 import type { Action } from '@/webview/state/RootState';
@@ -48,22 +48,10 @@ export function currentValue(picker: Picker): PickerValue | undefined {
   return values(picker).find((value) => value.id === picker.current);
 }
 
-export function categoryIcon(category: PickerCategory): string {
-  switch (category) {
-    case 'mode':
-      return '⚡';
-    case 'model':
-      return '🧠';
-    case 'thought_level':
-      return '💭';
-    default:
-      return '⚙';
-  }
-}
-
 export function updatePickers(
   state: PickersState,
   action: Action,
+  target?: PresentationTarget,
 ): Transition<PickersState, WebviewToExtensionMessage> {
   switch (action.type) {
     case 'state':
@@ -93,7 +81,7 @@ export function updatePickers(
       const chosen = { ...picker, current: value };
       return {
         state: { ...closed(state), pickers: state.pickers.map((candidate) => (candidate === picker ? chosen : candidate)) },
-        outgoing: [{ type: 'pickerValueChosen', pickerId, value }],
+        outgoing: target ? [{ type: 'pickerValueChosen', target, pickerId, value }] : [],
       };
     }
     default:

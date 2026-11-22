@@ -2,7 +2,7 @@
   "name": "your-turn",
   "displayName": "Your Turn",
   "description": "Work with coding agents and understand their changes, one turn at a time.",
-  "version": "0.4.0",
+  "version": "0.6.0",
   "publisher": "eeeggg",
   "license": "SEE LICENSE IN LICENSE",
   "icon": "resources/icon.png",
@@ -124,6 +124,11 @@
         "icon": "$(add)"
       },
       {
+        "command": "your-turn.agentActions",
+        "title": "Your Turn: More Actions",
+        "icon": "$(ellipsis)"
+      },
+      {
         "command": "your-turn.sendPrompt",
         "title": "Your Turn: Send Prompt"
       },
@@ -170,11 +175,13 @@
       },
       {
         "command": "your-turn.showLog",
-        "title": "Your Turn: Show Log"
+        "title": "Your Turn: Show Log",
+        "icon": "$(output)"
       },
       {
         "command": "your-turn.exportTraffic",
-        "title": "Your Turn: Export Protocol Traffic"
+        "title": "Your Turn: Export Protocol Traffic",
+        "icon": "$(export)"
       },
       {
         "command": "your-turn.showPersistedState",
@@ -191,11 +198,6 @@
       {
         "command": "your-turn.setModel",
         "title": "Your Turn: Set Agent Model"
-      },
-      {
-        "command": "your-turn.attachFile",
-        "title": "Your Turn: Attach File to Prompt",
-        "icon": "$(attach)"
       },
       {
         "command": "your-turn.refreshSessions",
@@ -238,7 +240,7 @@
         "command": "your-turn.openReview",
         "title": "Open Review",
         "icon": "$(diff)",
-        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles"
       },
       {
         "command": "your-turn.previousReviewFile",
@@ -256,47 +258,51 @@
         "command": "your-turn.undoFile",
         "title": "Undo File",
         "icon": "$(discard)",
-        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepFile",
         "title": "Keep File",
         "icon": "$(check)",
-        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && resource in your-turn.reviewedFiles && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepAllFiles",
         "title": "Keep All",
         "icon": "$(check-all)",
-        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewShown && your-turn.reviewHasFiles && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.undoDiffChange",
         "title": "Undo Change",
         "icon": "$(discard)",
-        "enablement": "your-turn.reviewDiffChange && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewDiffChange && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepDiffChange",
         "title": "Keep Change",
         "icon": "$(check)",
-        "enablement": "your-turn.reviewDiffChange && !your-turn.turnInProgress"
+        "enablement": "your-turn.reviewDiffChange && !your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.undoChange",
         "title": "Undo Change",
         "icon": "$(discard)",
-        "enablement": "!your-turn.turnInProgress"
+        "enablement": "!your-turn.reviewResolutionBlocked"
       },
       {
         "command": "your-turn.keepChange",
         "title": "Keep Change",
         "icon": "$(check)",
-        "enablement": "!your-turn.turnInProgress"
+        "enablement": "!your-turn.reviewResolutionBlocked"
       }
     ],
     "menus": {
       "commandPalette": [
+        {
+          "command": "your-turn.agentActions",
+          "when": "false"
+        },
         {
           "command": "your-turn.connectAgent",
           "when": "!your-turn.workspaceUnavailable"
@@ -355,10 +361,6 @@
         },
         {
           "command": "your-turn.setModel",
-          "when": "!your-turn.workspaceUnavailable"
-        },
-        {
-          "command": "your-turn.attachFile",
           "when": "!your-turn.workspaceUnavailable"
         },
         {
@@ -523,71 +525,66 @@
           "group": "navigation@0"
         },
         {
+          "command": "your-turn.showLog",
+          "when": "!your-turn.workspaceUnavailable && view == your-turn-sessions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "your-turn.exportTraffic",
+          "when": "!your-turn.workspaceUnavailable && view == your-turn-sessions && config.your-turn.logTraffic",
+          "group": "navigation@2"
+        },
+        {
           "command": "your-turn.addAgent",
           "when": "!your-turn.workspaceUnavailable && !your-turn.showingOtherWorkspaces && view == your-turn-sessions",
-          "group": "navigation@1"
+          "group": "navigation@3"
         },
         {
           "command": "your-turn.newSession",
           "when": "view == your-turn-chat",
           "group": "navigation@1"
-        },
-        {
-          "command": "your-turn.attachFile",
-          "when": "view == your-turn-chat",
-          "group": "navigation@2"
-        },
-        {
-          "command": "your-turn.cancelTurn",
-          "when": "view == your-turn-chat && your-turn.turnInProgress",
-          "group": "navigation@3"
-        },
-        {
-          "command": "your-turn.disconnectAgent",
-          "when": "view == your-turn-chat",
-          "group": "navigation@4"
-        },
-        {
-          "command": "your-turn.showLog",
-          "when": "view == your-turn-chat"
-        },
-        {
-          "command": "your-turn.exportTraffic",
-          "when": "view == your-turn-chat"
-        },
-        {
-          "command": "your-turn.restartAgent",
-          "when": "view == your-turn-chat"
         }
       ],
       "view/item/context": [
         {
           "command": "your-turn.newSession",
           "when": "view == your-turn-sessions && viewItem =~ /^agent/",
-          "group": "session@0"
+          "group": "inline@0"
         },
         {
-          "command": "your-turn.connectAgent",
-          "when": "view == your-turn-sessions && viewItem == agent-without-session",
-          "group": "inline"
+          "command": "your-turn.agentActions",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/",
+          "group": "inline@1"
         },
         {
-          "command": "your-turn.disconnectAgent",
-          "when": "view == your-turn-sessions && viewItem == agent-with-session",
-          "group": "inline"
-        },
-        {
-          "command": "your-turn.removeAgent",
-          "when": "view == your-turn-sessions && viewItem =~ /^agent/"
-        },
-        {
-          "command": "your-turn.restartAgent",
-          "when": "view == your-turn-sessions && viewItem == agent-with-session"
+          "command": "your-turn.newSession",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/",
+          "group": "1_session@0"
         },
         {
           "command": "your-turn.refreshSessions",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent/ && viewItem =~ /-refreshable$/",
+          "group": "1_session@1"
+        },
+        {
+          "command": "your-turn.connectAgent",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent-disconnected-/",
+          "group": "2_agent@0"
+        },
+        {
+          "command": "your-turn.disconnectAgent",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent-connected-/",
+          "group": "2_agent@0"
+        },
+        {
+          "command": "your-turn.restartAgent",
+          "when": "view == your-turn-sessions && viewItem =~ /^agent-connected-/",
+          "group": "2_agent@1"
+        },
+        {
+          "command": "your-turn.removeAgent",
           "when": "view == your-turn-sessions && viewItem =~ /^agent/",
-          "group": "session@1"
+          "group": "2_agent@2"
         },
         {
           "command": "your-turn.copySessionId",
@@ -638,7 +635,10 @@
         },
         "your-turn.activeFileExcludes": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 },
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
           "default": [],
           "order": 2,
           "markdownDescription": "Exclude matching files from automatic active-file attachment. Only applies when `#your-turn.includeActiveFile#` is enabled; turning it off retains this list.\n\nPatterns match at any directory depth, like VS Code Search (an initial `**/` is assumed). Examples: `.env` (that filename), `.env.*` (such as `.env.local`), `*.pem` (PEM files), `secrets/**` (files inside directories named secrets). Add one pattern per item."
@@ -670,6 +670,7 @@
     "test:webview": "node tools/run-tests.mjs test:webview",
     "test:integration": "node tools/run-tests.mjs test:integration",
     "test:ui": "node tools/run-tests.mjs test:ui",
+    "benchmark": "node tools/run-tests.mjs benchmark",
     "test:unit:only": "node tools/run-tests.mjs test:unit:only",
     "test:webview:only": "node tools/run-tests.mjs test:webview:only",
     "test:integration:only": "node tools/run-tests.mjs test:integration:only",
@@ -677,10 +678,11 @@
     "coverage": "node tools/run-tests.mjs coverage",
     "coverage:integration": "node tools/run-tests.mjs coverage:integration",
     "package:vsix": "vsce package",
+    "package:dev": "node tools/package-dev.mjs",
     "package:ci": "node tools/package-ci.mjs"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^2.1.0",
+    "@agentclientprotocol/sdk": "2.7.0",
     "@xterm/headless": "^6.0.0",
     "currency-codes": "^2.2.0",
     "date-fns": "^4.4.0",
@@ -716,7 +718,7 @@
     "@vitest/coverage-v8": "^5.0.5",
     "@vscode/test-cli": "^0.0.15",
     "@vscode/test-electron": "^3.1.0",
-    "@vscode/vsce": "^4.1.0",
+    "@vscode/vsce": "^4.1.1",
     "esbuild": "^0.28.2",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
@@ -733,7 +735,9 @@
   "knip": {
     "entry": [
       ".vscode-test.mjs",
+      "playwright.benchmark.config.mts",
       "src/extension.ts",
+      "tests/ui/*.benchmark.ts",
       "tests/ui/instrumentation/*.ts",
       "tools/run-integration.mjs",
       "tools/vscode-test.mjs"
@@ -748,7 +752,7 @@
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "@vscode/vsce-sign@2.1.0": true,
+    "@vscode/vsce-sign@2.1.1": true,
     "@parcel/watcher@2.5.1": true
   }
 }

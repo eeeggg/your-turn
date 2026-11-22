@@ -4,17 +4,17 @@ import { AgentConfigurations } from '@/core/AgentConfigurations';
 import { AgentManager, findOnPath } from '@/core/AgentManager';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { checkPackageRunner } from '@/core/PackageRunners';
-import { SessionCommands } from '@/core/SessionCommands';
-import { SessionStartup } from '@/core/SessionStartup';
-import { SessionManager } from '@/core/SessionManager';
+import { SessionCommands } from '@/core/sessions/Commands';
+import { SessionStartup } from '@/core/sessions/Startup';
+import { SessionManager } from '@/core/sessions/Manager';
 import { SessionReferences, StartupRequests, WorkspaceState } from '@/core/PersistedState';
-import { SessionList, type AgentSessions } from '@/core/SessionList';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
-import { AgentTerminals, type CommandSource } from '@/core/AgentTerminals';
+import { SessionList, type AgentSessions } from '@/core/sessions/List';
+import { SessionTabs } from '@/core/sessions/Tabs';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
+import type { CommandSource } from '@/core/AgentTerminals';
 import type { Change } from '@/core/review/Hunks';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
-import { Takeovers } from '@/core/review/Takeovers';
 import { ChatViewController, type DiffFileChoice } from '@/core/ChatViewController';
 import { fetchRegistry, registryPlatform } from '@/core/RegistryClient';
 import { logError, logInfo, logWarning, setLogSink } from '@/core/Log';
@@ -43,7 +43,7 @@ import { authMethodPicker } from '@/adapters/AuthMethodPicker';
 import { getAgentConfigs, getAgentNames } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel } from '@/adapters/OutputChannels';
 import { registerTrafficAdapter } from '@/adapters/Traffic';
-import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import type { ExtensionToWebviewMessage, PresentationTarget, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 
 let shutdown: (() => Promise<void>) | undefined;
 
@@ -116,14 +116,13 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const sessionUpdateHandler = new SessionUpdateHandler();
   const agentManager = new AgentManager();
   const connectionManager: ConnectionManager = new ConnectionManager(
-    sessionUpdateHandler,
     (context.extension.packageJSON as { version: string }).version,
-    ({ agentName, agentId, elicitations }) => {
-      const detachForms = chatViewController.attachElicitations(agentName, elicitations, agentId);
+    ({ agentName, elicitations }) => {
       const detachUrls = attachUrlElicitations(agentName, elicitations, urlElicitationQuickPick);
+      const permissions = new PermissionRequests(permissionQuickPick);
       return {
-        permissions: new PermissionRequests(permissionQuickPick),
-        close: () => { detachForms(); void detachUrls(); },
+        permissions, permissionInteractions: permissions,
+        close: () => { void detachUrls(); },
       };
     },
   );
@@ -136,11 +135,16 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     connectionManager,
     workspaceEnvironment,
     authMethodPicker,
+    sessionUpdateHandler,
+    pseudoterminalDisplays,
   );
   sessionManager.setPersistedState(sessionReferences, workspaceState);
 
+  const sessionTabs = new SessionTabs({ workspace: workspaceState, references: sessionReferences, environment: workspaceEnvironment });
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  const sessionList = new SessionList(sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget());
+  const sessionList = new SessionList(
+    sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget(), Date.now, sessionTabs,
+  );
   const sessionsChanged = new vscode.EventEmitter<void>();
   context.subscriptions.push(sessionsChanged);
   sessionList.on('changed', () => sessionsChanged.fire());
@@ -188,6 +192,8 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
       const previous = agentConfigs;
       agentConfigs = getAgentConfigs();
       sessionManager.agentsChanged(previous, agentConfigs);
+      sessionTabs.agentsChanged(previous, agentConfigs);
+      chatViewController.notifyTabsChanged();
       markNoAgentsConfigured();
       sessionTreeProvider.refresh();
     }
@@ -195,8 +201,9 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
 
   const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, (webview) => workspaceEnvironment.useWebview(webview));
   const reportedFileEditor = new ReportedFileEditor();
-  const agentTerminals = new AgentTerminals(pseudoterminalDisplays);
-  const chatViewController = new ChatViewController(sessionManager, chatWebviewProvider, reportedFileEditor, agentTerminals, workspaceEnvironment);
+  const chatViewController = new ChatViewController(
+    sessionManager, chatWebviewProvider, reportedFileEditor, workspaceEnvironment, undefined, sessionTabs,
+  );
   const chatMessageSubscription = chatWebviewProvider.onDidReceiveMessage((message) => {
     void chatViewController.handleMessage(message);
   });
@@ -208,23 +215,30 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
       }
     });
   });
-  sessionUpdateHandler.addListener((sessionId, update, _schema, agentId) => chatViewController.handleSessionUpdate(sessionId, update, agentId));
-  sessionUpdateHandler.addListener((sessionId, update) => agentTerminals.handleSessionUpdate(sessionId, update));
-  const reviews = new Reviews(workspaceFiles);
+  sessionUpdateHandler.addListener((delivery) => chatViewController.handleSessionUpdate(delivery));
+  const reviews = new Reviews(workspaceFiles, sessionManager);
+  chatViewController.setTabReviews(reviews);
+  const showReviewAdmission = () => {
+    void vscode.commands.executeCommand('setContext', 'your-turn.reviewResolutionBlocked', reviews.resolutionBlocked());
+  };
+  reviews.addListener(showReviewAdmission);
+  showReviewAdmission();
+  sessionManager.on('configuration-renamed', (from, to) => reviews.configurationRenamed(from, to));
+  sessionManager.on('source-retired', (sourceId) => reviews.sourceRetired(sourceId));
   let disposal: Promise<void> | undefined;
   const stop = (): Promise<void> => {
     if (disposal) { return disposal; }
     sessionUpdateHandler.dispose();
     chatMessageSubscription.dispose();
     const output = chatViewController.dispose();
-    const terminals = agentTerminals.dispose();
     reviewSourceControl.dispose();
     const takeovers = reviewTakeovers.dispose();
     const presenters = reviewPresenters.dispose();
     const diffs = reviewDiffs.dispose();
     const review = reviews.dispose();
+    const tabState = sessionTabs.dispose();
     const sessions = sessionManager.dispose();
-    disposal = Promise.allSettled([output, terminals, takeovers, presenters, diffs, review, sessions, turnEndShown]).then((results) => {
+    disposal = Promise.allSettled([output, takeovers, presenters, diffs, review, tabState, sessions]).then((results) => {
       const failures = results.filter((result) => result.status === 'rejected');
       if (failures.length > 0) {
         throw new AggregateError(failures.map((result) => result.reason as unknown), 'Failed to shut down Your Turn');
@@ -236,18 +250,20 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   const reviewChanges = new vscode.EventEmitter<void>();
   context.subscriptions.push(reviewChanges);
   reviews.addListener(() => reviewChanges.fire());
-  sessionUpdateHandler.addListener((sessionId, update, schema) => { void reviews.handleSessionUpdate(sessionId, update, schema); });
+  sessionUpdateHandler.addListener(({ input }) => { void reviews.handleSessionUpdate(input); });
   const reviewDiffs = factories.createReviewPresentation?.(reviews) ?? new DiffReviewPresentation(reviews);
-  const reviewControls = new ReviewControls(reviews, reviewDiffs);
+  const reviewControls = new ReviewControls(reviews, reviewDiffs,
+    () => vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') === 'diffEditor');
+  chatViewController.setReviewOpening(reviewControls);
   reviewDiffs.attach(reviewControls);
   const reviewPresenters = new ReviewPresenters(reviewControls, reviews);
   chatViewController.addTurnListener((inProgress) => reviewPresenters.turnInProgress(inProgress));
   const reviewSourceControl = new ReviewSourceControl(reviewControls, reviews);
-  const reviewTakeovers = new ReviewTakeovers(new Takeovers(reviews), reviewControls);
-  sessionManager.on('session-removed', (sessionId) => {
-    agentTerminals.endSession(sessionId);
-    reviews.sessionRemoved(sessionId);
-    chatViewController.notifySessionRemoved(sessionId);
+  const reviewTakeovers = new ReviewTakeovers(reviews, reviewControls);
+  sessionManager.on('session-removed', (registration) => {
+    sessionManager.endSessionOutput(registration);
+    reviews.sessionRemoved(registration);
+    chatViewController.notifySessionRemoved(registration);
   });
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
     ChatWebviewProvider.viewType,
@@ -257,20 +273,18 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
 
   const statusBarManager = new StatusBarManager(sessionManager);
 
-  sessionManager.on('active-session-changed', (sessionId) => {
-    reviews.activeSessionChanged(sessionId);
+  sessionManager.on('active-session-changed', (registration) => {
+    reviews.activeSessionChanged(registration);
     chatViewController.notifyActiveSessionChanged();
   });
-  sessionManager.on('session-opened', (sessionId) => {
-    chatViewController.notifySessionOpened(sessionId);
+  sessionManager.on('session-opened', (registration) => {
+    chatViewController.notifySessionOpened(registration);
   });
-  sessionManager.on('session-ended', (sessionId, reason) => {
-    chatViewController.notifySessionEnded(sessionId, reason);
+  sessionManager.on('session-ended', (registration, reason) => {
+    chatViewController.notifySessionEnded(registration, reason);
   });
-  let turnEndShown = Promise.resolve();
-  sessionManager.on('turn-ended', (sessionId) => {
-    if (sessionId !== sessionManager.getActiveSessionId()) { return; }
-    turnEndShown = reviewControls.turnEnded(sessionId).catch((e: unknown) => logError("Showing the turn's change failed", e));
+  sessionManager.on('turn-ended', (registration) => {
+    chatViewController.notifyTurnEnded(registration);
   });
   sessionManager.on('clear-transcript', () => {
     chatViewController.clearTranscript();
@@ -278,16 +292,15 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   sessionManager.on('mode-changed', () => {
     chatViewController.notifyPickersChanged();
   });
-  sessionManager.on('session-load-start', (sessionId) => {
-    // The load replays the terminals' updates, which would add their chunks to what is kept again.
-    agentTerminals.forgetSession(sessionId);
-    reviews.loadStarted(sessionId);
-    chatViewController.notifyLoadSessionStart(sessionId);
+  sessionManager.on('session-load-start', (load) => {
+    // The runtime stages replacement output until the replay commits.
+    reviews.loadStarted(load);
+    chatViewController.notifyLoadSessionStart(load);
   });
-  sessionManager.on('session-load-end', (sessionId, _agentName, ok) => {
-    reviews.loadEnded(sessionId);
-    chatViewController.notifyLoadSessionEnd(ok);
-    if (ok) {
+  sessionManager.on('session-load-end', (load, ok) => {
+    reviews.loadEnded(load);
+    const shown = chatViewController.notifyLoadSessionEnd(load, ok);
+    if (ok && shown) {
       // The loadSession response carries modes/configOptions for the
       // restored session. Re-send the state so the pickers pick them up
       // (the original `active-session-changed` was emitted before the RPC
@@ -296,7 +309,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     }
   });
 
-  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment, startupRequests);
+  const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment, startupRequests, sessionTabs);
   const sessionCommands = new SessionCommands(
     sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames, sessionStartup,
   );
@@ -321,12 +334,6 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     },
   );
   const focusChatView = () => vscode.commands.executeCommand('your-turn-chat.focus');
-  /**
-   * The review's decisions wait for the agent's turn to end, so none acts on a file the agent is writing. Their
-   * `enablement` disables their buttons and keys, but not `executeCommand`, which runs a command regardless.
-   */
-  const unlessTurnRuns = <A extends unknown[]>(run: (...args: A) => unknown) =>
-    (...args: A) => (chatViewController.hasRunningTurn ? undefined : run(...args));
   const chooseDiffFile = (arg: unknown, open: DiffFileChoice['open']) => {
     const choice = diffFileChoiceOf(arg, open);
     return choice && chatViewController.chooseDiffFile(choice);
@@ -345,6 +352,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     statusBarManager,
     vscode.commands.registerCommand('your-turn.connectAgent', (arg?: unknown) => sessionCommands.connect(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.newSession', (arg?: unknown) => sessionCommands.newSession(agentNameOf(arg))),
+    vscode.commands.registerCommand('your-turn.agentActions', (arg?: unknown) => {
+      const agentName = agentNameOf(arg);
+      const canRefresh = sessionList.agents().some((agent) => agent.name === agentName && agent.canRefreshSessions);
+      return sessionCommands.agentActions(agentName, canRefresh);
+    }),
     vscode.commands.registerCommand('your-turn.disconnectAgent', (arg?: unknown) => sessionCommands.disconnect(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.restartAgent', (arg?: unknown) => sessionCommands.restart(agentNameOf(arg))),
     vscode.commands.registerCommand('your-turn.cancelTurn', () => sessionCommands.cancelTurn()),
@@ -389,11 +401,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     vscode.commands.registerCommand('your-turn.openToolCallChanges', (arg?: unknown) => chooseDiffFile(arg, 'changes')),
     vscode.commands.registerCommand('your-turn.openCommandOutput', (arg?: unknown) => {
       const output = commandOutputOf(arg);
-      if (output && !agentTerminals.open(output.sessionId, output.source, output.name)) {
+      if (output && !chatViewController.openCommandOutput(output.target, output.source, output.name)) {
         logWarning('Command output is no longer retained', { outputName: output.name });
       }
     }),
-    vscode.commands.registerCommand('your-turn.openReview', unlessTurnRuns(() => reviewControls.openReview())),
+    vscode.commands.registerCommand('your-turn.openReview', () => reviewControls.openReview()),
     vscode.commands.registerCommand('your-turn.previousReviewFile', async (arg?: unknown) => {
       await reviewControls.previous(reviewPathOf(arg, reviewDiffs));
       await reviewPresenters.navigated();
@@ -402,36 +414,30 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
       await reviewControls.next(reviewPathOf(arg, reviewDiffs));
       await reviewPresenters.navigated();
     }),
-    vscode.commands.registerCommand('your-turn.undoFile', unlessTurnRuns((arg?: unknown) => {
+    vscode.commands.registerCommand('your-turn.undoFile', (arg?: unknown) => {
       const path = reviewPathOf(arg, reviewDiffs);
-      if (arg instanceof vscode.Uri && path === undefined) { return; }
+      if (arg !== undefined && path === undefined) { return; }
       return reviewControls.undoFile(path);
-    })),
-    vscode.commands.registerCommand('your-turn.keepFile', unlessTurnRuns((arg?: unknown) => {
+    }),
+    vscode.commands.registerCommand('your-turn.keepFile', (arg?: unknown) => {
       const path = reviewPathOf(arg, reviewDiffs);
-      if (arg instanceof vscode.Uri && path === undefined) { return; }
+      if (arg !== undefined && path === undefined) { return; }
       return reviewControls.keepFile(path);
-    })),
-    vscode.commands.registerCommand('your-turn.keepAllFiles', unlessTurnRuns(() => reviewControls.keepAll())),
-    vscode.commands.registerCommand('your-turn.keepChange', unlessTurnRuns((...args: unknown[]) => {
+    }),
+    vscode.commands.registerCommand('your-turn.keepAllFiles', () => reviewControls.keepAll()),
+    vscode.commands.registerCommand('your-turn.keepChange', (...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
-      return change && reviewControls.keepChange(change.path, change.change);
-    })),
-    vscode.commands.registerCommand('your-turn.keepDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('keep', arg))),
-    vscode.commands.registerCommand('your-turn.undoDiffChange', unlessTurnRuns((arg?: unknown) => reviewDiffs.decide('undo', arg))),
-    vscode.commands.registerCommand('your-turn.undoChange', unlessTurnRuns((...args: unknown[]) => {
+      if (!change) { return; }
+      const captured = reviewSourceControl.captureChange('keep', change.path, change.changes, change.index);
+      return captured && reviewControls.keepChange(change.path, change.change, captured);
+    }),
+    vscode.commands.registerCommand('your-turn.keepDiffChange', (arg?: unknown) => reviewDiffs.decide('keep', arg)),
+    vscode.commands.registerCommand('your-turn.undoDiffChange', (arg?: unknown) => reviewDiffs.decide('undo', arg)),
+    vscode.commands.registerCommand('your-turn.undoChange', (...args: unknown[]) => {
       const change = quickDiffChangeOf(args);
-      return change && reviewControls.undoChange(change.path, change.change);
-    })),
-    vscode.commands.registerCommand('your-turn.attachFile', async () => {
-      const [uri] = await vscode.window.showOpenDialog({
-        canSelectMany: false,
-        openLabel: 'Attach',
-        title: 'Attach File to Prompt',
-      }) ?? [];
-      if (uri) {
-        chatWebviewProvider.attachFile(uri);
-      }
+      if (!change) { return; }
+      const captured = reviewSourceControl.captureChange('undo', change.path, change.changes, change.index);
+      return captured && reviewControls.undoChange(change.path, change.change, captured);
     }),
     {
       dispose: () => {
@@ -456,10 +462,11 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     reviewChanges: reviewChanges.event,
     reviewOriginal: (uri) => reviewSourceControl.originalResource(uri),
     reviewListedFiles: () => reviewSourceControl.listedFiles(),
-    turnEndShown: () => turnEndShown,
+    turnEndShown: () => chatViewController.reviewOpeningSettled(),
     reviewPresentationSettled: async () => { await reviewPresenters.settled(); await reviewDiffs.settled(); },
     persistedStateSettled: async () => {
       await sessionManager.recordsSettled();
+      await sessionTabs.settled();
       await sessionReferences.settled();
       await workspaceState.settled();
     },
@@ -492,10 +499,22 @@ function agentNameOf(arg: unknown): string | undefined {
 
 /** The context menu on a diff's file passes the `data-vscode-context` the chat view gave it. */
 function diffFileChoiceOf(arg: unknown, open: DiffFileChoice['open']): DiffFileChoice | undefined {
-  const context = arg as { yourTurnToolCallId?: unknown; yourTurnDiffFile?: unknown } | undefined;
+  const context = arg as { yourTurnTarget?: unknown; yourTurnToolCallId?: unknown; yourTurnDiffFile?: unknown } | undefined;
+  const target = presentationTargetOf(context?.yourTurnTarget);
   const toolCallId = context?.yourTurnToolCallId;
   const file = context?.yourTurnDiffFile;
-  return typeof toolCallId === 'string' && typeof file === 'number' ? { toolCallId, file, open } : undefined;
+  return target && typeof toolCallId === 'string' && typeof file === 'number' && Number.isSafeInteger(file) && file >= 0
+    ? { target, toolCallId, file, open } : undefined;
+}
+
+function presentationTargetOf(value: unknown): PresentationTarget | undefined {
+  if (!value || typeof value !== 'object') { return undefined; }
+  const target = value as Partial<PresentationTarget>;
+  return typeof target.configuredName === 'string' && typeof target.sessionId === 'string'
+    && typeof target.generation === 'number' && Number.isSafeInteger(target.generation) && target.generation > 0
+    && typeof target.projection === 'number' && Number.isSafeInteger(target.projection) && target.projection > 0
+    ? { configuredName: target.configuredName, sessionId: target.sessionId, generation: target.generation, projection: target.projection }
+    : undefined;
 }
 
 /** The title area passes its editor's URI; the status bar passes nothing, and so means the active editor's file. */
@@ -507,23 +526,34 @@ function reviewPathOf(arg: unknown, presentation: DiffReviewPresentation): strin
  * The quick diff view's title passes its document's URI, its changes and the index of the one shown. A change's lines are
  * 1-based and inclusive, and a side with none has an end of 0 and a start of the line before.
  */
-function quickDiffChangeOf([uri, changes, index]: unknown[]): { path: string; change: Change } | undefined {
-  if (!(uri instanceof vscode.Uri) || uri.scheme !== 'file' || !Array.isArray(changes) || typeof index !== 'number') { return undefined; }
-  const change = changes[index] as Partial<Record<
-    'originalStartLineNumber' | 'originalEndLineNumber' | 'modifiedStartLineNumber' | 'modifiedEndLineNumber', unknown
-  >> | undefined;
-  const lines = (start: unknown, end: unknown) =>
-    typeof start === 'number' && typeof end === 'number' ? (end === 0 ? { start, end: start } : { start: start - 1, end }) : undefined;
-  const original = lines(change?.originalStartLineNumber, change?.originalEndLineNumber);
-  const modified = lines(change?.modifiedStartLineNumber, change?.modifiedEndLineNumber);
-  return original && modified ? { path: uri.fsPath, change: { original, modified } } : undefined;
+function quickDiffChangeOf([uri, changes, index]: unknown[]): { path: string; change: Change; changes: readonly Change[]; index: number } | undefined {
+  if (!(uri instanceof vscode.Uri) || uri.scheme !== 'file' || !Array.isArray(changes)
+    || typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= changes.length) { return undefined; }
+  const decoded: Change[] = [];
+  for (const value of changes) {
+    if (!value || typeof value !== 'object') { return undefined; }
+    const change = value as Partial<Record<
+      'originalStartLineNumber' | 'originalEndLineNumber' | 'modifiedStartLineNumber' | 'modifiedEndLineNumber', unknown
+    >>;
+    const lines = (start: unknown, end: unknown) =>
+      typeof start === 'number' && typeof end === 'number' && Number.isInteger(start) && Number.isInteger(end)
+        && start >= 0 && end >= 0 && (end === 0 || (start >= 1 && end >= start))
+        ? (end === 0 ? { start, end: start } : { start: start - 1, end }) : undefined;
+    const original = lines(change.originalStartLineNumber, change.originalEndLineNumber);
+    const modified = lines(change.modifiedStartLineNumber, change.modifiedEndLineNumber);
+    if (!original || !modified) { return undefined; }
+    decoded.push({ original, modified });
+  }
+  const change = decoded[index];
+  return change && { path: uri.fsPath, change, changes: decoded, index };
 }
 
 /** The context menu on a command's output passes the `data-vscode-context` the chat view gave it. */
-function commandOutputOf(arg: unknown): { sessionId: string; source: CommandSource; name: string } | undefined {
-  const context = arg as { yourTurnSessionId?: unknown; yourTurnToolCallId?: unknown; yourTurnTerminalId?: unknown; yourTurnTitle?: unknown } | undefined;
-  const { yourTurnSessionId: sessionId, yourTurnToolCallId: toolCallId, yourTurnTerminalId: terminalId, yourTurnTitle: name } = context ?? {};
-  if (typeof sessionId !== 'string' || typeof name !== 'string') { return undefined; }
-  if (typeof terminalId === 'string') { return { sessionId, source: { kind: 'terminal', terminalId }, name }; }
-  return typeof toolCallId === 'string' ? { sessionId, source: { kind: 'toolCall', toolCallId }, name } : undefined;
+function commandOutputOf(arg: unknown): { target: PresentationTarget; source: CommandSource; name: string } | undefined {
+  const context = arg as { yourTurnTarget?: unknown; yourTurnToolCallId?: unknown; yourTurnTerminalId?: unknown; yourTurnTitle?: unknown } | undefined;
+  const { yourTurnToolCallId: toolCallId, yourTurnTerminalId: terminalId, yourTurnTitle: name } = context ?? {};
+  const target = presentationTargetOf(context?.yourTurnTarget);
+  if (!target || typeof name !== 'string') { return undefined; }
+  if (typeof terminalId === 'string') { return { target, source: { kind: 'terminal', terminalId }, name }; }
+  return typeof toolCallId === 'string' ? { target, source: { kind: 'toolCall', toolCallId }, name } : undefined;
 }

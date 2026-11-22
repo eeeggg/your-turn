@@ -7,6 +7,22 @@ import { getOutputChannel, outputChannelSink } from '@/adapters/OutputChannels';
 const MODE_TOGGLES = ['your-turn.showOtherWorkspaces', 'your-turn.showAgents'];
 
 suite('Extension Test Suite', () => {
+	test('Offers New Session inline and separates session actions from connection management on agent rows', () => {
+		const ext = vscode.extensions.getExtension('eeeggg.your-turn');
+		assert.ok(ext);
+		const { menus } = (ext.packageJSON as { contributes: { menus: Record<string, { command: string; when: string; group?: string }[]> } }).contributes;
+		const actions = menus['view/item/context']?.filter(({ when }) => when.includes('agent'));
+		assert.deepStrictEqual(actions, [
+			{ command: 'your-turn.newSession', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: 'inline@0' },
+			{ command: 'your-turn.agentActions', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: 'inline@1' },
+			{ command: 'your-turn.newSession', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: '1_session@0' },
+			{ command: 'your-turn.refreshSessions', when: 'view == your-turn-sessions && viewItem =~ /^agent/ && viewItem =~ /-refreshable$/', group: '1_session@1' },
+			{ command: 'your-turn.connectAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent-disconnected-/', group: '2_agent@0' },
+			{ command: 'your-turn.disconnectAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent-connected-/', group: '2_agent@0' },
+			{ command: 'your-turn.restartAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent-connected-/', group: '2_agent@1' },
+			{ command: 'your-turn.removeAgent', when: 'view == your-turn-sessions && viewItem =~ /^agent/', group: '2_agent@2' },
+		]);
+	});
 	vscode.window.showInformationMessage('Start all tests.');
 
 	test('Extension should be present', () => {
@@ -41,7 +57,9 @@ suite('Extension Test Suite', () => {
 			keybindings?: { command: string }[];
 		} }).contributes;
 		const contributed = commands.map(({ command }) => command);
+		assert.ok(!contributed.includes('your-turn.attachFile'), 'your-turn.attachFile must not be contributed');
 		const registered = (await vscode.commands.getCommands(true)).filter((command) => command.startsWith('your-turn.'));
+		assert.ok(!registered.includes('your-turn.attachFile'), 'your-turn.attachFile must not be registered');
 		assert.deepStrictEqual([...registered].sort(), [...contributed].sort());
 		const named = [...Object.values(menus).flat().flatMap(({ command }) => command ?? []), ...keybindings.map(({ command }) => command)];
 		assert.deepStrictEqual(named.filter((command) => command.startsWith('your-turn.') && !contributed.includes(command)), []);
@@ -109,11 +127,20 @@ suite('Extension Test Suite', () => {
 		assert.deepStrictEqual(titles.map(({ command, when, group }) => [command, when, group]), [
 			['your-turn.showOtherWorkspaces', 'view == your-turn-sessions && !your-turn.showingOtherWorkspaces', 'navigation@0'],
 			['your-turn.showAgents', 'view == your-turn-sessions && your-turn.showingOtherWorkspaces', 'navigation@0'],
-			['your-turn.addAgent', '!your-turn.workspaceUnavailable && !your-turn.showingOtherWorkspaces && view == your-turn-sessions', 'navigation@1'],
+			['your-turn.showLog', '!your-turn.workspaceUnavailable && view == your-turn-sessions', 'navigation@1'],
+			['your-turn.exportTraffic', '!your-turn.workspaceUnavailable && view == your-turn-sessions && config.your-turn.logTraffic', 'navigation@2'],
+			['your-turn.addAgent', '!your-turn.workspaceUnavailable && !your-turn.showingOtherWorkspaces && view == your-turn-sessions', 'navigation@3'],
 		]);
 		assert.deepStrictEqual(commands.filter(({ command }) => MODE_TOGGLES.includes(command)).map(({ command, icon }) => [command, icon]), [
 			['your-turn.showOtherWorkspaces', '$(multiple-windows)'],
 			['your-turn.showAgents', '$(arrow-left)'],
 		]);
+		assert.strictEqual(commands.find(({ command }) => command === 'your-turn.showLog')?.icon, '$(output)');
+		const chatTitles = (menus['view/title'] ?? []).filter(({ when }) => when?.includes('view == your-turn-chat'));
+		assert.deepStrictEqual(chatTitles.map(({ command, when, group }) => [command, when, group]), [
+			['your-turn.newSession', 'view == your-turn-chat', 'navigation@1'],
+		]);
+		assert.ok(commands.some(({ command }) => command === 'your-turn.cancelTurn'));
+		assert.strictEqual(menus['commandPalette']?.find(({ command }) => command === 'your-turn.cancelTurn')?.when, '!your-turn.workspaceUnavailable');
 	});
 });

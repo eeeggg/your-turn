@@ -1,6 +1,6 @@
 import { assert, describe, expect, it } from 'vitest';
-import { planStepIcon, thoughtSummary, turnShown } from '@/webview/state/Transcript';
-import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { thoughtSummary, turnShown } from '@/webview/state/Transcript';
+import { retainedChatView as chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 describe('agent messages', () => {
   it('collects the text of a turn into one message, and starts a turn per prompt', () => {
@@ -250,16 +250,13 @@ describe('plans', () => {
     view.send({ type: 'loadSessionStart' });
 
     view.plan({ text: 'b', status: 'pending' });
+    view.send({ type: 'loadSessionEnd', ok: true });
 
     expect(view.summary()).toEqual(['turn: plan b']);
   });
 });
 
 describe('what is shown', () => {
-  it('marks each plan step status with an icon', () => {
-    expect((['pending', 'running', 'completed'] as const).map(planStepIcon)).toEqual(['⬜', '🔄', '✅']);
-  });
-
   it('rounds the thought duration to whole seconds', () => {
     expect(thoughtSummary({ startedAt: 0, endedAt: 2_500 })).toBe('Thought for 3s');
     expect(thoughtSummary({ startedAt: 0, endedAt: 499 })).toBe('Thought');

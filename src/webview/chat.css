@@ -41,6 +41,15 @@
   --color-selected-foreground: var(--vscode-list-activeSelectionForeground);
   --color-toolbar-hover: var(--vscode-toolbar-hoverBackground);
   --color-success: var(--vscode-testing-iconPassed);
+  --color-tab-active: var(--vscode-tab-activeBackground, var(--vscode-sideBar-background));
+  --color-tab-active-foreground: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+  --color-tab-inactive: var(--vscode-tab-inactiveBackground, var(--vscode-editorWidget-background));
+  --color-tab-inactive-foreground: var(--vscode-tab-inactiveForeground, var(--vscode-descriptionForeground));
+  --color-tab-active-border: var(--vscode-tab-activeBorderTop, var(--vscode-focusBorder));
+  --color-warning: var(--vscode-editorWarning-foreground);
+  --color-review-modified: var(--vscode-gitDecoration-modifiedResourceForeground, var(--vscode-foreground));
+  --color-review-created: var(--vscode-gitDecoration-untrackedResourceForeground, var(--vscode-foreground));
+  --color-review-deleted: var(--vscode-gitDecoration-deletedResourceForeground, var(--vscode-foreground));
   --color-failure: var(--vscode-testing-iconFailed);
   --color-progress: var(--vscode-progressBar-background);
   --color-pending: var(--vscode-badge-foreground);
@@ -63,17 +72,10 @@
 
   --shadow-popover: 0 2px 8px var(--vscode-widget-shadow);
   --shadow-popup: 0 -4px 12px var(--vscode-widget-shadow);
+}
 
-  --animate-thought-pulse: thought-pulse 1.2s ease-in-out infinite;
-  @keyframes thought-pulse {
-    0%,
-    100% {
-      opacity: 0.4;
-    }
-    50% {
-      opacity: 1;
-    }
-  }
+.session-tab-selected {
+  box-shadow: inset 0 0 0 1px var(--vscode-contrastActiveBorder, transparent);
 }
 
 @layer base {
@@ -90,6 +92,10 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
   }
 }
 

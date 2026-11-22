@@ -31,11 +31,15 @@ async function duringTeardown<T>(signal: AbortSignal, action: () => Promise<T>):
 }
 
 interface UiFixtures {
+  desktopDiagnostics: boolean;
+  fakeAgentEnv: Record<string, string>;
   agentVersion: 'v1' | 'v2';
+  mixedAgents: boolean;
   reviewPresentation: 'diffEditor' | 'quickDiff' | undefined;
   workspaceFiles: Record<string, string>;
   gitRepository: boolean;
   listsSessions: boolean;
+  loadsSessions: boolean;
   compaction: boolean;
   preSessionQuestion: boolean;
   authenticationQuestion: boolean;
@@ -175,11 +179,15 @@ async function captureFailure(
 }
 
 export const test = base.extend<UiFixtures>({
+  desktopDiagnostics: [true, { option: true }],
+  fakeAgentEnv: [{}, { option: true }],
   agentVersion: ['v1', { option: true }],
+  mixedAgents: [false, { option: true }],
   reviewPresentation: [undefined, { option: true }],
   workspaceFiles: [{}, { option: true }],
   gitRepository: [false, { option: true }],
   listsSessions: [false, { option: true }],
+  loadsSessions: [false, { option: true }],
   compaction: [false, { option: true }],
   preSessionQuestion: [false, { option: true }],
   authenticationQuestion: [false, { option: true }],
@@ -255,7 +263,7 @@ export const test = base.extend<UiFixtures>({
     }
   },
 
-  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, display, treeRefresh, reviewPresentationControl, nativeDiffControl }, use, testInfo) => {
+  window: async ({ workspace, reviewPresentation, gitRepository, listsSessions, loadsSessions, compaction, preSessionQuestion, authenticationQuestion, agentVersion, mixedAgents, display, treeRefresh, reviewPresentationControl, nativeDiffControl, desktopDiagnostics, fakeAgentEnv }, use, testInfo) => {
     const closeControls = async () => { await Promise.all([treeRefresh?.close(), reviewPresentationControl?.close(), nativeDiffControl?.close()]); };
     const executablePath = process.env['UI_VSCODE_EXECUTABLE'];
     if (!executablePath) {
@@ -319,14 +327,22 @@ export const test = base.extend<UiFixtures>({
             command: process.execPath,
             args: [join(extensionPath, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion}.js`)],
             env: {
-              ACP_TEST_SESSION_ID: `ui-${testInfo.testId}`,
               ELECTRON_RUN_AS_NODE: '1',
               ...(listsSessions ? { ACP_TEST_LISTS_SESSIONS: '1' } : {}),
+              ...(loadsSessions ? { ACP_TEST_RECORDS: join(profile, 'agent-records.jsonl') } : {}),
               ...(compaction ? { ACP_TEST_COMPACTION: '1' } : {}),
+              ...fakeAgentEnv,
               ...(preSessionQuestion ? { ACP_TEST_PRE_SESSION_QUESTION: '1' } : {}),
               ...(authenticationQuestion ? { ACP_TEST_AUTHENTICATION_QUESTION: '1' } : {}),
             },
           },
+          ...(mixedAgents ? {
+            [`fake-${agentVersion === 'v1' ? 'v2' : 'v1'}`]: {
+              command: process.execPath,
+              args: [join(extensionPath, 'dist', 'test', 'fixtures', `fakeAgent-${agentVersion === 'v1' ? 'v2' : 'v1'}.js`)],
+              env: { ELECTRON_RUN_AS_NODE: '1' },
+            },
+          } : {}),
         },
       }, undefined, 2));
 
@@ -346,7 +362,7 @@ export const test = base.extend<UiFixtures>({
         args: [
           '--disable-updates',
           '--force-disable-user-env',
-          '--log=debug',
+          ...(desktopDiagnostics ? ['--log=debug'] : []),
           '--disable-workspace-trust',
           '--new-window',
           '--skip-release-notes',
@@ -375,11 +391,13 @@ export const test = base.extend<UiFixtures>({
       });
       application.on('console', (message) => recordConsole('electron', message, diagnostics));
       application.on('close', () => record('application closed'));
-      try {
-        await application.context().tracing.start({ screenshots: true, snapshots: true, sources: true });
-        traceStarted = true;
-      } catch (error) {
-        diagnostics.events.push(`Electron tracing is unavailable: ${errorText(error)}`);
+      if (desktopDiagnostics) {
+        try {
+          await application.context().tracing.start({ screenshots: true, snapshots: true, sources: true });
+          traceStarted = true;
+        } catch (error) {
+          diagnostics.events.push(`Electron tracing is unavailable: ${errorText(error)}`);
+        }
       }
 
       window = await application.firstWindow();
@@ -484,6 +502,13 @@ export const test = base.extend<UiFixtures>({
           }
         } finally {
           clearTimeout(watchdog);
+          if (cleanupFailure !== undefined && profile) {
+            try {
+              Object.assign(diagnostics.extensionLogs, await vscodeLogs(profile));
+            } catch (error) {
+              diagnostics.events.push(`Could not capture shutdown logs: ${errorText(error)}`);
+            }
+          }
           const removed = await Promise.allSettled([
             profile ? rm(profile, { recursive: true, force: true }) : undefined,
             extensions ? rm(extensions, { recursive: true, force: true }) : undefined,

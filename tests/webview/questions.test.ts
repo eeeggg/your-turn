@@ -1,9 +1,9 @@
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { connect, loadChatPage } from '@tests/webview/chatPage';
+import { connect, DEFAULT_SESSION_ID, loadChatPage } from '@tests/webview/chatPage';
 
 const question: Extract<ExtensionToWebviewMessage, { type: 'questions' }>['questions'][number] = {
-  interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, draft: null,
+  interactionId: 'q1', sessionId: DEFAULT_SESSION_ID, agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, draft: null,
   fields: [{ name: 'enabled', kind: 'boolean', title: 'Enabled', description: null, required: false, choices: null, minimum: null, maximum: null, minLength: null, maxLength: null, minItems: null, maxItems: null, pattern: null, format: null, default: false }],
 };
 
@@ -11,6 +11,8 @@ describe('bundled question delivery', () => {
   it('preserves prompt composition and posts the standard response through the production message boundary', async () => {
     const page = loadChatPage();
     connect(page);
+    const target = { configuredName: 'Fake Agent', sessionId: DEFAULT_SESSION_ID, generation: 1, projection: 1 };
+    page.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     page.typePrompt('unfinished prompt');
     const prompt = page.byId<HTMLTextAreaElement>('promptInput');
     prompt.focus();
@@ -48,12 +50,13 @@ describe('bundled question delivery', () => {
     const form = page.document.querySelector('form');
     expect(form).not.toBeNull();
     form?.dispatchEvent(new page.window.Event('submit', { bubbles: true, cancelable: true }));
-    expect(page.takePosted()).toEqual([{ type: 'questionResponse', interactionId: 'q1', action: 'accept', content: { enabled: false } }]);
+    expect(page.takePosted()).toEqual([{ type: 'questionResponse', target, interactionId: 'q1', action: 'accept', content: { enabled: false } }]);
     expect(page.document.querySelector('.question-record')).toBeNull();
-    page.send({ type: 'questionSettled', record: {
-      interactionId: 'q1', sessionId: 's1', agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, fields: question.fields,
+    page.send({ type: 'contentPatch', target, base: 0, revision: 1, currentTurn: null, nextId: 2, usage: null,
+      patches: [{ kind: 'insert', index: 0, entries: [{ kind: 'question', id: 1, open: false, record: {
+      interactionId: 'q1', sessionId: DEFAULT_SESSION_ID, agentName: 'Agent', message: 'Confirm?', title: 'Question', description: null, fields: question.fields,
       response: { action: 'accept', content: { enabled: false } },
-    } });
+    } }] }] });
     const record = page.document.querySelector<HTMLDetailsElement>('.question-record');
     expect(record?.open).toBe(false);
     expect(record?.querySelector('summary')?.textContent).toBe('Elicitation — Submitted: Question');

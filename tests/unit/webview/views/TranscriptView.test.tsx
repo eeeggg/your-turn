@@ -3,15 +3,17 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import type {
   DiffFile,
-  ExtensionToWebviewMessage,
   ToolCallContent,
   WebviewToExtensionMessage
 } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
-import { initialState, update, type Action } from '@/webview/state/RootState';
+import { initialState, update } from '@/webview/state/RootState';
 import { createStore } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { hookClasses } from '@tests/hookClasses';
+import { setup as retainedSession, sessionInfo } from '@tests/unit/core/ChatViewControllerTestSupport';
+import { ContentProjection, isContentReport, type ContentReport, type FixtureAction } from '@tests/ContentProjection';
+const SESSION_ID = 'ddcb43e9-df3c-4604-8444-be1fb55dcdfa';
 
 afterEach(() => {
   cleanup();
@@ -59,13 +61,54 @@ vi.mock('use-stick-to-bottom', async () => {
   };
 });
 
-type ToolCallReport = Omit<Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>, 'type'>;
+type ToolCallReport = Omit<Extract<ContentReport, { type: 'toolCall' }>, 'type'>;
 
-function renderChatView() {
+function renderChatView(retained = false) {
   const posted: WebviewToExtensionMessage[] = [];
+  const composerEdits: Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[] = [];
   let time = 0;
-  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message), () => time);
-  const send = (...actions: Action[]) => act(() => actions.forEach((action) => store.dispatch(action)));
+  const content = new ContentProjection();
+  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => {
+    if (message.type === 'composerEdited') {
+      composerEdits.push(message);
+      runtime?.sessions.editComposer(message.target, message.target.generation, message.revision, message.text);
+      return;
+    }
+    posted.push(message);
+    if (runtime) { void runtime.controller.handleMessage(message); }
+  }, () => time);
+  const runtime = retained ? retainedSession(undefined, (sessions) => { for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); } }) : undefined;
+  if (runtime) {
+    runtime.sessions.session = sessionInfo({ sessionId: SESSION_ID, agentName: 'Fake' });
+    runtime.sessions.activeId = SESSION_ID;
+    const publish = runtime.environment.post.bind(runtime.environment);
+    runtime.environment.post = (message) => {
+      publish(message);
+      if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot' || message.type === 'contentPatch') { dispatch(structuredClone(message)); }
+    };
+  }
+  const dispatch = store.dispatch;
+  const dispatchAction = (action: FixtureAction) => {
+    const registration = runtime?.sessions.session;
+    if (runtime && registration && (action.type === 'agentText' || action.type === 'plan' || action.type === 'error')) {
+      if (action.type === 'plan') { runtime.sessions.retained.accept(registration, { kind: 'plan', steps: action.steps }, time); }
+      else if (action.type === 'agentText') { runtime.sessions.retained.accept(registration, { kind: 'agentText', messageId: action.messageId, text: action.text }, time); }
+      else { runtime.sessions.retained.promptFailed(registration, action.message); }
+      runtime.controller.notifyActiveSessionChanged();
+      return;
+    }
+    if (runtime?.sessions.session && action.type === 'promptEnd') {
+      runtime.sessions.finishProjectedTurn(time);
+    }
+    const projected = !runtime ? content.project(action, store.getSnapshot().transcript, time, store.getSnapshot().activeSession?.turnRunning, store.getSnapshot().activeSession?.loading) : undefined;
+    if (projected) { dispatch(projected); }
+    if (!isContentReport(action)) { dispatch(action); }
+    if (runtime && action.type === 'promptEnd') {
+      dispatch({ type: 'foregroundActivity', running: runtime.controller.hasRunningTurn });
+    }
+  };
+  store.dispatch = dispatchAction;
+  const send = (...actions: FixtureAction[]) => act(() => actions.forEach(dispatchAction));
   const { container } = render(
     <StoreContext value={store}>
       <ChatView />
@@ -87,18 +130,38 @@ function renderChatView() {
     at: (now: number) => {
       time = now;
     },
-    connect: () =>
+    connect: () => {
       send({
         type: 'state',
-        activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] },
-      }),
-    answer: (text: string) => send({ type: 'agentText', messageId: null, text }),
+        activeSessionId: SESSION_ID,
+        session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] },
+      });
+      if (runtime?.sessions.session) {
+        const registration = runtime.sessions.session;
+        act(() => {
+          runtime.sessions.retained.attach(registration);
+          runtime.controller.notifyActiveSessionChanged();
+        });
+      }
+    },
+    target: () => store.getSnapshot().transcript.projection?.target,
+    answer: (text: string) => {
+      const registration = runtime?.sessions.session;
+      if (runtime && registration) {
+        act(() => {
+          runtime.sessions.retained.accept(registration, { kind: 'agentText', messageId: null, text }, time);
+          runtime.controller.notifyActiveSessionChanged();
+        });
+      } else { send({ type: 'agentText', messageId: null, text }); }
+    },
     thought: (text: string) => send({ type: 'thoughtText', messageId: null, text }),
     toolCall: (report: ToolCallReport) => send({ type: 'toolCall', ...report }),
     takePosted: () => posted.splice(0),
+    takeComposerEdits: () => composerEdits.splice(0),
   };
 }
+
+const retainedQueueView = () => renderChatView(true);
 
 /** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
 async function toggle(details: HTMLDetailsElement): Promise<void> {
@@ -113,11 +176,13 @@ describe('the chat view', () => {
   it.each(['accept', 'decline', 'cancel'] as const)('shows a distinct collapsed %s record with inert question and response details', async (action) => {
     const view = renderChatView();
     view.connect();
-    view.send({ type: 'questionSettled', record: {
-      interactionId: 'q1', sessionId: 's1', agentName: 'Agent', title: 'Settings', message: 'Visit https://example.com?', description: 'Choose carefully',
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 },
+      target: { configuredName: 'Fake', sessionId: SESSION_ID, generation: 1, projection: 1 }, revision: 0,
+      currentTurn: null, nextId: 2, usage: null, terminals: [], entries: [{ kind: 'question', id: 1, open: false, record: {
+      interactionId: 'q1', sessionId: SESSION_ID, agentName: 'Agent', title: 'Settings', message: 'Visit https://example.com?', description: 'Choose carefully',
       fields: [{ name: 'enabled', kind: 'boolean', title: 'Enabled', description: 'Enable it?', required: false, choices: null, minimum: null, maximum: null, minLength: null, maxLength: null, minItems: null, maxItems: null, pattern: null, format: null }],
       response: action === 'accept' ? { action, content: { enabled: false } } : { action },
-    } });
+    } }] });
     const record = view.part<HTMLDetailsElement>('details.question-record');
     expect(record.open).toBe(false);
     const outcome = action === 'accept' ? 'Submitted' : action === 'decline' ? 'Declined' : 'Cancelled';
@@ -143,7 +208,7 @@ describe('the chat view', () => {
   it('lays out the tabs, the transcript, the input area and the load overlay in that order', () => {
     const { container } = renderChatView();
 
-    expect([...container.children].map((child) => child.id)).toEqual(['sessionTabs', 'transcript', 'questionAnchor', 'loadOverlay']);
+    expect([...container.children].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
     expect([...container.querySelector('#questionAnchor')?.children ?? []].map((child) => child.id)).toEqual(['inputArea']);
   });
 
@@ -155,7 +220,7 @@ describe('the chat view', () => {
   });
 
   it('follows the stream again when the user sends a prompt, and not as the agent streams', () => {
-    const view = renderChatView();
+    const view = retainedQueueView();
     view.connect();
     stickToBottom.scrollToBottom.mockClear();
 
@@ -174,6 +239,15 @@ describe('the chat view', () => {
     view.connect();
     view.send({ type: 'loadSessionStart' });
     expect(hookClasses(overlay)).toBe('load-overlay visible');
+    expect(overlay.getAttribute('role')).toBe('status');
+    expect(overlay.getAttribute('aria-live')).toBe('polite');
+    expect(overlay.querySelector('.spinner, .animate-spin, .load-indicator')).toBeNull();
+    const label = overlay.querySelector('.label');
+    expect(label?.textContent).toBe('Loading transcript…');
+    expect(Array.from(label?.classList ?? [])).toEqual(expect.arrayContaining([
+      'animate-pulse',
+      'motion-reduce:animate-none',
+    ]));
 
     view.send({ type: 'loadSessionEnd', ok: true });
     expect(hookClasses(overlay)).toBe('load-overlay');
@@ -181,6 +255,7 @@ describe('the chat view', () => {
 });
 
 describe('the queue', () => {
+  const renderChatView = () => retainedQueueView();
   const queue = (view: ReturnType<typeof renderChatView>) => view.container.querySelector('#queuedPrompts');
   const queued = (view: ReturnType<typeof renderChatView>) =>
     view.all('#queuedPrompts > .queued-prompt').map((item) => [item.querySelector('.queued-label')?.textContent, item.querySelector('.queued-text')?.textContent, item.title]);
@@ -205,7 +280,7 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
 
-      expect([...view.container.children].map((child) => child.id)).toEqual(['sessionTabs', 'transcript', 'questionAnchor', 'loadOverlay']);
+      expect([...view.container.children].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
     expect([...view.part('#questionAnchor').children].map((child) => child.id)).toEqual(['queuedPrompts', 'inputArea']);
     expect(queue(view)?.getAttribute('aria-label')).toBe('Queued prompts');
     expect(queued(view)).toEqual([
@@ -218,6 +293,8 @@ describe('the queue', () => {
   it('offers to send only the top prompt now, which cancels the running turn', () => {
     const view = renderChatView();
     view.connect();
+    const target = { configuredName: 'fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     prompt(view, 'first');
     prompt(view, 'second');
     prompt(view, 'third');
@@ -228,7 +305,7 @@ describe('the queue', () => {
     expect(buttons[0]?.textContent).toBe('Stop and send now');
     fireEvent.click(view.part('#queuedPrompts .send-now'));
 
-    expect(view.takePosted()).toEqual([{ type: 'cancelTurn' }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.target(), change: { kind: 'stop', id: view.store.getSnapshot().transcript.queued[0]?.id } }]);
   });
 
   it('steers only the queue head without cancellation and keeps the remainder queued', () => {
@@ -236,18 +313,24 @@ describe('the queue', () => {
     view.connect();
     prompt(view, 'first');
     view.send({ type: 'agentText', messageId: 'a1', text: 'before' });
+    expect(view.store.getSnapshot().transcript.entries.map((entry) => entry.id)).toEqual([1, 2]);
     prompt(view, 'second');
     prompt(view, 'third');
     view.takePosted();
     const buttons = view.all('#queuedPrompts .steer-now');
     expect(buttons.map((button) => button.closest('.queued-prompt')?.querySelector('.queued-text')?.textContent)).toEqual(['second']);
     expect(buttons[0]?.textContent).toBe('Steer now');
+    const target = view.target();
+    const id = view.store.getSnapshot().transcript.queued[0]?.id;
     fireEvent.click(view.part('#queuedPrompts .steer-now'));
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'second' }, { type: 'queuedPrompts', count: 1 }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target, change: { kind: 'steer', id } }]);
     expect(queued(view).map(([, value]) => value)).toEqual(['third']);
     expect(userMessages(view)).toEqual(['first', 'second']);
+    expect(view.store.getSnapshot().transcript.entries.map((entry) => entry.id)).toEqual([1, 2, 3]);
     view.send({ type: 'promptStart' }, { type: 'agentText', messageId: 'a2', text: 'after' });
     expect(userMessages(view)).toEqual(['first', 'second']);
+    expect(view.store.getSnapshot().transcript.entries.map((entry) => entry.id)).toEqual([1, 2, 3, 4]);
+    expect(view.all('#messages .message-content').map((element) => element.textContent)).toEqual(['first', 'before', 'second', 'after']);
     expect(view.takePosted()).toEqual([]);
   });
 
@@ -299,12 +382,18 @@ describe('the queue', () => {
     const editor = view.part<HTMLTextAreaElement>('[aria-label="Queued prompt text"]');
     expect(document.activeElement).toBe(editor);
     fireEvent.change(editor, { target: { value: 'saved second' } });
+    const id = view.store.getSnapshot().transcript.queued[0]?.id;
+    expect(view.takePosted()).toEqual([
+      { type: 'queueChanged', target: view.target(), change: { kind: 'editStarted', id, revision: 1 } },
+      { type: 'queueChanged', target: view.target(), change: { kind: 'edited', id, revision: 2, text: 'saved second' } },
+    ]);
     view.send({ type: 'promptEnd' });
     expect(view.takePosted()).toEqual([]);
     expect(userMessages(view)).toEqual(['first']);
     expect(editor.value).toBe('saved second');
+    const target = view.target();
     fireEvent.keyDown(editor, { key: 'Enter' });
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'saved second' }, { type: 'queuedPrompts', count: 1 }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target, change: { kind: 'editSaved', id, revision: 3 } }]);
     expect(userMessages(view)).toEqual(['first', 'saved second']);
     expect(queued(view).map(([, text]) => text)).toEqual(['third']);
   });
@@ -326,10 +415,10 @@ describe('the queue', () => {
     expect(view.container.querySelector('[aria-label="Queued prompt text"]')).toBeNull();
     expect(document.activeElement).toBe(view.part('.queued-text'));
     expect(queued(view).map(([, text]) => text)).toEqual(['second']);
-    expect(view.takePosted()).toEqual([]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.target(), change: { kind: 'editDiscarded', id: view.store.getSnapshot().transcript.queued[0]?.id, revision: 3 } }]);
   });
 
-  it.each(['cancel', 'empty save'] as const)('%s preserves the composer and recalls the last saved text without a transcript entry', (method) => {
+  it.each(['cancel', 'empty save'] as const)('%s preserves the composer and excludes unsent text from recall and transcript', (method) => {
     const view = renderChatView();
     view.connect();
     prompt(view, 'first');
@@ -345,10 +434,11 @@ describe('the queue', () => {
     expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('composer draft');
     expect(queued(view).map(([, text]) => text)).toEqual(['third']);
     expect(userMessages(view)).toEqual(['first']);
-    expect(view.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
+    expect(view.takePosted()).toEqual([{ type: 'queueChanged', target: view.target(), change: method === 'cancel'
+      ? { kind: 'cancelled', id: 1 } : { kind: 'editSaved', id: 1, revision: 3 } }]);
     view.send({ type: 'promptEdited', text: '' });
     fireEvent.keyDown(view.part('#promptInput'), { key: 'ArrowUp' });
-    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('second');
+    expect(view.part<HTMLTextAreaElement>('#promptInput').value).toBe('first');
     expect(userMessages(view)).toEqual(['first']);
     expect(view.takePosted()).toEqual([]);
   });
@@ -418,7 +508,7 @@ describe('transcript entries', () => {
   it('copies a user message directly without offering Markdown options', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal('navigator', { clipboard: { writeText } });
-    const view = renderChatView();
+    const view = renderChatView(true);
     view.connect();
     view.send({ type: 'promptEdited', text: 'user message' }, { type: 'promptSent' });
 
@@ -456,7 +546,7 @@ describe('transcript entries', () => {
   });
 
   it('draws prompts, turns and errors in order, with their classes, and a plan inside its turn', () => {
-    const view = renderChatView();
+    const view = renderChatView(true);
     view.connect();
     view.send({ type: 'promptEdited', text: 'question' }, { type: 'promptSent' }, { type: 'promptStart' });
     view.answer('answer');
@@ -476,11 +566,28 @@ describe('transcript entries', () => {
       return `${hookClasses(entry)}: ${text.textContent}`;
     })).toEqual([
       'message user: question',
-      'turn: answerPlan✅ done⬜ <b>next</b>',
+      'turn: answerPlanCompleted: donePending: <b>next</b>',
       'message error: boom',
     ]);
     expect(view.container.querySelector('.turn > .plan')).not.toBeNull();
-    expect(view.all('.plan-entry').map((entry) => hookClasses(entry))).toEqual(['plan-entry completed', 'plan-entry']);
+    expect(view.container.querySelector('.plan ul')).not.toBeNull();
+    const planEntries = view.all('.plan-entry');
+    expect(planEntries.map((entry) => entry.tagName)).toEqual(['LI', 'LI']);
+    expect(planEntries.map((entry) => hookClasses(entry))).toEqual(['plan-entry completed', 'plan-entry']);
+    expect(planEntries[0]?.classList.contains('line-through')).toBe(true);
+    expect(planEntries[1]?.classList.contains('text-muted-foreground')).toBe(false);
+    expect(planEntries[1]?.querySelector('.plan-icon')?.classList.contains('text-muted-foreground')).toBe(true);
+    for (const entry of planEntries) {
+      expect(entry.classList.contains('items-start')).toBe(true);
+      const icon = entry.querySelector('.plan-icon');
+      expect(icon?.classList.contains('mt-0.5')).toBe(true);
+      expect(icon?.getAttribute('aria-hidden')).toBe('true');
+      const svg = icon?.querySelector('svg');
+      expect(svg).not.toBeNull();
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-pulse');
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-spin');
+    }
+    expect(new Set(planEntries.map((entry) => entry.querySelector('.plan-icon svg')?.innerHTML)).size).toBe(2);
     expect(view.container.querySelector('.plan b')).toBeNull();
   });
 
@@ -523,11 +630,11 @@ describe('a turn', () => {
 });
 
 describe('a compaction', () => {
-  type Report = Extract<Action, { type: 'compactionUpdate' }>;
+  type Report = Extract<ContentReport, { type: 'compactionUpdate' }>;
   const report = (status = 'in_progress', fields: Partial<Pick<Report, 'summary' | 'error'>> = {}, compactionId = 'opaque/id'): Report => ({
     type: 'compactionUpdate', compactionId, status, summary: { present: false }, error: { present: false }, ...fields,
   });
-  const chunk = (text: string): Action => ({ type: 'compactionSummaryChunk', compactionId: 'opaque/id', content: { type: 'text', text } });
+  const chunk = (text: string): FixtureAction => ({ type: 'compactionSummaryChunk', compactionId: 'opaque/id', content: { type: 'text', text } });
   const summary = { present: true, value: [{ type: 'text', text: '**Summary**' }] } as const;
   const withSummary = (status = 'in_progress') => report(status, { summary: { present: true, value: [...summary.value] } });
 
@@ -543,7 +650,7 @@ describe('a compaction', () => {
     view.send(report('completed'));
     expect(view.all('#messages > .compaction-block')).toHaveLength(1);
     expect(view.all('.turn > *').map((element) => element.classList[0])).toEqual(['message', 'turn-tools', 'compaction-block', 'turn-tools', 'message']);
-    expect(view.all('.turn-tools-summary').map((element) => element.textContent)).toEqual(['▾ 1 tool call', '▾ 1 tool call']);
+    expect(view.all('.turn-tools-summary').map((element) => element.textContent)).toEqual(['1 tool call', '1 tool call']);
     expect(view.all('.compaction-header').map((element) => element.textContent)).toEqual(['Compaction completed', 'Compaction completed']);
   });
 
@@ -553,7 +660,14 @@ describe('a compaction', () => {
     const details = view.part<HTMLDetailsElement>('.compaction-block');
     expect(details.open).toBe(true);
     expect(view.part('.compaction-header').textContent).toBe('Compacting…');
-    expect(view.all('.compaction-indicator')).toHaveLength(1);
+    const indicator = view.part('.compaction-indicator');
+    expect(indicator.getAttribute('aria-hidden')).toBe('true');
+    expect(Array.from(indicator.classList)).toEqual(expect.arrayContaining([
+      'animate-pulse',
+      'motion-reduce:animate-none',
+      'forced-colors:border',
+      'forced-colors:border-current',
+    ]));
     expect(view.part('.compaction-content [data-streamdown="strong"]').textContent).toBe('Summary');
     await toggle(details);
     view.send(chunk(' more'));
@@ -632,6 +746,22 @@ describe('a compaction', () => {
     const error = '{"identifier":9007199254740993,"data":{"arbitrary":true}}';
     view.send(report('failed', { error: { present: true, value: error } }));
     expect(view.part('.compaction-error pre').textContent).toBe(error);
+  });
+
+  it('toggles the compaction error disclosure chevron when opened and closed', async () => {
+    const view = renderChatView();
+    view.send(report('failed', { error: { present: true, value: 'boom' } }));
+    const details = view.part<HTMLDetailsElement>('.compaction-error');
+    const summary = view.part('.compaction-error summary');
+    const closedPath = summary.querySelector('svg path')?.getAttribute('d');
+    expect(details.open).toBe(false);
+    expect(closedPath).toBeTruthy();
+
+    await toggle(details);
+    expect(details.open).toBe(true);
+    const openPath = summary.querySelector('svg path')?.getAttribute('d');
+    expect(openPath).toBeTruthy();
+    expect(openPath).not.toBe(closedPath);
   });
 
   it('joins adjacent streamed text into continuous Markdown and replaces it with the final summary', async () => {
@@ -723,6 +853,20 @@ describe('a compaction', () => {
     view.send(report('cancelled'));
     expect(view.part('.compaction-header').textContent).toBe('Compaction cancelled in 10s');
   });
+
+  it('mounts compaction summary content only while its disclosure is open', async () => {
+    const view = renderChatView();
+    view.send(withSummary('completed'));
+    const details = view.part<HTMLDetailsElement>('.compaction-block');
+    expect(details.open).toBe(false);
+    expect(details.querySelector('.compaction-content')).toBeNull();
+
+    await toggle(details);
+    expect(details.querySelector('.compaction-content [data-streamdown="strong"]')?.textContent).toBe('Summary');
+
+    await toggle(details);
+    expect(details.querySelector('.compaction-content')).toBeNull();
+  });
 });
 
 describe('a thought', () => {
@@ -734,7 +878,15 @@ describe('a thought', () => {
     const thought = view.part<HTMLDetailsElement>('.thought-block');
     expect(hookClasses(thought)).toBe('thought-block streaming');
     expect(thought.open).toBe(true);
-    expect(thought.querySelector('summary .thought-indicator')).not.toBeNull();
+    const indicator = thought.querySelector('summary .thought-indicator');
+    expect(indicator).not.toBeNull();
+    expect(indicator?.getAttribute('aria-hidden')).toBe('true');
+    expect(Array.from(indicator?.classList ?? [])).toEqual(expect.arrayContaining([
+      'animate-pulse',
+      'motion-reduce:animate-none',
+      'forced-colors:border',
+      'forced-colors:border-current',
+    ]));
     expect(thought.querySelector('summary')?.textContent).toBe(' Thinking…');
     expect(thought.querySelector('.thought-content')?.textContent).toBe('let me think');
 
@@ -757,27 +909,100 @@ describe('a thought', () => {
     expect(thought.open).toBe(false);
     expect(view.store.getSnapshot().transcript.entries[0]).toMatchObject({ parts: [{ kind: 'thought', open: false }] });
   });
+
+  it('mounts thought content only while its disclosure is open', async () => {
+    const view = renderChatView();
+    view.connect();
+    view.thought('**secret reasoning**');
+    view.answer('answer');
+    const thought = view.part<HTMLDetailsElement>('.thought-block');
+    expect(thought.open).toBe(false);
+    expect(thought.querySelector('.thought-content')).toBeNull();
+
+    await toggle(thought);
+    expect(thought.querySelector('.thought-content [data-streamdown="strong"]')?.textContent).toBe('secret reasoning');
+
+    await toggle(thought);
+    expect(thought.querySelector('.thought-content')).toBeNull();
+  });
 });
 
 describe('tool calls', () => {
-  it('shows the status, the title and the text content of each tool call', () => {
+  it('reveals a running command in the header before output arrives and keeps it expanded through completion', async () => {
+    const view = renderChatView();
+    view.connect();
+    const command = `python --input ${'long-path/'.repeat(30)}data.json\n  --format json`;
+    view.toolCall({ toolCallId: 'long-command', title: command, status: 'running', content: [] });
+    const details = view.part<HTMLDetailsElement>('#tc-long-command');
+    const header = view.part('.tc-title');
+    expect(details.open).toBe(false);
+    expect(header.textContent).toBe(command);
+    expect(header.classList.contains('truncate')).toBe(true);
+    expect(view.container.querySelector('.tc-body')).toBeNull();
+
+    await toggle(details);
+    expect(details.open).toBe(true);
+    expect(header.classList.contains('truncate')).toBe(false);
+    expect(Array.from(header.classList)).toEqual(expect.arrayContaining(['min-w-0', 'whitespace-pre-wrap', 'wrap-anywhere']));
+    expect(header.textContent).toBe(command);
+    expect(view.part('.tc-body').style.display).toBe('none');
+
+    view.toolCall({ toolCallId: 'long-command', content: [{ kind: 'commandOutput', text: 'Working…', truncated: false }] });
+    expect(details.open).toBe(true);
+    expect(view.part('.tc-command-text').textContent).toBe('Working…');
+    expect(view.part('.tc-body').textContent).not.toContain(command);
+    view.toolCall({ toolCallId: 'long-command', status: 'completed' });
+    expect(details.open).toBe(true);
+    expect(header.classList.contains('truncate')).toBe(false);
+
+    await toggle(details);
+    expect(details.open).toBe(false);
+    expect(header.classList.contains('truncate')).toBe(true);
+    expect(header.textContent).toBe(command);
+  });
+
+  it('shows a distinct non-spinning icon, accessible status, title, and text content for each tool call', async () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'Run', status: 'running', content: [{ kind: 'text', text: 'one' }, { kind: 'text', text: 'two' }] });
     view.toolCall({ toolCallId: 't2' });
+    view.toolCall({ toolCallId: 't3', title: 'Done', status: 'completed' });
+    view.toolCall({ toolCallId: 't4', title: 'Fail', status: 'failed' });
 
-    const [run, untitled] = view.all('.tool-call-inline');
+    const [run, untitled, done, fail] = view.all('.tool-call-inline');
     assert.exists(run);
     assert.exists(untitled);
+    assert.exists(done);
+    assert.exists(fail);
     expect(run.id).toBe('tc-t1');
     expect(hookClasses(run.querySelector('.tc-icon'))).toBe('tc-icon running');
-    expect(run.querySelector('.tc-icon')?.textContent).toBe('⟳');
+    expect(run.querySelector('.tc-icon')?.getAttribute('aria-hidden')).toBe('true');
+    expect(run.querySelector('.tc-icon')?.textContent).toBe('');
+    expect(Array.from(run.querySelector('.tc-summary')?.classList ?? [])).toEqual(expect.arrayContaining([
+      'focus-visible:outline-1',
+      'focus-visible:outline-ring',
+    ]));
+    expect(run.querySelector('.tc-summary .sr-only')?.textContent).toBe('Running: ');
     expect(run.querySelector('.tc-title')?.textContent).toBe('Run');
+    await toggle(run as HTMLDetailsElement);
     expect([...run.querySelectorAll('.tc-body-block')].map((block) => block.textContent)).toEqual(['one', 'two']);
     expect(run.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('');
     expect(run.querySelector('.tc-body-truncated')).toBeNull();
     expect(untitled.querySelector('.tc-title')?.textContent).toBe('Tool Call');
+    expect(untitled.querySelector('.tc-summary .sr-only')?.textContent).toBe('Pending: ');
+    await toggle(untitled as HTMLDetailsElement);
     expect(untitled.querySelector<HTMLElement>('.tc-body')?.style.display).toBe('none');
+    expect(done.querySelector('.tc-summary .sr-only')?.textContent).toBe('Completed: ');
+    expect(fail.querySelector('.tc-summary .sr-only')?.textContent).toBe('Failed: ');
+
+    const svgs = [untitled, run, done, fail].map((el) => el.querySelector('.tc-icon svg'));
+    for (const svg of svgs) {
+      expect(svg).not.toBeNull();
+      expect(Array.from(svg?.classList ?? [])).not.toContain('animate-spin');
+    }
+    expect(new Set(svgs.map((svg) => svg?.innerHTML)).size).toBe(4);
+    expect(Array.from(svgs[1]?.classList ?? [])).toEqual(expect.arrayContaining(['animate-pulse', 'motion-reduce:animate-none']));
+    expect(Array.from(svgs[0]?.classList ?? [])).not.toContain('animate-pulse');
   });
 
   it('draws no diffs while a tool call is closed, and once the user opens it draws each where it was reported among the texts', async () => {
@@ -838,6 +1063,8 @@ describe('tool calls', () => {
   it("makes each file's path a link that opens it, with the context VS Code's menu reads; a move's source and a directory are not links", () => {
     const view = renderChatView();
     view.connect();
+    const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 3, projection: 7 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     view.toolCall({ toolCallId: 't1', title: 'Edit', status: 'failed', content: [
       { kind: 'diff', files: [diffFile({
         operation: 'modify',
@@ -856,18 +1083,21 @@ describe('tool calls', () => {
 
     const links = view.all('.tc-diff-link');
     expect(links.map((link): unknown[] => [link.textContent, JSON.parse(link.dataset['vscodeContext'] ?? 'null') as unknown])).toEqual([
-      ['a.ts', { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: 't1', yourTurnDiffFile: 0, yourTurnDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
-      ['src/math.ts', { webviewSection: 'toolCallDiffFile', yourTurnToolCallId: 't1', yourTurnDiffFile: 1, yourTurnDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
+      ['a.ts', { webviewSection: 'toolCallDiffFile', yourTurnTarget: target, yourTurnToolCallId: 't1', yourTurnDiffFile: 0, yourTurnDiffFileHasLines: true, preventDefaultContextMenuItems: true }],
+      ['src/math.ts', { webviewSection: 'toolCallDiffFile', yourTurnTarget: target, yourTurnToolCallId: 't1', yourTurnDiffFile: 1, yourTurnDiffFileHasLines: false, preventDefaultContextMenuItems: true }],
     ]);
     expect(view.all('.tc-diff-path').map((path) => path.textContent)).toEqual(['a.ts', 'src/util.ts → src/math.ts', 'dist']);
 
     fireEvent.click(view.part('.tc-diff-file:nth-child(1) .tc-diff-link'));
-    expect(view.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 0 }]);
+    expect(view.takePosted()).toEqual([{ type: 'openFile', target, toolCallId: 't1', file: 0 }]);
   });
 
-  it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", () => {
+  it("gives a command's output and its tool call's title the context Open in Terminal reads: its session, the title, and its terminal or the tool call itself", async () => {
     const view = renderChatView();
     view.connect();
+    const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 3, projection: 7 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0,
+      entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
     view.send({ type: 'terminal', terminalId: 'term', text: 'ok', truncated: false, exitStatus: null });
     view.toolCall({ toolCallId: 'c1', title: 'npm test', content: [{ kind: 'terminal', terminalId: 'term' }] });
     view.toolCall({ toolCallId: 'c2', title: '', content: [{ kind: 'commandOutput', text: 'a.ts', truncated: false }] });
@@ -875,21 +1105,24 @@ describe('tool calls', () => {
     const contexts = (selector: string) => view.all(selector).map((element) => JSON.parse(element.dataset['vscodeContext'] ?? 'null') as unknown);
 
     const expected = [
-      { webviewSection: 'commandOutput', yourTurnSessionId: 's1', yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
-      { webviewSection: 'commandOutput', yourTurnSessionId: 's1', yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
+      { webviewSection: 'commandOutput', yourTurnTarget: target, yourTurnTitle: 'npm test', yourTurnTerminalId: 'term' },
+      { webviewSection: 'commandOutput', yourTurnTarget: target, yourTurnTitle: 'Tool Call', yourTurnToolCallId: 'c2' },
     ];
-    expect(contexts('.tc-command')).toEqual(expected);
     expect(contexts('.tc-summary')).toEqual([...expected, null]);
+    await toggle(view.part<HTMLDetailsElement>('#tc-c1'));
+    await toggle(view.part<HTMLDetailsElement>('#tc-c2'));
+    expect(contexts('.tc-command')).toEqual(expected);
   });
 
-  it("spins in a tool call's summary while a command of its terminals runs, and stops once it ends", () => {
+  it("shows a command's terminal in its tool call as it updates and ends without a summary spinner", async () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'npm test', status: 'completed', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
     expect(view.container.querySelector('.tc-body .tc-command')).toBeNull();
 
     view.send({ type: 'terminal', terminalId: 'term', text: 'running tests', truncated: false, exitStatus: null });
-    expect(view.part('#tc-t1 summary .tc-running').title).toBe('Command running');
+    expect(view.container.querySelector('.tc-running')).toBeNull();
     expect(view.part('.tc-command-text').textContent).toBe('running tests');
 
     view.send({ type: 'terminal', terminalId: 'term', text: 'all passed', truncated: false, exitStatus: { exitCode: 0, signal: null } });
@@ -897,11 +1130,12 @@ describe('tool calls', () => {
     expect(view.part('.tc-command').textContent).toBe('all passed');
   });
 
-  it("notes a command's earlier output not shown above its text, and how it failed below", () => {
+  it("notes a command's earlier output not shown above its text, and how it failed below", async () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'terminal', terminalId: 'term', text: 'Error: 3 tests failed', truncated: true, exitStatus: { exitCode: 1, signal: null } });
     view.toolCall({ toolCallId: 't1', title: 'npm test', content: [{ kind: 'terminal', terminalId: 'term' }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect([...view.part('.tc-command').children].map((part) => [part.className.split(' ')[0], part.textContent])).toEqual([
       ['tc-command-cut', 'Earlier output not shown'],
@@ -911,33 +1145,36 @@ describe('tool calls', () => {
     expect(view.container.querySelector('.tc-body-truncated')).toBeNull();
   });
 
-  it("shows a command's text sent as text the same way, with no spinner", () => {
+  it("shows a command's text sent as text the same way", async () => {
     const view = renderChatView();
     view.connect();
     view.toolCall({ toolCallId: 't1', title: 'ls', status: 'running', content: [{ kind: 'commandOutput', text: 'a.ts\nb.ts', truncated: true }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect(view.part('.tc-command-cut').textContent).toBe('Earlier output not shown');
     expect(view.part('.tc-command-text').textContent).toBe('a.ts\nb.ts');
     expect(view.container.querySelector('.tc-running')).toBeNull();
   });
 
-  it('says the agent disconnected before a command still running finished, once its session ends', () => {
+  it('says the agent disconnected before a command still running finished, once its session ends', async () => {
     const view = renderChatView();
     view.connect();
     view.send({ type: 'terminal', terminalId: 'term', text: 'watching', truncated: false, exitStatus: null });
     view.toolCall({ toolCallId: 't1', title: 'npm run watch', content: [{ kind: 'terminal', terminalId: 'term' }] });
 
     view.send({ type: 'sessionEnded', message: 'Fake exited unexpectedly (code 1).' });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect(view.container.querySelector('.tc-running')).toBeNull();
     expect(view.part('.tc-command-disconnected').textContent).toBe('The agent disconnected before the command finished.');
   });
 
-  it('notes content cut off at the limit', () => {
+  it('notes content cut off at the limit', async () => {
     const view = renderChatView();
     view.connect();
 
     view.toolCall({ toolCallId: 't1', title: 'Run', content: [{ kind: 'text', text: 'x'.repeat(25_000) }] });
+    await toggle(view.part<HTMLDetailsElement>('#tc-t1'));
 
     expect(view.part('.tc-body-block').textContent).toHaveLength(20_000);
     expect(view.part('.tc-body-truncated').textContent).toBe('... (output truncated)');
@@ -963,17 +1200,67 @@ describe('tool calls', () => {
     view.toolCall({ toolCallId: 't1', title: 'Read' });
     const summary = view.part('.turn-tools-summary');
     const list = view.part('.turn-tools-list');
-    expect(summary.textContent).toBe('▾ 1 tool call');
+    expect(summary.textContent).toBe('1 tool call');
 
     for (const id of ['t2', 't3', 't4']) {
       view.toolCall({ toolCallId: id, title: 'Read' });
     }
     view.send({ type: 'promptEnd' });
-    expect(summary.textContent).toBe('▸ 4 tool calls');
+    expect(summary.textContent).toBe('4 tool calls');
     expect(hookClasses(list)).toBe('turn-tools-list collapsed');
 
     fireEvent.click(summary);
-    expect(summary.textContent).toBe('▾ 4 tool calls');
+    expect(summary.textContent).toBe('4 tool calls');
     expect(hookClasses(list)).toBe('turn-tools-list');
+  });
+
+  it('mounts tool call items in a collapsed group only once expanded', () => {
+    const view = renderChatView();
+    view.connect();
+    view.send({ type: 'promptStart' });
+    for (const id of ['t1', 't2', 't3', 't4']) {
+      view.toolCall({ toolCallId: id, title: `Read ${id}`, status: 'completed' });
+    }
+    view.send({ type: 'promptEnd' });
+    const summary = view.part('.turn-tools-summary');
+    const list = view.part('.turn-tools-list');
+    expect(hookClasses(list)).toBe('turn-tools-list collapsed');
+    expect(list.querySelectorAll('.tool-call-inline')).toHaveLength(0);
+
+    fireEvent.click(summary);
+    expect(list.querySelectorAll('.tool-call-inline')).toHaveLength(4);
+
+    fireEvent.click(summary);
+    expect(list.querySelectorAll('.tool-call-inline')).toHaveLength(0);
+  });
+
+  it('mounts a tool call body and resolves its Markdown images only while open, keeping command summary context while closed', async () => {
+    const view = renderChatView();
+    view.connect();
+    const target = { configuredName: 'configured-fake', sessionId: SESSION_ID, generation: 1, projection: 1 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0,
+      entries: [], currentTurn: null, nextId: 1, usage: null, terminals: [] });
+    view.takePosted();
+    view.toolCall({ toolCallId: 't1', title: 'Run check', status: 'completed', content: [
+      { kind: 'commandOutput', text: 'ok', truncated: false },
+      { kind: 'text', text: '![Chart](https://images.example/chart.png)' },
+    ] });
+    const call = view.part<HTMLDetailsElement>('#tc-t1');
+    expect(call.open).toBe(false);
+    expect(call.querySelector('.tc-body')).toBeNull();
+    expect(view.takePosted()).toEqual([]);
+    expect(JSON.parse(call.querySelector<HTMLElement>('.tc-summary')?.dataset['vscodeContext'] ?? 'null')).toEqual({
+      webviewSection: 'commandOutput',
+      yourTurnTarget: target,
+      yourTurnTitle: 'Run check',
+      yourTurnToolCallId: 't1',
+    });
+
+    await toggle(call);
+    expect(call.querySelector('.tc-command-text')?.textContent).toBe('ok');
+    expect(view.takePosted()).toEqual([{ type: 'markdownImageContext', target }]);
+
+    await toggle(call);
+    expect(call.querySelector('.tc-body')).toBeNull();
   });
 });

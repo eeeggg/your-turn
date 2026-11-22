@@ -1,13 +1,12 @@
 import { assert, describe, expect, it } from 'vitest';
 import type { DiffFile, ToolCallContent } from '@/shared/WebviewMessages';
-import type { Action } from '@/webview/state/RootState';
+import type { FixtureAction as Action } from '@tests/ContentProjection';
 import {
   shownContent,
-  statusGlyph,
   TOOL_CALL_CONTENT_LIMIT,
   type ContentContext
 } from '@/webview/state/Transcript';
-import { chatView, promptEnd } from '@tests/unit/webview/state/TranscriptTestSupport';
+import { chatView, promptEnd, OTHER_TRANSCRIPT_SESSION_ID } from '@tests/unit/webview/state/TranscriptTestSupport';
 
 const texts = (...items: string[]): ToolCallContent[] => items.map((text) => ({ kind: 'text', text }));
 /** A file as the extension sends it, added with one line. */
@@ -190,11 +189,14 @@ describe("a tool call's files", () => {
     const view = chatView();
     view.connect();
     view.toolCall('t1', { title: 'Edit', content: [edited, ...texts('done'), twoFiles] });
+    const target = { configuredName: 'fake', sessionId: 'diff-session', generation: 1, projection: 2 };
+    view.send({ type: 'contentSnapshot', queue: [], composer: { text: '', revision: 0 }, target, revision: 0, entries: view.transcript().entries,
+      currentTurn: view.transcript().currentTurn, nextId: view.transcript().nextId, usage: null, terminals: [] });
     const before = view.transcript();
 
     view.send({ type: 'diffFileClicked', toolCallId: 't1', file: 2 });
 
-    expect(view.takePosted()).toEqual([{ type: 'openFile', toolCallId: 't1', file: 2 }]);
+    expect(view.takePosted()).toEqual([{ type: 'openFile', target, toolCallId: 't1', file: 2 }]);
     expect(view.transcript()).toBe(before);
   });
 
@@ -216,7 +218,7 @@ describe('commands', () => {
     assert.exists(call);
     const { terminals, sessionEnded } = view.transcript();
     const shown = shownContent(call.content, { terminals, sessionEnded }, false);
-    return { blocks: shown.blocks.filter((block) => block.kind === 'command'), running: shown.running };
+    return { blocks: shown.blocks.filter((block) => block.kind === 'command') };
   }
 
   it("shows a terminal where its tool call reported it, whichever came first, in every tool call showing it, and nothing until it is reported", () => {
@@ -248,8 +250,8 @@ describe('commands', () => {
       return commands(view, terminalId);
     };
 
-    expect(report('running', null)).toMatchObject({ blocks: [{ status: 'running', failure: null }], running: true });
-    expect(report('passed', { exitCode: 0, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: null }], running: false });
+    expect(report('running', null)).toMatchObject({ blocks: [{ status: 'running', failure: null }] });
+    expect(report('passed', { exitCode: 0, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: null }] });
     expect(report('failed', { exitCode: 2, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: 'Exit code 2' }] });
     expect(report('killed', { exitCode: null, signal: 'SIGTERM' })).toMatchObject({ blocks: [{ status: 'ended', failure: 'Ended by SIGTERM' }] });
     expect(report('unknown', { exitCode: null, signal: null })).toMatchObject({ blocks: [{ status: 'ended', failure: null }] });
@@ -265,7 +267,6 @@ describe('commands', () => {
 
     expect(commands(view, 'c1')).toEqual({
       blocks: [{ kind: 'command', text: 'building', truncated: false, status: 'disconnected', failure: null, terminalId: 't1' }],
-      running: false,
     });
   });
 
@@ -274,7 +275,7 @@ describe('commands', () => {
     view.connect();
     view.send({ type: 'terminal', terminalId: 't1', ...running });
 
-    view.connect({ sessionId: 's2' });
+    view.connect({ sessionId: OTHER_TRANSCRIPT_SESSION_ID });
     expect(view.transcript().terminals.size).toBe(0);
     view.send({ type: 'terminal', terminalId: 't1', ...running }, { type: 'clearTranscript' });
     expect(view.transcript().terminals.size).toBe(0);
@@ -291,7 +292,6 @@ describe('commands', () => {
         { kind: 'text', text: half },
       ],
       truncated: false,
-      running: false,
     });
   });
 });
@@ -300,9 +300,9 @@ describe('what is shown', () => {
   it('truncates tool call content past the limit, across blocks', () => {
     const half = 'a'.repeat(TOOL_CALL_CONTENT_LIMIT / 2);
 
-    expect(shownContent(texts(half, half), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: false, running: false });
-    expect(shownContent(texts(half, `${half}b`), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
-    expect(shownContent(texts(half, half, 'c'), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: true, running: false });
+    expect(shownContent(texts(half, half), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: false });
+    expect(shownContent(texts(half, `${half}b`), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: true });
+    expect(shownContent(texts(half, half, 'c'), inSession(), true)).toEqual({ blocks: texts(half, half), truncated: true });
   });
 
   it("shows a tool call's diffs where they were reported among its texts, their files relative to the working directory", () => {
@@ -324,11 +324,6 @@ describe('what is shown', () => {
     expect(shownContent([...texts('before'), diff, ...texts('after')], inSession(), false)).toEqual({
       blocks: texts('before', 'after'),
       truncated: false,
-      running: false,
     });
-  });
-
-  it('marks each tool call status with a glyph', () => {
-    expect((['pending', 'running', 'completed', 'failed'] as const).map(statusGlyph)).toEqual(['…', '⟳', '✓', '✗']);
   });
 });

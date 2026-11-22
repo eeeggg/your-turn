@@ -67,6 +67,10 @@ export function Markdown({ text, streaming }: { text: string; streaming: boolean
 let nextOccurrence = 1;
 
 function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
+  const owner = useSelector((state) => {
+    const target = state.transcript.projection?.target;
+    return JSON.stringify([target?.configuredName, target?.sessionId, target?.generation, state.transcript.markdownImageEpoch]);
+  });
   let source: string | null = null;
   if (typeof src === 'string' && src.startsWith(imageSourcePrefix)) {
     try {
@@ -74,7 +78,7 @@ function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
       source = decoded;
     } catch { /* An agent can supply malformed URLs in raw HTML. */ }
   }
-  return source ? <ValidatedImage source={source} alt={alt ?? ''} />
+  return source ? <ValidatedImage key={owner} source={source} alt={alt ?? ''} />
     : <span>{alt ? `${alt} — image not displayed` : 'Image not displayed'}</span>;
 }
 
@@ -98,7 +102,7 @@ function ValidatedImage({ source, alt }: { source: string; alt: string }) {
         <strong>{new URL(source).hostname}</strong> — {source}<br />
         Loading contacts an external server from the {origin ?? 'extension host (location unknown)'}. The destination may redirect.
       </span>}
-      {(presentation?.status === 'consent' || presentation?.status === 'retry') && <button type="button" className="text-link" onClick={() => dispatch({ type: 'markdownImageLoad', occurrence })}>
+      {(presentation?.status === 'consent' || presentation?.status === 'retry') && <button type="button" className="cursor-pointer rounded-sm text-link focus-visible:outline-1 focus-visible:outline-ring" onClick={() => dispatch({ type: 'markdownImageLoad', occurrence })}>
         {presentation.status === 'consent' ? 'Load image' : 'Retry'}
       </button>}
     </span>;
@@ -134,7 +138,7 @@ function CopyLinkButton({ href }: { href: string }) {
       type="button"
       aria-label="Copy link"
       title="Copy link"
-      className="ml-0.5 inline-flex cursor-pointer align-middle text-muted-foreground hover:text-foreground"
+      className="ml-0.5 inline-flex cursor-pointer rounded-sm align-middle text-muted-foreground hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring"
       onClick={() => void navigator.clipboard.writeText(href).then(() => setCopied(true))}
     >
       {copied ? (

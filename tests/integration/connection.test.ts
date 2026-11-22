@@ -1,11 +1,13 @@
 import * as assert from 'assert';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { suite, suiteSetup, suiteTeardown, test } from 'mocha';
+import { tmpdir } from 'node:os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import type { AcpDriver } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager, type AgentProcess } from '@/core/AgentManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { clearTraffic, getTrafficJsonl, setTrafficCaptureEnabled, type TrafficDirection } from '@/core/Traffic';
 import { setLogSink } from '@/core/Log';
 import { PermissionRequests } from '@/core/PermissionRequests';
@@ -31,6 +33,7 @@ for (const version of [1, 2]) {
     let exited: Promise<void> | undefined;
     const exits: (number | null)[] = [];
     const texts: string[] = [];
+    const textSessionIds: string[] = [];
     const textWaiters: { text: string; resolve: () => void }[] = [];
     const exitWaiters: (() => void)[] = [];
     const logs: string[] = [];
@@ -54,9 +57,10 @@ for (const version of [1, 2]) {
       });
 
       updates = new SessionUpdateHandler();
-      updates.addListener((_sessionId, update) => {
+      updates.addListener(({ input: { origin: { identity: { sessionId } }, update } }) => {
         if (update.kind === 'agentText') {
           texts.push(update.text);
+          textSessionIds.push(sessionId);
           for (const waiter of textWaiters.splice(0)) {
             if (texts.includes(waiter.text)) {
               waiter.resolve();
@@ -66,7 +70,7 @@ for (const version of [1, 2]) {
           }
         }
       });
-      manager = new ConnectionManager(updates, CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
+      manager = new ConnectionManager(CLIENT_VERSION, () => ({ permissions: new PermissionRequests(permissionQuickPick) }));
 
       // Inside the test host, process.execPath is the Electron binary.
       let finishExit: () => void = () => {};
@@ -83,7 +87,12 @@ for (const version of [1, 2]) {
           for (const resolve of exitWaiters.splice(0)) { resolve(); }
         },
       });
-      driver = await manager.connect('fake-agent', agent);
+      const sourceId = agent.id;
+      driver = await manager.connect('fake-agent', agent, sourceId, {
+        handleUpdate: (sessionId, update, schema) => updates?.handleUpdate({ input: {
+          origin: { identity: { configuredName: 'fake-agent', sessionId }, sourceId }, update, schema,
+        }, registration: undefined }),
+      });
     });
 
     const nextText = (text: string) => texts.includes(text)
@@ -135,23 +144,74 @@ for (const version of [1, 2]) {
 
     test('Creates a session and sets a config option', async () => {
       const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
-      assert.strictEqual(created.sessionId, 'fake-session');
+      assert.match(created.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
       assert.strictEqual(created.configOptions?.[0]?.category, 'model');
 
       const updated = await driver.setConfigOption(created.sessionId, 'model', 'model-b');
       assert.strictEqual(updated?.[0]?.current, 'model-b');
     });
 
-    test('Routes session updates and answers permission requests during a prompt', async () => {
-      await driver.prompt('fake-session', [{ kind: 'text', text: 'hi' }]);
-      assert.ok(texts.includes('hello'), `updates: ${JSON.stringify(texts)}`);
-      assert.ok(texts.includes('perm:allow'), `updates: ${JSON.stringify(texts)}`);
+    test('Creates distinct sessions on the same connection', async () => {
+      const first = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+      const second = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+      assert.notStrictEqual(second.sessionId, first.sessionId);
+      const updated = await driver.setConfigOption(second.sessionId, 'model', 'model-b');
+      assert.strictEqual(updated?.[0]?.current, 'model-b');
     });
 
+    test('Routes session updates and answers permission requests during a prompt', async () => {
+      const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+      await driver.prompt(created.sessionId, [{ kind: 'text', text: 'hi' }]);
+      assert.ok(texts.includes('hello'), `updates: ${JSON.stringify(texts)}`);
+      assert.ok(texts.includes('perm:allow'), `updates: ${JSON.stringify(texts)}`);
+      assert.deepStrictEqual(textSessionIds, [created.sessionId, created.sessionId]);
+    });
+
+    if (version === 1) {
+      test('Routes a sibling turn over stdio while the first prompt response is held', async () => {
+        const directory = await mkdtemp(path.join(tmpdir(), 'acp-sibling-'));
+        const trigger = path.join(directory, 'background-review.trigger');
+        let held: ReturnType<AcpDriver['prompt']> | undefined;
+        try {
+          await writeFile(path.join(directory, 'm.ts'), 'l1\nl2\n');
+          const first = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+          const second = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
+          const recordsBefore = trafficRecords().length;
+          const armed = nextText('Background review armed.');
+          held = driver.prompt(first.sessionId, [{ kind: 'text', text: `review-after-trigger ${directory}` }]);
+          const early = await Promise.race([armed.then(() => 'armed'), held.then(() => 'settled')]);
+          assert.strictEqual(early, 'armed');
+          assert.strictEqual(textSessionIds.at(-1), first.sessionId);
+
+          const sibling = await driver.prompt(second.sessionId, [{ kind: 'text', text: 'hi' }]);
+          assert.strictEqual(sibling.stopReason, 'end_turn');
+          assert.deepStrictEqual(textSessionIds.slice(-2), [second.sessionId, second.sessionId]);
+          const requests = trafficRecords().slice(recordsBefore).filter(({ direction, message }) => direction === 'send' && at(message, 'method') === 'session/prompt');
+          assert.deepStrictEqual(requests.map(({ message }) => at(message, 'params', 'sessionId')), [first.sessionId, second.sessionId]);
+          const firstRequestId = at(requests[0]?.message, 'id');
+          assert.notStrictEqual(firstRequestId, undefined);
+          assert.ok(!trafficRecords().slice(recordsBefore).some(({ direction, message }) => direction === 'recv' && at(message, 'id') === firstRequestId && at(message, 'method') === undefined));
+
+          await writeFile(trigger, 'complete');
+          assert.strictEqual((await held).stopReason, 'end_turn');
+          held = undefined;
+        } finally {
+          try {
+            if (held) {
+              await writeFile(trigger, 'complete');
+              await Promise.allSettled([held]);
+            }
+          } finally { await rm(directory, { recursive: true, force: true }); }
+        }
+      });
+    }
+
     test('Sends cancel as a notification', async () => {
+      const created = await driver.newSession({ cwd: __dirname, additionalDirectories: [] });
       const acknowledged = nextText('cancel-ack');
-      await driver.cancel('fake-session');
+      await driver.cancel(created.sessionId);
       await acknowledged;
+      assert.strictEqual(textSessionIds.at(-1), created.sessionId);
     });
 
     test('Traffic tap records both directions', () => {

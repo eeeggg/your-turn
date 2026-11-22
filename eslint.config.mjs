@@ -59,6 +59,16 @@ const contract = {
   message: "Only ChatViewController translates into the webview's contract; the rest of core, drivers included, never sees it.",
 };
 
+const sessionNavigation = {
+  group: ["@/core/sessions/Tabs", "@/core/sessions/Commands", "@/core/sessions/List", "@/core/sessions/Startup", "@/core/ChatViewController"],
+  message: "Session runtime and review do not depend on navigation or the chat view controller.",
+};
+
+const sessionRuntime = {
+  group: ["@/core/sessions/Manager", "@/core/sessions/States", "@/core/sessions/Content", "@/core/sessions/Interactions", "@/core/AgentManager", "@/core/acp/ConnectionManager"],
+  message: "Use qualified session contracts or a narrow capability, not concrete runtime owners.",
+};
+
 // A rule of its own, as every layer's rule replaces the other's options: Monaco's diff code is imported by internal paths,
 // which an upgrade can move.
 /** @type {import("eslint").Linter.RulesRecord} */
@@ -161,6 +171,30 @@ export default defineConfig(
     rules: { "@typescript-eslint/no-restricted-imports": "off" },
   },
   {
+    files: ["src/**/*.ts"],
+    ignores: ["src/core/review/Reviews.ts", "src/core/review/Review.ts", "src/core/review/Takeovers.ts", "src/core/review/FollowedFiles.ts", "src/core/review/V1Guard.ts", "src/core/review/V2Guard.ts"],
+    rules: {
+      "no-restricted-syntax": ["error",
+        {
+          selector: "ImportDeclaration[source.value='@/core/review/Review'] ImportSpecifier[imported.name='Review']",
+          message: "Only review internals may access mutable Review storage. Use Reviews projections and decisions.",
+        },
+        {
+          selector: "ExportNamedDeclaration[source.value='@/core/review/Review'] ExportSpecifier[local.name='Review']",
+          message: "Do not re-export mutable Review storage.",
+        },
+        {
+          selector: "ImportDeclaration[source.value='@/core/review/Review'] ImportNamespaceSpecifier, ExportAllDeclaration[source.value='@/core/review/Review']",
+          message: "Do not expose mutable Review storage through namespace imports or re-exports.",
+        },
+        {
+          selector: ":matches(ImportDeclaration, ExportNamedDeclaration, ExportAllDeclaration)[source.value=/^@\\/core\\/review\\/(Takeovers|FollowedFiles|V1Guard|V2Guard)$/]",
+          message: "Review mutation implementations belong inside Reviews. Use its observation and decision interface.",
+        },
+      ],
+    },
+  },
+  {
     files: ["src/core/**/*.ts"],
     rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract] }),
   },
@@ -170,7 +204,19 @@ export default defineConfig(
   },
   {
     files: ["src/core/acp/**/*.ts"],
-    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, contract] }),
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, contract, sessionNavigation] }),
+  },
+  {
+    files: ["src/core/AgentManager.ts", "src/core/sessions/{Manager,States,Content,Interactions,UpdateHandler}.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract, sessionNavigation] }),
+  },
+  {
+    files: ["src/core/review/**/*.ts"],
+    rules: restrictImports({ paths: [vscodeApi], patterns: [coreLayers, acpSdkInCore, contract, sessionNavigation, sessionRuntime] }),
+  },
+  {
+    files: ["src/core/sessions/Tabs.ts"],
+    rules: restrictImports({ paths: [vscodeApi, { name: "@/core/sessions/Manager", message: sessionRuntime.message }], patterns: [coreLayers, acpSdkInCore, contract] }),
   },
   {
     files: ["src/shared/**/*.ts"],

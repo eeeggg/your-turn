@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { SlashCommand } from '@/shared/WebviewMessages';
-import { answer, connect, loadChatPage, replayed, type ChatPage } from '@tests/webview/chatPage';
+import { answer, connect, loadChatPage as loadPage, replayed, type ChatPage } from '@tests/webview/chatPage';
+
+const loadChatPage = () => loadPage({ retained: true });
 
 let page: ChatPage;
 
@@ -26,15 +28,94 @@ function popupOpen(): boolean {
 }
 
 describe('sending prompts', () => {
+  it('edits locally at once and synchronizes only the latest draft after 200 ms without typing', async () => {
+    page = loadChatPage();
+    connect(page);
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    page.typePrompt('h');
+    expect(promptInput().value).toBe('h');
+    expect(page.takeComposerEdits()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(150);
+    page.typePrompt('hello');
+    await vi.advanceTimersByTimeAsync(199);
+    expect(promptInput().value).toBe('hello');
+    expect(page.takeComposerEdits()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(page.takeComposerEdits()).toEqual([{ type: 'composerEdited', target: page.target(), revision: 2, text: 'hello' }]);
+  });
+
+  it('flushes a pending draft before tab navigation and cannot post it again later', async () => {
+    page = loadChatPage();
+    connect(page);
+    page.takePosted();
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    page.typePrompt('draft before switch');
+    expect(page.takeComposerEdits()).toEqual([]);
+    page.document.querySelector<HTMLButtonElement>('[role="tab"]')?.click();
+    expect(page.takeComposerEdits()).toEqual([{ type: 'composerEdited', target: page.target(), revision: 1, text: 'draft before switch' }]);
+    expect(page.takePosted()).toEqual([{ type: 'selectSessionTab', tabId: 'tab-primary' }]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(page.takeComposerEdits()).toEqual([]);
+  });
+
+  it('flushes pending draft text when the page is leaving', () => {
+    page = loadChatPage();
+    connect(page);
+    page.typePrompt('last edit');
+    expect(page.takeComposerEdits()).toEqual([]);
+    page.window.dispatchEvent(new page.window.Event('pagehide'));
+    expect(page.takeComposerEdits()).toEqual([{ type: 'composerEdited', target: page.target(), revision: 1, text: 'last edit' }]);
+  });
+
+  it('keeps newer local input when an older composer echo arrives during the debounce interval', async () => {
+    page = loadChatPage();
+    connect(page);
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    page.typePrompt('new local text');
+    expect(page.takeComposerEdits()).toEqual([]);
+    page.send({ type: 'contentPatch', target: page.target(), base: 0, revision: 1,
+      patches: [], currentTurn: null, nextId: 1, usage: null, composer: { text: 'old echo', revision: 0 } });
+    expect(promptInput().value).toBe('new local text');
+    expect(page.takeComposerEdits()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(page.takeComposerEdits()).toEqual([{ type: 'composerEdited', target: page.target(), revision: 1, text: 'new local text' }]);
+  });
+
+  it('flushes before Send and never restores the submitted draft from a delayed timer', async () => {
+    page = loadChatPage();
+    connect(page);
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    page.typePrompt('send without waiting');
+    expect(page.takeComposerEdits()).toEqual([]);
+    page.pressKey('Enter');
+    expect(page.takeComposerEdits()).toEqual([
+      { type: 'composerEdited', target: page.target(), revision: 1, text: 'send without waiting' },
+      { type: 'composerEdited', target: page.target(), revision: 2, text: '' },
+    ]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(page.takeComposerEdits()).toEqual([]);
+    expect(promptInput().value).toBe('');
+    expect(userMessages()).toEqual(['send without waiting']);
+  });
+
   it('sends the trimmed prompt on Enter and shows it as a user message', () => {
     page = loadChatPage();
     connect(page);
     page.takePosted();
 
     page.typePrompt('  hello  ');
+    const target = page.target();
     page.pressKey('Enter');
 
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'hello' }]);
+    expect(page.takeComposerEdits()).toEqual([
+      { type: 'composerEdited', target, revision: 1, text: '  hello  ' },
+      { type: 'composerEdited', target, revision: 2, text: '' },
+    ]);
     expect(userMessages()).toEqual(['hello']);
     expect(promptInput().value).toBe('');
   });
@@ -81,12 +162,14 @@ describe('sending prompts', () => {
     page.takePosted();
 
     page.typePrompt('follow-up');
+    const target = page.target();
     page.pressKey('Enter');
-    expect(page.takePosted()).toEqual([{ type: 'queuedPrompts', count: 1 }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'follow-up' }]);
+    expect(userMessages()).toEqual([]);
     expect(promptInput().value).toBe('');
 
     page.send({ type: 'promptEnd' });
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'follow-up' }, { type: 'queuedPrompts', count: 0 }]);
+    expect(page.takePosted()).toEqual([]);
     expect(userMessages()).toEqual(['follow-up']);
   });
 });
@@ -123,8 +206,9 @@ describe('when the prompt box can be used', () => {
 
     page.send({ type: 'loadSessionEnd', ok: true });
     expect(usable()).toBe(true);
+    const target = page.target();
     page.pressKey('Enter');
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'hello' }]);
   });
 });
 
@@ -186,9 +270,10 @@ describe('slash commands', () => {
     page.takePosted();
 
     page.typePrompt('/in');
+    const target = page.target();
     page.pressKey('Enter');
 
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: '/init' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: '/init' }]);
     expect(popupOpen()).toBe(false);
   });
 
@@ -224,9 +309,10 @@ describe('slash commands', () => {
     page.takePosted();
 
     page.typePrompt('/');
+    const target = page.target();
     (popupItems()[0] as HTMLElement).click();
 
-    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', text: '/init' }]);
+    expect(page.takePosted()).toEqual([{ type: 'sendPrompt', target, text: '/init' }]);
   });
 
   it('closes on Escape without sending', () => {

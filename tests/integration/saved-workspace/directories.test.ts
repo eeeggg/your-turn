@@ -10,8 +10,8 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { AgentManager } from '@/core/AgentManager';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { WorkspaceState } from '@/core/PersistedState';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import type { ExtensionTestApi } from '@/extension';
 import { cleanup } from '@tests/integration/cleanup';
 
@@ -63,15 +63,22 @@ for (const version of [1, 2]) {
       const updates = new SessionUpdateHandler();
       const manager = new SessionManager(
         new AgentManager(),
-        new ConnectionManager(updates, '0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
+        new ConnectionManager('0.0.0-test', () => ({ permissions: new PermissionRequests(permissionQuickPick) })),
         createWorkspaceEnvironment(state),
         { chooseAuthMethod: async () => undefined },
+        updates,
       );
       owned.push(() => manager.dispose(), () => updates.dispose());
 
-      await manager.connectToAgent(agentName);
-      await manager.loadSession(agentName, 'loaded');
-      await manager.resumeSession(agentName, 'resumed');
+      const created = await manager.newSession(agentName);
+      const loadedId = '2cc68f2e-d950-4c2f-b0c3-ed600106ef52';
+      const resumedId = '8ba00873-a5e3-443e-a60b-071ff4831878';
+      const loaded = await manager.loadSession(agentName, loadedId);
+      const resumed = await manager.resumeSession(agentName, resumedId);
+      assert.notStrictEqual(created.sessionId, loadedId);
+      assert.notStrictEqual(created.sessionId, resumedId);
+      assert.strictEqual(loaded.sessionId, loadedId);
+      assert.strictEqual(resumed.sessionId, resumedId);
 
       const [first, second] = (vscode.workspace.workspaceFolders ?? []).map(({ uri }) => uri.fsPath);
       const directories = { cwd: first, additionalDirectories: [second] };

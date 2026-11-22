@@ -79,7 +79,10 @@ authentication, permissions, and other agent-specific settings.
 3. Open **Your Turn** in the Activity Bar.
 4. Select **Your Turn: Add Agent Configuration**. Choose an agent from the ACP
    registry or enter a custom command and arguments.
-5. Select **Your Turn: Connect to Agent**, then send a prompt.
+5. Select **Your Turn: New Session**, choose an agent, then send a prompt.
+
+Use **Connect to Agent** to connect without opening a session. Open another
+session or select a live tab without stopping work in the other tabs.
 
 The ACP registry provides suggested launch commands—a starting point, not a
 requirement. You control the command, arguments, and environment variables in
@@ -142,7 +145,7 @@ Configure `your-turn.activeFileExcludes` in user settings for a general list,
 or in workspace settings to replace it for that workspace. The list stays
 visible and saved when `your-turn.includeActiveFile` is off, and applies again
 when it is enabled. These exclusions affect only automatic attachment, not
-explicit attachments or the agent's independent file access.
+the agent's independent file access.
 
 ## Diagnostics, sensitive information, and telemetry
 

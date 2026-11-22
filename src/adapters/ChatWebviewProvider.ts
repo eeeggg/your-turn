@@ -68,8 +68,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
   }
 
   post(message: ExtensionToWebviewMessage): void {
-    if (message.type === 'state') {
-      this.title = message.session ? `Chat ${message.session.agentName}` : 'Chat';
+    if (message.type === 'state' || message.type === 'viewSnapshot') {
+      const session = message.type === 'viewSnapshot' ? message.state.session : message.session;
+      this.title = session ? `Chat ${session.agentName}` : 'Chat';
       if (this.view) { this.view.title = this.title; }
     }
     if (this.view) {
@@ -84,18 +85,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider, ChatView
 
   executeCommand(command: string, ...rest: unknown[]): Thenable<unknown> {
     return vscode.commands.executeCommand(command, ...rest);
-  }
-
-  /** Attach a file to the next prompt and reveal the chat view. */
-  attachFile(uri: vscode.Uri): void {
-    if (this.view) {
-      this.post({
-        type: 'file-attached',
-        path: uri.fsPath,
-        name: uri.fsPath.split(/[\\/]/).pop() || uri.fsPath,
-      });
-      this.view.show(true);
-    }
   }
 
   dispose(): void {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { agent, methods, ndJsonStream, PROTOCOL_VERSION, RequestError } from '@agentclientprotocol/sdk';
 import type { AgentContext, ContentBlock, SessionConfigOption } from '@agentclientprotocol/sdk';
 import { appendFileSync, readFileSync, unlinkSync, watch, writeFileSync } from 'node:fs';
@@ -27,7 +28,12 @@ import { Readable, Writable } from 'node:stream';
  * as in use.
  */
 
-const SESSION_ID = process.env['ACP_TEST_SESSION_ID'] ?? 'fake-session';
+const COMPACTION_SESSION = '0717894d-6488-4fa1-9cc9-9d859cd1a914';
+const OTHER_COMPACTION_SESSION = 'd59bb150-ee82-4e47-ab32-74ecf761b471';
+const SHORT_BENCHMARK_SESSION = '51982598-8fec-4d32-ae6b-53a913692bc1';
+const LONG_BENCHMARK_SESSION = '463ca85f-3fd4-4d11-b816-687d9df999fc';
+const REALLY_LONG_BENCHMARK_SESSION = 'fca54590-70da-49b7-8186-c02ccd8164ee';
+const TAB_SWITCH_BENCHMARK = process.env['ACP_TEST_TAB_SWITCH_BENCHMARK'] === '1';
 const LISTS_SESSIONS = process.env['ACP_TEST_LISTS_SESSIONS'] !== undefined;
 const RECORDS = process.env['ACP_TEST_RECORDS'];
 const COMPACTION = process.env['ACP_TEST_COMPACTION'] !== undefined;
@@ -73,7 +79,11 @@ function restoredOptions({ model, effort, fast }: Choices): SessionConfigOption[
   ];
 }
 
-/** Open a session it is asked to load or resume, which starts out with model A at low effort and not fast. */
+/**
+ * Open a session it is asked to load or resume, which starts out with model A at low effort and not fast.
+ * shortcut: historical loads are scripted, not backed by a database. Seed known sessions and validate request IDs
+ * when Slice 1 authority or Slice 2 routing tests need it; do not tie session lifetime to process lifetime.
+ */
 function restore(sessionId: string): SessionConfigOption[] {
   if (sessionId === 'gone') {
     throw new RequestError(-32002, 'Resource not found', { sessionId });
@@ -106,6 +116,29 @@ async function replay(client: AgentContext, sessionId: string): Promise<void> {
     client.notify(methods.client.session.update, { sessionId, update: { sessionUpdate, content: { type: 'text', text } } });
   await update('user_message_chunk', 'earlier question');
   await update('agent_message_chunk', 'earlier answer');
+}
+
+async function replayBenchmark(client: AgentContext, sessionId: string): Promise<void> {
+  const size = sessionId === REALLY_LONG_BENCHMARK_SESSION ? 'Really Long' : sessionId === LONG_BENCHMARK_SESSION ? 'Long' : 'Short';
+  const turns = size === 'Short' ? 4 : 120 * (size === 'Really Long' ? 6 : 1);
+  const toolsPerTurn = size === 'Short' ? 2 : 10;
+  for (let turn = 1; turn <= turns; turn++) {
+    await client.notify(methods.client.session.update, { sessionId, update: {
+      sessionUpdate: 'user_message_chunk', content: { type: 'text', text: `Inspect component ${turn}.` },
+    } });
+    for (let call = 1; call <= toolsPerTurn; call++) {
+      await client.notify(methods.client.session.update, { sessionId, update: {
+        sessionUpdate: 'tool_call', toolCallId: `${turn}-${call}`, title: `Read component ${turn}, section ${call}`,
+        status: 'completed', content: [{ type: 'content', content: { type: 'text',
+          text: `Component ${turn}, section ${call}\n\n${'| key | value | status |\n'.repeat(100)}` } }],
+      } });
+    }
+    const text = `**Component ${turn}:** Reviewed API boundaries and error handling.\n\n- Confirmed callers.\n- Checked failure behavior.`;
+    const marker = turn === turns ? `\n\n${size} benchmark transcript complete.` : '';
+    await client.notify(methods.client.session.update, { sessionId, update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: text + marker },
+    } });
+  }
 }
 
 async function images(client: AgentContext, sessionId: string): Promise<void> {
@@ -141,6 +174,38 @@ async function replayCompaction(client: AgentContext, sessionId: string): Promis
   await client.notify(methods.client.session.update, {
     sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Historical answer' } },
   });
+}
+
+async function streamTools(client: AgentContext, sessionId: string): Promise<void> {
+  const say = (text: string) => client.notify(methods.client.session.update, {
+    sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  });
+  const checkpoint = async (name: string) => {
+    const response = await client.request(methods.client.session.requestPermission, {
+      sessionId, toolCall: { toolCallId: 'stream-checkpoint', title: name, status: 'pending' },
+      options: [{ optionId: 'continue', name, kind: 'allow_once' }],
+    });
+    if (response.outcome.outcome !== 'selected' || response.outcome.optionId !== 'continue') {
+      throw RequestError.invalidParams(undefined, 'Tool stream checkpoint not acknowledged');
+    }
+  };
+  await say(Array.from({ length: 60 }, (_, index) => `History line ${index}.`).join('\n\n'));
+  await checkpoint('Stream first batch');
+  for (const batch of [1, 2]) {
+    for (let index = 0; index < 30; index++) {
+      const toolCallId = `stream-${batch}-${index}`;
+      await client.notify(methods.client.session.update, {
+        sessionId, update: { sessionUpdate: 'tool_call', toolCallId, title: `Stream tool ${batch}-${index}`, status: 'pending' },
+      });
+      for (const status of ['in_progress', 'completed'] as const) {
+        await client.notify(methods.client.session.update, {
+          sessionId, update: { sessionUpdate: 'tool_call_update', toolCallId, status },
+        });
+      }
+    }
+    await say(`Batch ${batch} finished.`);
+    await checkpoint(batch === 1 ? 'Stream second batch' : 'Finish tool stream');
+  }
 }
 
 async function compact(client: AgentContext, sessionId: string): Promise<void> {
@@ -346,7 +411,7 @@ agent({ name: 'fake-agent' })
     return {
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: {
-        loadSession: RECORDS !== undefined || COMPACTION,
+        loadSession: RECORDS !== undefined || COMPACTION || TAB_SWITCH_BENCHMARK,
         sessionCapabilities: {
           ...(LISTS_SESSIONS ? { list: {} } : {}),
           ...(RECORDS ? { additionalDirectories: {}, resume: {} } : {}),
@@ -357,15 +422,23 @@ agent({ name: 'fake-agent' })
     };
   })
   .onRequest(methods.agent.session.list, ({ params }) => {
+    if (TAB_SWITCH_BENCHMARK) {
+      const cwd = params.cwd ?? process.cwd();
+      return { sessions: [
+        { sessionId: SHORT_BENCHMARK_SESSION, cwd, title: 'Short benchmark session' },
+        { sessionId: LONG_BENCHMARK_SESSION, cwd, title: 'Long benchmark session' },
+        { sessionId: REALLY_LONG_BENCHMARK_SESSION, cwd, title: 'Really Long session (benchmark)' },
+      ] };
+    }
     if (COMPACTION) {
       if (initializes.join(',') !== '2,1') { throw RequestError.invalidParams(undefined, 'Missing v1 initialize'); }
       return { sessions: [
-        { sessionId: SESSION_ID, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' },
-        { sessionId: `${SESSION_ID}-other`, cwd: params.cwd ?? process.cwd(), title: 'Another session with a deliberately long title for tab overflow' },
+        { sessionId: COMPACTION_SESSION, cwd: params.cwd ?? process.cwd(), title: 'Compaction session' },
+        { sessionId: OTHER_COMPACTION_SESSION, cwd: params.cwd ?? process.cwd(), title: 'Another session with a deliberately long title for tab overflow' },
       ] };
     }
     listings += 1;
-    return { sessions: [{ sessionId: `listed-${listings}`, cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
+    return { sessions: [{ sessionId: randomUUID(), cwd: params.cwd ?? process.cwd(), title: `Listed ${listings}` }] };
   })
   .onRequest(methods.agent.authenticate, async ({ client, requestId }) => {
     if (requestId === null) { throw new Error('Authentication needs a parent request ID'); }
@@ -382,12 +455,13 @@ agent({ name: 'fake-agent' })
     sessionCreationAttempts++;
     if (AUTHENTICATION_QUESTION && !authenticated) { throw new RequestError(-32000, 'Authentication required'); }
     record('session/new', params);
-    return { sessionId: SESSION_ID, configOptions: [modelOption('model-a')] };
+    return { sessionId: randomUUID(), configOptions: [modelOption('model-a')] };
   })
   .onRequest(methods.agent.session.load, async ({ params, client }) => {
     record('session/load', params);
     const configOptions = restore(params.sessionId);
-    if (COMPACTION) { await replayCompaction(client, params.sessionId); }
+    if (TAB_SWITCH_BENCHMARK) { await replayBenchmark(client, params.sessionId); }
+    else if (COMPACTION) { await replayCompaction(client, params.sessionId); }
     else { await replay(client, params.sessionId); }
     return { configOptions };
   })
@@ -448,6 +522,10 @@ agent({ name: 'fake-agent' })
       });
       return { stopReason: 'end_turn' };
     }
+    if (text === 'stream-tools') {
+      await streamTools(client, params.sessionId);
+      return { stopReason: 'end_turn' };
+    }
     if (COMPACTION && text === 'compact') {
       await compact(client, params.sessionId);
       return { stopReason: 'end_turn' };
@@ -485,6 +563,19 @@ agent({ name: 'fake-agent' })
     if (text.startsWith('review-diff ')) {
       await changeDiffReview(client, params.sessionId, text.slice('review-diff '.length));
       return { stopReason: 'end_turn' };
+    }
+    if (text.startsWith('review-after-trigger ')) {
+      const directory = text.slice('review-after-trigger '.length);
+      let release!: () => void;
+      const triggered = new Promise<void>((resolve) => { release = resolve; });
+      const watcher = watch(directory, (_event, name) => { if (name === 'background-review.trigger') { release(); } });
+      try {
+        await client.notify(methods.client.session.update, { sessionId: params.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Background review armed.' } } });
+        await triggered;
+        await changeDiffReview(client, params.sessionId, directory);
+        return { stopReason: 'end_turn' };
+      } finally { watcher.close(); }
     }
     if (text === 'run') {
       await run(client, params.sessionId);

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import type { AuthPrompt } from '@/core/SessionManager';
+import type { AuthPrompt } from '@/core/sessions/Manager';
 import type { AuthMethod } from '@/core/acp/AcpDriver';
 
 /** Creates the authentication prompt, optionally reporting the method active in its quick pick. */

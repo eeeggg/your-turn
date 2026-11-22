@@ -4,7 +4,7 @@ import { launchPath, type AgentConfigEntry } from '@/core/AgentManager';
 import { logError, logWarning, messageOf } from '@/core/Log';
 import type { PackageRunner, PackageRunnerCheck } from '@/core/PackageRunners';
 import type { RegistryAgent } from '@/core/RegistryClient';
-import type { SessionManager } from '@/core/SessionManager';
+import type { SessionManager } from '@/core/sessions/Manager';
 import {
   ConfigurationTarget,
   QuickPickItemKind,

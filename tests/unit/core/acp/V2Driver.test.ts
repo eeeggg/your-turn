@@ -16,12 +16,17 @@ import { setLogSink } from '@/core/Log';
 import { connectedDriver, fakeV2Agent, work, type AgentScript } from '@tests/unit/core/InProcessAgents';
 
 const go: PromptPart[] = [{ kind: 'text', text: 'go' }];
+const SESSION_ID = '692ea3c0-0981-41c2-8c75-89daf03b614e';
+const OTHER_SESSION_ID = '83c9d650-134e-4a06-a592-e4f0689b72dc';
+const LISTED_SESSION_ID = '1ae980fb-6a2d-40cf-bd89-5b170e82a403';
+const OTHER_LISTED_SESSION_ID = 'fac6489d-2fe1-4e7d-8ca6-907153e2b804';
+const HISTORICAL_SESSION_ID = '476e02c9-31af-489b-9065-e8ab7391c204';
 
 function text(value: string, audience?: V2.Role[]): V2.ContentBlock {
   return { type: 'text', text: value, ...(audience ? { annotations: { audience } } : {}) };
 }
 
-function notify(client: V2.AgentContext, update: V2.SessionUpdate, sessionId = 's1'): Promise<void> {
+function notify(client: V2.AgentContext, update: V2.SessionUpdate, sessionId = SESSION_ID): Promise<void> {
   return client.notify(V2.methods.client.session.update, { sessionId, update });
 }
 
@@ -32,7 +37,7 @@ async function passedUp(...sent: [string, V2.SessionUpdate][]): Promise<[string,
       for (const [sessionId, update] of sent) {
         await notify(client, update, sessionId);
       }
-      return { sessionId: 's1' };
+      return { sessionId: SESSION_ID };
     })
     .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
   await driver.newSession(work);
@@ -43,7 +48,7 @@ async function passedUp(...sent: [string, V2.SessionUpdate][]): Promise<[string,
 
 /** The session updates the driver passes up for those the agent sends for one session. */
 async function updatesFor(...sent: V2.SessionUpdate[]): Promise<SessionUpdate[]> {
-  return (await passedUp(...sent.map((update): [string, V2.SessionUpdate] => ['s1', update]))).map(([, update]) => update);
+  return (await passedUp(...sent.map((update): [string, V2.SessionUpdate] => [SESSION_ID, update]))).map(([, update]) => update);
 }
 
 const running: V2.StateUpdate = { state: 'running' };
@@ -51,11 +56,11 @@ const blocked: V2.StateUpdate = { state: 'requires_action' };
 const idle: V2.StateUpdate = { state: 'idle', stopReason: 'end_turn' };
 
 function reportState(client: V2.AgentContext, update: V2.StateUpdate): Promise<void> {
-  return client.notify(V2.methods.client.session.update, { sessionId: 's1', update: { sessionUpdate: 'state_update', ...update } });
+  return client.notify(V2.methods.client.session.update, { sessionId: SESSION_ID, update: { sessionUpdate: 'state_update', ...update } });
 }
 
 /** Resolves with 'ended' or the error once `prompt` settles, so a test can tell a turn still running from one that ended. */
-function outcomeOf(prompt: Promise<void>): Promise<unknown> {
+function outcomeOf(prompt: Promise<unknown>): Promise<unknown> {
   return prompt.then(() => 'ended', (e: unknown) => e);
 }
 
@@ -95,7 +100,7 @@ async function turnAgent(...beforeAnswer: V2.StateUpdate[]) {
 
 /** The config options of a session the agent creates with these. */
 async function configOptionsOf(...options: V2.SessionConfigOption[]): Promise<ConfigOption[] | null> {
-  const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: 's1', configOptions: options })));
+  const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({ sessionId: SESSION_ID, configOptions: options })));
   return (await driver.newSession(work)).configOptions;
 }
 
@@ -111,15 +116,15 @@ const modelOption: V2.SessionConfigOption = {
 describe('V2Driver', () => {
   it('passes foreground snapshots up by session, including autonomous work and requires action', async () => {
     expect(await passedUp(
-      ['s1', { sessionUpdate: 'state_update', state: 'idle' }],
-      ['s1', { sessionUpdate: 'state_update', state: 'running' }],
-      ['s2', { sessionUpdate: 'state_update', state: 'requires_action' }],
-      ['s1', { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' }],
+      [SESSION_ID, { sessionUpdate: 'state_update', state: 'idle' }],
+      [SESSION_ID, { sessionUpdate: 'state_update', state: 'running' }],
+      [OTHER_SESSION_ID, { sessionUpdate: 'state_update', state: 'requires_action' }],
+      [SESSION_ID, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' }],
     )).toEqual([
-      ['s1', { kind: 'foreground', state: 'idle' }],
-      ['s1', { kind: 'foreground', state: 'running' }],
-      ['s2', { kind: 'foreground', state: 'requiresAction' }],
-      ['s1', { kind: 'foreground', state: 'idle' }],
+      [SESSION_ID, { kind: 'foreground', state: 'idle' }],
+      [SESSION_ID, { kind: 'foreground', state: 'running' }],
+      [OTHER_SESSION_ID, { kind: 'foreground', state: 'requiresAction' }],
+      [SESSION_ID, { kind: 'foreground', state: 'idle', outcome: 'cancelled' }],
     ]);
   });
 
@@ -163,16 +168,16 @@ describe('V2Driver', () => {
       const received: V2.NewSessionRequest[] = [];
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, ({ params }) => {
         received.push(params);
-        return { sessionId: 's1' };
+        return { sessionId: SESSION_ID };
       }));
 
-      expect(await driver.newSession(work)).toEqual({ sessionId: 's1', modes: null, configOptions: null, commands: null });
+      expect(await driver.newSession(work)).toEqual({ sessionId: SESSION_ID, modes: null, configOptions: null, commands: null });
       expect(received).toEqual([{ cwd: '/work' }]);
     });
 
     it('gives a session the commands the agent starts it with, with the hint a text input has', async () => {
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, () => ({
-        sessionId: 's1',
+        sessionId: SESSION_ID,
         availableCommands: [
           { type: 'command', name: 'web', description: 'Search the web', input: { type: 'text', hint: 'query' } },
           { type: 'command', name: 'pick', description: 'Pick a file', input: { type: '_vendor_file', hint: 'not text input' } },
@@ -192,15 +197,15 @@ describe('V2Driver', () => {
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.list, ({ params }) => {
         received.push(params);
         return {
-          sessions: [{ sessionId: 'a', cwd: '/work', title: 'Fix the build', updatedAt: '2026-10-20T00:00:00Z' }, { sessionId: 'b', cwd: '/work' }],
+          sessions: [{ sessionId: LISTED_SESSION_ID, cwd: '/work', title: 'Fix the build', updatedAt: '2026-10-20T00:00:00Z' }, { sessionId: OTHER_LISTED_SESSION_ID, cwd: '/work' }],
           ...(params.cursor ? {} : { nextCursor: 'page2' }),
         };
       }));
 
       expect(await driver.listSessions({ cwd: '/work' })).toEqual({
         sessions: [
-          { sessionId: 'a', cwd: '/work', title: 'Fix the build', updatedAt: '2026-10-20T00:00:00Z' },
-          { sessionId: 'b', cwd: '/work', title: null, updatedAt: null },
+          { sessionId: LISTED_SESSION_ID, cwd: '/work', title: 'Fix the build', updatedAt: '2026-10-20T00:00:00Z' },
+          { sessionId: OTHER_LISTED_SESSION_ID, cwd: '/work', title: null, updatedAt: null },
         ],
         nextCursor: 'page2',
       });
@@ -215,12 +220,12 @@ describe('V2Driver', () => {
         return { configOptions: [modelOption] };
       }));
 
-      const loaded = await driver.loadSession('old', work);
-      const resumed = await driver.resumeSession('old', work);
+      const loaded = await driver.loadSession(HISTORICAL_SESSION_ID, work);
+      const resumed = await driver.resumeSession(HISTORICAL_SESSION_ID, work);
 
       expect(received).toEqual([
-        { sessionId: 'old', cwd: '/work', replayFrom: { type: 'start' } },
-        { sessionId: 'old', cwd: '/work' },
+        { sessionId: HISTORICAL_SESSION_ID, cwd: '/work', replayFrom: { type: 'start' } },
+        { sessionId: HISTORICAL_SESSION_ID, cwd: '/work' },
       ]);
       expect(loaded).toEqual(resumed);
       expect(loaded.modes).toBeNull();
@@ -234,27 +239,27 @@ describe('V2Driver', () => {
       async function setupRequests(capabilities: V2.SessionCapabilities, given: SessionRoots = roots): Promise<unknown[]> {
         const received: unknown[] = [];
         const { driver } = await connectedDriver(() => fakeV2Agent({ capabilities: { session: capabilities } })
-          .onRequest(V2.methods.agent.session.new, ({ params }) => { received.push(params); return { sessionId: 's1' }; })
+          .onRequest(V2.methods.agent.session.new, ({ params }) => { received.push(params); return { sessionId: SESSION_ID }; })
           .onRequest(V2.methods.agent.session.resume, ({ params }) => { received.push(params); return {}; }));
         await driver.newSession(given);
-        await driver.loadSession('s1', given);
-        await driver.resumeSession('s1', given);
+        await driver.loadSession(SESSION_ID, given);
+        await driver.resumeSession(SESSION_ID, given);
         return received;
       }
 
       it('gives a session its other directories on creation, load and resume when the agent supports them', async () => {
         expect(await setupRequests({ additionalDirectories: {} })).toEqual([
           { cwd: '/work', additionalDirectories: ['/more', '/other'] },
-          { sessionId: 's1', cwd: '/work', additionalDirectories: ['/more', '/other'], replayFrom: { type: 'start' } },
-          { sessionId: 's1', cwd: '/work', additionalDirectories: ['/more', '/other'] },
+          { sessionId: SESSION_ID, cwd: '/work', additionalDirectories: ['/more', '/other'], replayFrom: { type: 'start' } },
+          { sessionId: SESSION_ID, cwd: '/work', additionalDirectories: ['/more', '/other'] },
         ]);
       });
 
       it('sends only the cwd to an agent that does not support them, and when there are none', async () => {
         const onlyCwd = [
           { cwd: '/work' },
-          { sessionId: 's1', cwd: '/work', replayFrom: { type: 'start' } },
-          { sessionId: 's1', cwd: '/work' },
+          { sessionId: SESSION_ID, cwd: '/work', replayFrom: { type: 'start' } },
+          { sessionId: SESSION_ID, cwd: '/work' },
         ];
 
         expect(await setupRequests({})).toEqual(onlyCwd);
@@ -269,9 +274,9 @@ describe('V2Driver', () => {
         return { configOptions: [{ ...modelOption, currentValue: 'b' }] };
       }));
 
-      const options = await driver.setConfigOption('s1', 'model', 'b');
+      const options = await driver.setConfigOption(SESSION_ID, 'model', 'b');
 
-      expect(received).toEqual([{ sessionId: 's1', configId: 'model', type: 'id', value: 'b' }]);
+      expect(received).toEqual([{ sessionId: SESSION_ID, configId: 'model', type: 'id', value: 'b' }]);
       expect(options).toEqual([expect.objectContaining({ id: 'model', current: 'b' })]);
     });
 
@@ -282,15 +287,15 @@ describe('V2Driver', () => {
         return { configOptions: [] };
       }));
 
-      await driver.setConfigOption('s1', 'fast', true);
+      await driver.setConfigOption(SESSION_ID, 'fast', true);
 
-      expect(received).toEqual([{ sessionId: 's1', configId: 'fast', type: 'boolean', value: true }]);
+      expect(received).toEqual([{ sessionId: SESSION_ID, configId: 'fast', type: 'boolean', value: true }]);
     });
 
     it('has no modes to set', async () => {
       const { driver } = await connectedDriver(() => fakeV2Agent());
 
-      await expect(driver.setMode('s1', 'code')).rejects.toThrow('ACP v2 sessions have no modes');
+      await expect(driver.setMode(SESSION_ID, 'code')).rejects.toThrow('ACP v2 sessions have no modes');
     });
 
     it('logs in with the method chosen, and cancels a session', async () => {
@@ -305,11 +310,11 @@ describe('V2Driver', () => {
       });
 
       await driver.authenticate('token');
-      await driver.cancel('s1');
+      await driver.cancel(SESSION_ID);
 
       expect(logins).toEqual([{ methodId: 'token' }]);
-      expect(await cancel).toBe('s1');
-      expect(cancelSession).toHaveBeenCalledExactlyOnceWith('s1');
+      expect(await cancel).toBe(SESSION_ID);
+      expect(cancelSession).toHaveBeenCalledExactlyOnceWith(SESSION_ID);
     });
   });
 
@@ -383,8 +388,8 @@ describe('V2Driver', () => {
           return { messageId: block.text };
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
-      const first = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'first' }]));
-      const second = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'second' }]));
+      const first = outcomeOf(driver.prompt(SESSION_ID, [{ kind: 'text', text: 'first' }]));
+      const second = outcomeOf(driver.prompt(SESSION_ID, [{ kind: 'text', text: 'second' }]));
       await driver.listSessions({});
       const early = late === 'first' ? 'second' : 'first';
       accept.get(early)?.();
@@ -412,7 +417,7 @@ describe('V2Driver', () => {
           return { messageId: 'local' };
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
-      await driver.prompt('s1', go);
+      await driver.prompt(SESSION_ID, go);
       await notify(client, { sessionUpdate: 'user_message', messageId: 'local', content: [text('go')] });
       await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'local', content: text('go') });
       await notify(client, { sessionUpdate: 'user_message_chunk', messageId: 'local', content: { type: 'image', data: 'AAAA', mimeType: 'image/png' } });
@@ -422,9 +427,9 @@ describe('V2Driver', () => {
       await notify(client, { sessionUpdate: 'user_message', messageId: 'other', content: [text('external')] });
       await driver.listSessions({});
       expect(updates).toEqual([
-        ['s1', { kind: 'foreground', state: 'running' }],
-        ['s1', { kind: 'foreground', state: 'idle' }],
-        ['s1', { kind: 'promptMessage', messageId: 'other', text: 'external' }],
+        [SESSION_ID, { kind: 'foreground', state: 'running' }],
+        [SESSION_ID, { kind: 'foreground', state: 'idle' }],
+        [SESSION_ID, { kind: 'promptMessage', messageId: 'other', text: 'external' }],
       ]);
     });
 
@@ -442,8 +447,8 @@ describe('V2Driver', () => {
           return { messageId: name.text };
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
-      const first = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'first' }]));
-      const second = outcomeOf(driver.prompt('s1', [{ kind: 'text', text: 'second' }]));
+      const first = outcomeOf(driver.prompt(SESSION_ID, [{ kind: 'text', text: 'first' }]));
+      const second = outcomeOf(driver.prompt(SESSION_ID, [{ kind: 'text', text: 'second' }]));
       await driver.listSessions({});
       await reportState(client, running);
       requests.get(rejected)?.refuse();
@@ -460,9 +465,9 @@ describe('V2Driver', () => {
 
     it('completes all overlapping accepted prompts on idle rather than replacing the earlier waiter', async () => {
       const agent = await turnAgent();
-      const first = outcomeOf(agent.driver.prompt('s1', go));
+      const first = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report(running);
-      const second = outcomeOf(agent.driver.prompt('s1', go));
+      const second = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report();
       await agent.report(idle);
       expect(await second).toBe('ended');
@@ -471,9 +476,9 @@ describe('V2Driver', () => {
 
     it('rejects all overlapping completion waiters when the connection closes', async () => {
       const agent = await turnAgent();
-      const first = outcomeOf(agent.driver.prompt('s1', go));
+      const first = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report(running);
-      const second = outcomeOf(agent.driver.prompt('s1', go));
+      const second = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report();
       await agent.exit();
       expect(await second).toEqual(new Error('The connection to the agent closed before the turn ended'));
@@ -489,14 +494,14 @@ describe('V2Driver', () => {
         return { messageId: 'u1' };
       }));
 
-      await driver.prompt('s1', [
+      await driver.prompt(SESSION_ID, [
         { kind: 'fileLink', uri: 'file:///work/a.ts', name: 'a.ts', mimeType: 'text/typescript' },
         { kind: 'fileLink', uri: 'file:///work/b', name: 'b' },
         { kind: 'text', text: 'Fix it' },
       ]);
 
       expect(received).toEqual([{
-        sessionId: 's1',
+        sessionId: SESSION_ID,
         prompt: [
           { type: 'resource_link', uri: 'file:///work/a.ts', name: 'a.ts', mimeType: 'text/typescript' },
           { type: 'resource_link', uri: 'file:///work/b', name: 'b' },
@@ -510,7 +515,7 @@ describe('V2Driver', () => {
       ['waiting on the user', blocked],
     ])('ends the turn when the session goes idle after %s, not when the agent accepts the prompt', async (_, state) => {
       const agent = await turnAgent();
-      const outcome = outcomeOf(agent.driver.prompt('s1', go));
+      const outcome = outcomeOf(agent.driver.prompt(SESSION_ID, go));
 
       await agent.report(state);
       expect(await soFar(outcome)).toBe('running');
@@ -519,9 +524,37 @@ describe('V2Driver', () => {
       expect(await outcome).toBe('ended');
     });
 
+    it.each(['end_turn', 'cancelled'] as const)('preserves the idle stop reason %s for runtime completion', async (stopReason) => {
+      const agent = await turnAgent();
+      const result = agent.driver.prompt(SESSION_ID, go);
+      await agent.report(running, stopReason === 'end_turn' ? { state: 'idle', stopReason: 'end_turn' } : { state: 'idle', stopReason: 'cancelled' });
+
+      expect(await result).toEqual({ stopReason });
+    });
+
+    it('treats a held prompt rejected by cancellation as a cancelled turn', async () => {
+      let received!: () => void;
+      let cancelled!: () => void;
+      const prompting = new Promise<void>((resolve) => { received = resolve; });
+      const cancellation = new Promise<void>((resolve) => { cancelled = resolve; });
+      const { driver } = await connectedDriver(() => fakeV2Agent()
+        .onRequest(V2.methods.agent.session.prompt, async () => {
+          received();
+          await cancellation;
+          throw new V2.RequestError(-32800, 'Request cancelled');
+        })
+        .onNotification(V2.methods.agent.session.cancel, () => { cancelled(); }), {
+        permissions: { requestPermission: async () => { throw new Error('Unexpected permission request'); }, cancelSession() {} },
+      });
+      const result = expect(driver.prompt(SESSION_ID, go)).resolves.toEqual({ stopReason: 'cancelled' });
+      await prompting;
+      await driver.cancel(SESSION_ID);
+      await result;
+    });
+
     it('ends nothing with an idle report while the session is already idle', async () => {
       const agent = await turnAgent();
-      const outcome = outcomeOf(agent.driver.prompt('s1', go));
+      const outcome = outcomeOf(agent.driver.prompt(SESSION_ID, go));
 
       await agent.report(idle);
       expect(await soFar(outcome)).toBe('running');
@@ -533,12 +566,12 @@ describe('V2Driver', () => {
     it('ends the turn the agent reported in full before accepting the prompt', async () => {
       const agent = await turnAgent(running, idle);
 
-      expect(await outcomeOf(agent.driver.prompt('s1', go))).toBe('ended');
+      expect(await outcomeOf(agent.driver.prompt(SESSION_ID, go))).toBe('ended');
     });
 
     it('waits on when the session is working again by the time the agent accepts the prompt', async () => {
       const agent = await turnAgent(running, idle, running);
-      const outcome = outcomeOf(agent.driver.prompt('s1', go));
+      const outcome = outcomeOf(agent.driver.prompt(SESSION_ID, go));
 
       await agent.report();
       expect(await soFar(outcome)).toBe('running');
@@ -550,9 +583,9 @@ describe('V2Driver', () => {
     it("fails with the error the agent's idle report carries, and asks for authentication on -32000", async () => {
       const agent = await turnAgent();
 
-      const failed = outcomeOf(agent.driver.prompt('s1', go));
+      const failed = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report(running, { state: 'idle', stopReason: 'error', error: { code: -32603, message: 'The model crashed' } });
-      const refused = outcomeOf(agent.driver.prompt('s1', go));
+      const refused = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report(running, { state: 'idle', stopReason: 'error', error: { code: -32000, message: 'Log in again' } });
 
       expect(await failed).toEqual(new Error('The model crashed'));
@@ -562,7 +595,7 @@ describe('V2Driver', () => {
 
     it('fails a turn still running when the connection closes', async () => {
       const agent = await turnAgent();
-      const outcome = outcomeOf(agent.driver.prompt('s1', go));
+      const outcome = outcomeOf(agent.driver.prompt(SESSION_ID, go));
       await agent.report(running);
 
       await agent.exit();
@@ -576,7 +609,7 @@ describe('V2Driver', () => {
         throw V2.RequestError.internalError(undefined, 'Too many prompts');
       }));
 
-      const refused = await outcomeOf(driver.prompt('s1', go));
+      const refused = await outcomeOf(driver.prompt(SESSION_ID, go));
       await exit();
 
       expect(refused).toHaveProperty('message', expect.stringContaining('Too many prompts'));
@@ -712,8 +745,8 @@ describe('V2Driver', () => {
       const { driver, schemas } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.session.new, async ({ client }) => {
           await notify(client, { sessionUpdate: 'agent_message_chunk', messageId: 'a1', content: text('hi') });
-          await notify(client, { sessionUpdate: 'agent_message_chunk', messageId: 'a2', content: text('hi') }, 's2');
-          return { sessionId: 's1' };
+          await notify(client, { sessionUpdate: 'agent_message_chunk', messageId: 'a2', content: text('hi') }, OTHER_SESSION_ID);
+          return { sessionId: SESSION_ID };
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
       await driver.newSession(work);
@@ -769,21 +802,21 @@ describe('V2Driver', () => {
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
 
-      await driver.loadSession('s1', work);
+      await driver.loadSession(SESSION_ID, work);
       // As the user's prompt does, this one comes after the driver has taken in the replay.
       await driver.listSessions({});
-      await driver.prompt('s1', go);
-      await driver.loadSession('s1', work);
+      await driver.prompt(SESSION_ID, go);
+      await driver.loadSession(SESSION_ID, work);
       await driver.listSessions({});
 
       const replay: [string, SessionUpdate][] = [
-        ['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }],
-        ['s1', { kind: 'promptText', messageId: 'u0', text: ' now' }],
+        [SESSION_ID, { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }],
+        [SESSION_ID, { kind: 'promptText', messageId: 'u0', text: ' now' }],
       ];
       expect(updates).toEqual([...replay,
-        ['s1', { kind: 'foreground', state: 'running' }],
-        ['s1', { kind: 'agentText', messageId: 'a1', text: 'Done' }],
-        ['s1', { kind: 'foreground', state: 'idle' }],
+        [SESSION_ID, { kind: 'foreground', state: 'running' }],
+        [SESSION_ID, { kind: 'agentText', messageId: 'a1', text: 'Done' }],
+        [SESSION_ID, { kind: 'foreground', state: 'idle' }],
         ...replay]);
     });
 
@@ -798,39 +831,39 @@ describe('V2Driver', () => {
         })
         .onRequest(V2.methods.agent.session.list, () => ({ sessions: [] })));
 
-      await driver.prompt('s1', go).catch(() => {});
-      await driver.loadSession('s1', work);
+      await driver.prompt(SESSION_ID, go).catch(() => {});
+      await driver.loadSession(SESSION_ID, work);
       await driver.listSessions({});
 
-      expect(updates).toEqual([['s1', { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }]]);
+      expect(updates).toEqual([[SESSION_ID, { kind: 'promptMessage', messageId: 'u0', text: 'Fix the build' }]]);
     });
 
     it("keeps each tool call's content, which an update's content replaces and a chunk adds to, and leaves alone what an update leaves out", async () => {
       const texts = (...items: string[]): ToolCallContent[] => items.map((item) => ({ kind: 'text', text: item }));
       expect(await passedUp(
-        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: 'Read a.ts', status: 'in_progress', content: [
+        [SESSION_ID, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: 'Read a.ts', status: 'in_progress', content: [
           { type: 'content', content: text('first') },
           { type: 'diff', changes: [] },
           { type: 'content', content: text('') },
         ] }],
-        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('second') } }],
-        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'terminal', terminalId: 'term' } }],
-        ['s2', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('elsewhere') } }],
-        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: null, status: 'completed' }],
-        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [{ type: 'content', content: text('replaced') }] }],
-        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('more') } }],
-        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: null }],
-        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('again') } }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('second') } }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'terminal', terminalId: 'term' } }],
+        [OTHER_SESSION_ID, { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('elsewhere') } }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', title: null, status: 'completed' }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [{ type: 'content', content: text('replaced') }] }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('more') } }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: null }],
+        [SESSION_ID, { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: { type: 'content', content: text('again') } }],
       )).toEqual([
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', title: 'Read a.ts', status: 'running', content: texts('first') }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('first', 'second') }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [...texts('first', 'second'), { kind: 'terminal', terminalId: 'term' }] }],
-        ['s2', { kind: 'toolCall', toolCallId: 'c1', content: texts('elsewhere') }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', status: 'completed' }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced') }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced', 'more') }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [] }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: texts('again') }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', title: 'Read a.ts', status: 'running', content: texts('first') }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: texts('first', 'second') }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [...texts('first', 'second'), { kind: 'terminal', terminalId: 'term' }] }],
+        [OTHER_SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: texts('elsewhere') }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', status: 'completed' }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced') }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: texts('replaced', 'more') }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [] }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: texts('again') }],
       ]);
     });
 
@@ -850,7 +883,7 @@ describe('V2Driver', () => {
         ], patch: null } },
       ];
       expect(await passedUp(
-        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+        [SESSION_ID, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
           { type: 'diff', changes: [{ operation: 'modify', path: '/work/a.ts', fileType: 'text', mimeType: 'text/typescript' }], patch },
           { type: 'content', content: text('between') },
           { type: 'diff', changes: [
@@ -861,12 +894,12 @@ describe('V2Driver', () => {
             { operation: 'modify', path: '/work/link', fileType: 'symlink' },
           ] },
         ] }],
-        ['s1', { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: {
+        [SESSION_ID, { sessionUpdate: 'tool_call_content_chunk', toolCallId: 'c1', content: {
           type: 'diff', changes: [{ operation: 'modify', path: '/work/b.ts' }], patch: { format: 'unified', text: '@@ -1 +1 @@' },
         } }],
       )).toEqual([
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: reported }],
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: reported }],
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [
           ...reported,
           { kind: 'diff', diff: { kind: 'changes', changes: [
             { operation: 'modify', path: '/work/b.ts', fileType: null, mimeType: null },
@@ -909,11 +942,11 @@ describe('V2Driver', () => {
     it("passes on a terminal's output chunks as their bytes, each decoded alone, even with a character split between them", async () => {
       const [first, second] = [Buffer.from('caf\xc3', 'latin1'), Buffer.from('\xa9\n', 'latin1')];
       expect(await passedUp(
-        ['s1', { sessionUpdate: 'terminal_output_chunk', terminalId: 't1', data: first.toString('base64') }],
-        ['s2', { sessionUpdate: 'terminal_output_chunk', terminalId: 't1', data: second.toString('base64') }],
+        [SESSION_ID, { sessionUpdate: 'terminal_output_chunk', terminalId: 't1', data: first.toString('base64') }],
+        [OTHER_SESSION_ID, { sessionUpdate: 'terminal_output_chunk', terminalId: 't1', data: second.toString('base64') }],
       )).toEqual([
-        ['s1', { kind: 'terminalOutput', terminalId: 't1', data: new Uint8Array(first) }],
-        ['s2', { kind: 'terminalOutput', terminalId: 't1', data: new Uint8Array(second) }],
+        [SESSION_ID, { kind: 'terminalOutput', terminalId: 't1', data: new Uint8Array(first) }],
+        [OTHER_SESSION_ID, { kind: 'terminalOutput', terminalId: 't1', data: new Uint8Array(second) }],
       ]);
     });
 
@@ -921,12 +954,12 @@ describe('V2Driver', () => {
       const custom = { operation: '_chmod', path: '/work/run.sh' } as V2.DiffChange;
       const future = { operation: 'truncate', path: '/work/log' } as V2.DiffChange;
       expect(await passedUp(
-        ['s1', { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
+        [SESSION_ID, { sessionUpdate: 'tool_call_update', toolCallId: 'c1', content: [
           { type: 'diff', changes: [custom, { operation: 'modify', path: '/work/sock', fileType: 'socket' }] },
           { type: 'diff', changes: [future], patch: { format: 'git_patch', text: '' } },
         ] }],
       )).toEqual([
-        ['s1', { kind: 'toolCall', toolCallId: 'c1', content: [
+        [SESSION_ID, { kind: 'toolCall', toolCallId: 'c1', content: [
           { kind: 'diff', diff: { kind: 'changes', changes: [{ operation: 'modify', path: '/work/sock', fileType: 'other', mimeType: null }], patch: null } },
         ] }],
       ]);
@@ -1219,9 +1252,9 @@ describe('V2Driver', () => {
       const received: V2.RequestPermissionResponse[] = [];
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
         for (const request of sent) {
-          received.push(await client.request(V2.methods.client.session.requestPermission, { sessionId: 's1', ...request }));
+          received.push(await client.request(V2.methods.client.session.requestPermission, { sessionId: SESSION_ID, ...request }));
         }
-        return { sessionId: 's1' };
+        return { sessionId: SESSION_ID };
       }), { permissions: { requestPermission, cancelSession: vi.fn() } });
       await driver.newSession(work);
       return { requests: requestPermission.mock.calls.map(([request]) => request), received };
@@ -1241,13 +1274,13 @@ describe('V2Driver', () => {
 
       expect(requests).toEqual([
         {
-          sessionId: 's1',
+          sessionId: SESSION_ID,
           title: 'Make edits?',
           description: 'To fix the build',
           subject: 'Edit a.ts',
           options: [{ id: 'allow', name: 'Allow', kind: 'allow_once' }, { id: 'reject', name: 'Reject', kind: 'reject_always' }],
         },
-        { sessionId: 's1', title: 'Continue with elevated permissions?', description: null, subject: null, options: [{ id: 'allow', name: 'Allow', kind: 'allow_once' }] },
+        { sessionId: SESSION_ID, title: 'Continue with elevated permissions?', description: null, subject: null, options: [{ id: 'allow', name: 'Allow', kind: 'allow_once' }] },
       ]);
       expect(received).toEqual([{ outcome: { outcome: 'selected', optionId: 'allow' } }, { outcome: { outcome: 'cancelled' } }]);
     });
@@ -1284,14 +1317,14 @@ describe('V2Driver', () => {
       const received: unknown[] = [];
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
         const response = client.request(V2.methods.client.session.requestPermission, {
-          sessionId: 's1',
+          sessionId: SESSION_ID,
           title: 'Run command?',
           options: [allow],
         }, { cancellationSignal: cancellation.signal }).catch((error: unknown) => error);
         await started;
         cancellation.abort();
         received.push(await response);
-        return { sessionId: 's1' };
+        return { sessionId: SESSION_ID };
       }), { permissions });
 
       await driver.newSession(work);
@@ -1315,10 +1348,10 @@ describe('V2Driver', () => {
       const { driver } = await connectedDriver(() => fakeV2Agent()
         .onRequest(V2.methods.agent.session.new, async ({ client }) => {
           const response = await client.request(V2.methods.client.session.requestPermission, {
-            sessionId: 's1', title: 'Run command?', options: [allow],
+            sessionId: SESSION_ID, title: 'Run command?', options: [allow],
           });
           events.push(`permission:${response.outcome.outcome}`);
-          return { sessionId: 's1' };
+          return { sessionId: SESSION_ID };
         })
         .onNotification(V2.methods.agent.session.cancel, () => { events.push('session-cancel'); }), {
         permissions: { requestPermission, cancelSession },
@@ -1326,11 +1359,11 @@ describe('V2Driver', () => {
       const session = driver.newSession(work);
 
       await started;
-      await driver.cancel('s1');
+      await driver.cancel(SESSION_ID);
       await session;
 
       expect(events).toEqual(['session-cancel', 'cancel-pending-permissions', 'permission:cancelled']);
-      expect(cancelSession).toHaveBeenCalledExactlyOnceWith('s1');
+      expect(cancelSession).toHaveBeenCalledExactlyOnceWith(SESSION_ID);
     });
   });
 
@@ -1340,9 +1373,9 @@ describe('V2Driver', () => {
       const answer = new Promise<unknown>((resolve) => { answered = resolve; });
       const { driver } = await connectedDriver(() => fakeV2Agent().onRequest(V2.methods.agent.session.new, async ({ client }) => {
         answered(await client.request(V2.methods.client.elicitation.create, {
-          mode: 'url', sessionId: 's1', elicitationId: 'e1', url: 'file:///tmp/login', message: 'Sign in',
+          mode: 'url', sessionId: SESSION_ID, elicitationId: 'e1', url: 'file:///tmp/login', message: 'Sign in',
         }).catch((e: unknown) => e));
-        return { sessionId: 's1' };
+        return { sessionId: SESSION_ID };
       }));
 
       await driver.newSession(work);

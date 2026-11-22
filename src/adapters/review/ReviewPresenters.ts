@@ -5,7 +5,6 @@ import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
 import { BASELINE_SCHEME } from '@/adapters/review/ReviewSourceControl';
-import { applyReviewEdit, saveForReview } from '@/adapters/review/ReviewTakeovers';
 
 /** VS Code diffs a file some time after it opens or the agent writes it; quick diff's view has nothing to show before. */
 const VIEW_ATTEMPTS = 20;
@@ -79,6 +78,21 @@ export function createReviewEditors(
   let latestShow = Promise.resolve();
   let disposed = false;
   let disposal: Promise<void> | undefined;
+  let navigation = 0;
+  let activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+  let expectedPath: string | undefined;
+  const navigated = () => {
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    if (tab === activeTab) { return; }
+    activeTab = tab;
+    if (expectedPath !== undefined && activePath() === expectedPath) { expectedPath = undefined; return; }
+    navigation++;
+  };
+  const navigationSubscriptions = [
+    vscode.window.tabGroups.onDidChangeTabs(navigated),
+    vscode.window.tabGroups.onDidChangeTabGroups(navigated),
+    vscode.window.onDidChangeActiveTextEditor(navigated),
+  ];
   const stopping = new AbortController();
   const pending = new Set<Promise<void>>();
   const accepted = (action: () => Promise<void>): Promise<void> => {
@@ -97,13 +111,16 @@ export function createReviewEditors(
    * before the view shows, and the one before may try an editor that lost the focus since; the one stopped ends with the
    * last.
    */
-  function show(path: string, prepare: (current: () => boolean) => Promise<void> = async () => {}): Promise<void> {
-    if (disposed) { return Promise.resolve(); }
+  function show(path: string, prepare: (current: () => boolean) => Promise<void> = async () => {}, stillCurrent?: () => boolean): Promise<void> {
+    if (disposed || (stillCurrent && !stillCurrent())) { return Promise.resolve(); }
     const own = ++shows;
-    const current = () => !disposed && own === shows && activePath() === path;
+    const current = () => !disposed && own === shows && activePath() === path && (!stillCurrent || stillCurrent());
     const shown = (async () => {
       try {
+        expectedPath = path;
         const editor = await showTextDocument(vscode.Uri.file(path), { preview: false, preserveFocus: false });
+        navigated();
+        expectedPath = undefined;
         if (!current()) { return; }
         if (viewShown(path)) { await execute('closeQuickDiff'); }
         if (!current()) { return; }
@@ -127,6 +144,7 @@ export function createReviewEditors(
   }
 
   return {
+    captureNavigation: () => { const captured = navigation; return () => !disposed && navigation === captured; },
     activePath,
     isOpen: (path) => viewShown(path) || vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
       input instanceof vscode.TabInputTextDiff
@@ -134,13 +152,15 @@ export function createReviewEditors(
       && input.modified.scheme === 'file'
       && input.modified.fsPath === path)),
     /** `vscode.open`, as it opens a tab for a file not there too, which a text document cannot. */
-    open: (path) => accepted(async () => { await execute('vscode.open', vscode.Uri.file(path)); }),
-    showChange: (path) => accepted(() => show(path)),
+    open: (path, stillCurrent) => accepted(async () => {
+      if (!stillCurrent || stillCurrent()) { await execute('vscode.open', vscode.Uri.file(path)); }
+    }),
+    showChange: (path, stillCurrent) => accepted(() => show(path, undefined, stillCurrent)),
     /**
      * A view opened before VS Code diffs the file again would be moved on by it, so the cursor goes to the change only
      * once quick diff's changes start where `changes` do; the view opens at the change from the cursor.
      */
-    showChangeOf: (path, changes, index) => accepted(() => show(path, async (current) => {
+    showChangeOf: (path, changes, index, stillCurrent) => accepted(() => show(path, async (current) => {
       const editor = vscode.window.activeTextEditor;
       const change = changes[index];
       if (editor?.document.uri.fsPath !== path || !change) { return; }
@@ -153,27 +173,17 @@ export function createReviewEditors(
       if (!current()) { return; }
       const line = startLine(change) - 1;
       editor.selection = new vscode.Selection(line, 0, line, 0);
-    })),
+    }, stillCurrent)),
     /** `closeQuickDiff`, Escape's command, which is not in VS Code's API; it closes the focused editor's view. */
     closeChange: (path) => accepted(async () => {
       if (viewShown(path)) { await execute('closeQuickDiff'); }
     }),
     showError: (message) => { void vscode.window.showErrorMessage(message); },
     text: (path) => openDocument(path)?.getText(),
-    applyEdit: async (path, { start, end, text }) => {
-      const document = openDocument(path);
-      if (!document) { return false; }
-      const edit = new vscode.WorkspaceEdit();
-      edit.replace(document.uri, new vscode.Range(document.positionAt(start), document.positionAt(end)), text);
-      return applyReviewEdit(path, edit);
-    },
-    save: async (path) => {
-      const document = openDocument(path);
-      if (document?.isDirty && !(await saveForReview(path, document))) { throw new Error('VS Code did not save it'); }
-    },
     dispose: () => {
       if (disposal) { return disposal; }
       disposed = true;
+      for (const subscription of navigationSubscriptions) { subscription.dispose(); }
       stopping.abort();
       disposal = Promise.allSettled(pending).then((results) => {
         const failures = results.filter((result) => result.status === 'rejected');

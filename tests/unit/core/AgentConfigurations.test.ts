@@ -4,8 +4,8 @@ import { AgentConfigurations } from '@/core/AgentConfigurations';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import type { PackageRunner, PackageRunnerCheck } from '@/core/PackageRunners';
 import type { RegistryAgent } from '@/core/RegistryClient';
-import { SessionManager } from '@/core/SessionManager';
-import { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
+import { SessionManager } from '@/core/sessions/Manager';
+import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import { ConfigurationTarget, QuickPickItemKind, type WorkspaceConfiguration } from '@/core/VsCodeApi';
 import { fakeAgent, InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
 import { ScriptedUser } from '@tests/unit/core/ScriptedUser';
@@ -51,9 +51,10 @@ function setup(userAgents: Agents, { workspace = {}, defaults = {}, registry = a
   const launcher = new InProcessAgents({ one: () => fakeAgent(), two: () => fakeAgent() });
   const manager = new SessionManager(
     launcher,
-    new ConnectionManager(new SessionUpdateHandler(), '0.0.0-test', () => unusedHandlers),
+    new ConnectionManager('0.0.0-test', () => unusedHandlers),
     { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
     { chooseAuthMethod: async () => undefined },
+    new SessionUpdateHandler(),
   );
   const user = new ScriptedUser();
   const lookedFor: string[] = [];

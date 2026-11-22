@@ -6,44 +6,89 @@ import {
   placeholder,
   type PromptBoxState
 } from '@/webview/state/PromptBox';
-import { initialState, update, type Action } from '@/webview/state/RootState';
+import { initialState, update } from '@/webview/state/RootState';
+import { isContentReport, type FixtureAction as Action } from '@tests/ContentProjection';
 import { createStore } from '@/webview/state/Store';
+import { setup as retainedSession, sessionInfo } from '@tests/unit/core/ChatViewControllerTestSupport';
 
 const init: SlashCommand = { name: 'init', description: 'Initialize the project', takesInput: false, hint: null };
 const review: SlashCommand = { name: 'review', description: 'Review changes', takesInput: true, hint: 'What to review' };
 const reset: SlashCommand = { name: 'Reset', description: 'Start over', takesInput: false, hint: null };
+const SESSION_ID = 'c0fcb239-e29f-4a01-99f6-c29d450663ee';
+const OTHER_SESSION_ID = '35d04fce-f7dd-4a42-8d1d-c509c0506b0f';
 
 function chatView() {
   const posted: WebviewToExtensionMessage[] = [];
-  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => posted.push(message));
+  const composerEdits: Extract<WebviewToExtensionMessage, { type: 'composerEdited' }>[] = [];
+  const submissions: string[] = [];
+  const store = createStore(initialState, update, (message: WebviewToExtensionMessage) => {
+    if (message.type === 'composerEdited') {
+      composerEdits.push(message);
+      retained.sessions.editComposer(message.target, message.target.generation, message.revision, message.text);
+      return;
+    }
+    posted.push(message);
+    if (message.type === 'sendPrompt') { submissions.push(message.text); }
+  });
+  const retained = retainedSession();
+  retained.sessions.session = sessionInfo({ sessionId: SESSION_ID, agentName: 'Fake' });
+  retained.sessions.activeId = SESSION_ID;
+  retained.sessions.retained.attach(retained.sessions.session);
+  const publish = retained.environment.post.bind(retained.environment);
+  retained.environment.post = (message) => {
+    publish(message);
+    if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot' || message.type === 'contentPatch') { store.dispatch(structuredClone(message)); }
+  };
+  const dispatch = (action: Action) => {
+    if (action.type === 'loadSessionStart') { retained.controller.notifyLoadSessionStart(SESSION_ID); }
+    if (action.type === 'promptText') {
+      retained.controller.handleSessionUpdate(SESSION_ID, { kind: 'promptText', messageId: action.messageId, text: action.text });
+      return;
+    }
+    if (!isContentReport(action)) { store.dispatch(action); }
+    for (const text of submissions.splice(0)) {
+      const registration = retained.sessions.session;
+      if (!registration) { throw new Error('Missing retained session'); }
+      retained.sessions.retained.submitted(registration, text);
+      retained.controller.notifyActiveSessionChanged();
+    }
+    if (action.type === 'loadSessionEnd') { retained.controller.notifyLoadSessionEnd(action.ok); }
+  };
   let notified = 0;
   store.subscribe(() => notified++);
   return {
     box: (): PromptBoxState => store.getSnapshot().promptBox,
     session: () => store.getSnapshot().activeSession,
+    target: () => store.getSnapshot().transcript.projection?.target,
     matches: () => matchingCommands(store.getSnapshot().promptBox, store.getSnapshot().activeSession).map((command) => command.name),
     highlighted: () => {
       const { promptBox, activeSession } = store.getSnapshot();
       return highlightedIndex(promptBox, matchingCommands(promptBox, activeSession));
     },
-    send: (...actions: Action[]) => actions.forEach((action) => store.dispatch(action)),
+    send: (...actions: Action[]) => actions.forEach(dispatch),
     type: (text: string) => store.dispatch({ type: 'promptEdited', text }),
-    connect: (session: Partial<SessionSnapshot> = {}) =>
+    connect: (session: Partial<SessionSnapshot> = {}) => {
+      retained.sessions.session = sessionInfo({ sessionId: session.sessionId ?? SESSION_ID, agentName: session.agentName ?? 'Fake', availableCommands: session.commands ?? [init, review, reset] });
+      retained.sessions.activeId = retained.sessions.session.sessionId;
+      retained.sessions.retained.attach(retained.sessions.session);
       store.dispatch({
         type: 'state',
-        activeSessionId: 's1',
-        session: { sessionId: 's1', agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review, reset], ...session },
-      }),
+        activeSessionId: session.sessionId ?? SESSION_ID,
+        session: { sessionId: SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [init, review, reset], ...session },
+      });
+      retained.controller.notifyActiveSessionChanged();
+    },
     /** Each prompt sent and its turn ended, so it is in the session's history. */
     sent: (...texts: string[]) =>
       texts.forEach((text) => {
         store.dispatch({ type: 'promptEdited', text });
-        store.dispatch({ type: 'promptSent' });
-        store.dispatch({ type: 'promptEnd' });
+        dispatch({ type: 'promptSent' });
+        dispatch({ type: 'promptEnd' });
       }),
     older: () => store.dispatch({ type: 'historyMoved', to: 'older' }),
     newer: () => store.dispatch({ type: 'historyMoved', to: 'newer' }),
     takePosted: () => posted.splice(0),
+    takeComposerEdits: () => composerEdits.splice(0),
     notified: () => notified,
   };
 }
@@ -53,10 +98,15 @@ describe('sending', () => {
     const view = chatView();
     view.connect();
     view.type('  hello  ');
+    const target = view.target();
 
     view.send({ type: 'promptSent' });
 
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: 'hello' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target, text: 'hello' }]);
+    expect(view.takeComposerEdits()).toEqual([
+      { type: 'composerEdited', target, revision: 1, text: '  hello  ' },
+      { type: 'composerEdited', target, revision: 2, text: '' },
+    ]);
     expect(view.box().text).toBe('');
   });
 
@@ -125,7 +175,7 @@ describe('the slash command popup', () => {
     view.send({ type: 'loadSessionStart' });
     expect(view.matches()).toEqual([]);
 
-    view.connect({ sessionId: 's2', commands: [] });
+    view.connect({ sessionId: OTHER_SESSION_ID, commands: [] });
     expect(view.matches()).toEqual([]);
   });
 
@@ -200,9 +250,10 @@ describe('choosing a slash command', () => {
     view.connect();
     view.type('/in');
 
+    const target = view.target();
     view.send({ type: 'slashCommandChosen', name: 'init' });
 
-    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', text: '/init' }]);
+    expect(view.takePosted()).toEqual([{ type: 'sendPrompt', target, text: '/init' }]);
     expect(view.box().text).toBe('');
   });
 
@@ -311,8 +362,9 @@ describe('the prompt history', () => {
     view.older();
     view.older();
 
+    const target = view.target();
     view.send({ type: 'promptSent' }, { type: 'promptEnd' });
-    expect(view.takePosted()).toContainEqual({ type: 'sendPrompt', text: 'q1' });
+    expect(view.takePosted()).toContainEqual({ type: 'sendPrompt', target, text: 'q1' });
     view.older();
     view.older();
 
@@ -321,7 +373,7 @@ describe('the prompt history', () => {
 
   it('stops browsing in another session or none, and once the transcript is cleared, keeping the text', () => {
     const leavings: Action[] = [
-      { type: 'state', activeSessionId: 's2', session: { sessionId: 's2', agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } },
+      { type: 'state', activeSessionId: OTHER_SESSION_ID, session: { sessionId: OTHER_SESSION_ID, agentName: 'Fake', cwd: '/work', pickers: [], commands: [] } },
       { type: 'state', activeSessionId: null, session: null },
       { type: 'clearTranscript' },
     ];

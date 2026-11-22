@@ -4,6 +4,10 @@ import type { FileContent } from '@/core/review/Review';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
 
+const SESSION_ID = { sessionId: 'e6a9042f-7b38-46d1-9c52-130fb8ade765', agentName: 'fake', agentId: 'source' };
+const OTHER_SESSION_ID = { ...SESSION_ID, sessionId: '410dc953-ae62-4f78-b905-67e8213acdb4' };
+const input = (update: SessionUpdate) => ({ origin: { identity: { configuredName: 'fake', sessionId: SESSION_ID.sessionId }, sourceId: 'source' }, update, schema: 'v1' as const });
+
 /** A completed tool call that changed `path` from `old` to `now`, which the disk holds. */
 const edited = (toolCallId: string, path: string, old: string | null, now: string): SessionUpdate => ({
   kind: 'toolCall',
@@ -21,13 +25,15 @@ const twoChanges = { before: lines('1', '2', '3', '4', '5', '6', '7'), after: li
 const lineChanged = (line: number) => ({ original: { start: line, end: line + 1 }, modified: { start: line, end: line + 1 } });
 
 /**
- * Controls over session `s1`'s review, shown, with `/w/a.ts`, `/w/b.ts` and `/w/c.ts` changed in that order, then
+ * Controls over the shown session's review, with `/w/a.ts`, `/w/b.ts` and `/w/c.ts` changed in that order, then
  * `/w/gone.ts` deleted when `deleted` is set and `/w/m.ts` changed twice when `changes` is; the editors record what
  * they were asked, their open documents being what the disk holds, and `failing` makes restores reject.
  */
-async function controls({ deleted = false, changes = false } = {}) {
+async function controls({ deleted = false, changes = false, canRevealDeferred = true } = {}) {
   const disk: Record<string, FileContent> = { '/w/a.ts': 'A\n', '/w/b.ts': 'B\n', '/w/c.ts': 'C\n', '/w/gone.ts': null, '/w/m.ts': twoChanges.after };
   const documents = new Map<string, string>(Object.entries(disk).flatMap(([path, text]) => text === null ? [] : [[path, text]]));
+  const versions = new Map<string, number>();
+  const watchers = new Map<string, () => void>();
   const restored: [string, FileContent][] = [];
   const opened: string[] = [];
   const shown: string[] = [];
@@ -38,6 +44,9 @@ async function controls({ deleted = false, changes = false } = {}) {
   let failSave = false;
   let applies = true;
   let active: string | undefined;
+  let navigation = 0;
+  let blocked = false;
+  let followUp: ((current?: () => boolean) => void) | undefined;
   let read = async (path: string): Promise<FileContent> => disk[path] ?? null;
   const reviews = new Reviews({
     read: (path) => read(path),
@@ -46,30 +55,16 @@ async function controls({ deleted = false, changes = false } = {}) {
       restored.push([path, content]);
       disk[path] = content;
     },
-    watch: () => ({ dispose: () => {} }),
-  });
-  onTestFinished(async () => { await reviews.dispose(); });
-  reviews.activeSessionChanged('s1');
-  await reviews.handleSessionUpdate('s1', edited('t1', '/w/a.ts', 'a\n', 'A\n'), 'v1');
-  await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
-  await reviews.handleSessionUpdate('s1', edited('t3', '/w/c.ts', 'c\n', 'C\n'), 'v1');
-  if (deleted) { await reviews.handleSessionUpdate('s1', edited('t4', '/w/gone.ts', 'gone\n', ''), 'v1'); }
-  if (changes) { await reviews.handleSessionUpdate('s1', edited('t5', '/w/m.ts', twoChanges.before, twoChanges.after), 'v1'); }
-  const subject = new ReviewControls(reviews, {
-    activePath: () => active,
-    isOpen: (path) => active === path || opened.includes(path) || shown.includes(path),
-    open: async (path) => { opened.push(path); },
-    showChange: async (path) => { shown.push(path); },
-    showChangeOf: async (path, changes, index) => {
-      views.push(`show ${path} at ${String(changes[index]?.modified.start)} of ${changes.map(({ modified }) => modified.start).join()}`);
+    watch: (path, changed) => { watchers.set(path, changed); return { dispose: () => { watchers.delete(path); } }; },
+    snapshot: (path) => {
+      const text = documents.get(path);
+      return text === undefined ? undefined : { instance: documents, version: versions.get(path) ?? 1, dirty: false, text };
     },
-    closeChange: async (path) => { views.push(`close ${path} with ${documents.get(path) === twoChanges.after ? 'both' : 'one'}`); },
-    showError: (message) => errors.push(message),
-    text: (path) => documents.get(path),
-    applyEdit: async (path, { start, end, text }) => {
+    applyEdit: async (path, { start, end, text }, current) => {
       const document = documents.get(path);
-      if (!applies || document === undefined) { return false; }
+      if (!current() || !applies || document === undefined) { return false; }
       documents.set(path, document.slice(0, start) + text + document.slice(end));
+      versions.set(path, (versions.get(path) ?? 1) + 1);
       return true;
     },
     save: async (path) => {
@@ -78,10 +73,37 @@ async function controls({ deleted = false, changes = false } = {}) {
       const text = documents.get(path);
       if (text !== undefined) {
         disk[path] = text;
-        reviews.shown()?.read(path, text);
+        watchers.get(path)?.();
       }
     },
+  }, {
+    resolutionBlocked: () => blocked, onChanged: () => () => {},
+    runDecision: async (action) => blocked ? { kind: 'blocked' } : { kind: 'completed', value: await action(() => true) },
   });
+  onTestFinished(async () => { await reviews.dispose(); });
+  reviews.activeSessionChanged(SESSION_ID);
+  await reviews.handleSessionUpdate(input(edited('t1', '/w/a.ts', 'a\n', 'A\n')));
+  await reviews.handleSessionUpdate(input(edited('t2', '/w/b.ts', 'b\n', 'B\n')));
+  await reviews.handleSessionUpdate(input(edited('t3', '/w/c.ts', 'c\n', 'C\n')));
+  if (deleted) { await reviews.handleSessionUpdate(input(edited('t4', '/w/gone.ts', 'gone\n', ''))); }
+  if (changes) { await reviews.handleSessionUpdate(input(edited('t5', '/w/m.ts', twoChanges.before, twoChanges.after))); }
+  const subject = new ReviewControls(reviews, {
+    captureNavigation: () => { const captured = navigation; return () => navigation === captured; },
+    activePath: () => active,
+    isOpen: (path) => active === path || opened.includes(path) || shown.includes(path),
+    open: async (path, current) => { followUp?.(current); if (!current || current()) { opened.push(path); } },
+    showChange: async (path, current) => {
+      followUp?.(current);
+      if (current && !current()) { return; }
+      shown.push(path);
+    },
+    showChangeOf: async (path, changes, index) => {
+      views.push(`show ${path} at ${String(changes[index]?.modified.start)} of ${changes.map(({ modified }) => modified.start).join()}`);
+    },
+    closeChange: async (path) => { views.push(`close ${path} with ${documents.get(path) === twoChanges.after ? 'both' : 'one'}`); },
+    showError: (message) => errors.push(message),
+    text: (path) => documents.get(path),
+  }, () => canRevealDeferred);
   return {
     controls: subject,
     reviews,
@@ -94,14 +116,108 @@ async function controls({ deleted = false, changes = false } = {}) {
     documents,
     disk,
     setRead: (next: typeof read) => { read = next; },
-    activate: (path: string | undefined) => { active = path; },
+    activate: (path: string | undefined) => { active = path; navigation++; },
     fail: () => { failing = true; },
     failSaves: () => { failSave = true; },
     refuseEdits: () => { applies = false; },
+    block: () => { blocked = true; },
+    beforeFollowUp: (action: (current?: () => boolean) => void) => { followUp = action; },
   };
 }
 
 describe('ReviewControls', () => {
+  it('does not open a deferred review in quick diff mode but keeps selected turn-end behavior', async () => {
+    const { controls: subject, shown } = await controls({ canRevealDeferred: false });
+    expect(await subject.turnEnded(SESSION_ID, () => true, true)).toBe('not-automatic');
+    expect(shown).toEqual([]);
+    expect(await subject.turnEnded(SESSION_ID)).toBe('opened');
+    expect(shown).toEqual(['/w/a.ts']);
+  });
+
+  it('reports an invalidated attempt when an editor rejects the final guard', async () => {
+    const { controls: subject, reviews, shown, beforeFollowUp } = await controls();
+    beforeFollowUp(() => reviews.activeSessionChanged(OTHER_SESSION_ID));
+    const attempt = await subject.turnEnded(SESSION_ID);
+    expect(attempt).toBe('invalidated');
+    expect(shown).toEqual([]);
+  });
+
+  it('guards final advancement against a session switch inside editor preparation', async () => {
+    const { controls: subject, reviews, opened, activate, beforeFollowUp } = await controls();
+    activate('/w/a.ts');
+    beforeFollowUp(() => reviews.activeSessionChanged(OTHER_SESSION_ID));
+    await subject.keepFile();
+    expect(opened).toEqual([]);
+  });
+  it.each(['keep-file', 'undo-file', 'keep-all', 'keep-change', 'undo-change'] as const)('blocks %s through authority without effects or advancement', async (action) => {
+    const { controls: subject, block, opened, saved, restored, activate, documents } = await controls({ changes: true });
+    activate('/w/m.ts');
+    block();
+    switch (action) {
+      case 'keep-file': await subject.keepFile('/w/m.ts'); break;
+      case 'undo-file': await subject.undoFile('/w/m.ts'); break;
+      case 'keep-all': await subject.keepAll(); break;
+      case 'keep-change': await subject.keepChange('/w/m.ts', lineChanged(1)); break;
+      case 'undo-change': await subject.undoChange('/w/m.ts', lineChanged(1)); break;
+    }
+    expect(subject.reviewedPaths()).toEqual(['/w/a.ts', '/w/b.ts', '/w/c.ts', '/w/m.ts']);
+    expect(documents.get('/w/m.ts')).toBe(twoChanges.after);
+    expect(opened).toEqual([]);
+    expect(saved).toEqual([]);
+    expect(restored).toEqual([]);
+  });
+
+  it('does not cancel selected A presentation when sibling B emits output and ends its turn', async () => {
+    const { controls: subject, shown, reviews, setRead } = await controls();
+    await subject.keepAll();
+    let release: (text: FileContent) => void = () => {};
+    setRead(() => new Promise((resolve) => { release = resolve; }));
+    const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
+    const presenting = subject.turnEnded(SESSION_ID);
+    await reviews.handleSessionUpdate({ origin: {
+      identity: { configuredName: OTHER_SESSION_ID.agentName, sessionId: OTHER_SESSION_ID.sessionId }, sourceId: OTHER_SESSION_ID.agentId,
+    }, update: { kind: 'agentText', messageId: null, text: 'B finished' }, schema: 'v1' });
+    await subject.turnEnded(OTHER_SESSION_ID);
+    release('B\n');
+    await Promise.all([reading, presenting]);
+    expect(shown).toEqual(['/w/b.ts']);
+  });
+
+  it('does not open after editor navigation away and back during evidence settlement', async () => {
+    const { controls: subject, shown, reviews, setRead, activate } = await controls();
+    await subject.keepAll();
+    let release: (text: FileContent) => void = () => {};
+    setRead(() => new Promise((resolve) => { release = resolve; }));
+    const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
+    const presenting = subject.turnEnded(SESSION_ID);
+    activate('/w/other.ts');
+    activate(undefined);
+    release('B\n');
+    await Promise.all([reading, presenting]);
+    expect(shown).toEqual([]);
+    expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
+  });
+
+  it.each(['switch', 'away-back', 'remove', 'retire'] as const)('does not present a settled turn after registration invalidation by %s', async (change) => {
+    const { controls: subject, shown, reviews, setRead } = await controls();
+    await subject.keepAll();
+    let release: (text: FileContent) => void = () => {};
+    setRead(() => new Promise((resolve) => { release = resolve; }));
+    const reading = reviews.handleSessionUpdate(input(edited('late', '/w/b.ts', 'b\n', 'B\n')));
+    const presenting = subject.turnEnded(SESSION_ID);
+    if (change === 'remove') { reviews.sessionRemoved(SESSION_ID); }
+    else if (change === 'retire') { reviews.sourceRetired(SESSION_ID.agentId); }
+    else {
+      reviews.activeSessionChanged(OTHER_SESSION_ID);
+      if (change === 'away-back') { reviews.activeSessionChanged(SESSION_ID); }
+    }
+    release('B\n');
+    await Promise.all([reading, presenting]);
+    expect(shown).toEqual([]);
+    reviews.activeSessionChanged(SESSION_ID);
+    expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
+  });
+
   it.each(['keep', 'undo'] as const)('rejects %s File for a deletion recreated before its watcher reads it', async (action) => {
     const { controls: subject, reviews, disk, restored, saved } = await controls({ deleted: true });
     disk['/w/gone.ts'] = 'recreated\n';
@@ -140,10 +256,10 @@ describe('ReviewControls', () => {
     setRead(async () => checked);
     try {
       const deciding = action === 'keep' ? subject.keepFile('/w/gone.ts') : subject.undoFile('/w/gone.ts');
-      reviews.activeSessionChanged('s2');
+      reviews.activeSessionChanged(OTHER_SESSION_ID);
       release(null);
       await deciding;
-      reviews.activeSessionChanged('s1');
+      reviews.activeSessionChanged(SESSION_ID);
       expect(subject.baseline('/w/gone.ts')).toBe('gone\n');
       expect(restored).toEqual([]);
     } finally { release(null); }
@@ -174,15 +290,15 @@ describe('ReviewControls', () => {
     expect(subject.baseline('/w/other.ts')).toBeUndefined();
     await subject.keepFile('/w/a.ts');
     expect(subject.baseline('/w/a.ts')).toBeUndefined();
-    reviews.activeSessionChanged('s2');
+    reviews.activeSessionChanged(OTHER_SESSION_ID);
     expect(subject.baseline('/w/b.ts')).toBeUndefined();
   });
 
   it('places every file as 0 of 0 with nothing under review, a session with no review yet among them', async () => {
     const { controls: subject, reviews } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     expect(subject.position('/w/a.ts')).toBe('0 of 0');
-    reviews.activeSessionChanged('s2');
+    reviews.activeSessionChanged(OTHER_SESSION_ID);
     expect(subject.sessionShown()).toBe(true);
     expect(subject.reviewedPaths()).toEqual([]);
     expect(subject.position(undefined)).toBe('0 of 0');
@@ -202,7 +318,7 @@ describe('ReviewControls', () => {
     activate('/w/c.ts');
     await subject.keepFile();
     expect(subject.reviewedPaths()).toEqual(['/w/b.ts']);
-    subject.keepAll();
+    await subject.keepAll();
     expect(subject.reviewedPaths()).toEqual([]);
   });
 
@@ -421,7 +537,7 @@ describe('ReviewControls', () => {
     await subject.openReview();
     await subject.keepFile('/w/a.ts');
     await subject.openReview();
-    subject.keepAll();
+    await subject.keepAll();
     await subject.openReview();
     reviews.activeSessionChanged(null);
     await subject.openReview();
@@ -434,12 +550,19 @@ describe('ReviewControls', () => {
       read: async (path) => path === '/w/b.ts' ? 'B\n' : null,
       restore: async () => {},
       watch: () => ({ dispose: () => {} }),
+      snapshot: () => undefined,
+      applyEdit: async () => { throw new Error('Unexpected edit'); },
+      save: async () => { throw new Error('Unexpected save'); },
+    }, {
+      resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
     });
     onTestFinished(async () => { await reviews.dispose(); });
-    reviews.activeSessionChanged('s1');
-    await reviews.handleSessionUpdate('s1', edited('t1', '/w/gone.ts', 'gone\n', ''), 'v1');
-    await reviews.handleSessionUpdate('s1', edited('t2', '/w/b.ts', 'b\n', 'B\n'), 'v1');
+    reviews.activeSessionChanged(SESSION_ID);
+    await reviews.handleSessionUpdate(input(edited('t1', '/w/gone.ts', 'gone\n', '')));
+    await reviews.handleSessionUpdate(input(edited('t2', '/w/b.ts', 'b\n', 'B\n')));
     const subject = new ReviewControls(reviews, {
+      captureNavigation: () => () => true,
       activePath: () => undefined,
       isOpen: () => false,
       open: async () => {},
@@ -448,12 +571,10 @@ describe('ReviewControls', () => {
       closeChange: async () => {},
       showError: () => {},
       text: () => undefined,
-      applyEdit: async () => false,
-      save: async () => {},
     });
     await subject.openReview();
     expect(shown).toEqual(['/w/gone.ts']);
-    reviews.shown()?.keepFile('/w/b.ts');
+    await subject.keepFile('/w/b.ts');
     await subject.openReview();
     expect(shown).toEqual(['/w/gone.ts', '/w/gone.ts']);
   });
@@ -461,36 +582,36 @@ describe('ReviewControls', () => {
   it('shows the first unresolved file at turn end only when no review file is open', async () => {
     const { controls: subject, shown, activate, reviews } = await controls();
     activate('/w/b.ts');
-    await subject.turnEnded('s1');
+    await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual([]);
     activate('/w/other.ts');
-    await subject.turnEnded('s1');
+    await subject.turnEnded(SESSION_ID);
     reviews.activeSessionChanged(null);
-    await subject.turnEnded('s1');
+    await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual(['/w/a.ts']);
   });
 
   it('does not replace an already open deletion at turn end', async () => {
     const { controls: subject, shown, activate } = await controls({ deleted: true });
     activate('/w/gone.ts');
-    await subject.turnEnded('s1');
+    await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual([]);
   });
 
   it('shows a change once the files the turn\'s edits name were read, as the turn can end before', async () => {
     const { controls: subject, shown, reviews } = await controls();
-    reviews.shown()?.keepAll();
-    void reviews.handleSessionUpdate('s1', edited('t6', '/w/b.ts', 'b\n', 'B\n'), 'v1');
-    await subject.turnEnded('s1');
+    await subject.keepAll();
+    void reviews.handleSessionUpdate(input(edited('t6', '/w/b.ts', 'b\n', 'B\n')));
+    await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual(['/w/b.ts']);
   });
 
   it('shows existing and deleted files on entry, but not unreviewed or resolved files', async () => {
-    const { controls: subject, shown, reviews } = await controls({ deleted: true });
+    const { controls: subject, shown } = await controls({ deleted: true });
     await subject.entered('/w/b.ts');
     await subject.entered('/w/other.ts');
     await subject.entered('/w/gone.ts');
-    reviews.shown()?.keepFile('/w/a.ts');
+    await subject.keepFile('/w/a.ts');
     await subject.entered('/w/a.ts');
     expect(shown).toEqual(['/w/b.ts', '/w/gone.ts']);
   });
@@ -504,17 +625,17 @@ describe('ReviewControls', () => {
     { names: [], want: [] },
   ])('includes every existence change in entry and wraparound: $names', async ({ names, want }) => {
     const { controls: subject, reviews, disk, opened, shown } = await controls();
-    subject.keepAll();
+    await subject.keepAll();
     for (const name of names) {
       const path = `/w/${name}.ts`;
       disk[path] = name === 'live' ? 'changed\n' : null;
-      await reviews.handleSessionUpdate('s1', edited(name, path, name === 'empty' ? '' : 'before\n', name === 'live' ? 'changed\n' : ''), 'v1');
+      await reviews.handleSessionUpdate(input(edited(name, path, name === 'empty' ? '' : 'before\n', name === 'live' ? 'changed\n' : '')));
     }
     expect(subject.reviewedPaths()).toEqual(want);
     await subject.openReview();
     expect(shown).toEqual(want.length ? [want[0]] : []);
     shown.length = 0;
-    await subject.turnEnded('s1');
+    await subject.turnEnded(SESSION_ID);
     expect(shown).toEqual(want.length ? [want[0]] : []);
     for (const path of want) { await subject.entered(path); }
     expect(shown.slice(want.length ? 1 : 0)).toEqual(want);
@@ -527,9 +648,9 @@ describe('ReviewControls', () => {
   });
 
   it.each(['keep', 'undo'] as const)('advances from live to deleted after %s, and resolves an all-deleted review', async (action) => {
-    const { controls: subject, reviews, opened, activate } = await controls({ deleted: true });
-    reviews.shown()?.keepFile('/w/a.ts');
-    reviews.shown()?.keepFile('/w/b.ts');
+    const { controls: subject, opened, activate } = await controls({ deleted: true });
+    await subject.keepFile('/w/a.ts');
+    await subject.keepFile('/w/b.ts');
     activate('/w/c.ts');
     if (action === 'keep') { await subject.keepFile(); } else { await subject.undoFile(); }
     expect(opened).toEqual(['/w/gone.ts']);

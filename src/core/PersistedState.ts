@@ -21,6 +21,13 @@ export interface SessionAddress {
   readonly workspaceUri: string;
 }
 
+/** The workspace's tab order and selection, independent of live connections and session references. */
+export interface SessionTabLayout {
+  readonly tabs: readonly SessionAddress[];
+  readonly selected: SessionAddress | null;
+  readonly mru: readonly SessionAddress[];
+}
+
 /** A session's options as last displayed, reapplied when it is loaded. */
 export interface Selections {
   /** Only for agents using the separate modes API; a mode config option belongs in `options`. */
@@ -60,7 +67,7 @@ export interface ObservedListing {
 }
 
 const REFERENCES_VERSION = 3;
-const WORKSPACE_VERSION = 2;
+const WORKSPACE_VERSION = 3;
 const REFERENCES_KEY = 'your-turn.sessionReferences';
 const WORKSPACE_KEY = 'your-turn.workspace';
 const STARTUP_REQUESTS_KEY = 'your-turn.startupRequests';
@@ -125,8 +132,9 @@ export class SessionReferences extends EventEmitter<{ changed: [] }> {
   }
 
   /** The session was created, loaded or resumed, or a turn of it ended. */
-  used(address: SessionAddress): Promise<void> {
-    return this.upsert(address, (reference) => ({ ...reference, lastActiveAt: this.timestamp() }));
+  used(address: SessionAddress, title?: string): Promise<void> {
+    return this.upsert(address, (reference) => ({ ...reference, lastActiveAt: this.timestamp(),
+      ...(title === undefined ? {} : { title }) }));
   }
 
   /** The agent reported the session's title, or that it has none. */
@@ -419,6 +427,15 @@ export class WorkspaceState {
     return this.change({ lastActiveSession: addressOf(address) });
   }
 
+  /** Undefined means no layout has been saved; an empty layout deliberately keeps every tab closed. */
+  tabLayout(): SessionTabLayout | undefined {
+    return this.read().stored.tabLayout;
+  }
+
+  setTabLayout(layout: SessionTabLayout): Promise<void> {
+    return this.change({ tabLayout: tabLayoutFrom(layout) });
+  }
+
   /** This workspace's target as the window holds it, once a remote window has learned it. */
   workspaceTarget(): WorkspaceTarget | undefined {
     return this.read().stored.workspaceTarget;
@@ -428,10 +445,21 @@ export class WorkspaceState {
     return this.change({ workspaceTarget: { uri, host } });
   }
 
-  /** A configuration was renamed: the last active session moves to the new name if it was used through the old. */
+  /** A configuration was renamed: its workspace addresses move to the new name. */
   rebind(from: string, to: string): Promise<void> {
-    const last = this.read().stored.lastActiveSession;
-    return last?.configuredName === from ? this.change({ lastActiveSession: { ...last, configuredName: to } }) : Promise.resolve();
+    const { lastActiveSession, tabLayout } = this.read().stored;
+    if (from === to || (lastActiveSession?.configuredName !== from && !tabLayout?.tabs.some((tab) => tab.configuredName === from))) {
+      return Promise.resolve();
+    }
+    const rebound = (address: SessionAddress) => address.configuredName === from ? { ...address, configuredName: to } : address;
+    return this.change({
+      ...(lastActiveSession ? { lastActiveSession: rebound(lastActiveSession) } : {}),
+      ...(tabLayout ? { tabLayout: tabLayoutFrom({
+        tabs: tabLayout.tabs.map(rebound),
+        selected: tabLayout.selected ? rebound(tabLayout.selected) : null,
+        mru: tabLayout.mru.map(rebound),
+      }) } : {}),
+    });
   }
 
   /** Delete explicitly retired keys without reading or interpreting their contents. */
@@ -463,14 +491,17 @@ export class WorkspaceState {
   }
 
   private read(): { stored: StoredWorkspace; writable: boolean } {
-    const { value, writable } = readEnvelope(this.workspaceState, WORKSPACE_KEY, WORKSPACE_VERSION);
+    const { value, writable } = readEnvelope(this.workspaceState, WORKSPACE_KEY, WORKSPACE_VERSION, 2);
     const lastActiveSession = value && addressFrom(value['lastActiveSession']);
     const workspaceTarget = value && targetFrom(value['workspaceTarget']);
+    const tabLayout = value?.['schemaVersion'] === WORKSPACE_VERSION && Object.hasOwn(value, 'tabLayout')
+      ? tabLayoutFrom(value['tabLayout']) : undefined;
     return {
       stored: {
         schemaVersion: WORKSPACE_VERSION,
         ...(lastActiveSession ? { lastActiveSession } : {}),
         ...(workspaceTarget ? { workspaceTarget } : {}),
+        ...(tabLayout ? { tabLayout } : {}),
       },
       writable,
     };
@@ -614,13 +645,14 @@ interface StoredWorkspace {
   schemaVersion: typeof WORKSPACE_VERSION;
   lastActiveSession?: SessionAddress;
   workspaceTarget?: WorkspaceTarget;
+  tabLayout?: SessionTabLayout;
 }
 
 /**
- * A key's envelope in the version this code writes, or none. A missing, malformed or earlier value may be replaced; a
+ * A key's envelope in this version or an explicitly supported migration version. Other earlier values may be replaced; a
  * later version is read as empty and never written, so this version cannot destroy what a newer one saved.
  */
-function readEnvelope(store: KeyValueStore, key: string, current: number): { value: Record<string, unknown> | undefined; writable: boolean } {
+function readEnvelope(store: KeyValueStore, key: string, current: number, previous?: number): { value: Record<string, unknown> | undefined; writable: boolean } {
   const raw = store.get<unknown>(key);
   if (!isRecord(raw)) {
     return { value: undefined, writable: true };
@@ -629,7 +661,7 @@ function readEnvelope(store: KeyValueStore, key: string, current: number): { val
   if (typeof version === 'number' && version > current) {
     return { value: undefined, writable: false };
   }
-  return { value: version === current ? raw : undefined, writable: true };
+  return { value: version === current || (previous !== undefined && version === previous) ? raw : undefined, writable: true };
 }
 
 function isCount(value: unknown): value is number {
@@ -690,6 +722,33 @@ function addressFrom(raw: unknown): SessionAddress | undefined {
     && typeof host === 'string' && typeof workspaceUri === 'string'
     ? { configuredName, sessionId, cwd, host, workspaceUri }
     : undefined;
+}
+
+function tabAddressKey({ host, workspaceUri, configuredName, sessionId }: SessionAddress): string {
+  return JSON.stringify([host, workspaceUri, configuredName, sessionId]);
+}
+
+/** A present but malformed layout stays empty, so it cannot revive a legacy last-active session. */
+function tabLayoutFrom(raw: unknown): SessionTabLayout {
+  const fields = isRecord(raw) ? raw : {};
+  const tabs = new Map<string, SessionAddress>();
+  for (const address of listOf(fields['tabs'], addressFrom)) {
+    const key = tabAddressKey(address);
+    if (!tabs.has(key)) {
+      tabs.set(key, address);
+    }
+  }
+  const retained = (candidate: unknown) => {
+    const address = addressFrom(candidate);
+    return address ? tabs.get(tabAddressKey(address)) : undefined;
+  };
+  const mru = new Map(listOf(fields['mru'], retained).map((address) => [tabAddressKey(address), address]));
+  for (const [key, address] of tabs) {
+    if (!mru.has(key)) {
+      mru.set(key, address);
+    }
+  }
+  return { tabs: [...tabs.values()], selected: retained(fields['selected']) ?? null, mru: [...mru.values()] };
 }
 
 function targetFrom(raw: unknown): WorkspaceTarget | undefined {

@@ -1,5 +1,5 @@
 import type { PermissionOption, PermissionOutcome, PermissionRequest } from '@/core/acp/AcpDriver';
-import type { Permissions } from '@/core/ClientHandlers';
+import type { Permissions, PermissionInteractions } from '@/core/ClientHandlers';
 import { logDebug, logError } from '@/core/Log';
 
 /** The `your-turn.autoApprovePermissions` setting. */
@@ -36,10 +36,20 @@ interface PendingPermission {
  * Answers the agent's permission requests one at a time, so concurrent requests
  * wait their turn instead of competing for the user's attention.
  */
-export class PermissionRequests implements Permissions {
+export class PermissionRequests implements Permissions, PermissionInteractions {
   private readonly queue: PendingPermission[] = [];
   private readonly pending = new Set<PendingPermission>();
   private processing = false;
+  private readonly listeners = new Set<() => void>();
+
+  snapshot(): readonly Readonly<PermissionRequest>[] {
+    return [...this.pending].map(({ request }) => structuredClone(request));
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
 
   constructor(private readonly chooser: PermissionChooser) {}
 
@@ -53,6 +63,7 @@ export class PermissionRequests implements Permissions {
       ...(signal ? { signal } : {}),
     };
     this.pending.add(pending);
+    this.publish();
 
     if (signal) {
       pending.signalAbort = () => this.cancel(pending, REQUEST_CANCELLED);
@@ -151,5 +162,13 @@ export class PermissionRequests implements Permissions {
       pending.signal?.removeEventListener('abort', pending.signalAbort);
     }
     pending.resolve(outcome);
+    this.publish();
+  }
+
+  private publish(): void {
+    for (const listener of this.listeners) {
+      try { listener(); }
+      catch { logError('Permission observer failed'); }
+    }
   }
 }

@@ -4,9 +4,10 @@ import * as os from 'node:os';
 import { join } from 'node:path';
 import { setup, suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
+import { WorkspaceState } from '@/core/PersistedState';
 import type { ExtensionTestApi } from '@/extension';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { observed } from '@tests/integration/observed';
+import { observed, promptTarget } from '@tests/integration/observed';
 import { cleanup } from '@tests/integration/cleanup';
 
 const activeFile = () => vscode.window.activeTextEditor?.document.uri.fsPath;
@@ -25,6 +26,7 @@ for (const version of [2]) {
     let api: ExtensionTestApi;
     let original: unknown;
     let originalPresentation: unknown;
+    let recordsDirectory: string | undefined;
     const posts: ExtensionToWebviewMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
     const config = () => vscode.workspace.getConfiguration('your-turn');
@@ -35,6 +37,7 @@ for (const version of [2]) {
     let mismatched: string;
 
     suiteSetup(async () => {
+      recordsDirectory = fs.mkdtempSync(join(os.tmpdir(), 'acp-review-records-'));
       originalPresentation = config().inspect('review.presentation')?.globalValue;
       await config().update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
       const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
@@ -45,12 +48,12 @@ for (const version of [2]) {
       original = config().inspect('agents')?.globalValue;
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: `review-view-${process.env['VSCODE_TEST_GROUP'] ?? 'default'}-${version}` } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_RECORDS: join(recordsDirectory, 'records.jsonl') } } },
         vscode.ConfigurationTarget.Global,
       );
       await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.newSession', agentName);
     });
 
     suiteTeardown(async function () {
@@ -59,6 +62,7 @@ for (const version of [2]) {
         () => config().update('agents', original, vscode.ConfigurationTarget.Global),
         () => config().update('review.presentation', originalPresentation, vscode.ConfigurationTarget.Global),
         ...subscriptions.map((subscription) => () => { subscription.dispose(); }),
+        () => { if (recordsDirectory) { fs.rmSync(recordsDirectory, { recursive: true, force: true }); } },
       ]);
     });
 
@@ -78,7 +82,7 @@ for (const version of [2]) {
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
       const reviewed = observed(api.reviewChanges, () => (api.reviewedFiles().length === 3 ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `review ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `review ${folder}` });
       await Promise.all([promptEnded, reviewed]);
       await api.turnEndShown();
     });
@@ -117,7 +121,7 @@ for (const version of [2]) {
       try {
         const ended = posts.filter((post) => post.type === 'promptEnd').length;
         const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-        await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
+        await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hello' });
         await promptEnded;
         await api.turnEndShown();
       } finally {
@@ -158,7 +162,7 @@ for (const version of [2]) {
       assert.deepStrictEqual(api.reviewedFiles(), []);
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `again ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `again ${folder}` });
       await promptEnded;
       await api.turnEndShown();
 
@@ -178,7 +182,7 @@ for (const version of [2]) {
       try {
         const ended = posts.filter((post) => post.type === 'promptEnd').length;
         const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-        await api.sendChatMessage({ type: 'sendPrompt', text: 'hello' });
+        await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hello' });
         await promptEnded;
         await api.turnEndShown();
         await api.reviewPresentationSettled();
@@ -200,7 +204,7 @@ for (const version of [2]) {
       });
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
+      const turn = api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hold the turn' });
       try {
         await asked;
         await vscode.commands.executeCommand('your-turn.keepChange', vscode.Uri.file(modified), [quickDiffChange([2, 2], [2, 2])], 0);
@@ -237,7 +241,7 @@ for (const version of [2]) {
       });
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      const turn = api.sendChatMessage({ type: 'sendPrompt', text: 'hold the turn' });
+      const turn = api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: 'hold the turn' });
       try {
         await asked;
         await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(mismatched));
@@ -266,7 +270,7 @@ for (const version of [2]) {
       fs.writeFileSync(three, `${lines.join('\n')}\n`);
       const ended = posts.filter((post) => post.type === 'promptEnd').length;
       const promptEnded = observed(api.chatPosts, () => (posts.filter((post) => post.type === 'promptEnd').length > ended ? true : undefined));
-      await api.sendChatMessage({ type: 'sendPrompt', text: `three ${folder}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target: promptTarget(posts), text: `three ${folder}` });
       await promptEnded;
       await api.turnEndShown();
       await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(three));
@@ -311,6 +315,10 @@ for (const version of [2]) {
     });
 
     test("Disconnecting the agent keeps its session's review, shown again once its session is", async () => {
+      await api.persistedStateSettled();
+      const address = new WorkspaceState(api.storage.workspaceState).lastActiveSession();
+      assert.ok(address, 'the session to reopen was persisted');
+      assert.strictEqual(address.configuredName, agentName);
       const baseline = await baselineDocument(modified);
       let changed = observed(vscode.workspace.onDidChangeTextDocument, () => (baseline.getText() === '' ? true : undefined));
       await vscode.commands.executeCommand('your-turn.disconnectAgent', agentName);
@@ -318,7 +326,7 @@ for (const version of [2]) {
       assert.deepStrictEqual(api.reviewListedFiles(), []);
       await changed;
       changed = observed(vscode.workspace.onDidChangeTextDocument, () => (baseline.getText() === 'one\ntwo\n' ? true : undefined));
-      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.openSession', { agentName, sessionId: address.sessionId });
       assert.deepStrictEqual(api.reviewedFiles(), [modified, created, deleted]);
       assert.deepStrictEqual(api.reviewListedFiles(), [modified, created, deleted]);
       await changed;

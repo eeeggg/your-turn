@@ -8,7 +8,6 @@ import type * as Acp from '@agentclientprotocol/sdk';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { logDebug, logInfo, logTrace } from '@/core/Log';
-import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import type {
   AcpDriver,
   AgentDescription,
@@ -27,6 +26,7 @@ import type {
   SessionRoots,
   SessionState,
   SessionUpdate,
+  SessionUpdateSink,
   SlashCommand,
   ToolCallContent,
   ToolCallStatus,
@@ -48,12 +48,13 @@ export function v1InitializeRequest(clientVersion: string): Acp.InitializeReques
 
 /** Speaks ACP v1 over a connection, through the SDK's stable v1 client. */
 export class V1Driver implements AcpDriver {
+  readonly schema = 'v1';
   /** Connect the SDK's v1 client to the stream and initialize the connection. */
   static async connect(
     agentName: string,
     stream: Acp.Stream,
     clientVersion: string,
-    updates: SessionUpdateHandler,
+    updates: SessionUpdateSink,
     handlers: ClientHandlers,
   ): Promise<V1Driver> {
     const { permissions } = handlers;
@@ -139,12 +140,13 @@ export class V1Driver implements AcpDriver {
     return sessionState(response);
   }
 
-  async prompt(sessionId: string, prompt: PromptPart[]): Promise<void> {
+  async prompt(sessionId: string, prompt: PromptPart[]): Promise<{ stopReason: string | null }> {
     const response = await authChecked(this.connection.agent.request(methods.agent.session.prompt, {
       sessionId,
       prompt: prompt.map(contentBlock),
     }));
     logInfo('Prompt turn ended', { stopReason: response.stopReason });
+    return { stopReason: response.stopReason };
   }
 
   async cancel(sessionId: string): Promise<void> {

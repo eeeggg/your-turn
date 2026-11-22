@@ -8,8 +8,7 @@ import type { ExtensionTestApi } from '@/extension';
 import type { DiffFile, ExtensionToWebviewMessage, ToolCallContent, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { observed } from '@tests/integration/observed';
 import { cleanup } from '@tests/integration/cleanup';
-
-type ToolCallPost = Extract<ExtensionToWebviewMessage, { type: 'toolCall' }>;
+import { initialState, update } from '@/webview/state/RootState';
 
 const activeTab = () => vscode.window.tabGroups.activeTabGroup.activeTab;
 const tabEvents = [vscode.window.tabGroups.onDidChangeTabs, vscode.window.tabGroups.onDidChangeTabGroups] as const;
@@ -35,41 +34,56 @@ async function shownChanges(title: string): Promise<{ before: string; after: str
 for (const version of [1, 2]) {
   suite(`Tool Call Diffs Test Suite, ACP v${version}`, () => {
     const agentName = `fake-diffs-v${version}`;
-    const sessionId = `toolcalldiffs-v${version}`;
     let api: ExtensionTestApi;
     let dir: string;
     let original: { agents: unknown; showToolCallDiffs: unknown } | undefined;
     const posts: ExtensionToWebviewMessage[] = [];
+    let view = initialState;
     const answers: WebviewToExtensionMessage[] = [];
     const subscriptions: vscode.Disposable[] = [];
     const config = () => vscode.workspace.getConfiguration('your-turn');
 
-    const editCall = () => posts.find((post): post is ToolCallPost => post.type === 'toolCall' && post.toolCallId === 'edit-1');
+    const editCall = () => view.transcript.entries.flatMap((entry) => entry.kind === 'turn' ? entry.parts : [])
+      .flatMap((part) => part.kind === 'toolCalls' ? part.toolCalls : []).reverse().find((call) => call.toolCallId === 'edit-1');
     const prompt = async () => {
+      const previous = editCall();
+      const target = view.transcript.projection?.target;
+      assert.ok(target, 'the selected session has an issued projection before submission');
       posts.length = 0;
-      await api.sendChatMessage({ type: 'sendPrompt', text: `edit ${dir}` });
+      await api.sendChatMessage({ type: 'sendPrompt', target, text: `edit ${dir}` });
       await observed(api.chatPosts, () => posts.find((post) => post.type === 'promptEnd'));
       await api.turnEndShown();
-      return observed(api.chatPosts, editCall);
+      return observed(api.chatPosts, () => {
+        const call = editCall();
+        return call !== previous ? call : undefined;
+      });
     };
     const showDiffs = (on: boolean) => config().update('showToolCallDiffs', on, vscode.ConfigurationTarget.Global);
+    const fileContext = (file: number) => {
+      const target = view.transcript.projection?.target;
+      assert.ok(target, 'the selected session has an issued projection');
+      return { yourTurnTarget: target, yourTurnToolCallId: 'edit-1', yourTurnDiffFile: file };
+    };
 
     suiteSetup(async () => {
       const extension = vscode.extensions.getExtension<ExtensionTestApi | undefined>('eeeggg.your-turn');
       const activated = await extension?.activate();
       assert.ok(activated, 'activate returns the test API in extension tests');
       api = activated;
-      subscriptions.push(api.chatPosts((post) => posts.push(post)), api.chatMessages((message) => answers.push(message)));
+      subscriptions.push(api.chatPosts((post) => {
+        posts.push(post);
+        view = update(view, post, Date.now()).state;
+      }), api.chatMessages((message) => answers.push(message)));
       dir = mkdtempSync(join(tmpdir(), 'acp-diffs-'));
       original = { agents: config().inspect('agents')?.globalValue, showToolCallDiffs: config().inspect('showToolCallDiffs')?.globalValue };
       await config().update(
         'agents',
-        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1', ACP_TEST_SESSION_ID: sessionId } } },
+        { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', `fakeAgent-v${version}.js`)], env: { ELECTRON_RUN_AS_NODE: '1' } } },
         vscode.ConfigurationTarget.Global,
       );
       await vscode.commands.executeCommand('your-turn-chat.focus');
       await api.chatViewReady;
-      await vscode.commands.executeCommand('your-turn.connectAgent', agentName);
+      await vscode.commands.executeCommand('your-turn.newSession', agentName);
     });
 
     setup(() => {
@@ -131,11 +145,11 @@ for (const version of [1, 2]) {
       const a = join(dir, 'a.ts');
 
       answers.length = 0;
-      await vscode.commands.executeCommand('your-turn.openToolCallFile', { yourTurnToolCallId: 'edit-1', yourTurnDiffFile: 0 });
+      await vscode.commands.executeCommand('your-turn.openToolCallFile', fileContext(0));
       await shownFile(a);
       assert.deepStrictEqual(answers, []);
 
-      await vscode.commands.executeCommand('your-turn.openToolCallChanges', { yourTurnToolCallId: 'edit-1', yourTurnDiffFile: 0 });
+      await vscode.commands.executeCommand('your-turn.openToolCallChanges', fileContext(0));
       assert.deepStrictEqual(await shownChanges("a.ts (Agent's Change)"), { before: 'one\ntwo\n', after: 'one\nTWO\n' });
     });
 
@@ -144,7 +158,7 @@ for (const version of [1, 2]) {
       await prompt();
       await vscode.commands.executeCommand('workbench.action.closeAllEditors');
 
-      await vscode.commands.executeCommand(version === 1 ? 'your-turn.openToolCallChanges' : 'your-turn.openToolCallFile', { yourTurnToolCallId: 'edit-1', yourTurnDiffFile: 1 });
+      await vscode.commands.executeCommand(version === 1 ? 'your-turn.openToolCallChanges' : 'your-turn.openToolCallFile', fileContext(1));
 
       assert.deepStrictEqual(
         version === 1 ? await shownChanges("new.ts (Agent's Change)") : await shownChanges("gone.ts (Agent's Change)"),

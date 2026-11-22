@@ -2,8 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   yourTurnContainerControl,
-  agentsViewRow,
-  connectAgentAction,
+  chooseAgentAction,
   editorTab,
   editorSelection,
   plainFileEditor,
@@ -64,9 +63,7 @@ async function openFile(window: Parameters<typeof editorTab>[0], name: string): 
 
 async function connectFakeAgent(window: Parameters<typeof editorTab>[0]): Promise<void> {
   await yourTurnContainerControl(window).click();
-  const agent = agentsViewRow(window, 'fake-v1');
-  await agent.hover();
-  await connectAgentAction(window).click();
+  await chooseAgentAction(window, 'fake-v1', 'New Session');
 }
 
 test("a completed turn preserves the already-open reviewed file's quick diff", async ({ window, workspace }, testInfo) => {

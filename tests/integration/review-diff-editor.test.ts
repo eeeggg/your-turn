@@ -8,11 +8,16 @@ import { DiffReviewPresentation } from '@/adapters/review/DiffReviewPresentation
 import { workspaceFiles } from '@/adapters/review/WorkspaceFiles';
 import { ReviewControls } from '@/core/review/ReviewControls';
 import { Reviews } from '@/core/review/Reviews';
-import { Takeovers } from '@/core/review/Takeovers';
 import { ReviewTakeovers } from '@/adapters/review/ReviewTakeovers';
 import { createReviewEditors, ReviewPresenters } from '@/adapters/review/ReviewPresenters';
 import { ReviewSourceControl } from '@/adapters/review/ReviewSourceControl';
 import { observed } from '@tests/integration/observed';
+import type { SessionUpdate } from '@/core/acp/AcpDriver';
+
+const registration = (sessionId: string) => ({ sessionId, agentName: 'fake', agentId: 'source' });
+const evidence = (sessionId: string, update: SessionUpdate) => ({ origin: {
+  identity: { configuredName: 'fake', sessionId }, sourceId: 'source',
+}, update, schema: 'v1' as const });
 
 function deferred() {
   let resolve: () => void = () => {};
@@ -24,6 +29,7 @@ suite('Native review diff', () => {
   let folder: string;
   let file: string;
   let reviews: Reviews;
+  let selected: ReturnType<typeof registration>;
   let controls: ReviewControls;
   let presentation: DiffReviewPresentation;
   let prior: unknown;
@@ -41,6 +47,14 @@ suite('Native review diff', () => {
   const ownedTabs = () => vscode.window.tabGroups.all.flatMap((group) => group.tabs).filter((tab) =>
     tab.input instanceof vscode.TabInputTextDiff && tab.input.original.scheme === 'your-turn-review-diff');
 
+  const refresh = async (target: string, text: string | null) => {
+    await reviews.handleSessionUpdate(evidence(selected.sessionId, {
+      kind: 'toolCall', toolCallId: `refresh-${target}-${String(text)}`, status: 'completed',
+      content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: target,
+        oldText: reviews.shown()?.file(target)?.baseline ?? null, newText: text ?? '' } }],
+    }));
+  };
+
   setup(async () => {
     owned = {};
     folder = '';
@@ -49,20 +63,24 @@ suite('Native review diff', () => {
     folder = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-native-review-'));
     file = path.join(folder, 'file.txt');
     fs.writeFileSync(file, after);
-    owned.reviews = reviews = new Reviews(workspaceFiles);
+    owned.reviews = reviews = new Reviews(workspaceFiles, {
+      resolutionBlocked: () => false, onChanged: () => () => {},
+      runDecision: async (action) => ({ kind: 'completed', value: await action(() => true) }),
+    });
     openDiff = (...args) => vscode.commands.executeCommand('vscode.diff', ...args);
     closeTabs = (tabs) => vscode.window.tabGroups.close(tabs, true);
     owned.presentation = presentation = new DiffReviewPresentation(reviews, (...args) => openDiff(...args), (tabs) => closeTabs(tabs));
     controls = new ReviewControls(reviews, presentation);
     presentation.attach(controls);
-    owned.takeovers = new ReviewTakeovers(new Takeovers(reviews), controls);
+    owned.takeovers = new ReviewTakeovers(reviews, controls);
     const session = `native-${path.basename(folder)}`;
-    reviews.activeSessionChanged(session);
-    await reviews.handleSessionUpdate(session, {
+    selected = registration(session);
+    reviews.activeSessionChanged(selected);
+    await reviews.handleSessionUpdate(evidence(session, {
       kind: 'toolCall', toolCallId: 'edit', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: file, oldText: before, newText: after } }],
-    }, 'v1');
-    await controls.turnEnded(session);
+    }));
+    await controls.turnEnded(selected);
   });
 
   teardown(async function () {
@@ -120,10 +138,10 @@ suite('Native review diff', () => {
     assert.ok(input() instanceof vscode.TabInputTextDiff);
     const deleted = path.join(folder, 'scm-deleted.txt');
     const session = `native-${path.basename(folder)}`;
-    await reviews.handleSessionUpdate(session, {
+    await reviews.handleSessionUpdate(evidence(session, {
       kind: 'toolCall', toolCallId: 'delete-scm', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: 'removed\n', newText: '' } }],
-    }, 'v1');
+    }));
     const resource = group.resourceStates.find((resource) => resource.resourceUri.fsPath === deleted);
     assert.ok(resource?.command);
     await click(resource.command);
@@ -135,20 +153,57 @@ suite('Native review diff', () => {
     assert.deepEqual(presentation.provideFileDecoration(vscode.Uri.file(deleted)), { badge: 'D', tooltip: 'Deleted' });
     assert.match(vscode.window.tabGroups.activeTabGroup.activeTab?.label ?? '', /\(Deleted\)/);
     assert.equal(fs.existsSync(deleted), false);
-    reviews.activeSessionChanged('other');
-    await reviews.handleSessionUpdate('other', {
+    reviews.activeSessionChanged(registration('other'));
+    await reviews.handleSessionUpdate(evidence('other', {
       kind: 'toolCall', toolCallId: 'other-delete', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: 'other baseline\n', newText: '' } }],
-    }, 'v1');
+    }));
     await presentation.settled();
     assert.equal(presentation.provideFileDecoration(diff.original), undefined);
     assert.equal(presentation.provideFileDecoration(diff.modified), undefined);
     await click(resource.command);
     assert.equal(ownedTabs().length, 0, 'a stale entry cannot open the newly shown review');
-    assert.equal(controls.baseline(deleted), 'other baseline\n');
+    assert.equal(controls.baseline(deleted), 'removed\n', 'associated sessions share the first pending baseline');
     owned.sourceControl.dispose();
     delete owned.sourceControl;
     assert.equal((await vscode.commands.getCommands(false)).includes(live.command), false, 'disposing SCM unregisters its callback');
+  });
+
+  test('shared dirty Undo resolves both sessions without saving and remains editor-undoable', async () => {
+    const a = reviews.shown();
+    const sibling = `sibling-${path.basename(folder)}`;
+    await reviews.handleSessionUpdate(evidence(sibling, {
+      kind: 'toolCall', toolCallId: 'shared', status: 'completed',
+      content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: file, oldText: 'not a second baseline\n', newText: after } }],
+    }));
+    reviews.activeSessionChanged(registration(sibling));
+    const b = reviews.shown();
+    assert.ok(a);
+    assert.ok(b);
+    assert.equal(a.file(file), b.file(file));
+    assert.equal(b.file(file)?.baseline, before);
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(file));
+    await vscode.window.showTextDocument(document);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(document.uri, new vscode.Position(document.lineCount, 0), 'typed\n');
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    assert.equal(document.isDirty, true);
+    const dirty = document.getText();
+    // Dispose presentation before resolution so closing its diff cannot change the undo target.
+    await presentation.dispose();
+    const decision = reviews.captureDecision({ action: 'undo-file', path: file });
+    assert.ok(decision);
+    assert.deepEqual(await reviews.decide(decision), { kind: 'applied', saved: false, resolved: [file] });
+    assert.equal(document.getText(), before + 'typed\n');
+    assert.equal(document.isDirty, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), after);
+    assert.deepEqual(a.files(), []);
+    assert.deepEqual(b.files(), []);
+    await vscode.window.showTextDocument(document);
+    await vscode.commands.executeCommand('undo');
+    assert.equal(document.getText(), dirty);
+    assert.deepEqual(a.files(), []);
+    assert.deepEqual(b.files(), []);
   });
 
   test('replaces an open review on live deletion and recreation without taking unrelated focus', async () => {
@@ -158,7 +213,7 @@ suite('Native review diff', () => {
     const original = ownedTabs()[0]?.input;
     assert.ok(original instanceof vscode.TabInputTextDiff);
     fs.unlinkSync(file);
-    reviews.shown()?.read(file, null);
+    await refresh(file, null);
     await presentation.settled();
     const deleted = ownedTabs()[0]?.input;
     assert.ok(deleted instanceof vscode.TabInputTextDiff);
@@ -167,7 +222,7 @@ suite('Native review diff', () => {
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, other);
     assert.equal(presentation.pathOf(original.original), undefined);
     fs.writeFileSync(file, 'recreated\n');
-    reviews.shown()?.read(file, 'recreated\n');
+    await refresh(file, 'recreated\n');
     await presentation.settled();
     const recreated = ownedTabs()[0]?.input;
     assert.ok(recreated instanceof vscode.TabInputTextDiff);
@@ -189,7 +244,7 @@ suite('Native review diff', () => {
     assert.equal(await vscode.workspace.applyEdit(edit), true);
     assert.equal(document.isDirty, true);
     fs.unlinkSync(file);
-    reviews.shown()?.read(file, null);
+    await refresh(file, null);
     await presentation.settled();
     assert.equal(document.isDirty, true);
     assert.equal(document.getText(), `UNSAVED\n${after}`);
@@ -204,13 +259,13 @@ suite('Native review diff', () => {
   test('a created file removed again resolves and closes its review without a phantom deletion', async () => {
     const created = path.join(folder, 'created.txt');
     fs.writeFileSync(created, 'new\n');
-    await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
+    await reviews.handleSessionUpdate(evidence(`native-${path.basename(folder)}`, {
       kind: 'toolCall', toolCallId: 'created', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: created, oldText: null, newText: 'new\n' } }],
-    }, 'v1');
+    }));
     await presentation.open(created);
     fs.unlinkSync(created);
-    reviews.shown()?.read(created, null);
+    await refresh(created, null);
     await presentation.settled();
     assert.equal(controls.baseline(created), undefined);
     assert.equal(ownedTabs().some(({ input }) => input instanceof vscode.TabInputTextDiff && input.modified.fsPath === created), false);
@@ -231,10 +286,10 @@ suite('Native review diff', () => {
     assert.ok(input() instanceof vscode.TabInputText);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, file);
     const deleted = path.join(folder, 'quick-deleted.txt');
-    await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
+    await reviews.handleSessionUpdate(evidence(`native-${path.basename(folder)}`, {
       kind: 'toolCall', toolCallId: 'quick-delete', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: '', newText: '' } }],
-    }, 'v1');
+    }));
     const resource = group.resourceStates.find((resource) => resource.resourceUri.fsPath === deleted);
     assert.ok(resource?.command);
     await vscode.commands.executeCommand(resource.command.command, ...(resource.command.arguments ?? []) as unknown[]);
@@ -243,7 +298,7 @@ suite('Native review diff', () => {
     assert.equal(diff.modified.scheme, 'your-turn-review-diff');
     assert.equal(fs.existsSync(deleted), false);
     fs.writeFileSync(deleted, 'recreated\n');
-    reviews.shown()?.read(deleted, 'recreated\n');
+    await refresh(deleted, 'recreated\n');
     await presentation.settled();
     assert.equal(ownedTabs().some(({ input }) => input instanceof vscode.TabInputTextDiff && input.modified.fsPath === deleted), false);
     assert.equal(vscode.window.tabGroups.all.some(({ tabs }) => tabs.some(({ input }) =>
@@ -256,10 +311,10 @@ suite('Native review diff', () => {
       test(`reviews ${baseline === '' ? 'empty' : 'nonempty'} deletion with ${setting} without opening a disk document`, async () => {
         const deleted = path.join(folder, 'deleted.txt');
         await vscode.workspace.getConfiguration('your-turn').update('review.presentation', setting, vscode.ConfigurationTarget.Global);
-        await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
+        await reviews.handleSessionUpdate(evidence(`native-${path.basename(folder)}`, {
           kind: 'toolCall', toolCallId: 'delete', status: 'completed',
           content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: baseline, newText: '' } }],
-        }, 'v1');
+        }));
         assert.deepEqual(reviews.shown()?.file(deleted), { path: deleted, baseline, current: null });
         await presentation.open(deleted);
         const diff = input();
@@ -312,10 +367,10 @@ suite('Native review diff', () => {
 
   test('keeps absence through the virtual modified editor without creating a file', async () => {
     const deleted = path.join(folder, 'kept-deletion.txt');
-    await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
+    await reviews.handleSessionUpdate(evidence(`native-${path.basename(folder)}`, {
       kind: 'toolCall', toolCallId: 'delete', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: 'gone\n', newText: '' } }],
-    }, 'v1');
+    }));
     await presentation.showChange(deleted);
     await controls.keepFile();
     await presentation.settled();
@@ -326,10 +381,10 @@ suite('Native review diff', () => {
   test('an existing empty file keeps a real editable modified side', async () => {
     const empty = path.join(folder, 'empty.txt');
     fs.writeFileSync(empty, '');
-    await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
+    await reviews.handleSessionUpdate(evidence(`native-${path.basename(folder)}`, {
       kind: 'toolCall', toolCallId: 'empty', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: empty, oldText: 'was full\n', newText: '' } }],
-    }, 'v1');
+    }));
     await presentation.open(empty);
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
@@ -344,15 +399,15 @@ suite('Native review diff', () => {
 
   test('both retained deletion URIs stop targeting the file after recreation', async () => {
     const deleted = path.join(folder, 'recreated.txt');
-    await reviews.handleSessionUpdate(`native-${path.basename(folder)}`, {
+    await reviews.handleSessionUpdate(evidence(`native-${path.basename(folder)}`, {
       kind: 'toolCall', toolCallId: 'delete', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: deleted, oldText: 'gone\n', newText: '' } }],
-    }, 'v1');
+    }));
     await presentation.open(deleted);
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
     fs.writeFileSync(deleted, 'recreated\n');
-    reviews.shown()?.read(deleted, 'recreated\n');
+    await refresh(deleted, 'recreated\n');
     assert.equal(presentation.pathOf(diff.original), undefined);
     assert.equal(presentation.pathOf(diff.modified), undefined);
     assert.equal(fs.readFileSync(deleted, 'utf8'), 'recreated\n');
@@ -374,6 +429,26 @@ suite('Native review diff', () => {
       release();
       await showing;
     }
+  });
+
+  test('does not issue a queued automatic diff request after its validity expires', async () => {
+    const { promise: gate, resolve: release } = deferred();
+    const { promise: opening, resolve: started } = deferred();
+    let calls = 0;
+    let current = true;
+    openDiff = async () => { calls++; started(); await gate; };
+    const showing = presentation.showChangeOf(file, controls.changes(file), 0);
+    let queued: Promise<void> | undefined;
+    try {
+      await opening;
+      queued = presentation.showChangeOf(file, controls.changes(file), 1, () => current);
+      current = false;
+    } finally {
+      release();
+      await Promise.all([showing, queued]);
+    }
+    assert.equal(calls, 1);
+    assert.equal(controls.changes(file).length, 2);
   });
 
   test('disposal drains an opening, abandons queued openings and leaves unresolved review intact', async () => {
@@ -407,8 +482,8 @@ suite('Native review diff', () => {
       assert.equal(controls.changes(file).length, 2);
       await presentation.showChange(file);
       await presentation.showChangeOf(file, controls.changes(file), 0);
-      reviews.activeSessionChanged('other-session');
-      reviews.activeSessionChanged(`native-${path.basename(folder)}`);
+      reviews.activeSessionChanged(registration('other-session'));
+      reviews.activeSessionChanged(registration(`native-${path.basename(folder)}`));
       assert.equal(calls, 1);
       assert.equal(controls.changes(file).length, 2);
     } finally {
@@ -432,14 +507,58 @@ suite('Native review diff', () => {
     assert.equal(document.getText(), 'one\nNEW\nthree\nfour\nfive\nsix\nSEVEN\n');
   });
 
+  test('rejects a malformed lens argument instead of using the selected change', async () => {
+    const baseline = controls.baseline(file);
+    await presentation.decide('keep', { index: 0 });
+    assert.equal(controls.baseline(file), baseline);
+    assert.equal(controls.changes(file).length, 2);
+  });
+
+  test('rejects a lens after an edit and undo restore identical text', async () => {
+    const keep = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
+    assert.ok(keep);
+    const document = await vscode.workspace.openTextDocument(file);
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(1, 0, 1, 3), 'NEW');
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    await vscode.commands.executeCommand('undo');
+    assert.equal(document.getText(), after);
+    const baseline = controls.baseline(file);
+    await presentation.decide('keep', keep.command?.arguments?.[0]);
+    assert.equal(controls.baseline(file), baseline);
+    assert.equal(controls.changes(file).length, 2);
+  });
+
+  test('a freshly published lens works once after edit, undo and save while the old lens stays stale', async () => {
+    const old = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
+    assert.ok(old);
+    const document = await vscode.workspace.openTextDocument(file);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(document.uri, new vscode.Position(6, 5), ' manual');
+    assert.equal(await vscode.workspace.applyEdit(edit), true);
+    assert.equal(await document.save(), true);
+    await vscode.commands.executeCommand('undo');
+    assert.equal(await document.save(), true);
+    assert.equal(document.getText(), after);
+    await presentation.decide('keep', old.command?.arguments?.[0]);
+    assert.equal(controls.changes(file).length, 2);
+    const fresh = (await lenses()).find((lens) => lens.command?.command === 'your-turn.keepDiffChange');
+    assert.ok(fresh);
+    await presentation.decide('keep', fresh.command?.arguments?.[0]);
+    assert.equal(controls.changes(file).length, 1);
+    assert.equal(controls.baseline(file), 'one\nTWO\nthree\nfour\nfive\nsix\nseven\n');
+    assert.equal(document.isDirty, false);
+    assert.equal(fs.readFileSync(file, 'utf8'), after);
+  });
+
   test('disposal drains a retired tab closure and reports its failure after a sibling closes', async () => {
     const other = path.join(folder, 'other.txt');
     fs.writeFileSync(other, 'NEW\n');
     const session = `native-${path.basename(folder)}`;
-    await reviews.handleSessionUpdate(session, {
+    await reviews.handleSessionUpdate(evidence(session, {
       kind: 'toolCall', toolCallId: 'other', status: 'completed',
       content: [{ kind: 'diff', diff: { kind: 'wholeFile', path: other, oldText: 'old\n', newText: 'NEW\n' } }],
-    }, 'v1');
+    }));
     await presentation.showChange(other);
     const { promise: gate, resolve: release } = deferred();
     const { promise: closing, resolve: started } = deferred();
@@ -486,7 +605,7 @@ suite('Native review diff', () => {
     });
     presentation.attach(controls);
     assert.equal(controls.changes(file).length, 0, 'the open document still matches the baseline');
-    await controls.turnEnded(`native-${path.basename(folder)}`);
+    await controls.turnEnded(selected);
     assert.equal(ownedTabs().length, 1, 'disk evidence is enough to open the review diff');
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
@@ -500,7 +619,7 @@ suite('Native review diff', () => {
     await vscode.window.showTextDocument(vscode.Uri.file(file), { preview: false });
     assert.equal(presentation.isOpen(file), false, 'an ordinary text tab is not a review diff');
 
-    await controls.turnEnded(`native-${path.basename(folder)}`);
+    await controls.turnEnded(selected);
 
     assert.equal(ownedTabs().length, 1, 'an ordinary text tab must not suppress the review diff');
   });
@@ -534,7 +653,7 @@ suite('Native review diff', () => {
     const other = path.join(folder, 'other.txt');
     fs.writeFileSync(other, 'other\n');
     await vscode.window.showTextDocument(vscode.Uri.file(other), { preview: false });
-    reviews.activeSessionChanged('another-session');
+    reviews.activeSessionChanged(registration('another-session'));
     await presentation.settled();
     assert.equal(ownedTabs().length, 0);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, other);

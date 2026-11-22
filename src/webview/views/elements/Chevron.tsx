@@ -12,7 +12,6 @@ export function Chevron({ direction, size = 14, className = '' }: {
   return (
     <Icon
       size={size}
-      strokeWidth={2.25}
       aria-hidden="true"
       className={`flex-none ${className}`}
     />

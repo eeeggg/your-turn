@@ -2,7 +2,6 @@ import * as Acp from '@agentclientprotocol/sdk/experimental/v2';
 
 import type { ClientHandlers } from '@/core/ClientHandlers';
 import { logDebug, logInfo, logTrace } from '@/core/Log';
-import type { SessionUpdateHandler } from '@/core/SessionUpdateHandler';
 import { logDeviation } from '@/core/StandardDeviations';
 import {
   AuthRequired,
@@ -27,6 +26,7 @@ import {
   type SessionRoots,
   type SessionState,
   type SessionUpdate,
+  type SessionUpdateSink,
   type SlashCommand,
   type TerminalExitStatus,
   type ToolCallContent,
@@ -49,12 +49,13 @@ export function v2InitializeRequest(clientVersion: string): Acp.InitializeReques
 
 /** Speaks ACP v2 over a connection, through the SDK's stable v2 client. */
 export class V2Driver implements AcpDriver {
+  readonly schema = 'v2';
   /** Connect the SDK's v2 client to the stream and initialize the connection. */
   static async connect(
     agentName: string,
     stream: Acp.Stream,
     clientVersion: string,
-    updates: SessionUpdateHandler,
+    updates: SessionUpdateSink,
     handlers: ClientHandlers,
   ): Promise<V2Driver> {
     const { permissions } = handlers;
@@ -79,9 +80,13 @@ export class V2Driver implements AcpDriver {
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
           foreground.report(params.sessionId, params.update);
           if (Acp.StateUpdate.isIdle(params.update) || Acp.StateUpdate.isRunning(params.update) || Acp.StateUpdate.isRequiresAction(params.update)) {
+            const outcome = Acp.StateUpdate.isIdle(params.update)
+              ? Acp.IdleStateUpdate.isError(params.update) ? 'failed' : params.update.stopReason === 'cancelled' ? 'cancelled' : undefined
+              : undefined;
             updates.handleUpdate(params.sessionId, {
               kind: 'foreground',
               state: Acp.StateUpdate.isRequiresAction(params.update) ? 'requiresAction' : params.update.state,
+              ...(outcome ? { outcome } : {}),
             }, 'v2');
           }
           return;
@@ -165,13 +170,17 @@ export class V2Driver implements AcpDriver {
   }
 
   /** The agent answers once it has taken the prompt in, and reports the end of the turn it starts as the session going idle. */
-  async prompt(sessionId: string, prompt: PromptPart[]): Promise<void> {
+  async prompt(sessionId: string, prompt: PromptPart[]): Promise<{ stopReason: string | null }> {
     const turn = this.foreground.begin(sessionId);
     try {
       const response = await authChecked(this.connection.agent.request(Acp.methods.agent.session.prompt, {
         sessionId,
         prompt: prompt.map(contentBlock),
-      }));
+      })).catch((error: unknown) => {
+        if (error instanceof Acp.RequestError && error.code === -32800) { return null; }
+        throw error;
+      });
+      if (!response) { return { stopReason: 'cancelled' }; }
       logDebug('Prompt accepted', { messageId: response.messageId });
       this.translator.accepted(sessionId, response.messageId);
       const idle = await turn.end();
@@ -179,6 +188,7 @@ export class V2Driver implements AcpDriver {
         throw turnFailure(idle.error);
       }
       logInfo('Prompt turn ended', { stopReason: idle.stopReason ?? 'none' });
+      return { stopReason: idle.stopReason ?? null };
     } finally {
       this.foreground.remove(sessionId, turn);
     }

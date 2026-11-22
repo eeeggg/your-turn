@@ -61,6 +61,13 @@
 
 ## Environment and Release Safety
 
+- For an explicitly requested local development VSIX, use `npm run package:dev`;
+  see [RELEASING.md](RELEASING.md) for its contract. It packages the working tree
+  with a staging-only dev version derived from the tracked numeric release target.
+  Do not hand-edit temporary versions or impersonate CI. Report the artifact path,
+  embedded version, checksum, and verification actually completed. Changing the
+  tracked release target, installation, and publication need separate authorization.
+
 - Follow [RELEASING.md](RELEASING.md) for branch, version, development-build,
   release-candidate, and publication policy. Do not couple version changes to
   dependency installation or infer publication authorization from a merge.
