@@ -14,6 +14,7 @@ opening a public issue.
 3. Install the locked dependencies with `npm ci`.
 4. Read [AGENTS.md](AGENTS.md) for repository conventions and
    [GLOSSARY.md](GLOSSARY.md) for project terminology.
+5. Use [ARCHITECTURE.md](ARCHITECTURE.md) to find where to make your change.
 
 Keep changes focused and follow the surrounding code's structure and style.
 
