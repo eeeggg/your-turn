@@ -226,6 +226,7 @@ export class ChatViewController {
   private disposed = false;
   private disposal: Promise<void> | undefined;
   private readonly stopActivity: () => void;
+  private readonly listedTitlesChanged = () => this.sendTabs();
 
   constructor(
     private readonly sessions: ChatSessions,
@@ -239,6 +240,7 @@ export class ChatViewController {
     tabs = new SessionTabs(),
   ) {
     this.tabs = tabs;
+    this.tabs.on('listedTitlesChanged', this.listedTitlesChanged);
     this.stopQuestions = sessions.interactions.subscribe((created) => {
       this.sendQuestions();
       this.sendTabs(false, true);
@@ -614,6 +616,7 @@ export class ChatViewController {
     this.disposed = true;
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); }
     this.stopActivity();
+    this.tabs.off('listedTitlesChanged', this.listedTitlesChanged);
     this.stopTabReviews?.();
     this.imageBytes.clear();
     this.resetMarkdownImages();

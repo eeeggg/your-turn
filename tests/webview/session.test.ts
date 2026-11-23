@@ -39,7 +39,7 @@ describe('session state', () => {
     connect(page, { sessionId }, tabId);
     page.takePosted();
 
-    const close = page.document.querySelector<HTMLButtonElement>('#sessionTabs button[aria-label="Close Fake Agent"]');
+    const close = page.document.querySelector<HTMLButtonElement>('#sessionTabs button[aria-label="Close Untitled"]');
     expect(close).not.toBeNull();
     close?.click();
     const posted = page.takePosted();
@@ -86,8 +86,8 @@ describe('session state', () => {
     connect(page, { agentName: 'OpenCode', cwd: '/work/project' });
 
     expect(page.byId('sessionTabs').hidden).toBe(false);
-    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
-    expect(page.document.querySelector('[role="tab"]')?.getAttribute('title')).toContain('/work/project');
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('Untitled');
+    expect(page.document.querySelector('[role="tab"]')?.getAttribute('title')).toBe('Untitled\nOpenCode\n/work/project');
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
     expect(page.byId('emptyState').style.display).toBe('none');
   });
@@ -99,7 +99,7 @@ describe('session state', () => {
     expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('Fix the build');
   });
 
-  it('updates the title from sessionInfoUpdate and falls back to the agent name when cleared', () => {
+  it('updates the tab title and falls back to Untitled when cleared', () => {
     page = loadChatPage();
     connect(page, { agentName: 'OpenCode', title: 'Old' });
     const tab = { tabId: 'tab', agentName: 'OpenCode', cwd: '/work', additionalDirectories: [], status: 'quiet' as const,
@@ -111,7 +111,7 @@ describe('session state', () => {
 
     page.send({ type: 'sessionInfoUpdate', title: null });
     page.send({ type: 'sessionTabs', selectedTabId: 'tab', tabs: [{ ...tab, title: null }] });
-    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
+    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('Untitled');
   });
 
   it('ignores sessionInfoUpdate when no session is connected', () => {
@@ -154,7 +154,9 @@ describe('session state', () => {
     connect(page, { sessionId: OTHER_SESSION_ID, agentName: 'OpenCode' }, 'tab-other');
 
     expect(page.document.querySelectorAll('.message')).toHaveLength(0);
-    expect(page.document.querySelector('[role="tab"]')?.textContent).toBe('OpenCode');
+    const tab = page.document.querySelector('[role="tab"]');
+    expect(tab?.textContent).toBe('Untitled');
+    expect(tab?.getAttribute('title')).toContain('\nOpenCode\n');
     expect(page.byId('inputArea').classList.contains('disabled')).toBe(false);
   });
 

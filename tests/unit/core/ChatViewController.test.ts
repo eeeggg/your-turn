@@ -451,6 +451,17 @@ describe('ChatViewController', () => {
     expect(environment.take()).toEqual([]);
   });
 
+  it('publishes a listed title for the existing tab without replacing its transcript', () => {
+    const { controller, sessions, environment } = setup();
+    controller.notifySessionOpened(sessions.requireSession());
+    const initial = environment.take().find((message) => message.type === 'sessionTabs');
+    if (!initial) { throw new Error('missing tab snapshot'); }
+
+    controller.sessionTabs.updateListedTitles('fake', new Map([[SESSION_ID, 'Listed title']]));
+
+    expect(environment.take()).toEqual([{ ...initial, tabs: initial.tabs.map((tab) => ({ ...tab, title: 'Listed title' })) }]);
+  });
+
   it('updates tab labels and foreground indicators without creating content or prompt boundaries', async () => {
     const { controller, sessions, environment } = setup();
     controller.notifySessionOpened(sessions.requireSession());
