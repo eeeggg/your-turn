@@ -23,7 +23,7 @@ interface TabPersistence {
 }
 
 /** This workspace window's navigation references, independent of live connections. */
-export class SessionTabs extends EventEmitter<{ changed: [] }> {
+export class SessionTabs extends EventEmitter<{ changed: []; listedTitlesChanged: [] }> {
   private tabs: OpenTab[] = [];
   private selectedTabId: string | null = null;
   private mru: string[] = [];
@@ -105,6 +105,22 @@ export class SessionTabs extends EventEmitter<{ changed: [] }> {
     if (sameReference(existing, next)) { return; }
     this.tabs = this.tabs.map((tab) => tab === existing ? next : tab);
     this.announce();
+  }
+
+  updateListedTitles(agentName: string, titles: ReadonlyMap<string, string | null>): void {
+    const updated = this.tabs.map((tab) => {
+      if (tab.agentName !== agentName) { return tab; }
+      const title = titles.get(tab.sessionId);
+      if (title === undefined || (title ?? undefined) === tab.title) { return tab; }
+      const next = { ...tab };
+      if (title === null) { delete next.title; }
+      else { next.title = title; }
+      return next;
+    });
+    if (updated.some((tab, index) => tab !== this.tabs[index])) {
+      this.tabs = updated;
+      this.emit('listedTitlesChanged');
+    }
   }
 
   select(tabId: string): void {

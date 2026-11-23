@@ -140,7 +140,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
     private readonly workspaceCwd: () => string | undefined,
     private readonly workspaceTarget: () => WorkspaceTarget | undefined,
     private readonly now: () => number = Date.now,
-    private readonly tabs?: Pick<SessionTabs, 'has' | 'on' | 'off'>,
+    private readonly tabs?: Pick<SessionTabs, 'has' | 'on' | 'off' | 'updateListedTitles'>,
   ) {
     super();
     for (const event of SESSION_EVENTS) {
@@ -212,8 +212,10 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       const current = stillLoading();
       if (current) {
         const shown = new Set(current.sessions.map((session) => session.sessionId));
-        const sessions = [...current.sessions, ...page.sessions.filter((session) => !shown.has(session.sessionId))];
+        const added = page.sessions.filter((session) => !shown.has(session.sessionId));
+        const sessions = [...current.sessions, ...added];
         this.listings.set(agentName, { ...current, sessions, nextCursor: page.nextCursor, more: moreAfter(page.nextCursor) });
+        this.acceptTitles(agentName, added);
         this.announce();
       }
     } catch (e) {
@@ -349,6 +351,7 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
         if (shown) {
           this.forgetReportedBy(agentName, reported);
           this.listings.set(agentName, startingOver ? listed(page.sessions, page.nextCursor) : refreshed(shown, page));
+          this.acceptTitles(agentName, page.sessions);
           this.announce();
         }
       },
@@ -392,7 +395,19 @@ export class SessionList extends EventEmitter<{ changed: [] }> {
       return;
     }
     this.listings.set(agentName, next);
+    if (next.kind === 'listed') { this.acceptTitles(agentName, next.sessions); }
     this.announce();
+  }
+
+  private acceptTitles(agentName: string, sessions: readonly ListedSession[]): void {
+    const learned = this.sinceListed.get(agentName);
+    const titles = new Map<string, string | null>();
+    for (const { sessionId, title } of sessions) {
+      if (learned?.get(sessionId)?.title || titles.has(sessionId)) { continue; }
+      titles.set(sessionId, title);
+      this.sessions.acceptListedTitle({ configuredName: agentName, sessionId }, title);
+    }
+    this.tabs?.updateListedTitles(agentName, titles);
   }
 
   /** Session history for this window's host and cwd; a window with no workspace target has none. */

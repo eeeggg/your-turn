@@ -49,7 +49,7 @@ const WORKSPACE: WorkspaceTarget = { uri: 'file:///Users/me/work.code-workspace'
 const address = (configuredName: string, sessionId: string): SessionAddress =>
   ({ configuredName, sessionId, cwd: '/work', host: WORKSPACE.host, workspaceUri: WORKSPACE.uri });
 
-function setup(scripts: Record<string, AgentScript>, tabs?: Pick<SessionTabs, 'has' | 'on' | 'off'>) {
+function setup(scripts: Record<string, AgentScript>, tabs?: SessionTabs) {
   const agents = new InProcessAgents(scripts);
   const authPrompt = { chooseAuthMethod: vi.fn<AuthPrompt['chooseAuthMethod']>(async () => undefined) };
   let target: WorkspaceTarget | undefined = WORKSPACE;
@@ -480,6 +480,29 @@ describe('SessionList', () => {
         expect(fake.requests).toEqual([undefined, undefined, undefined]);
       });
 
+      it('updates an existing background tab from a listing without selecting it or opening other tabs', async () => {
+        const fake = changing([{ sessions: [] }, { sessions: [] }, { sessions: [
+          session(FIRST_SESSION_ID, { title: 'Session exports across agent harnesses' }),
+          session(THIRD_SESSION_ID, { title: 'Not open' }),
+        ] }]);
+        const tabs = new SessionTabs();
+        const { list, manager } = setup({ fake: fake.script }, tabs);
+        await listed(list, 'fake');
+        const live = await manager.loadSession('fake', FIRST_SESSION_ID);
+        await list.settled();
+        const background = tabs.open(live);
+        const selected = tabs.open({ agentName: 'fake', agentDisplayName: 'OpenCode', sessionId: SECOND_SESSION_ID, cwd: '/work', title: 'Selected' });
+        await list.refresh('fake');
+
+        expect(await shownNow(list)).toMatchObject({ rows: ['Session exports across agent harnesses', 'Not open'] });
+        expect(tabs.snapshot()).toMatchObject({ selectedTabId: selected, tabs: [
+          { tabId: background, title: 'Session exports across agent harnesses' },
+          { tabId: selected, title: 'Selected' },
+        ] });
+        expect(tabs.open(live)).toBe(background);
+        expect(tabs.snapshot().tabs[0]?.title).toBe('Session exports across agent harnesses');
+      });
+
       it('neither starts an agent nor asks one whose sessions are not shown', async () => {
         const fake = changing([{ sessions: page('a') }]);
         const { agents, manager, list } = setup({ fake: fake.script });
@@ -636,7 +659,7 @@ describe('SessionList', () => {
         ]);
         const { manager, list } = setup({ fake: fake.script });
         await listed(list, 'fake');
-        await manager.loadSession('fake', FIRST_SESSION_ID);
+        const live = await manager.loadSession('fake', FIRST_SESSION_ID);
         await list.settled();
         manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: 'Reported before' });
 
@@ -647,11 +670,13 @@ describe('SessionList', () => {
 
         const sessions = await list.sessionsOf('fake');
         expect(sessions.kind === 'listed' && sessions.rows.map(({ label, age }) => ({ label, age }))).toEqual([{ label: 'Relisted', age: 'now' }]);
+        expect(live.title).toBe('Relisted');
 
         const again = list.refresh('fake');
         manager.applySessionInfoUpdate({ configuredName: 'fake', sessionId: FIRST_SESSION_ID }, { title: 'Reported meanwhile' });
         await again;
         expect(await shownNow(list)).toEqual({ rows: ['Reported meanwhile'], more: 'none' });
+        expect(live.title).toBe('Reported meanwhile');
       });
 
       it('refreshes once the first turn of a session created here ends, and not after later turns', async () => {

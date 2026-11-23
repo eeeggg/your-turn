@@ -88,7 +88,7 @@ export interface SessionInfo extends SessionRegistration {
    */
   configOptions: ConfigOption[] | null;
   availableCommands: SlashCommand[];
-  /** Latest title supplied by a session update, if any. */
+  /** Latest known title, if any. */
   title?: string;
 }
 
@@ -1189,6 +1189,14 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
         identity: { configuredName: session.agentName, sessionId }, sourceId: session.agentId,
       }, update);
     }
+  }
+
+  /** Keep a live session's title when the Agents list accepts a listing for it. */
+  acceptListedTitle(identity: SessionIdentity, title: string | null): void {
+    const session = this.getSession(identity);
+    if (!session) { return; }
+    if (title === null) { delete session.title; }
+    else { session.title = title; }
   }
 
   /** A turn of the session ended: record it as used, and tell the session list. */

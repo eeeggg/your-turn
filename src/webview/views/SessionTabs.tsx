@@ -57,7 +57,7 @@ export function SessionTabs() {
       className="session-tabs flex-none border-b border-border bg-muted">
       <div role="presentation" className="flex flex-wrap">
         {navigation.tabs.map((tab, index) => {
-          const label = tab.title || tab.agentName;
+          const label = tab.title?.trim() || 'Untitled';
           const current = tab.tabId === navigation.selectedTabId;
           const descriptionId = `${descriptionPrefix}-${tab.tabId}`;
           const markers = reviewMarkers.filter(({ key }) => tab.review[key]);

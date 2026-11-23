@@ -104,8 +104,9 @@ describe('session tabs', () => {
       { tabId: 'b', title: null, agentName: 'Other', cwd: '/work/project', additionalDirectories: [], status: 'working', review },
     ] });
     const first = screen.getByRole('tab', { name: 'Fix the build' });
-    const second = screen.getByRole('tab', { name: 'Other' });
+    const second = screen.getByRole('tab', { name: 'Untitled' });
     expect(first.title).toBe('Fix the build\nOpenCode\n/work/project\n/other');
+    expect(second.title).toBe('Untitled\nOther\n/work/project');
     expect(first.getAttribute('aria-selected')).toBe('true');
     expect(second.getAttribute('aria-selected')).toBe('false');
     expect(screen.getAllByLabelText('Actively working')).toHaveLength(1);
@@ -146,6 +147,18 @@ describe('session tabs', () => {
 
     expect(part('#sessionTabs').hidden).toBe(false);
     expect(screen.getByRole('tab', { name: 'Fix the build' }).title).toBe('Fix the build\nOpenCode\n/work/project');
+  });
+
+  it.each([
+    ['', 'Untitled'],
+    [' \t ', 'Untitled'],
+    ['  Fix the build  ', 'Fix the build'],
+  ])('displays the title %j as %j', (title, label) => {
+    const { connect } = renderTabs();
+    connect({ title });
+
+    expect(screen.getByRole('tab').textContent).toBe(label);
+    expect(screen.getByRole('button', { name: `Close ${label}` }).title).toBe(`Close ${label}`);
   });
 
   it('shows a steady activity icon only while the snapshot reports work', () => {
