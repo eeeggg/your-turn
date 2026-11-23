@@ -250,6 +250,7 @@ export type WebviewToExtensionMessage =
   | { type: 'composerEdited'; target: PresentationTarget; revision: number; text: string }
   | { type: 'contentSnapshotRequested'; target: PresentationTarget }
   | { type: 'markdownImageContext'; target: PresentationTarget }
+  | { type: 'openTranscriptFile'; target: PresentationTarget; destination: string }
   | { type: 'resolveMarkdownImage'; context: number; occurrence: number; source: string }
   | { type: 'loadMarkdownImage'; context: number; occurrence: number }
   | { type: 'releaseMarkdownImage'; context: number; occurrence: number }

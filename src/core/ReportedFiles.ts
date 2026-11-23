@@ -1,5 +1,6 @@
 import { applyPatch, reversePatch } from 'diff';
 import type { FileChange } from '@/core/acp/AcpDriver';
+import type { FileLanding } from '@/core/TranscriptFileLinks';
 
 export interface PatchHunk {
   oldStart: number;
@@ -24,7 +25,7 @@ export interface FileEditor {
   /** The file's text; null when there is no file to read. */
   readText(path: string): PromiseLike<string | null>;
   /** Open it as VS Code opens a file the user picks, following the user's settings for preview editors and tabs. */
-  open(path: string): PromiseLike<void>;
+  open(path: string, landing?: FileLanding): PromiseLike<void>;
   /** VS Code's diff editor, both sides read-only. */
   showChanges(path: string, before: string, after: string): PromiseLike<void>;
   showInformationMessage(message: string): PromiseLike<unknown>;

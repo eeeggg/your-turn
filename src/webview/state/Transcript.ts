@@ -172,6 +172,7 @@ export interface TranscriptState {
 }
 
 export type TranscriptAction =
+  | { type: 'transcriptFileClicked'; target: PresentationTarget; destination: string }
   | { type: 'markdownImageLoad'; occurrence: number }
   | { type: 'markdownImageMounted'; occurrence: number; source: string }
   | { type: 'markdownImageUnmounted'; occurrence: number }
@@ -476,6 +477,8 @@ export function updateTranscript(
     case 'diffFileClicked':
       return { state: transcript, outgoing: transcript.projection
         ? [{ type: 'openFile', target: transcript.projection.target, toolCallId: action.toolCallId, file: action.file }] : [] };
+    case 'transcriptFileClicked':
+      return { state: transcript, outgoing: [{ type: 'openTranscriptFile', target: action.target, destination: action.destination }] };
     case 'sendNowChosen':
       // Runtime handles Stop and queue release; keep the queue projection until it responds.
       return !turnRunning || transcript.queued[0]?.id !== action.id || !transcript.projection

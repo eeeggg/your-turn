@@ -505,10 +505,22 @@ describe('what the agent cannot put on the page', () => {
 });
 
 describe('links', () => {
+  it.each([
+    ['[Plan](your-turn-plans/open/mermaid-diagrams.md)', 'your-turn-plans/open/mermaid-diagrams.md'],
+    ['[Plan][plan]\n\n[plan]: file:///docs/plan%23draft.md#overview', 'file:///docs/plan%23draft.md#overview'],
+  ])('opens an explicit file link only on activation: %s', (markdown, destination) => {
+    answer(markdown);
+    expect(message().textContent).not.toContain('[blocked]');
+    expect(page.takePosted()).toEqual([]);
+    message().querySelector<HTMLElement>('[role="link"]')?.click();
+    expect(page.takePosted()).toEqual([{ type: 'openTranscriptFile', target, destination }]);
+  });
+
   it('leaves a click on a link to VS Code, which opens it', () => {
-    answer('See [the site](https://example.com/).');
-    const link = message().querySelector('a');
+    answer('See [the site](https://example.com/) and [another](https://transcript-file.invalid/docs%2Fplan.md).');
+    const [link, other] = message().querySelectorAll('a');
     expect(link?.getAttribute('href')).toBe('https://example.com/');
+    expect(other?.getAttribute('href')).toBe('https://transcript-file.invalid/docs%2Fplan.md');
 
     let prevented: boolean | undefined;
     // VS Code listens for clicks on the webview's window and opens the link unless the page took the click.

@@ -260,6 +260,7 @@ class FakeEditor implements FileEditor {
   exists = vi.fn<FileEditor['exists']>(async () => false);
   readText = vi.fn<FileEditor['readText']>(async () => null);
   open = vi.fn<FileEditor['open']>(async () => {});
+  warnFileOpen = vi.fn<(message: string) => void>();
   showChanges = vi.fn<FileEditor['showChanges']>(async () => {});
   showInformationMessage = vi.fn<FileEditor['showInformationMessage']>(async () => undefined);
 }
