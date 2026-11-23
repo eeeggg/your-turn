@@ -6,6 +6,8 @@ import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls
 import type { Reviews } from '@/core/review/Reviews';
 import type { ReviewDecision } from '@/core/review/Reviews';
 import { createReviewEditors } from '@/adapters/review/ReviewPresenters';
+import { fileSelection } from '@/adapters/ReportedFileEditor';
+import type { FileLanding } from '@/core/TranscriptFileLinks';
 
 const SCHEME = 'your-turn-review-diff';
 const enabled = () => vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') === 'diffEditor';
@@ -123,12 +125,16 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
     });
   }
 
-  showChange(path: string, stillCurrent?: () => boolean): Promise<void> {
+  showChange(path: string, stillCurrent?: () => boolean, landing?: FileLanding): Promise<void> {
     return this.present(async () => {
       if (stillCurrent && !stillCurrent()) { return; }
-      if (!enabled() && !this.controls?.deleted(path)) { await this.editors.showChange(path, stillCurrent); return; }
+      if (!enabled() && !this.controls?.deleted(path)) { await this.editors.showChange(path, stillCurrent, landing); return; }
       if (!this.controls?.deleted(path)) { await vscode.workspace.openTextDocument(vscode.Uri.file(path)); }
       if (this.disposed || (stillCurrent && !stillCurrent())) { return; }
+      if (landing && !this.controls?.deleted(path)) {
+        await this.showDiff(path, landing.startLine, { selection: fileSelection(landing) }, stillCurrent);
+        return;
+      }
       const changes = this.controls?.changes(path) ?? [];
       if (changes.length > 0) { await this.showChangeOf(path, changes, 0, stillCurrent); }
       // Disk evidence can precede VS Code's reload of an already-open document.

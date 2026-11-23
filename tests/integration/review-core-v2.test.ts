@@ -95,6 +95,39 @@ for (const version of [2]) {
       assert.strictEqual(fs.readFileSync(mismatched, 'utf8'), 'on disk\n');
     });
 
+    test('transcript links land on the current side of a review and still open deleted files', async () => {
+      const target = promptTarget(posts);
+      const click = (path: string) => api.sendChatMessage({ type: 'openTranscriptFile', target, destination: `${path}#L1` });
+      await click(modified);
+      const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      assert.ok(input instanceof vscode.TabInputTextDiff);
+      assert.strictEqual(input.modified.fsPath, modified);
+      assert.strictEqual(vscode.window.activeTextEditor?.selection.start.line, 0);
+
+      await click(deleted);
+      const deletion = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+      assert.ok(deletion instanceof vscode.TabInputTextDiff);
+      assert.strictEqual(deletion.modified.fsPath, deleted);
+      assert.strictEqual((await vscode.workspace.openTextDocument(deletion.original)).getText(), 'gone\n');
+    });
+
+    test('transcript links keep Quick Diff open and land at the requested line', async () => {
+      const configuration = config();
+      const originalPresentation = configuration.inspect('review.presentation')?.globalValue;
+      await configuration.update('review.presentation', 'quickDiff', vscode.ConfigurationTarget.Global);
+      try {
+        await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+        await api.sendChatMessage({ type: 'openTranscriptFile', target: promptTarget(posts), destination: `${modified}#L1` });
+        assert.ok(vscode.window.tabGroups.activeTabGroup.activeTab?.input instanceof vscode.TabInputText);
+        assert.ok(vscode.window.visibleTextEditors.some(({ document }) => document.uri.scheme === 'review-baseline' && document.uri.fsPath === modified));
+        const editor = vscode.window.activeTextEditor;
+        assert.strictEqual(editor?.document.uri.fsPath, modified);
+        assert.strictEqual(editor.selection.start.line, 0);
+      } finally {
+        await configuration.update('review.presentation', originalPresentation, vscode.ConfigurationTarget.Global);
+      }
+    });
+
     test("The review's source control lists the files under review, giving quick diff each one's baseline and none for another file", async () => {
       assert.deepStrictEqual(api.reviewListedFiles(), [modified, created, deleted]);
       assert.strictEqual((await baselineDocument(modified)).getText(), 'one\ntwo\n');

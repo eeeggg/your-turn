@@ -5,6 +5,8 @@ import type { Change } from '@/core/review/Hunks';
 import type { ReviewControls, ReviewEditors } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
 import { BASELINE_SCHEME } from '@/adapters/review/ReviewSourceControl';
+import { fileSelection } from '@/adapters/ReportedFileEditor';
+import type { FileLanding } from '@/core/TranscriptFileLinks';
 
 /** VS Code diffs a file some time after it opens or the agent writes it; quick diff's view has nothing to show before. */
 const VIEW_ATTEMPTS = 20;
@@ -111,7 +113,7 @@ export function createReviewEditors(
    * before the view shows, and the one before may try an editor that lost the focus since; the one stopped ends with the
    * last.
    */
-  function show(path: string, prepare: (current: () => boolean) => Promise<void> = async () => {}, stillCurrent?: () => boolean): Promise<void> {
+  function show(path: string, prepare: (current: () => boolean) => Promise<void> = async () => {}, stillCurrent?: () => boolean, landing?: FileLanding): Promise<void> {
     if (disposed || (stillCurrent && !stillCurrent())) { return Promise.resolve(); }
     const own = ++shows;
     const current = () => !disposed && own === shows && activePath() === path && (!stillCurrent || stillCurrent());
@@ -131,6 +133,11 @@ export function createReviewEditors(
           await execute('editor.action.dirtydiff.next');
           if (!current()) { break; }
           await pause(VIEW_ATTEMPT_MS, stopping.signal);
+        }
+        if (landing && current()) {
+          const range = fileSelection(landing);
+          editor.selection = new vscode.Selection(range.start, range.end);
+          editor.revealRange(range);
         }
       } finally {
         if (own !== shows) { await latestShow; }
@@ -155,7 +162,7 @@ export function createReviewEditors(
     open: (path, stillCurrent) => accepted(async () => {
       if (!stillCurrent || stillCurrent()) { await execute('vscode.open', vscode.Uri.file(path)); }
     }),
-    showChange: (path, stillCurrent) => accepted(() => show(path, undefined, stillCurrent)),
+    showChange: (path, stillCurrent, landing) => accepted(() => show(path, undefined, stillCurrent, landing)),
     /**
      * A view opened before VS Code diffs the file again would be moved on by it, so the cursor goes to the change only
      * once quick diff's changes start where `changes` do; the view opens at the change from the cursor.
@@ -288,7 +295,7 @@ export class ReviewPresenters implements vscode.Disposable {
     if (path === this.tabPath) { return; }
     this.tabPath = path;
     if (path !== undefined && !this.turnRuns && vscode.workspace.getConfiguration('your-turn').get<string>('review.presentation', 'diffEditor') === 'quickDiff') {
-      this.latestPresentation = this.controls.entered(path).catch((e: unknown) => logError("Showing the file's change failed", e));
+      this.latestPresentation = this.controls.tabEntered(path).catch((e: unknown) => logError("Showing the file's change failed", e));
       const presentation = this.latestPresentation;
       this.pending.add(presentation);
       void presentation.then(() => this.pending.delete(presentation));

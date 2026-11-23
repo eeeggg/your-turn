@@ -4,6 +4,7 @@ import type { Change } from '@/core/review/Hunks';
 import type { FileContent } from '@/core/review/Review';
 import type { Reviews, ReviewDecision, ReviewDecisionResult } from '@/core/review/Reviews';
 import type { SessionIdentity, SessionRegistration } from '@/core/sessions/UpdateHandler';
+import type { FileLanding } from '@/core/TranscriptFileLinks';
 
 /** The editors the review's controls act on, by a file's path. */
 export interface ReviewEditors {
@@ -14,7 +15,7 @@ export interface ReviewEditors {
   isOpen(path: string): boolean;
   open(path: string, stillCurrent?: () => boolean): Promise<void>;
   /** Opens the file with quick diff's view showing the change after the cursor, once VS Code has diffed it. */
-  showChange(path: string, stillCurrent?: () => boolean): Promise<void>;
+  showChange(path: string, stillCurrent?: () => boolean, landing?: FileLanding): Promise<void>;
   /** Opens the file with quick diff's view showing `changes[index]`, once VS Code's diff of it is `changes`. */
   showChangeOf(path: string, changes: readonly Change[], index: number, stillCurrent?: () => boolean): Promise<void>;
   /** Closes quick diff's view on the file, before the review's edit would move it on to a change of VS Code's choice. */
@@ -32,6 +33,8 @@ export type ReviewOpeningOutcome = 'opened' | 'already-open' | 'no-files' | 'not
  * first.
  */
 export class ReviewControls {
+  private readonly explicitEntries = new Map<string, symbol>();
+
   constructor(private readonly reviews: Reviews, private readonly editors: ReviewEditors,
     private readonly canRevealDeferred = () => true) {}
 
@@ -186,9 +189,24 @@ export class ReviewControls {
    * The user came to a file's editor, Next and Previous File's among them: a change in quick diff's view while the file
    * is under review, as VS Code closes the view when its editor shows another file.
    */
-  async entered(path: string): Promise<void> {
+  async entered(path: string, stillCurrent?: () => boolean, landing?: FileLanding): Promise<void> {
     const file = this.reviews.shown()?.file(path);
-    if (file) { await this.editors.showChange(path); }
+    if (!file) { return; }
+    if (!stillCurrent) { await this.editors.showChange(path); return; }
+    const current = this.reviews.captureSelection();
+    const entry = Symbol();
+    this.explicitEntries.set(path, entry);
+    try {
+      await this.editors.showChange(path, () => this.explicitEntries.get(path) === entry
+        && stillCurrent() && current() && this.reviews.shown()?.file(path) !== undefined, landing);
+    } finally {
+      if (this.explicitEntries.get(path) === entry) { this.explicitEntries.delete(path); }
+    }
+  }
+
+  /** Opening a link can activate a tab; do not start a second presentation for the same entry. */
+  async tabEntered(path: string): Promise<void> {
+    if (!this.explicitEntries.has(path)) { await this.entered(path); }
   }
 
   /**

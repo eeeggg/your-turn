@@ -16,23 +16,34 @@ const DefaultLink = defaultComponents.a;
 // Its modal opens links with `window.open`, which a webview ignores; a plain link's click goes to VS Code, which opens it.
 const linkSafety = { enabled: false };
 const components: Components = { a: Link, img: MarkdownImage };
-const remarkPlugins = [...Object.values(defaultRemarkPlugins), imageReferences];
+const remarkPlugins = [...Object.values(defaultRemarkPlugins), transcriptResources];
 // A transport through Markdown's URL sanitization, never a browser image source.
 const imageSourcePrefix = 'https://markdown-image.invalid/';
+// Keep authored HTTPS links out of the file-link transport.
+const fileLinkPrefix = `https://transcript-file.invalid/${crypto.getRandomValues(new Uint32Array(4)).join('-')}/`;
 
 interface MarkdownNode {
   type: string;
   alt?: string | null;
   url?: string;
   identifier?: string;
+  title?: string | null;
   children?: MarkdownNode[];
 }
 
-function imageReferences() {
-  return function replaceImages(node: MarkdownNode): void {
-    const definitions = new Map<string, string>();
+/** Preserve candidates before sanitization. The extension host validates them on activation. */
+function isFileLinkCandidate(destination: string): boolean {
+  return destination.length > 0 && !/^[#?]|^\/\/|[\x00-\x1f\x7f]/.test(destination)
+    && (/^file:|^[a-z]:[\\/]/i.test(destination) || !/^[a-z][a-z\d+.-]*:/i.test(destination));
+}
+
+function transcriptResources() {
+  return function replaceResources(node: MarkdownNode): void {
+    const definitions = new Map<string, MarkdownNode>();
     const collect = (current: MarkdownNode): void => {
-      if (current.type === 'definition' && current.identifier && current.url) { definitions.set(current.identifier.toLowerCase(), current.url); }
+      if (current.type === 'definition' && current.identifier && current.url && !definitions.has(current.identifier)) {
+        definitions.set(current.identifier, current);
+      }
       current.children?.forEach(collect);
     };
     collect(node);
@@ -40,15 +51,19 @@ function imageReferences() {
     function replace(node: MarkdownNode): void {
       if (!node.children) { return; }
       node.children = node.children.map((child) => {
+        const definition = definitions.get(child.identifier ?? '');
+        const source = child.url ?? definition?.url;
+        replace(child);
+        if ((child.type === 'link' || child.type === 'linkReference') && source && isFileLinkCandidate(source)) {
+          return { ...child, type: 'link', title: child.title ?? definition?.title ?? null, url: `${fileLinkPrefix}${encodeURIComponent(source)}` };
+        }
         if (child.type === 'image' || child.type === 'imageReference') {
-          const source = child.url ?? definitions.get(child.identifier?.toLowerCase() ?? '');
           if (source && !/^http:|^(?!data:|https:|file:)[a-z][a-z\d+.-]*:/i.test(source)) {
             return { ...child, type: 'image', url: `${imageSourcePrefix}${encodeURIComponent(source)}` };
           }
           const explanation = source && /^http:/i.test(source) ? ': HTTP images are blocked; HTTPS is required' : ': unsupported image source';
           return { type: 'text', value: `${child.alt ? `${child.alt} — image not displayed` : 'Image not displayed'}${explanation}` };
         }
-        replace(child);
         return child;
       });
     }
@@ -110,6 +125,17 @@ function ValidatedImage({ source, alt }: { source: string; alt: string }) {
 
 function Link(props: ComponentProps<'a'> & ExtraProps) {
   const { href, className } = props;
+  const dispatch = useDispatch();
+  const target = useSelector((state) => state.transcript.projection?.target);
+  if (href?.startsWith(fileLinkPrefix)) {
+    let destination: string;
+    try { destination = decodeURIComponent(href.slice(fileLinkPrefix.length)); }
+    catch { return <span>{props.children}</span>; }
+    return target && isFileLinkCandidate(destination)
+      ? <button type="button" role="link" title={props.title ?? destination} className={`cursor-pointer rounded-sm text-link underline focus-visible:outline-1 focus-visible:outline-ring ${className ?? ''}`}
+          onClick={() => dispatch({ type: 'transcriptFileClicked', target, destination })}>{props.children}</button>
+      : <span>{props.children}</span>;
+  }
   return (
     <>
       <DefaultLink {...props} className={`text-link ${className ?? ''}`} />

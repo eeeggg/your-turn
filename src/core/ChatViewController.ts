@@ -37,6 +37,7 @@ import { SessionTabs } from '@/core/sessions/Tabs';
 import type { SessionCommands } from '@/core/sessions/Commands';
 import type { ReviewControls } from '@/core/review/ReviewControls';
 import type { Reviews } from '@/core/review/Reviews';
+import { resolveTranscriptFile, type FileLanding } from '@/core/TranscriptFileLinks';
 
 /** The session operations the chat view uses. */
 export type ChatSessions = Pick<
@@ -181,11 +182,11 @@ export class ChatViewController {
   private navigation: Pick<SessionCommands, 'selectTab' | 'closeTab'> | undefined;
   private tabReviews: Pick<Reviews, 'summary' | 'onSummaryChanged'> | undefined;
   private stopTabReviews: (() => void) | undefined;
-  private reviewOpening: Pick<ReviewControls, 'turnEnded'> | undefined;
+  private reviewOpening: Pick<ReviewControls, 'turnEnded' | 'baseline' | 'deleted' | 'entered'> | undefined;
   private reviewSelection: SessionRegistration | null = null;
   private readonly reviewAttempts = new Set<Promise<void>>();
 
-  setReviewOpening(controls: Pick<ReviewControls, 'turnEnded'>): void { this.reviewOpening = controls; }
+  setReviewOpening(controls: Pick<ReviewControls, 'turnEnded' | 'baseline' | 'deleted' | 'entered'>): void { this.reviewOpening = controls; }
 
   setTabReviews(reviews: Pick<Reviews, 'summary' | 'onSummaryChanged'>): void {
     this.stopTabReviews?.();
@@ -229,7 +230,10 @@ export class ChatViewController {
   constructor(
     private readonly sessions: ChatSessions,
     private readonly environment: ChatViewEnvironment,
-    private readonly editor: FileEditor,
+    private readonly editor: FileEditor & {
+      transcriptLanding?(path: string, fragment: string): PromiseLike<FileLanding | undefined>;
+      warnFileOpen?(message: string): void;
+    },
     private readonly workspace?: Pick<SessionEnvironment, 'workspaceRoots'>,
     private readonly imageNetwork?: ImageNetwork,
     tabs = new SessionTabs(),
@@ -394,6 +398,9 @@ export class ChatViewController {
       case 'openFile':
         await this.chooseDiffFile({ target: message.target, toolCallId: message.toolCallId, file: message.file, open: 'file' });
         break;
+      case 'openTranscriptFile':
+        await this.openTranscriptFile(message.target, message.destination);
+        break;
       case 'openChanges':
         await this.chooseDiffFile({ target: message.target, toolCallId: message.toolCallId, file: message.file, open: 'changes' });
         break;
@@ -408,6 +415,32 @@ export class ChatViewController {
 
   openCommandOutput(target: PresentationTarget, source: CommandSource, name: string): boolean {
     return this.currentTarget(target) && this.sessions.openCommandOutput(target, source, name);
+  }
+
+  private async openTranscriptFile(target: PresentationTarget | null | undefined, destination: string): Promise<void> {
+    if (!target || typeof destination !== 'string' || !this.currentTarget(target)) { return; }
+    const registration = this.sessions.getActiveSession();
+    if (registration !== this.projected?.registration) { return; }
+    const tabs = this.tabs.snapshot();
+    const owner = registration ?? tabs.tabs.find((tab) => tab.tabId === tabs.selectedTabId);
+    const current = () => this.sessions.getActiveSession() === registration && this.currentTarget(target);
+    try {
+      const { path, fragment } = resolveTranscriptFile(destination, owner?.cwd);
+      const review = registration && this.reviewOpening;
+      const deleted = review?.deleted(path);
+      if (!deleted && !await this.editor.exists(path)) { throw new Error('File not found or not a file'); }
+      if (!current()) { return; }
+      const landing = fragment && !deleted ? await this.editor.transcriptLanding?.(path, fragment) : undefined;
+      if (!current()) { return; }
+      if (review?.baseline(path) !== undefined) {
+        await review.entered(path, current, landing);
+      } else {
+        await this.editor.open(path, landing);
+      }
+    } catch (error) {
+      const reason = messageOf(error);
+      if (current()) { this.editor.warnFileOpen?.(`Could not open ${destination}${reason ? `: ${reason}` : ''}`); }
+    }
   }
 
   private currentTarget(target: PresentationTarget): boolean {

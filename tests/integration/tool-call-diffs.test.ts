@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { setup, suite, suiteSetup, suiteTeardown, test } from 'mocha';
 import * as vscode from 'vscode';
 import type { ExtensionTestApi } from '@/extension';
@@ -111,6 +112,35 @@ for (const version of [1, 2]) {
       assert.strictEqual(call.title, 'Edit a.ts');
       assert.deepStrictEqual(call.content, []);
     });
+
+    if (version === 1) { test('transcript file links open an encoded filename and resolve headings and line ranges', async () => {
+      const path = join(dir, 'plan#draft.md');
+      writeFileSync(path, '# Overview\n\n# Overview\n\n# Overview-1\n\n# L2\n\n# Read **bold**\n');
+      const uri = pathToFileURL(path).href;
+      const target = view.transcript.projection?.target;
+      assert.ok(target);
+      const click = async (fragment: string) => {
+        await api.sendChatMessage({ type: 'openTranscriptFile', target, destination: `${uri}#${fragment}` });
+        const editor = vscode.window.activeTextEditor;
+        assert.strictEqual(editor?.document.uri.fsPath, path);
+        return editor.selection;
+      };
+      assert.strictEqual((await click('overview-1')).start.line, 2);
+      assert.strictEqual((await click('read-bold')).start.line, 8);
+      assert.strictEqual((await click('L2')).start.line, 1);
+      const range = await click('L3-L5');
+      assert.strictEqual(range.start.line, 2);
+      assert.strictEqual(range.end.line, 4);
+      const editor = vscode.window.activeTextEditor;
+      assert.ok(editor);
+      try {
+        assert.ok(await editor.edit((edit) => edit.insert(new vscode.Position(0, 0), '\n')));
+        assert.strictEqual((await click('read-bold')).start.line, 9);
+        assert.strictEqual((await click('unknown')).start.line, 9);
+      } finally {
+        await vscode.commands.executeCommand('workbench.action.files.revert');
+      }
+    }); }
 
     test("With it on, the tool call carries its diffs' files, diffed in the extension", async () => {
       await showDiffs(true);

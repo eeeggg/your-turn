@@ -1867,6 +1867,31 @@ describe('ChatViewController', () => {
     });
   });
 
+  describe('transcript file links', () => {
+    it('resolves outside the session directory and ignores a stale click', async () => {
+      const parts = setup();
+      const target = await issuedTarget(parts);
+      const click = { type: 'openTranscriptFile' as const, target, destination: '../plan%23draft.md#overview' };
+      parts.editor.exists.mockResolvedValue(true);
+      await parts.controller.handleMessage(click);
+      await issuedTarget(parts);
+      await parts.controller.handleMessage(click);
+      expect(parts.editor.open.mock.calls.map(([path]) => path)).toEqual(['/work/plan#draft.md']);
+    });
+
+    it.each([
+      ['missing.md', 'File not found'],
+      ['file://server/share/plan.md', 'Hostless'],
+      ['command:workbench.action.files.save', 'Unsupported file link'],
+    ])('warns and does not open %s', async (destination, reason) => {
+      const parts = setup();
+      const target = await issuedTarget(parts);
+      await parts.controller.handleMessage({ type: 'openTranscriptFile', target, destination });
+      expect(parts.editor.open).not.toHaveBeenCalled();
+      expect(parts.editor.warnFileOpen.mock.calls[0]?.[0]).toContain(`${destination}: ${reason}`);
+    });
+  });
+
   describe("a tool call's files", () => {
     /** A controller shown a tool call of three files: an edit, a binary file reported without lines, and a patch. */
     function withFiles() {
