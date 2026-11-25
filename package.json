@@ -615,7 +615,7 @@
         },
         "your-turn.agents": {
           "type": "object",
-          "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
+          "description": "Agent configurations. Locally, each key is an agent name with command, args, and env. In a remote window, put those entries in a group keyed by the remote authority.",
           "default": {}
         },
         "your-turn.autoApprovePermissions": {
