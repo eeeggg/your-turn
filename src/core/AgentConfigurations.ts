@@ -1,5 +1,14 @@
 import { basename } from 'node:path';
 
+import {
+  activeAgents,
+  nameConflict,
+  scopeConflict,
+  withActiveAgents,
+  type AgentConfigs,
+  type AgentScope,
+  type WritableScope
+} from '@/core/AgentConfigScope';
 import { launchPath, type AgentConfigEntry } from '@/core/AgentManager';
 import { logError, logWarning, messageOf } from '@/core/Log';
 import type { PackageRunner, PackageRunnerCheck } from '@/core/PackageRunners';
@@ -12,8 +21,6 @@ import {
   type Window,
   type WorkspaceConfiguration
 } from '@/core/VsCodeApi';
-
-type AgentConfigs = Record<string, AgentConfigEntry>;
 
 /** Where Add Agent and Detect Agents learn what agents there are and what this machine can run. */
 export interface AgentSources {
@@ -37,11 +44,13 @@ type Source = 'custom' | { name: string; version: string; config: AgentConfigEnt
 
 const CUSTOM: QuickPickItem = { label: 'Custom…', detail: 'Enter a name, the command that starts the agent, and its arguments' };
 
-/** The commands that add and remove agent configurations, kept in the user's `your-turn.agents` setting. */
+/** The commands that add and remove agent configurations, kept in the active list of the `your-turn.agents` setting. */
 export class AgentConfigurations {
   constructor(
     /** The `your-turn` section of the settings; VS Code's configuration objects are snapshots, so it is read fresh each time. */
     private readonly configuration: () => WorkspaceConfiguration,
+    /** Where the active list is: local, the group for a known remote authority, or unknown while that is not yet learned. */
+    private readonly scope: () => AgentScope,
     private readonly sessions: SessionManager,
     private readonly window: Window,
     private readonly sources: AgentSources,
@@ -49,13 +58,23 @@ export class AgentConfigurations {
 
   /** Add an agent configuration, entered by hand or picked from the agent registry. */
   async add(): Promise<void> {
+    const scope = this.scope();
+    if (scope.kind === 'unknown') {
+      this.sayAuthorityUnknown();
+      return;
+    }
+    const conflict = scopeConflict(this.rawAgents(), scope);
+    if (conflict) {
+      this.sayScopeConflict(scope, conflict);
+      return;
+    }
     const source = await this.pickSource();
     if (source === 'custom') {
-      await this.addByHand();
+      await this.addByHand(scope);
     } else if (source && 'cannotAdd' in source) {
       void this.window.showInformationMessage(source.cannotAdd);
     } else if (source) {
-      await this.addFromRegistry(source);
+      await this.addFromRegistry(scope, source);
     }
   }
 
@@ -149,12 +168,16 @@ export class AgentConfigurations {
   }
 
   /** Confirm and save an agent from the agent registry; nothing connects to it. */
-  private async addFromRegistry({ name, version, config }: Extract<Source, { config: AgentConfigEntry }>): Promise<void> {
-    if (this.inWorkspace(name)) {
+  private async addFromRegistry(scope: WritableScope, { name, version, config }: Extract<Source, { config: AgentConfigEntry }>): Promise<void> {
+    if (this.inActiveWorkspace(scope, name)) {
       this.sayDefinedInWorkspace(name);
       return;
     }
-    const replacing = Object.hasOwn(this.agents(), name);
+    if (nameConflict(this.rawAgents(), scope, name)) {
+      this.sayNameConflict(name);
+      return;
+    }
+    const replacing = Object.hasOwn(this.activeList(scope), name);
     const runs = `It runs: ${commandLine(config)}`;
     const action = replacing ? 'Replace' : 'Add';
     const choice = await this.window.showQuickPick([
@@ -170,11 +193,11 @@ export class AgentConfigurations {
         : `Add ${name} ${version} from the ACP registry?`,
     });
     if (choice?.label !== action) { return; }
-    await this.saveAgent(name, config, replacing);
+    await this.saveAgent(scope, name, config, replacing);
   }
 
   /** Ask for a name, command, and arguments, and save them as an agent configuration. */
-  private async addByHand(): Promise<void> {
+  private async addByHand(scope: WritableScope): Promise<void> {
     const name = (await this.window.showInputBox({
       prompt: 'Agent name',
       placeHolder: 'my-agent',
@@ -182,12 +205,16 @@ export class AgentConfigurations {
     }))?.trim();
     if (!name) { return; }
 
-    if (this.inWorkspace(name)) {
+    if (this.inActiveWorkspace(scope, name)) {
       this.sayDefinedInWorkspace(name);
       return;
     }
+    if (nameConflict(this.rawAgents(), scope, name)) {
+      this.sayNameConflict(name);
+      return;
+    }
 
-    const replacing = Object.hasOwn(this.agents(), name);
+    const replacing = Object.hasOwn(this.activeList(scope), name);
     if (replacing) {
       const choice = await this.window.showQuickPick([
         { label: 'Replace', detail: 'Its configuration is overwritten, and the agent is stopped if it is running.' },
@@ -213,7 +240,7 @@ export class AgentConfigurations {
     });
     if (args === undefined) { return; }
 
-    await this.saveAgent(name, { command, args: splitArguments(args) }, replacing);
+    await this.saveAgent(scope, name, { command, args: splitArguments(args) }, replacing);
   }
 
   /**
@@ -222,6 +249,17 @@ export class AgentConfigurations {
    * already configured, under any name or by its full path, is left out.
    */
   async detect(): Promise<void> {
+    const scope = this.scope();
+    if (scope.kind === 'unknown') {
+      this.sayAuthorityUnknown();
+      return;
+    }
+    const conflict = scopeConflict(this.rawAgents(), scope);
+    if (conflict) {
+      this.sayScopeConflict(scope, conflict);
+      return;
+    }
+
     let registry: readonly RegistryAgent[];
     try {
       registry = await this.sources.fetchRegistry();
@@ -253,7 +291,7 @@ export class AgentConfigurations {
       return;
     }
 
-    const configured = new Set(Object.values(this.agents()).map((config) => basename(config.command)));
+    const configured = new Set(Object.values(this.activeList(scope)).map((config) => basename(config.command)));
     const offered = found.filter((f) => !configured.has(f.config.command));
     if (offered.length === 0) {
       void this.window.showInformationMessage('Every agent from the ACP registry found on the PATH VS Code sees is already configured.');
@@ -275,11 +313,15 @@ export class AgentConfigurations {
     const adding: AgentConfigs = {};
     const replacing: string[] = [];
     for (const { agent: { name }, config } of picked.flatMap((item) => items.get(item) ?? [])) {
-      if (this.inWorkspace(name)) {
+      if (this.inActiveWorkspace(scope, name)) {
         this.sayDefinedInWorkspace(name);
         continue;
       }
-      if (Object.hasOwn(this.agents(), name)) {
+      if (nameConflict(this.rawAgents(), scope, name)) {
+        this.sayNameConflict(name);
+        continue;
+      }
+      if (Object.hasOwn(this.activeList(scope), name)) {
         const choice = await this.window.showQuickPick([
           { label: 'Replace', detail: `Its configuration is overwritten, and the agent is stopped if it is running. It runs: ${commandLine(config)}` },
           { label: 'Skip' },
@@ -295,27 +337,101 @@ export class AgentConfigurations {
     const names = Object.keys(adding);
     if (names.length === 0) { return; }
 
-    await Promise.all(replacing.map((name) => this.sessions.disconnectAgent(name)));
-    await this.save({ ...this.userAgents(), ...adding });
-    const quoted = names.map((name) => `"${name}"`).join(', ');
-    void this.window.showInformationMessage(names.length === 1 ? `Agent ${quoted} added.` : `Agents added: ${quoted}.`);
+    const saved = await this.saveAdditions(scope, adding, new Set(replacing));
+    const quoted = saved.map((name) => `"${name}"`).join(', ');
+    if (quoted) {
+      void this.window.showInformationMessage(saved.length === 1 ? `Agent ${quoted} added.` : `Agents added: ${quoted}.`);
+    }
   }
 
-  private async saveAgent(name: string, config: AgentConfigEntry, replacing: boolean): Promise<void> {
-    if (replacing) {
-      await this.sessions.disconnectAgent(name);
+  private async saveAgent(scope: WritableScope, name: string, config: AgentConfigEntry, replacing: boolean): Promise<void> {
+    const saved = await this.saveAdditions(scope, { [name]: config }, replacing ? new Set([name]) : new Set());
+    if (saved.includes(name)) {
+      void this.window.showInformationMessage(replacing ? `Agent "${name}" replaced.` : `Agent "${name}" added.`);
     }
-    await this.save({ ...this.userAgents(), [name]: config });
-    void this.window.showInformationMessage(replacing ? `Agent "${name}" replaced.` : `Agent "${name}" added.`);
+  }
+
+  /** Recheck additions against fresh effective and writable maps after every picker and disconnect has completed. */
+  private async saveAdditions(scope: WritableScope, additions: AgentConfigs, confirmedReplacements: ReadonlySet<string>): Promise<string[]> {
+    const accepted = (effective: unknown): AgentConfigs => {
+      const result: AgentConfigs = {};
+      const conflict = scopeConflict(effective, scope);
+      if (conflict) {
+        this.sayScopeConflict(scope, conflict);
+        return result;
+      }
+      const active = activeAgents(effective, scope);
+      for (const [name, config] of Object.entries(additions)) {
+        if (this.inActiveWorkspace(scope, name)) {
+          this.sayDefinedInWorkspace(name);
+        } else if (nameConflict(effective, scope, name)) {
+          this.sayNameConflict(name);
+        } else if (Object.hasOwn(active, name) && !confirmedReplacements.has(name)) {
+          void this.window.showInformationMessage(`Cannot add "${name}": it was configured while the picker was open. Confirm the replacement and try again.`);
+        } else {
+          result[name] = config;
+        }
+      }
+      return result;
+    };
+
+    let current = accepted(this.rawAgents());
+    if (Object.keys(current).length === 0) { return []; }
+    const replacing = Object.keys(current).filter((name) => confirmedReplacements.has(name));
+    await Promise.all(replacing.map((name) => this.sessions.disconnectAgent(name)));
+
+    // Settings can change while disconnecting an agent. Recheck names and group collisions before applying the edit.
+    current = accepted(this.rawAgents());
+    if (Object.keys(current).length === 0) { return []; }
+    const userRaw = this.rawUserAgents();
+    const userConflict = scopeConflict(userRaw, scope);
+    if (userConflict) {
+      this.sayScopeConflict(scope, userConflict);
+      return [];
+    }
+    const writable = Object.fromEntries(Object.entries(current).filter(([name]) => {
+      if (nameConflict(userRaw, scope, name)) {
+        this.sayNameConflict(name);
+        return false;
+      }
+      return true;
+    }));
+    if (Object.keys(writable).length === 0) { return []; }
+    const updated = withActiveAgents(userRaw, scope, { ...activeAgents(userRaw, scope), ...writable });
+    await this.configuration().update('agents', updated, ConfigurationTarget.Global);
+    return Object.keys(writable);
   }
 
   private sayDefinedInWorkspace(name: string): void {
     void this.window.showInformationMessage(`Agent "${name}" is defined in the workspace settings; edit them to change it.`);
   }
 
+  private sayAuthorityUnknown(): void {
+    void this.window.showInformationMessage('The remote authority is not yet known; agent configurations are unavailable until it is.');
+  }
+
+  private sayNameConflict(name: string): void {
+    void this.window.showInformationMessage(`Cannot add "${name}": that name already holds another value in the settings.`);
+  }
+
+  /** `scope` is always remote here, as `scopeConflict` never reports a conflict for local scope. */
+  private sayScopeConflict(scope: WritableScope, conflict: 'authority-is-agent' | 'authority-malformed'): void {
+    if (scope.kind !== 'remote') { return; }
+    const problem = conflict === 'authority-is-agent'
+      ? 'a single agent configuration there, not a group'
+      : 'not a valid group of agent configurations there';
+    void this.window.showInformationMessage(`Cannot change agents for "${scope.authority}": its entry in the user settings is ${problem}.`);
+  }
+
   /** Stop an agent and remove its configuration, asking which when none is given. */
   async remove(agentName?: string): Promise<void> {
-    const agentNames = Object.keys(this.agents());
+    const scope = this.scope();
+    if (scope.kind === 'unknown') {
+      this.sayAuthorityUnknown();
+      return;
+    }
+
+    const agentNames = Object.keys(this.activeList(scope));
     if (agentNames.length === 0) {
       void this.window.showInformationMessage('No agents configured.');
       return;
@@ -327,12 +443,7 @@ export class AgentConfigurations {
     });
     if (!name) { return; }
 
-    const { [name]: inUser, ...remaining } = this.userAgents();
-    const inWorkspace = this.inWorkspace(name);
-    if (!inUser && inWorkspace) {
-      void this.window.showInformationMessage(`Agent "${name}" is defined in the workspace settings; edit them to remove it.`);
-      return;
-    }
+    if (!this.canRemove(scope, name, this.rawUserAgents())) { return; }
 
     const choice = await this.window.showQuickPick([
       { label: 'Remove', detail: 'Remove its configuration from the user settings and stop the agent if it is running.' },
@@ -341,36 +452,68 @@ export class AgentConfigurations {
       title: 'Remove ACP Agent',
       placeHolder: `Remove agent "${name}"?`,
     });
-    if (choice?.label !== 'Remove') { return; }
+    if (choice?.label !== 'Remove' || !this.canRemove(scope, name, this.rawUserAgents())) { return; }
 
     await this.sessions.disconnectAgent(name);
-    await this.save(remaining);
-    void this.window.showInformationMessage(inWorkspace
-      ? `Agent "${name}" removed from the user settings; the workspace settings still define it.`
-      : `Agent "${name}" removed.`);
+    const userRaw = this.rawUserAgents();
+    if (!this.canRemove(scope, name, userRaw)) { return; }
+    const { [name]: _removed, ...remaining } = activeAgents(userRaw, scope);
+    await this.configuration().update('agents', withActiveAgents(userRaw, scope, remaining), ConfigurationTarget.Global);
+
+    let message = `Agent "${name}" removed.`;
+    if (Object.hasOwn(this.activeList(scope), name)) {
+      const source = this.inActiveWorkspace(scope, name)
+        ? 'the workspace settings still define it.'
+        : 'it is still configured in another settings layer.';
+      message = `Agent "${name}" removed from the user settings; ${source}`;
+    }
+    void this.window.showInformationMessage(message);
   }
 
-  /** Every configured agent, merged from the defaults, the user settings and the workspace settings. */
-  private agents(): AgentConfigs {
-    return this.configuration().get<AgentConfigs>('agents') ?? {};
+  private canRemove(scope: WritableScope, name: string, userRaw: unknown): boolean {
+    const effective = this.rawAgents();
+    const conflict = scopeConflict(effective, scope) ?? scopeConflict(userRaw, scope);
+    if (conflict) {
+      this.sayScopeConflict(scope, conflict);
+      return false;
+    }
+    if (!Object.hasOwn(activeAgents(effective, scope), name)) {
+      void this.window.showInformationMessage(`Agent "${name}" is no longer configured.`);
+      return false;
+    }
+    if (Object.hasOwn(activeAgents(userRaw, scope), name)) { return true; }
+    const source = this.inActiveWorkspace(scope, name)
+      ? 'the workspace settings; edit them to remove it.'
+      : 'another settings layer.';
+    void this.window.showInformationMessage(`Agent "${name}" is defined in ${source}`);
+    return false;
   }
 
-  /** The agents in the user settings alone, the only ones these commands write. */
-  private userAgents(): AgentConfigs {
-    return this.inspected()?.globalValue ?? {};
+  /** The active list's agents, merged from the defaults, the user settings and the workspace settings. */
+  private activeList(scope: AgentScope): AgentConfigs {
+    return activeAgents(this.rawAgents(), scope);
   }
 
-  /** Whether the workspace settings define the agent, overriding any of that name in the user settings. */
-  private inWorkspace(name: string): boolean {
-    return Object.hasOwn(this.inspected()?.workspaceValue ?? {}, name);
+  /** Whether the workspace settings define the agent in the active list, overriding any of that name in the user settings. */
+  private inActiveWorkspace(scope: AgentScope, name: string): boolean {
+    return Object.hasOwn(activeAgents(this.rawWorkspaceAgents(), scope), name);
+  }
+
+  /** The effective `your-turn.agents` value, merged from the defaults, the user settings and the workspace settings. */
+  private rawAgents(): unknown {
+    return this.configuration().get<unknown>('agents');
+  }
+
+  private rawUserAgents(): unknown {
+    return this.inspected()?.globalValue;
+  }
+
+  private rawWorkspaceAgents(): unknown {
+    return this.inspected()?.workspaceValue;
   }
 
   private inspected() {
-    return this.configuration().inspect<AgentConfigs>('agents');
-  }
-
-  private async save(agents: AgentConfigs): Promise<void> {
-    await this.configuration().update('agents', agents, ConfigurationTarget.Global);
+    return this.configuration().inspect<unknown>('agents');
   }
 }
 

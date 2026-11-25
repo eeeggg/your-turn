@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { activeAgents, type AgentScope } from '@/core/AgentConfigScope';
 import type { AgentConfigEntry } from '@/core/AgentManager';
 import { AgentConfigurations } from '@/core/AgentConfigurations';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
@@ -6,20 +7,23 @@ import type { PackageRunner, PackageRunnerCheck } from '@/core/PackageRunners';
 import type { RegistryAgent } from '@/core/RegistryClient';
 import { SessionManager } from '@/core/sessions/Manager';
 import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
-import { ConfigurationTarget, QuickPickItemKind, type WorkspaceConfiguration } from '@/core/VsCodeApi';
+import { ConfigurationTarget, QuickPickItemKind, type InputBoxOptions, type WorkspaceConfiguration } from '@/core/VsCodeApi';
 import { fakeAgent, InProcessAgents, unusedHandlers, work } from '@tests/unit/core/InProcessAgents';
 import { ScriptedUser } from '@tests/unit/core/ScriptedUser';
+
+const LOCAL: AgentScope = { kind: 'local' };
 
 type Agents = Record<string, AgentConfigEntry>;
 
 /**
- * The `acp` settings in the default, user and workspace scopes, read merged
- * as VS Code merges an object setting, recording each update with its target.
+ * The `agents` settings in the default, user and workspace scopes, read merged as VS Code merges an object setting,
+ * recording each update with its target. Raw rather than typed as `Agents`, so a remote authority's group, nested
+ * inside the top-level map, can be set up the same way VS Code would hold it.
  */
 class MemoryConfiguration implements WorkspaceConfiguration {
   readonly updates: { section: string; value: unknown; target: number }[] = [];
 
-  constructor(private user: Agents, private readonly workspace: Agents, private readonly defaults: Agents) {}
+  constructor(private user: Record<string, unknown>, private readonly workspace: Record<string, unknown>, private readonly defaults: Record<string, unknown>) {}
 
   get<T>(section: string): T | undefined {
     return section === 'agents' ? { ...this.defaults, ...this.user, ...this.workspace } as T : undefined;
@@ -32,33 +36,38 @@ class MemoryConfiguration implements WorkspaceConfiguration {
   async update(section: string, value: unknown, target: number): Promise<void> {
     this.updates.push({ section, value, target });
     if (section === 'agents') {
-      this.user = value as Agents;
+      this.user = value as Record<string, unknown>;
     }
   }
+
+  setUser(value: Record<string, unknown>): void { this.user = value; }
 }
 
 interface Scopes {
-  workspace?: Agents;
-  defaults?: Agents;
+  workspace?: Record<string, unknown>;
+  defaults?: Record<string, unknown>;
   registry?: () => Promise<readonly RegistryAgent[]>;
   runners?: Partial<Record<PackageRunner, PackageRunnerCheck>>;
   /** The commands on the `PATH`, by name, with where each is. */
   onPath?: Record<string, string>;
+  scriptedUser?: ScriptedUser;
+  /** Where the active list is; defaults to local, as most tests predate authority scoping. */
+  scope?: AgentScope;
 }
 
-function setup(userAgents: Agents, { workspace = {}, defaults = {}, registry = async () => [], runners = {}, onPath = {} }: Scopes = {}) {
+function setup(userAgents: Record<string, unknown>, { workspace = {}, defaults = {}, registry = async () => [], runners = {}, onPath = {}, scope = LOCAL, scriptedUser }: Scopes = {}) {
   const configuration = new MemoryConfiguration(userAgents, workspace, defaults);
   const launcher = new InProcessAgents({ one: () => fakeAgent(), two: () => fakeAgent() });
   const manager = new SessionManager(
     launcher,
     new ConnectionManager('0.0.0-test', () => unusedHandlers),
-    { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => configuration.get<Agents>('agents') ?? {}, activeFileLink: () => undefined },
+    { workspaceRoots: () => work, workspaceTarget: () => undefined, workspaceTargetKnown: () => Promise.resolve(undefined), agentConfigs: () => activeAgents(configuration.get('agents'), scope), activeFileLink: () => undefined },
     { chooseAuthMethod: async () => undefined },
     new SessionUpdateHandler(),
   );
-  const user = new ScriptedUser();
+  const user = scriptedUser ?? new ScriptedUser();
   const lookedFor: string[] = [];
-  const configurations = new AgentConfigurations(() => configuration, manager, user, {
+  const configurations = new AgentConfigurations(() => configuration, () => scope, manager, user, {
     fetchRegistry: registry,
     checkRunner: async (runner) => runners[runner] ?? { works: true },
     findOnPath: async (command) => {
@@ -104,6 +113,17 @@ describe('AgentConfigurations', () => {
         target: ConfigurationTarget.Global,
       }]);
       expect(user.take()).toEqual([pickedCustom, askName, askCommand, askArgs, { call: 'showInformationMessage', message: 'Agent "mine" added.' }]);
+    });
+
+    it('preserves existing local agents when a malformed entry is named command', async () => {
+      const { configuration, user, configurations } = setup({ command: 'stray', one: { command: 'one' } });
+      user.answer(CUSTOM, 'mine', 'npx', '');
+
+      await configurations.add();
+
+      expect(configuration.get('agents')).toEqual({
+        command: 'stray', one: { command: 'one' }, mine: { command: 'npx', args: [] },
+      });
     });
 
     it('saves only the user settings\' own agents, not the workspace\'s or the defaults', async () => {
@@ -742,6 +762,21 @@ describe('AgentConfigurations', () => {
       ]);
     });
 
+    it('reports when an agent remains available from defaults after removing the user entry', async () => {
+      const { configuration, user, configurations } = setup(
+        { one: { command: 'one' } },
+        { defaults: { one: { command: 'default-one' } } },
+      );
+      user.answer('Remove');
+
+      await configurations.remove('one');
+
+      expect(configuration.inspect('agents')?.globalValue).toEqual({});
+      expect(configuration.get('agents')).toEqual({ one: { command: 'default-one' } });
+      const message = user.take().at(-1);
+      expect(message?.call === 'showInformationMessage' && message.message).toContain('still configured');
+    });
+
     it('asks which agent to remove when none is given', async () => {
       const { configuration, user, configurations } = setup({ one: { command: 'one' }, two: { command: 'two' } });
       user.answer('two', 'Remove');
@@ -777,6 +812,263 @@ describe('AgentConfigurations', () => {
       await configurations.remove();
 
       expect(user.take()).toEqual([{ call: 'showInformationMessage', message: 'No agents configured.' }]);
+    });
+  });
+
+  describe('remote authority scope', () => {
+    const DEVENV: AgentScope = { kind: 'remote', authority: 'ssh-remote+devenv' };
+    const UNKNOWN: AgentScope = { kind: 'unknown' };
+    const unknownMessage = 'The remote authority is not yet known; agent configurations are unavailable until it is.';
+
+    it('removes only the selected agent when another entry changes during confirmation', async () => {
+      const { configuration, user, configurations } = setup(
+        { 'ssh-remote+devenv': { one: { command: 'one' }, two: { command: 'old' } } },
+        { scope: DEVENV },
+      );
+      user.answer('Remove');
+
+      const removing = configurations.remove('one');
+      expect(user.calls.at(-1)).toMatchObject({ call: 'showQuickPick', options: { placeHolder: 'Remove agent "one"?' } });
+      configuration.setUser({
+        'ssh-remote+devenv': { one: { command: 'one' }, two: { command: 'new' }, stray: null },
+      });
+      await removing;
+
+      expect(configuration.get('agents')).toEqual({
+        'ssh-remote+devenv': { two: { command: 'new' }, stray: null },
+      });
+    });
+
+    it('leaves an authority key alone when it becomes occupied during removal confirmation', async () => {
+      const { configuration, user, configurations } = setup(
+        { 'ssh-remote+devenv': { one: { command: 'one' } } },
+        { scope: DEVENV },
+      );
+      user.answer('Remove');
+
+      const removing = configurations.remove('one');
+      const changed = { 'ssh-remote+devenv': { command: 'local-agent' } };
+      configuration.setUser(changed);
+      await removing;
+
+      expect(configuration.get('agents')).toEqual(changed);
+      expect(configuration.updates).toEqual([]);
+    });
+
+    it('preserves malformed entries when adding an agent to the remote group', async () => {
+      const { configuration, user, configurations } = setup(
+        { 'ssh-remote+devenv': { stray: 'keep me' } },
+        { scope: DEVENV },
+      );
+      user.answer(CUSTOM, 'mine', 'npx', '');
+
+      await configurations.add();
+
+      expect(configuration.get('agents')).toEqual({
+        'ssh-remote+devenv': { stray: 'keep me', mine: { command: 'npx', args: [] } },
+      });
+    });
+
+    it('reports a malformed name collision in Detect and saves the other selection', async () => {
+      const { configuration, user, configurations } = setup(
+        { 'ssh-remote+devenv': { Stray: 'keep me' } },
+        {
+          scope: DEVENV,
+          registry: async () => [
+            { id: 'stray', name: 'Stray', version: '1.0.0', description: '', runs: { through: 'binary' }, binary: { 'linux-x86_64': { cmd: './stray' } } },
+            { id: 'valid', name: 'Valid', version: '1.0.0', description: '', runs: { through: 'binary' }, binary: { 'linux-x86_64': { cmd: './valid' } } },
+          ],
+          onPath: { stray: '/bin/stray', valid: '/bin/valid' },
+        },
+      );
+      user.answer(['Stray', 'Valid']);
+
+      await configurations.detect();
+
+      expect(configuration.get('agents')).toEqual({
+        'ssh-remote+devenv': { Stray: 'keep me', Valid: { command: 'valid' } },
+      });
+      expect(user.take()).toContainEqual({
+        call: 'showInformationMessage',
+        message: 'Cannot add "Stray": that name already holds another value in the settings.',
+      });
+    });
+
+    it('saves an agent into the group for the current authority, creating it if absent', async () => {
+      const { configuration, user, configurations } = setup({ one: { command: 'one' } }, { scope: DEVENV });
+      user.answer(CUSTOM, 'mine', 'npx', '');
+
+      await configurations.add();
+
+      expect(configuration.updates).toEqual([{
+        section: 'agents',
+        value: { one: { command: 'one' }, 'ssh-remote+devenv': { mine: { command: 'npx', args: [] } } },
+        target: ConfigurationTarget.Global,
+      }]);
+    });
+
+    it('reads and replaces only the matching authority group, leaving local entries and other authorities untouched', async () => {
+      const userAgents = {
+        one: { command: 'local-one' },
+        'ssh-remote+devenv': { one: { command: 'remote-one', args: ['--old'] } },
+        'ssh-remote+other': { two: { command: 'two' } },
+      };
+      const { configuration, launcher, manager, user, configurations } = setup(userAgents, { scope: DEVENV });
+      await manager.ensureConnected('one');
+      user.answer(CUSTOM, 'one', 'Replace', 'remote-one', '--new');
+
+      await configurations.add();
+
+      expect(configuration.get('agents')).toEqual({
+        one: { command: 'local-one' },
+        'ssh-remote+devenv': { one: { command: 'remote-one', args: ['--new'] } },
+        'ssh-remote+other': { two: { command: 'two' } },
+      });
+      // "one" was connected through the active (remote) scope's configuration, so replacing it stops it.
+      expect(launcher.running('one')).toEqual([]);
+    });
+
+    it('detects agents into the group for the current authority', async () => {
+      const opencode: RegistryAgent = {
+        id: 'opencode',
+        name: 'OpenCode',
+        version: '1.19.3',
+        description: 'The open source coding agent',
+        runs: { through: 'binary' },
+        binary: { 'linux-x86_64': { cmd: './opencode', args: ['acp'] } },
+      };
+      const { configuration, user, configurations } = setup({}, {
+        scope: DEVENV,
+        registry: async () => [opencode],
+        onPath: { opencode: '/home/me/.opencode/bin/opencode' },
+      });
+      user.answer(['OpenCode']);
+
+      await configurations.detect();
+
+      expect(configuration.get('agents')).toEqual({ 'ssh-remote+devenv': { OpenCode: { command: 'opencode', args: ['acp'] } } });
+    });
+
+    it('removes an agent from the group for the current authority, keeping it after its last entry is gone', async () => {
+      const userAgents = { 'ssh-remote+devenv': { one: { command: 'one' } } };
+      const { configuration, user, configurations } = setup(userAgents, { scope: DEVENV });
+      user.answer('Remove');
+
+      await configurations.remove('one');
+
+      expect(configuration.get('agents')).toEqual({ 'ssh-remote+devenv': {} });
+    });
+
+    it('treats the same agent name in another authority\'s group as no conflict', async () => {
+      const userAgents = { 'ssh-remote+other': { one: { command: 'other-one' } } };
+      const { configuration, user, configurations } = setup(userAgents, { scope: DEVENV });
+      user.answer(CUSTOM, 'one', 'npx', '');
+
+      await configurations.add();
+
+      expect(configuration.get('agents')).toEqual({
+        'ssh-remote+other': { one: { command: 'other-one' } },
+        'ssh-remote+devenv': { one: { command: 'npx', args: [] } },
+      });
+    });
+
+    it.each([
+      ['add', (c: ReturnType<typeof setup>['configurations']) => c.add()],
+      ['detect', (c: ReturnType<typeof setup>['configurations']) => c.detect()],
+      ['remove', (c: ReturnType<typeof setup>['configurations']) => c.remove('one')],
+    ])('says the authority is not yet known for %s, and makes no changes', async (_command, run) => {
+      const { configuration, user, configurations } = setup({ one: { command: 'one' } }, { scope: UNKNOWN });
+
+      await run(configurations);
+
+      expect(configuration.updates).toEqual([]);
+      expect(user.take()).toEqual([{ call: 'showInformationMessage', message: unknownMessage }]);
+    });
+
+    it('reports a collision adding a local agent whose name already holds a remote authority\'s group, and leaves the map unchanged', async () => {
+      const userAgents = { 'ssh-remote+devenv': { one: { command: 'one' } } };
+      const { configuration, user, configurations } = setup(userAgents, { scope: LOCAL });
+      user.answer(CUSTOM, 'ssh-remote+devenv', 'npx', '');
+
+      await configurations.add();
+
+      expect(configuration.updates).toEqual([]);
+      expect(user.take()).toEqual([
+        pickedCustom,
+        askName,
+        { call: 'showInformationMessage', message: 'Cannot add "ssh-remote+devenv": that name already holds another value in the settings.' },
+      ]);
+    });
+
+    it.each([
+      ['add', (c: ReturnType<typeof setup>['configurations']) => c.add()],
+      ['detect', (c: ReturnType<typeof setup>['configurations']) => c.detect()],
+    ])('reports a collision for %s when the current authority\'s key already holds a local agent configuration, and leaves the map unchanged', async (_command, run) => {
+      const userAgents = { 'ssh-remote+devenv': { command: 'already-an-agent' } };
+      const { configuration, user, configurations } = setup(userAgents, { scope: DEVENV, registry: async () => [] });
+
+      await run(configurations);
+
+      expect(configuration.updates).toEqual([]);
+      expect(user.take()).toEqual([{
+        call: 'showInformationMessage',
+        message: 'Cannot change agents for "ssh-remote+devenv": its entry in the user settings is a single agent configuration there, not a group.',
+      }]);
+    });
+
+    it('reports a collision when the current authority\'s key holds a malformed value, and leaves the map unchanged', async () => {
+      const userAgents = { 'ssh-remote+devenv': 'not an object' };
+      const { configuration, user, configurations } = setup(userAgents, { scope: DEVENV });
+
+      await configurations.add();
+
+      expect(configuration.updates).toEqual([]);
+      expect(user.take()).toEqual([{
+        call: 'showInformationMessage',
+        message: 'Cannot change agents for "ssh-remote+devenv": its entry in the user settings is not a valid group of agent configurations there.',
+      }]);
+    });
+  });
+
+  it('does not overwrite an agent added while the custom configuration picker is open', async () => {
+    const configurationRef: { current?: MemoryConfiguration } = {};
+    class RacingUser extends ScriptedUser {
+      private inputCount = 0;
+      override async showInputBox(options?: InputBoxOptions): Promise<string | undefined> {
+        const answer = await super.showInputBox(options);
+        this.inputCount += 1;
+        if (this.inputCount === 3) {
+          configurationRef.current?.setUser({ mine: { command: 'concurrent-edit' } });
+        }
+        return answer;
+      }
+    }
+    const user = new RacingUser().answer(CUSTOM, 'mine', 'npx', '');
+    const setupResult = setup({}, { scriptedUser: user });
+    configurationRef.current = setupResult.configuration;
+
+    await setupResult.configurations.add();
+
+    expect(setupResult.configuration.get('agents')).toEqual({ mine: { command: 'concurrent-edit' } });
+    expect(setupResult.configuration.updates).toEqual([]);
+    expect(user.take().at(-1)).toEqual({
+      call: 'showInformationMessage',
+      message: 'Cannot add "mine": it was configured while the picker was open. Confirm the replacement and try again.',
+    });
+  });
+
+  it('does not overwrite a malformed local setting whose key matches a new agent name', async () => {
+    const malformed = { mine: 'preserve this' };
+    const { configuration, user, configurations } = setup(malformed);
+    user.answer(CUSTOM, 'mine', 'npx', '');
+
+    await configurations.add();
+
+    expect(configuration.get('agents')).toEqual(malformed);
+    expect(configuration.updates).toEqual([]);
+    expect(user.take().at(-1)).toEqual({
+      call: 'showInformationMessage',
+      message: 'Cannot add "mine": that name already holds another value in the settings.',
     });
   });
 });

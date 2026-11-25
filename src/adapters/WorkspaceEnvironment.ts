@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import type { WorkspaceState, WorkspaceTarget } from '@/core/PersistedState';
+import { agentScopeOf, type AgentScope } from '@/core/AgentConfigScope';
 import { logInfo } from '@/core/Log';
 import type { SessionEnvironment } from '@/core/sessions/Manager';
 import { getAgentConfigs } from '@/adapters/AgentConfig';
@@ -74,6 +75,11 @@ export async function openWorkspace(clientUri: string): Promise<void> {
 export interface WorkspaceEnvironment extends SessionEnvironment {
   /** A webview of this window while one exists, and `undefined` once it is gone. */
   useWebview(webview: Pick<vscode.Webview, 'asWebviewUri'> | undefined): void;
+  /**
+   * Where this window's active agent list is, from the same `remoteName`/`workspaceTarget` state `workspaceTarget()`
+   * uses, so the two never derive the authority independently and risk disagreeing.
+   */
+  agentScope(): AgentScope;
 }
 
 /** The document in the active editor, as a resource link for a prompt, unless the user turned that off. */
@@ -192,7 +198,8 @@ export function createWorkspaceEnvironment(
       return new Promise((settle) => waiting.push(settle));
     },
 
-    agentConfigs: getAgentConfigs,
+    agentScope: () => agentScopeOf(remoteName, workspaceTarget()?.host),
+    agentConfigs: () => getAgentConfigs(agentScopeOf(remoteName, workspaceTarget()?.host)),
     activeFileLink,
   };
 }

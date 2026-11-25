@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { join } from 'node:path';
 import { suite, suiteSetup, suiteTeardown, teardown, test } from 'mocha';
 import * as vscode from 'vscode';
+import { watchAgentConfigs } from '@/adapters/AgentConfig';
 import { permissionQuickPick } from '@/adapters/PermissionQuickPick';
 import { createWorkspaceEnvironment, extensionHostUriOf } from '@/adapters/WorkspaceEnvironment';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
@@ -40,9 +41,12 @@ suite("The window's workspace target", () => {
     assert.strictEqual(folders.length, 1, 'a folder window has exactly one folder');
     folder = folders[0]?.uri ?? assert.fail('a folder window has a folder');
     original = config().inspect('agents')?.globalValue;
+    const entry = { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1' } };
     await config().update(
       'agents',
-      { [agentName]: { command: process.execPath, args: [join(__dirname, 'fixtures', 'fakeAgent-v1.js')], env: { ELECTRON_RUN_AS_NODE: '1' } } },
+      // Top level for this real local window's own tests; also under the authority group the manually constructed
+      // remote environment below resolves to, once its webview gives it one.
+      { [agentName]: entry, 'ssh-remote+devenv': { [agentName]: entry } },
       vscode.ConfigurationTarget.Global,
     );
   });
@@ -146,6 +150,40 @@ suite("The window's workspace target", () => {
     assert.strictEqual(await soFar(known), undefined);
   });
 
+  test('refreshes the agents when a later webview resolves the authority and uses that list for later edits', async () => {
+    const environment = createWorkspaceEnvironment(workspaceState(), 'ssh-remote');
+    const refreshed: string[][] = [];
+    interface Comparison { before: string[]; after: string[] }
+    let report!: (change: Comparison) => void;
+    const compared = new Promise<Comparison>((resolve) => { report = resolve; });
+    const watcher = watchAgentConfigs(environment, (change) => {
+      refreshed.push(Object.keys(environment.agentConfigs()));
+      if (change) {
+        report({ before: Object.keys(change.before), after: Object.keys(change.after) });
+      }
+    });
+    owned.push(() => watcher.dispose());
+
+    const firstTarget = environment.workspaceTargetKnown();
+    watcher.useWebview({ asWebviewUri: (uri) => uri });
+    assert.strictEqual(await firstTarget, undefined);
+    assert.deepStrictEqual(refreshed, []);
+
+    watcher.useWebview(remoteWebview(webview(), 'ssh-remote+devenv'));
+    assert.deepStrictEqual(refreshed, [[agentName]]);
+
+    const current = config().inspect<Record<string, unknown>>('agents')?.globalValue;
+    const entry = environment.agentConfigs()[agentName];
+    owned.push(() => config().update('agents', current, vscode.ConfigurationTarget.Global));
+    await config().update('agents', {
+      ...current,
+      'ssh-remote+devenv': { renamed: entry },
+    }, vscode.ConfigurationTarget.Global);
+
+    assert.deepStrictEqual(await compared, { before: [agentName], after: ['renamed'] });
+    assert.deepStrictEqual(refreshed, [[agentName], ['renamed']]);
+  });
+
   test('records a session opened here as its reference and as the last active session of this workspace', async () => {
     await vscode.commands.executeCommand('your-turn.newSession', agentName);
     await api.persistedStateSettled();
@@ -159,7 +197,7 @@ suite("The window's workspace target", () => {
     assert.deepStrictEqual({ configuredName, sessionId: referenced, cwd, host, workspaceUri }, address);
   });
 
-  test('in a remote window, records a session opened while its target is pending once given a webview of the window', async () => {
+  test('in a remote window, refuses to launch an agent before its authority is known, and records a session opened once a webview of the window gives it', async () => {
     // The manager disposes the stores it records to, so it records references to its own, in memory.
     const stored = new Map<string, unknown>();
     const references = new SessionReferences({ get: <T>(key: string) => stored.get(key) as T | undefined, update: async (key, value) => { stored.set(key, value); } });
@@ -175,23 +213,18 @@ suite("The window's workspace target", () => {
     );
     owned.push(() => manager.dispose(), () => updates.dispose());
     manager.setPersistedState(references, state);
-    const session = await manager.newSession(agentName);
-    const sessionId = session.sessionId;
-    const recorded = () => [
-      references.get({ host: onDevenv().host, configuredName: agentName, sessionId }),
-      workspaceState().lastActiveSession(),
-    ];
-
-    await references.settled();
-    await state.settled();
-    assert.deepStrictEqual(recorded(), [undefined, undefined]);
+    // The active list is empty until the remote authority is known, so launching the agent configured under it fails.
+    await assert.rejects(manager.newSession(agentName), /No agent configuration named "fake-persisted-folder"/);
 
     environment.useWebview(remoteWebview(webview(), 'ssh-remote+devenv'));
+    const session = await manager.newSession(agentName);
+    const sessionId = session.sessionId;
     await manager.recordsSettled();
     await references.settled();
     await state.settled();
     const address = { configuredName: agentName, sessionId, cwd: folder.fsPath, host: onDevenv().host, workspaceUri: onDevenv().uri };
-    const [reference, lastActive] = recorded();
+    const lastActive = workspaceState().lastActiveSession();
+    const reference = references.get({ host: onDevenv().host, configuredName: agentName, sessionId });
     assert.deepStrictEqual(lastActive, address);
     assert.ok(reference, 'the session has a reference on the remote host');
     const { configuredName, sessionId: referenced, cwd, host, workspaceUri } = reference;

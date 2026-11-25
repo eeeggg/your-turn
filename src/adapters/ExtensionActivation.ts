@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import { AgentConfigurations } from '@/core/AgentConfigurations';
 import { AgentManager, findOnPath } from '@/core/AgentManager';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { checkPackageRunner } from '@/core/PackageRunners';
+import { checkPackageRunner, type PackageRunner } from '@/core/PackageRunners';
 import { SessionCommands } from '@/core/sessions/Commands';
 import { SessionStartup } from '@/core/sessions/Startup';
 import { SessionManager } from '@/core/sessions/Manager';
@@ -40,7 +40,7 @@ import {
 import { WorkspaceOpening } from '@/core/WorkspaceOpening';
 import { PersistedStateCommands } from '@/adapters/PersistedStateCommands';
 import { authMethodPicker } from '@/adapters/AuthMethodPicker';
-import { getAgentConfigs, getAgentNames } from '@/adapters/AgentConfig';
+import { getAgentNames, watchAgentConfigs } from '@/adapters/AgentConfig';
 import { outputChannelSink, disposeChannels, getOutputChannel } from '@/adapters/OutputChannels';
 import { registerTrafficAdapter } from '@/adapters/Traffic';
 import type { ExtensionToWebviewMessage, PresentationTarget, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
@@ -142,8 +142,9 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
 
   const sessionTabs = new SessionTabs({ workspace: workspaceState, references: sessionReferences, environment: workspaceEnvironment });
   const workspaceCwd = () => vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  const agentNames = () => getAgentNames(workspaceEnvironment.agentScope());
   const sessionList = new SessionList(
-    sessionManager, sessionReferences, getAgentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget(), Date.now, sessionTabs,
+    sessionManager, sessionReferences, agentNames, workspaceCwd, () => workspaceEnvironment.workspaceTarget(), Date.now, sessionTabs,
   );
   const sessionsChanged = new vscode.EventEmitter<void>();
   context.subscriptions.push(sessionsChanged);
@@ -183,23 +184,19 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   });
   // The Agents view's welcome is shown on this rather than on the tree being empty, which VS Code assumes until the
   // tree's first items arrive; `when` clauses cannot test the `your-turn.agents` object for emptiness themselves.
-  const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'your-turn.noAgentsConfigured', getAgentNames().length === 0);
+  const markNoAgentsConfigured = () => void vscode.commands.executeCommand('setContext', 'your-turn.noAgentsConfigured', agentNames().length === 0);
   markNoAgentsConfigured();
-  // The change event carries no previous value, so renames are found against the map as it was last read.
-  let agentConfigs = getAgentConfigs();
-  const agentsChanged = vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('your-turn.agents')) {
-      const previous = agentConfigs;
-      agentConfigs = getAgentConfigs();
-      sessionManager.agentsChanged(previous, agentConfigs);
-      sessionTabs.agentsChanged(previous, agentConfigs);
-      chatViewController.notifyTabsChanged();
-      markNoAgentsConfigured();
-      sessionTreeProvider.refresh();
+  const agentConfigWatcher = watchAgentConfigs(workspaceEnvironment, (change) => {
+    if (change) {
+      sessionManager.agentsChanged(change.before, change.after);
+      sessionTabs.agentsChanged(change.before, change.after);
     }
+    chatViewController.notifyTabsChanged();
+    markNoAgentsConfigured();
+    sessionTreeProvider.refresh();
   });
 
-  const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, (webview) => workspaceEnvironment.useWebview(webview));
+  const chatWebviewProvider = new ChatWebviewProvider(context.extensionUri, agentConfigWatcher.useWebview);
   const reportedFileEditor = new ReportedFileEditor();
   const chatViewController = new ChatViewController(
     sessionManager, chatWebviewProvider, reportedFileEditor, workspaceEnvironment, undefined, sessionTabs,
@@ -311,7 +308,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
 
   const sessionStartup = new SessionStartup(sessionManager, workspaceState, workspaceEnvironment, startupRequests, sessionTabs);
   const sessionCommands = new SessionCommands(
-    sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, getAgentNames, sessionStartup,
+    sessionManager, chatViewController, reviewControls, vscode.window, vscode.commands, agentNames, sessionStartup,
   );
   chatViewController.setTabNavigation(sessionCommands);
   void sessionCommands.revealRequested();
@@ -324,11 +321,12 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
   });
   const agentConfigurations = new AgentConfigurations(
     () => vscode.workspace.getConfiguration('your-turn'),
+    () => workspaceEnvironment.agentScope(),
     sessionManager,
     vscode.window,
     {
       fetchRegistry,
-      checkRunner: (runner) => checkPackageRunner(agentManager, runner, workspaceEnvironment.workspaceRoots().cwd),
+      checkRunner: (runner: PackageRunner) => checkPackageRunner(agentManager, runner, workspaceEnvironment.workspaceRoots().cwd),
       findOnPath,
       platform: registryPlatform(),
     },
@@ -345,7 +343,7 @@ export function activate(context: vscode.ExtensionContext, factories: Activation
     windowFocused,
     requestedOnFocus,
     { dispose: () => tickAges(false) },
-    agentsChanged,
+    agentConfigWatcher,
     chatViewRegistration,
     chatMessageSubscription,
     reportedFileEditor,
