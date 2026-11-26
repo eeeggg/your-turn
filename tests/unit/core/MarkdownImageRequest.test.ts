@@ -19,7 +19,7 @@ describe('production image HTTPS request boundary', () => {
       options = given;
       const req = new EventEmitter();
       return Object.assign(req, { end() { callback(Object.assign(Readable.from([bytes]), { statusCode: 200, headers: { 'content-type': 'image/gif' } })); } });
-    }) as typeof https.request);
+    }) as unknown as typeof https.request);
     const signal = new AbortController().signal;
     expect(await fetchMarkdownImage('https://images.example/a?secret=token', signal)).toEqual({ data: bytes.toString('base64'), mimeType: 'image/gif' });
     expect(options).toEqual({

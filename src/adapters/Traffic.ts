@@ -9,7 +9,7 @@ function syncTrafficCaptureSetting(): void {
 }
 
 /** Register explicit protocol-traffic export and its configuration listener. */
-export function registerTrafficAdapter(subscriptions: vscode.Disposable[]): void {
+export function registerTrafficAdapter(subscriptions: Pick<vscode.Disposable, 'dispose'>[]): void {
   syncTrafficCaptureSetting();
   subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {

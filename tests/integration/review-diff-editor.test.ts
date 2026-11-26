@@ -148,9 +148,9 @@ suite('Native review diff', () => {
     const diff = input();
     assert.ok(diff instanceof vscode.TabInputTextDiff);
     assert.equal(diff.modified.scheme, 'your-turn-review-diff');
-    assert.deepEqual(presentation.provideFileDecoration(diff.original), { badge: 'D', tooltip: 'Deleted' });
-    assert.deepEqual(presentation.provideFileDecoration(diff.modified), { badge: 'D', tooltip: 'Deleted' });
-    assert.deepEqual(presentation.provideFileDecoration(vscode.Uri.file(deleted)), { badge: 'D', tooltip: 'Deleted' });
+    assert.deepEqual(presentation.provideFileDecoration(diff.original), new vscode.FileDecoration('D', 'Deleted'));
+    assert.deepEqual(presentation.provideFileDecoration(diff.modified), new vscode.FileDecoration('D', 'Deleted'));
+    assert.deepEqual(presentation.provideFileDecoration(vscode.Uri.file(deleted)), new vscode.FileDecoration('D', 'Deleted'));
     assert.match(vscode.window.tabGroups.activeTabGroup.activeTab?.label ?? '', /\(Deleted\)/);
     assert.equal(fs.existsSync(deleted), false);
     reviews.activeSessionChanged(registration('other'));
