@@ -150,9 +150,6 @@ suite('Workspace files', () => {
     const files = createWorkspaceFiles((watched) => {
       pattern = watched;
       return {
-        ignoreCreateEvents: false,
-        ignoreChangeEvents: false,
-        ignoreDeleteEvents: false,
         onDidCreate: created.event,
         onDidChange: changed.event,
         onDidDelete: deleted.event,

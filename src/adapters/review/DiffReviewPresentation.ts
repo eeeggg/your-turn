@@ -100,7 +100,7 @@ export class DiffReviewPresentation implements ReviewEditors, vscode.CodeLensPro
 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
     const path = this.pathOf(uri);
-    return path !== undefined && this.controls?.deleted(path) ? { badge: 'D', tooltip: 'Deleted' } : undefined;
+    return path !== undefined && this.controls?.deleted(path) ? new vscode.FileDecoration('D', 'Deleted') : undefined;
   }
 
   activePath(): string | undefined {

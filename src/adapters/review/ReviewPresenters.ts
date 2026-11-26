@@ -15,7 +15,7 @@ const DIFF_ATTEMPTS = 30;
 const DIFF_ATTEMPT_MS = 100;
 
 /** What the presenters put on screen, which VS Code's API cannot read back. */
-export interface ReviewDisplay extends vscode.Disposable {
+export interface ReviewDisplay extends Pick<vscode.Disposable, 'dispose'> {
   /**
    * Whether a session is shown, for the title area's buttons to be, and the files under review, which enable them. The
    * files are `Uri`s: `setContext` makes them strings in the window, after a remote window's URIs were translated,

@@ -21,7 +21,7 @@ for (const version of [1, 2]) {
     let original: unknown;
     const posts: ExtensionToWebviewMessage[] = [];
     let view = initialState;
-    const subscriptions: vscode.Disposable[] = [];
+  const subscriptions: Pick<vscode.Disposable, 'dispose'>[] = [];
     const config = () => vscode.workspace.getConfiguration('your-turn');
     /** The context the chat view gives the command's output, which VS Code's menu passes to Open in Terminal. */
     const context = {

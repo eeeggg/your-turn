@@ -51,6 +51,7 @@ vi.mock('vscode', () => ({
     registerTextDocumentContentProvider: () => ({ dispose() {} }),
   },
   window: host.window,
+  WorkspaceEdit: class { readonly size = 0; },
   commands: { executeCommand: host.execute, registerCommand: () => ({ dispose() {} }) },
   TabInputTextDiff: class { readonly original = undefined; },
   EventEmitter: class { event = () => ({ dispose() {} }); fire() {} dispose() {} },
@@ -178,7 +179,7 @@ describe('Review adapter shutdown', () => {
     let release = () => {};
     const gate = new Promise<void>((resolve) => { release = resolve; });
     host.apply.mockImplementation(async () => { await gate; return true; });
-    const applying = applyReviewEdit('/review/file.txt', {} as vscode.WorkspaceEdit, { before: 'after\n', after: 'before\n' });
+    const applying = applyReviewEdit('/review/file.txt', new vscode.WorkspaceEdit(), { before: 'after\n', after: 'before\n' });
     try {
       change();
       expect(reviews.shown()?.file('/review/file.txt')?.baseline).toBe('before\ntyped\n');

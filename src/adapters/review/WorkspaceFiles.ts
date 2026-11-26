@@ -17,7 +17,7 @@ async function encodingOf(uri: vscode.Uri): Promise<vscode.TextDocument | undefi
   }
 }
 
-type WatcherFactory = (pattern: vscode.RelativePattern) => vscode.FileSystemWatcher;
+type WatcherFactory = (pattern: vscode.RelativePattern) => Pick<vscode.FileSystemWatcher, 'onDidCreate' | 'onDidChange' | 'onDidDelete' | 'dispose'>;
 
 /** The files under review, inside the workspace or outside it, as VS Code reads, watches and writes them. */
 export function createWorkspaceFiles(
