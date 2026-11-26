@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Readable } from 'node:stream';
 import type { ConfigOption, Modes, SessionUpdate } from '@/core/acp/AcpDriver';
-import { ChatViewController } from '@/core/ChatViewController';
+import type { ChatViewController } from '@/core/ChatViewController';
 import { Cleaner } from '@/core/CommandOutput';
 import { setLogSink } from '@/core/Log';
 import { ElicitationRequests } from '@/core/ElicitationRequests';

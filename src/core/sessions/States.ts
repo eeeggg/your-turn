@@ -1,4 +1,4 @@
-import type { SessionUpdate } from '@/core/acp/AcpDriver';
+import type { SessionUpdate, TerminalExitStatus } from '@/core/acp/AcpDriver';
 import {
   initialContent,
   updateContent,
@@ -33,7 +33,7 @@ export type QueueChange =
 interface SessionTerminal {
   readonly text: string;
   readonly truncated: boolean;
-  readonly exitStatus: import('@/core/acp/AcpDriver').TerminalExitStatus | null;
+  readonly exitStatus: TerminalExitStatus | null;
 }
 
 export interface SessionStateView {

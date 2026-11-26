@@ -4,7 +4,8 @@ import { agent, methods, PROTOCOL_VERSION, RequestError } from '@agentclientprot
 import type { AgentContext, SessionConfigOption, SessionNotification } from '@agentclientprotocol/sdk';
 import * as V2 from '@agentclientprotocol/sdk/experimental/v2';
 import { setLogSink } from '@/core/Log';
-import { SessionManager } from '@/core/sessions/Manager';
+import type { SessionManager } from '@/core/sessions/Manager';
+import type { SessionUpdateSink } from '@/core/acp/AcpDriver';
 import { ChatViewController } from '@/core/ChatViewController';
 import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
 import { SessionStates } from '@/core/sessions/States';
@@ -16,8 +17,8 @@ import * as RetainedContent from '@/core/sessions/Content';
 import { AgentTerminals } from '@/core/AgentTerminals';
 import { PermissionRequests } from '@/core/PermissionRequests';
 import { ElicitationRequests } from '@/core/ElicitationRequests';
-import { contentSnapshots, questionSnapshots } from '@tests/unit/core/ChatViewControllerTestSupport';
-import { initialState, update as updateView } from '@/webview/state/RootState';
+import { contentSnapshots, deferred, questionSnapshots } from '@tests/unit/core/ChatViewControllerTestSupport';
+import { contentApplied, initialState, update as updateView } from '@/webview/state/RootState';
 import { promptHistory } from '@/webview/state/Transcript';
 import { fakeAgent, fakeV2Agent, unusedEditor, type AgentScript } from '@tests/unit/core/InProcessAgents';
 import {
@@ -615,9 +616,9 @@ describe('SessionManager', () => {
     expect(contentSnapshots(posted).at(-1)).toMatchObject({ composer: { text: 'latest draft', revision: 2 } });
   });
 
-  it('holds an edited core queue head through idle and releases its saved text without skipping it', async () => {
+  it.each(['current projection', 'missed projection'] as const)('releases the saved queue head without skipping it after a %s', async (projection) => {
     const prompts: string[] = [];
-    const { manager } = setup({ fake: () => fakeAgent()
+    const { manager, chatView, posted } = setup({ fake: () => fakeAgent()
       .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
       .onRequest(methods.agent.session.prompt, ({ params }) => {
         prompts.push(params.prompt.flatMap((part) => part.type === 'text' ? [part.text] : []).join(''));
@@ -632,8 +633,12 @@ describe('SessionManager', () => {
     await manager.submitPrompt(identity, generation, 'tail');
     const head = manager.sessionState(identity)?.queue[0];
     if (!head) { throw new Error('Missing queue head'); }
-    manager.changeQueuedPrompt(identity, generation, { kind: 'editStarted', id: head.id, revision: 1 });
-    manager.changeQueuedPrompt(identity, generation, { kind: 'edited', id: head.id, text: 'saved head', revision: 2 });
+    await chatView.handleMessage({ type: 'ready' });
+    const target = promptTarget(posted);
+    if (projection === 'missed projection') { chatView.notifyActiveSessionChanged(); expect(promptTarget(posted)).not.toEqual(target); }
+    await chatView.handleMessage({ type: 'queueChanged', target, change: { kind: 'editStarted', id: head.id, revision: 1 } });
+    await chatView.handleMessage({ type: 'queueChanged', target, change: { kind: 'edited', id: head.id, text: 'saved head', revision: 2 } });
+    expect(manager.sessionState(identity)?.queue[0]).toMatchObject({ draft: 'saved head', revision: 2 });
     manager.applyForegroundState(identity, 'idle');
     expect(prompts).toEqual([]);
     expect(manager.sessionState(identity)?.queue.map((entry) => entry.text)).toEqual(['head', 'tail']);
@@ -643,7 +648,7 @@ describe('SessionManager', () => {
       if (prompts.length === 2 && !manager.hasForegroundWork(identity)) { settled(); }
     });
     try {
-      manager.changeQueuedPrompt(identity, generation, { kind: 'editSaved', id: head.id, revision: 3 });
+      await chatView.handleMessage({ type: 'queueChanged', target, change: { kind: 'editSaved', id: head.id, revision: 3 } });
       await completed;
       expect(prompts).toEqual(['saved head', 'tail']);
       expect(manager.sessionState(identity)?.queue).toEqual([]);
@@ -932,7 +937,7 @@ describe('SessionManager', () => {
         terminals: { open: (name) => { opened.push(name); return { write: (text) => { written.push(text); }, show() {} }; } },
       });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1103,7 +1108,7 @@ describe('SessionManager', () => {
         .onRequest(methods.agent.session.prompt, async () => { await finished; return { stopReason: 'end_turn' }; }),
       });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1133,7 +1138,7 @@ describe('SessionManager', () => {
     it('patches the empty retained projection on its first content update', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1153,7 +1158,7 @@ describe('SessionManager', () => {
     it('retains terminal output cleaned before session registration without publishing it early', async () => {
       let started!: () => void;
       const readStarted = new Promise<void>((resolve) => { started = resolve; });
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       const shown = AgentTerminals.prototype.shown;
       let reading: Promise<CommandOutput.ShownOutput> | undefined;
       const read = vi.spyOn(AgentTerminals.prototype, 'shown').mockImplementation(function (this: AgentTerminals, ...args) {
@@ -1194,7 +1199,7 @@ describe('SessionManager', () => {
       let finish!: () => void;
       const replay = new Promise<void>((resolve) => { replayed = resolve; });
       const finished = new Promise<void>((resolve) => { finish = resolve; });
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       const { manager, connections } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
         .onRequest(methods.agent.session.load, async () => {
@@ -1273,7 +1278,7 @@ describe('SessionManager', () => {
         editor: unusedEditor, showsDiffs: false, terminals: { open: () => ({ write: (text) => { written.push(text); }, show() {} }) },
       });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1290,7 +1295,7 @@ describe('SessionManager', () => {
         editor: unusedEditor, showsDiffs: false, terminals: { open: () => ({ write: () => {}, show() {} }) },
       });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1316,7 +1321,7 @@ describe('SessionManager', () => {
 
     it.each([false, true])('retains command and terminal output through Load and equal-ID owner replacement (success: %s)', async (ok) => {
       const written: string[] = [];
-      const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+      const sinks = new Map<string, SessionUpdateSink>();
       const { manager, connections } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
         .onRequest(methods.agent.session.load, () => {
@@ -1358,7 +1363,7 @@ describe('SessionManager', () => {
           showChanges: async (path) => { changed.push(path); }, showInformationMessage: async () => undefined },
       });
       const connect = connections.connect.bind(connections);
-      const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+      const sinks = new Map<string, SessionUpdateSink>();
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
@@ -1408,7 +1413,7 @@ describe('SessionManager', () => {
       });
       const identity = { configuredName: 'fake', sessionId: FIRST_SESSION };
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         if (name === 'fake') { sink = input; }
         return connect(name, streams, id, input, closed);
@@ -1434,7 +1439,7 @@ describe('SessionManager', () => {
     });
 
     it('cleans command output received before session registration', async () => {
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       const { manager, connections, chatView, posted } = setup({ fake: () => fakeAgent()
         .onRequest(methods.agent.session.new, () => {
           sink?.handleUpdate(FIRST_SESSION, { kind: 'toolCall', toolCallId: 'run', toolKind: 'execute', content: [{ kind: 'text', text: 'Early' }] }, 'v1');
@@ -1466,7 +1471,7 @@ describe('SessionManager', () => {
     it('patches only the changed retained tool call and preserves its sibling reference', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1505,7 +1510,7 @@ describe('SessionManager', () => {
         return result;
       });
       onTestFinished(() => { clean.mockRestore(); applied.mockRestore(); });
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       const { manager, connections, chatView } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
         .onRequest(methods.agent.session.load, ({ params }) => {
@@ -1550,7 +1555,7 @@ describe('SessionManager', () => {
     it('retains cleaned command output and reconstructs it after the webview becomes ready again', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1586,7 +1591,7 @@ describe('SessionManager', () => {
     it('does not suppress a tool call before the replacement owner has a projection', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script, other: sessionAgent(SECOND_SESSION).script });
       const connect = connections.connect.bind(connections);
-      const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+      const sinks = new Map<string, SessionUpdateSink>();
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
@@ -1609,7 +1614,7 @@ describe('SessionManager', () => {
     it('projects thought timing when completion flushes the final thought chunk', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1619,7 +1624,7 @@ describe('SessionManager', () => {
       await chatView.handleMessage({ type: 'ready' });
       let view = posted.reduce((state, message) => updateView(state, structuredClone(message), 0).state, initialState);
       sink?.handleUpdate(FIRST_SESSION, { kind: 'foreground', state: 'running' }, 'v2');
-      posted.splice(0);
+      view = posted.splice(0).reduce((state, message) => updateView(state, structuredClone(message), 0).state, view);
       sink?.handleUpdate(FIRST_SESSION, { kind: 'thoughtText', messageId: 'r1', text: ' tail' }, 'v1');
       sink?.handleUpdate(FIRST_SESSION, { kind: 'foreground', state: 'idle' }, 'v2');
       view = posted.reduce((state, message) => updateView(state, structuredClone(message), 0).state, view);
@@ -1633,7 +1638,7 @@ describe('SessionManager', () => {
     it('flushes projected partial text before foreground completion', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1650,7 +1655,7 @@ describe('SessionManager', () => {
     });
 
     it.each([false, true])('projects committed content after Load settles (success: %s)', async (ok) => {
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       const { manager, connections, chatView, posted } = setup({ fake: () => fakeAgent({ agentCapabilities: { loadSession: true } })
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
         .onRequest(methods.agent.session.load, ({ params }) => {
@@ -1683,7 +1688,7 @@ describe('SessionManager', () => {
     it('projects the selected owner when two configurations use the same session ID', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script, other: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+      const sinks = new Map<string, SessionUpdateSink>();
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
@@ -1703,7 +1708,7 @@ describe('SessionManager', () => {
     it('projects rich prompt contraction without duplicating the following turn', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1729,7 +1734,7 @@ describe('SessionManager', () => {
     it('reconstructs retained content on ready and sends only new text during streaming', async () => {
       const { manager, connections, chatView, posted } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1752,6 +1757,110 @@ describe('SessionManager', () => {
       } finally { vi.useRealTimers(); }
     });
 
+    it.each(['prompt patch lost', 'turn finishes offline', 'journal is evicted offline', 'projection change is lost'] as const)('recovers in place when %s', async (scenario) => {
+      const accepted = deferred<undefined>();
+      const finish = deferred<undefined>();
+      const submissions: string[] = [];
+      const { manager, chatView, posted, connections } = setup({ fake: sessionAgent(FIRST_SESSION, (app) => app
+        .onRequest(methods.agent.session.prompt, async ({ params }) => {
+          submissions.push(params.sessionId);
+          accepted.resolve(undefined);
+          await finish.promise;
+          return { stopReason: 'end_turn' };
+        })).script,
+      });
+      const connect = connections.connect.bind(connections);
+      let sink: SessionUpdateSink | undefined;
+      vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
+        sink = input;
+        return connect(name, streams, id, input, closed);
+      });
+      await manager.newSession('fake');
+      if (!sink) { throw new Error('Missing session update sink'); }
+      sink.handleUpdate(FIRST_SESSION, { kind: 'promptMessage', messageId: 'earlier', text: 'Earlier prompt' }, 'v1');
+      sink.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'earlier-reply', text: 'First answer' }, 'v1');
+      posted.splice(0);
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      let view = initialState;
+      let dropNextPatch = false;
+      const deliver = () => {
+        while (posted.length > 0) {
+          for (const message of posted.splice(0)) {
+            if (view.transcript.projection) { expect(contentSnapshots([message])).toEqual([]); }
+            if (dropNextPatch && message.type === 'contentPatch') {
+              dropNextPatch = false;
+              continue;
+            }
+            const transition = updateView(view, structuredClone(message), 0);
+            view = transition.state;
+            for (const reply of transition.outgoing) { void chatView.handleMessage(reply); }
+            const applied = contentApplied(view, message);
+            if (applied) { void chatView.handleMessage(applied); }
+          }
+        }
+      };
+      let turn: Promise<void> | undefined;
+      try {
+        await chatView.handleMessage({ type: 'ready' });
+        const target = promptTarget(posted);
+        deliver();
+        const earlier = view.transcript.entries[0];
+        dropNextPatch = true;
+        turn = chatView.handleMessage({ type: 'sendPrompt', target, text: 'Keep this prompt visible' });
+        await accepted.promise;
+        deliver();
+        expect(dropNextPatch).toBe(false);
+        expect(view.activeSession?.turnRunning).toBe(true);
+        expect(manager.sessionState(target)?.content.entries.at(-1)).toMatchObject({ kind: 'prompt', text: 'Keep this prompt visible' });
+
+        if (scenario === 'journal is evicted offline') {
+          sink.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'earlier-reply', text: 'Revised first answer' }, 'v1');
+          for (let index = 1; index <= 160; index++) {
+            sink.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'new-reply', text: `Answer ${index}` }, 'v1');
+          }
+        }
+        if (scenario === 'projection change is lost') {
+          chatView.notifyActiveSessionChanged();
+          expect(contentSnapshots(posted)).toHaveLength(1);
+          posted.splice(0);
+          sink.handleUpdate(FIRST_SESSION, { kind: 'agentMessage', messageId: 'new-reply', text: 'After projection change' }, 'v1');
+          deliver();
+        }
+        if (scenario !== 'prompt patch lost') {
+          finish.resolve(undefined);
+          await turn;
+          await vi.advanceTimersByTimeAsync(5_000);
+          // No messages or acknowledgments cross the seam while offline.
+          posted.splice(0);
+          expect(view.activeSession?.turnRunning).toBe(true);
+        }
+        await vi.advanceTimersByTimeAsync(scenario === 'prompt patch lost' ? 5_000 : 10_000);
+        expect(contentSnapshots(posted)).toEqual([]);
+        deliver();
+        expect(promptHistory(view.transcript)).toEqual(['Earlier prompt', 'Keep this prompt visible']);
+        expect(view.transcript.entries[0]).toBe(earlier);
+        if (scenario === 'projection change is lost') {
+          expect(view.transcript.entries.at(-1)).toMatchObject({ kind: 'turn', parts: [{ text: 'After projection change' }] });
+          expect(view.transcript.projection?.target.projection).toBeGreaterThan(target.projection);
+        }
+        if (scenario === 'journal is evicted offline') {
+          expect(view.transcript.entries).toMatchObject([
+            { kind: 'prompt' }, { kind: 'turn', parts: [{ text: 'Revised first answer' }] },
+            { kind: 'prompt' }, { kind: 'turn', parts: [{ text: 'Answer 160' }] },
+          ]);
+          expect(contentSnapshots(posted)).toEqual([]);
+        }
+        expect(view.activeSession?.turnRunning).toBe(scenario === 'prompt patch lost');
+        expect(submissions).toEqual([FIRST_SESSION]);
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(posted).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+        finish.resolve(undefined);
+        await turn;
+      }
+    });
+
     it('retains submitted prompts and ends their content turns when submissions settle', async () => {
       const { manager } = setup({ fake: sessionAgent(FIRST_SESSION, (app) => app
         .onRequest(methods.agent.session.prompt, ({ params }) => {
@@ -1770,7 +1879,7 @@ describe('SessionManager', () => {
     it('retains streamed content and whole-message replacements before projection', async () => {
       const { manager, connections, updates } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1795,7 +1904,7 @@ describe('SessionManager', () => {
     });
 
     it('does not attach usage from a failed Resume when the same connection retries', async () => {
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       let attempts = 0;
       const { manager, connections } = setup({ fake: () => fakeAgent({ agentCapabilities: { sessionCapabilities: { resume: {} } } })
         .onRequest(methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
@@ -1826,7 +1935,7 @@ describe('SessionManager', () => {
     });
 
     it.each([false, true])('attaches early usage only after successful registration (opening fails: %s)', async (fails) => {
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       let enter: () => void = () => {};
       let finish: () => void = () => {};
       const entered = new Promise<void>((resolve) => { enter = resolve; });
@@ -1857,7 +1966,7 @@ describe('SessionManager', () => {
     });
 
     it.each(['failed', 'replaced', 'cleared'] as const)('keeps usage committed until Load finishes: %s', async (outcome) => {
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       let enter: () => void = () => {};
       let finish: () => void = () => {};
       const entered = new Promise<void>((resolve) => { enter = resolve; });
@@ -1901,7 +2010,7 @@ describe('SessionManager', () => {
         other: sessionAgent(FIRST_SESSION).script,
       });
       const connect = connections.connect.bind(connections);
-      const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+      const sinks = new Map<string, SessionUpdateSink>();
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sinks.set(name, input);
         return connect(name, streams, id, input, closed);
@@ -1922,7 +2031,7 @@ describe('SessionManager', () => {
     it('projects retained usage when the webview becomes ready without another agent update', async () => {
       const { manager, connections, chatView, posted, updates } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);
@@ -1947,7 +2056,7 @@ describe('SessionManager', () => {
     it('rejects normalized input captured from a retired connection before global fan-out', async () => {
       const { manager, connections, updates, received } = setup({ fake: sessionAgent(FIRST_SESSION).script });
       const connect = connections.connect.bind(connections);
-      let sink: import('@/core/acp/AcpDriver').SessionUpdateSink | undefined;
+      let sink: SessionUpdateSink | undefined;
       vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, input, closed) => {
         sink = input;
         return connect(name, streams, id, input, closed);

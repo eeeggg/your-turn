@@ -1,4 +1,5 @@
 import type {
+  ContentVersions,
   DiffFile,
   ExitStatus,
   ImagePresentation,
@@ -7,8 +8,8 @@ import type {
   SessionUsage,
   ToolCallContent,
   ToolCallStatus,
-WebviewToExtensionMessage,
-PresentationTarget,
+  WebviewToExtensionMessage,
+  PresentationTarget,
 } from '@/shared/WebviewMessages';
 import type { ActiveSession } from '@/webview/state/ActiveSession';
 import type { Action } from '@/webview/state/RootState';
@@ -147,7 +148,7 @@ export interface QueuedPrompt {
 export interface TranscriptState {
   readonly toolGroupOverrides: ReadonlyMap<string, boolean>;
   readonly thoughtOverrides: ReadonlyMap<string, boolean>;
-  readonly projection: { readonly target: PresentationTarget; readonly revision: number } | null;
+  readonly projection: { readonly target: PresentationTarget; readonly revision: number; readonly versions?: ContentVersions } | null;
   readonly markdownContext: number | null;
   readonly markdownImageEpoch: number | undefined;
   readonly markdownContextRequested: boolean;
@@ -501,12 +502,15 @@ export function updateTranscript(
       if (action.type === 'queuedPromptCancelled') {
         return { state: transcript, outgoing: [{ type: 'queueChanged', target: transcript.projection.target, change: { kind: 'cancelled', id: action.id } }] };
       }
+      if (action.type === 'queuedPromptEditSaved') {
+        return prompt.draft === null ? stateOnly(transcript) : { state: transcript, outgoing: [{ type: 'queueChanged', target: transcript.projection.target,
+          change: { kind: 'editSaved', id: action.id, revision: (prompt.revision ?? 0) + 1 } }] };
+      }
       let revised: QueuedPrompt;
       switch (action.type) {
         case 'queuedPromptToggled': revised = { ...prompt, open: !prompt.open }; break;
         case 'queuedPromptEditStarted': revised = prompt.draft === null ? { ...prompt, draft: prompt.text } : prompt; break;
         case 'queuedPromptEdited': revised = prompt.draft !== null ? { ...prompt, draft: action.text } : prompt; break;
-        case 'queuedPromptEditSaved': revised = prompt.draft !== null ? { ...prompt, text: prompt.draft, draft: null } : prompt; break;
         case 'queuedPromptEditDiscarded': revised = { ...prompt, draft: null }; break;
       }
       if (revised === prompt) { return stateOnly(transcript); }
@@ -514,7 +518,7 @@ export function updateTranscript(
       const revision = (prompt.revision ?? 0) + 1;
       revised = { ...revised, revision };
       const changed = { ...transcript, queued: transcript.queued.map((item) => item.id === action.id ? revised : item) };
-      const kind = { queuedPromptEditStarted: 'editStarted', queuedPromptEdited: 'edited', queuedPromptEditSaved: 'editSaved', queuedPromptEditDiscarded: 'editDiscarded' } as const;
+      const kind = { queuedPromptEditStarted: 'editStarted', queuedPromptEdited: 'edited', queuedPromptEditDiscarded: 'editDiscarded' } as const;
       return { state: changed, outgoing: [{ type: 'queueChanged', target: transcript.projection.target,
         change: action.type === 'queuedPromptEdited' ? { kind: 'edited', id: action.id, text: action.text, revision } : { kind: kind[action.type], id: action.id, revision } }] };
     }

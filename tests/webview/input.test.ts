@@ -1,6 +1,7 @@
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { SlashCommand } from '@/shared/WebviewMessages';
 import { answer, connect, loadChatPage as loadPage, replayed, type ChatPage } from '@tests/webview/chatPage';
+import { issuedTarget, setup } from '@tests/unit/core/ChatViewControllerTestSupport';
 
 const loadChatPage = () => loadPage({ retained: true });
 
@@ -82,6 +83,61 @@ describe('sending prompts', () => {
     expect(page.takeComposerEdits()).toEqual([]);
     await vi.advanceTimersByTimeAsync(200);
     expect(page.takeComposerEdits()).toEqual([{ type: 'composerEdited', target: page.target(), revision: 1, text: 'new local text' }]);
+  });
+
+  it('saves a pending draft before acknowledging a repaired projection', async () => {
+    const host = setup();
+    const { controller, environment } = host;
+    await issuedTarget(host);
+    await controller.handleMessage({ type: 'ready' });
+    const initial = environment.take().find((message) => message.type === 'viewSnapshot');
+    if (!initial?.content) { throw new Error('Missing initial projection'); }
+    const { target } = initial.content;
+
+    vi.useFakeTimers();
+    onTestFinished(() => { vi.useRealTimers(); });
+    page = loadPage();
+    page.send(initial);
+    page.takePosted();
+    await vi.advanceTimersByTimeAsync(50);
+    page.takePosted();
+
+    delete environment.acknowledge;
+    controller.notifyActiveSessionChanged();
+    const missed = environment.take().find((message) => message.type === 'viewSnapshot');
+    if (!missed?.content) { throw new Error('Missing changed projection'); }
+    const next = missed.content.target;
+    page.send({ type: 'contentManifestRequested', target: next });
+    const [manifest] = page.takePosted();
+    if (manifest?.type !== 'contentManifest') { throw new Error('Missing manifest'); }
+    await controller.handleMessage(manifest);
+    const repair = environment.take().find((message) => message.type === 'contentPatch');
+    if (!repair) { throw new Error('Missing repair patch'); }
+
+    page.typePrompt('draft during reconnect');
+    page.send({ ...repair, target: { ...next, sessionId: 'other-session' } });
+    expect(page.takeComposerEdits()).toEqual([]);
+    page.send(repair);
+    const edits = page.takeComposerEdits();
+    expect(edits).toEqual([{ type: 'composerEdited', target, revision: 1, text: 'draft during reconnect' }]);
+    expect(page.takePosted()).toEqual([]);
+    expect(promptInput().value).toBe('draft during reconnect');
+    for (const edit of edits) { await controller.handleMessage(edit); }
+
+    await vi.advanceTimersByTimeAsync(50);
+    const acknowledgments = page.takePosted();
+    expect(acknowledgments).toEqual([{ type: 'contentApplied', target: next, revision: repair.revision }]);
+    for (const acknowledgment of acknowledgments) { await controller.handleMessage(acknowledgment); }
+    await vi.advanceTimersByTimeAsync(200);
+    expect(page.takeComposerEdits()).toEqual([]);
+    expect(page.takePosted()).toEqual([]);
+
+    await controller.handleMessage({ type: 'ready' });
+    const reopened = environment.take().find((message) => message.type === 'viewSnapshot');
+    if (!reopened) { throw new Error('Missing reopened view'); }
+    const fresh = loadPage();
+    fresh.send(reopened);
+    expect(fresh.byId<HTMLTextAreaElement>('promptInput').value).toBe('draft during reconnect');
   });
 
   it('flushes before Send and never restores the submitted draft from a delayed timer', async () => {

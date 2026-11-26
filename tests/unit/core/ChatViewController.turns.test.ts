@@ -1,6 +1,6 @@
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { ChatViewController } from '@/core/ChatViewController';
-import { initialState, update } from '@/webview/state/RootState';
+import { contentApplied, initialState, update } from '@/webview/state/RootState';
 import {
   SESSION_ID,
   OTHER_SESSION_ID,
@@ -65,6 +65,164 @@ describe('ChatViewController', () => {
     }
   });
 
+  it('accepts a prompt in flight during recovery of the same session', async () => {
+    const parts = setup();
+    const { controller, sessions, environment } = parts;
+    const target = await issuedTarget(parts);
+    const post = environment.post.bind(environment);
+    environment.post = (message) => { if (message.type !== 'viewSnapshot') { post(message); } };
+    controller.notifyActiveSessionChanged();
+    await controller.handleMessage({ type: 'composerEdited', target, revision: 1, text: 'In flight' });
+    const turn = controller.handleMessage({ type: 'sendPrompt', target, text: 'In flight' });
+    try {
+      expect(sessions.prompts.map(({ text }) => text)).toEqual(['In flight']);
+      expect(sessions.sessionState(target)?.composer.text).toBe('In flight');
+    } finally {
+      for (const prompt of sessions.prompts.splice(0)) { prompt.reply.resolve(undefined); }
+      await turn;
+    }
+  });
+
+  it('stops retrying when a duplicate patch recovers a lost acknowledgment', async () => {
+    const parts = setup();
+    const { controller, environment } = parts;
+    await issuedTarget(parts);
+    const acknowledge = environment.acknowledge;
+    vi.useFakeTimers();
+    try {
+      delete environment.acknowledge;
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'promptMessage', messageId: 'p', text: 'Delivered once' });
+      expect(environment.transcript().entries).toMatchObject([{ kind: 'prompt', text: 'Delivered once' }]);
+      environment.take();
+      if (acknowledge) { environment.acknowledge = acknowledge; }
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(environment.take()).toHaveLength(1);
+      expect(environment.transcript().entries).toMatchObject([{ kind: 'prompt', text: 'Delivered once' }]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(environment.take()).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['revision gap', 'invalid base'] as const)('recovers a quiet transcript with a contiguous journal after %s', async (failure) => {
+    const parts = setup();
+    const { controller, environment } = parts;
+    await issuedTarget(parts);
+    vi.useFakeTimers();
+    try {
+      let view = initialState;
+      const sent: Parameters<typeof environment.post>[0][] = [];
+      const deliver = () => {
+        for (const message of sent.splice(0)) {
+          const result = update(view, message, 0);
+          view = result.state;
+          for (const reply of result.outgoing) { void controller.handleMessage(reply); }
+          const applied = contentApplied(view, message);
+          if (applied) { void controller.handleMessage(applied); }
+        }
+      };
+      environment.post = (message) => { sent.push(message); };
+      await controller.handleMessage({ type: 'ready' });
+      deliver();
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentMessage', messageId: 'm', text: 'First' });
+      const first = sent.find((message) => message.type === 'contentPatch');
+      if (!first) { throw new Error('Missing first patch'); }
+      if (failure === 'invalid base') {
+        deliver();
+        expect(view.transcript.projection?.versions?.entries).toHaveLength(1);
+        view = update(view, { type: 'loadSessionStart' }, 0).state;
+      } else { sent.splice(0); }
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'agentText', messageId: 'm', text: ' answer' });
+      await vi.advanceTimersByTimeAsync(100);
+      const next = sent.find((message) => message.type === 'contentPatch');
+      if (!next) { throw new Error('Missing second patch'); }
+      expect(next.patches).toMatchObject([{ kind: 'appendText' }]);
+      deliver();
+      expect(view.transcript.entries).toEqual([]);
+      if (failure === 'invalid base') {
+        expect(sent.splice(0)).toEqual([expect.objectContaining({ type: 'contentPatch', patches: [expect.objectContaining({ kind: 'insert' })] })]);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(sent.map(({ type }) => type)).toEqual(['contentManifestRequested']);
+        deliver();
+        expect(sent.map(({ type }) => type)).toEqual(['contentPatch']);
+      } else {
+        expect(sent).toEqual([]);
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(sent).toEqual([first, next]);
+      }
+      deliver();
+      expect(view.transcript.entries).toMatchObject([{ kind: 'turn', parts: [{ kind: 'message', text: 'First answer' }] }]);
+      expect(view.transcript.projection?.revision).toBe(next.revision);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(sent).toEqual([]);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it.each(['unchanged', 'reprojected'] as const)('recovers a missed switch to a quiet %s session', async (selection) => {
+    const parts = setup();
+    const { controller, sessions, environment } = parts;
+    const original = await issuedTarget(parts);
+    const post = environment.post.bind(environment);
+    const quiet = sessionInfo({ sessionId: OTHER_SESSION_ID });
+    vi.useFakeTimers();
+    try {
+      const dropped: Parameters<typeof post>[0][] = [];
+      environment.post = (message) => { dropped.push(message); };
+      sessions.session = quiet;
+      sessions.activeId = quiet.sessionId;
+      sessions.retained.attach(quiet);
+      controller.notifyActiveSessionChanged();
+      const delayed = dropped.find((message) => message.type === 'viewSnapshot');
+      if (!delayed?.content) { throw new Error('Missing selection snapshot'); }
+      expect(delayed.content).toMatchObject({ target: { sessionId: quiet.sessionId }, revision: 0 });
+      if (selection === 'reprojected') { controller.notifyActiveSessionChanged(); }
+      await controller.handleMessage({ type: 'contentApplied', target: original, revision: 0 });
+      expect(environment.transcript().projection?.target).toEqual(original);
+
+      environment.post = (message) => {
+        post(message);
+        if (message.type === 'contentManifestRequested') {
+          const view = { ...initialState, transcript: environment.transcript() };
+          for (const reply of update(view, message, 0).outgoing) { void controller.handleMessage(reply); }
+        }
+      };
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(environment.take().map((message) => message.type)).toEqual(selection === 'reprojected'
+        ? ['viewSnapshot', 'contentManifestRequested', 'contentPatch'] : ['viewSnapshot']);
+      expect(environment.transcript().projection?.target.sessionId).toBe(quiet.sessionId);
+      expect(environment.transcript().projection?.revision).toBe(selection === 'reprojected' ? 1 : 0);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(environment.take()).toEqual([]);
+
+      const later = sessionInfo({ sessionId: 'later-session' });
+      sessions.session = later;
+      sessions.activeId = later.sessionId;
+      sessions.retained.attach(later);
+      controller.notifyActiveSessionChanged();
+      post(delayed);
+      expect(environment.transcript().projection?.target.sessionId).toBe(later.sessionId);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('defers replay while hidden and resumes retrying when visible without more agent output', async () => {
+    const parts = setup();
+    const { controller, environment } = parts;
+    await issuedTarget(parts);
+    const post = environment.post.bind(environment);
+    environment.post = (message) => { if (environment.visible) { post(message); } };
+    vi.useFakeTimers();
+    try {
+      environment.visible = false;
+      controller.handleSessionUpdate(SESSION_ID, { kind: 'promptMessage', messageId: 'p', text: 'While hidden' });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(environment.take()).toEqual([]);
+      expect(environment.transcript().entries).toEqual([]);
+      environment.visible = true;
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(environment.take().map(({ type }) => type)).toEqual(['contentPatch']);
+      expect(environment.transcript().entries).toMatchObject([{ kind: 'prompt', text: 'While hidden' }]);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('reports overlapping errors before one completion when submissions settle together', async () => {
     const { controller, sessions, environment } = setup();
     const first = sendPrompt(controller, sessions, 'first');
@@ -73,7 +231,11 @@ describe('ChatViewController', () => {
     sessions.answer();
     sessions.fail(new Error('Refused'));
     await Promise.all([first, second]);
-    expect(environment.take().map((message) => message.type)).toEqual(['contentPatch', 'promptEnd']);
+    expect(environment.take()).toEqual([
+      expect.objectContaining({ type: 'contentPatch', patches: [expect.objectContaining({ kind: 'insert', entries: [{ kind: 'error', id: 3, text: 'Refused' }] })] }),
+      expect.objectContaining({ type: 'contentPatch', running: false, patches: [] }),
+      { type: 'promptEnd' },
+    ]);
     expect(environment.transcript().entries.at(-1)).toEqual({ kind: 'error', id: 3, text: 'Refused' });
   });
 
@@ -140,7 +302,7 @@ describe('ChatViewController', () => {
     sessions.answer();
     await first;
     expect(controller.hasRunningTurn).toBe(false);
-    expect(environment.take()).toEqual([{ type: 'promptEnd' }]);
+    expect(environment.take()).toEqual([expect.objectContaining({ type: 'contentPatch', running: false, patches: [] }), { type: 'promptEnd' }]);
   });
 
   describe('turns', () => {
@@ -202,7 +364,7 @@ describe('ChatViewController', () => {
       expect(controller.hasRunningTurn).toBe(true);
       sessions.answer();
       await turn;
-      expect(environment.take()).toEqual([{ type: 'promptEnd' }]);
+      expect(environment.take()).toEqual([expect.objectContaining({ type: 'contentPatch', running: false, patches: [] }), { type: 'promptEnd' }]);
     });
 
     it('keeps immediate submission feedback through an initial idle snapshot until foreground work starts', async () => {
@@ -241,7 +403,7 @@ describe('ChatViewController', () => {
       await turn;
 
       expect(sessions.recordTurnEnded).toHaveBeenCalledExactlyOnceWith({ configuredName: 'fake', sessionId: SESSION_ID });
-      expect(environment.take()).toStrictEqual([{ type: 'promptEnd' }]);
+      expect(environment.take()).toEqual([expect.objectContaining({ type: 'contentPatch', running: false, patches: [] }), { type: 'promptEnd' }]);
       expect(controller.hasRunningTurn).toBe(false);
     });
 

@@ -4,6 +4,16 @@ import { expect, it } from 'vitest';
 const eslint = new ESLint();
 
 it.each([
+  ["export type Versions = import('@/shared/WebviewMessages').ContentVersions;", ['@typescript-eslint/consistent-type-imports']],
+  ["import { ContentVersions } from '@/shared/WebviewMessages'; export type Versions = ContentVersions;", ['@typescript-eslint/consistent-type-imports']],
+  ["import type { ContentVersions } from '@/shared/WebviewMessages'; export type Versions = ContentVersions;", []],
+  ["export const loadPath = () => import('node:path');", []],
+])('enforces explicit type imports without blocking runtime imports: %s', async (source, rules) => {
+  const [result] = await eslint.lintText(source, { filePath: 'src/adapters/ExtensionActivation.ts' });
+  expect(result?.messages.map(({ ruleId }) => ruleId)).toEqual(rules);
+});
+
+it.each([
   "import { Review } from '@/core/review/Review'; void Review;",
   "export { Review } from '@/core/review/Review';",
   "export * from '@/core/review/Takeovers';",

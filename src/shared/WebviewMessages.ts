@@ -197,9 +197,16 @@ type ContentPatch =
   | { readonly kind: 'spliceParts'; readonly turnId: number; readonly index: number; readonly remove: number; readonly parts: readonly PresentedPart[] }
   | { readonly kind: 'appendText'; readonly turnId: number; readonly part: number; readonly text: string }
   | { readonly kind: 'toolCall'; readonly turnId: number; readonly part: number; readonly call: PresentedToolCall }
-  | { readonly kind: 'terminal'; readonly terminalId: string; readonly text: string; readonly truncated: boolean; readonly exitStatus: ExitStatus | null };
+  | { readonly kind: 'terminal'; readonly terminalId: string; readonly text: string; readonly truncated: boolean; readonly exitStatus: ExitStatus | null }
+  | { readonly kind: 'removeTerminal'; readonly terminalId: string };
+
+export interface ContentVersions {
+  readonly entries: readonly (readonly [id: number, revision: number])[];
+  readonly terminals: readonly (readonly [id: string, revision: number])[];
+}
 
 interface ContentSnapshot {
+  readonly versions?: ContentVersions;
   readonly queue: readonly { readonly id: number; readonly text: string; readonly draft: string | null; readonly revision?: number }[];
   readonly composer: { readonly text: string; readonly revision: number };
   readonly target: PresentationTarget;
@@ -218,8 +225,9 @@ export type ExtensionToWebviewMessage =
     tabs: SessionTabsSnapshot; running: boolean; loading: boolean; questions: Question[]; content: ContentSnapshot | null }
   | ({ type: 'contentSnapshot' } & ContentSnapshot)
   | { type: 'contentPatch'; target: PresentationTarget; base: number; revision: number; patches: readonly ContentPatch[];
-    currentTurn: number | null; nextId: number; usage: SessionUsage | null; composer?: { readonly text: string; readonly revision: number };
-    queue?: ContentSnapshot['queue'] }
+      currentTurn: number | null; nextId: number; usage: SessionUsage | null; running?: boolean; composer?: { readonly text: string; readonly revision: number };
+    queue?: ContentSnapshot['queue']; versions?: ContentVersions; baseTarget?: PresentationTarget }
+  | { type: 'contentManifestRequested'; target: PresentationTarget }
   | { type: 'markdownImageContext'; target: PresentationTarget; context: number; origin?: string }
   | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)
   | ({ type: 'sessionTabs' } & SessionTabsSnapshot)
@@ -248,6 +256,8 @@ export type WebviewToExtensionMessage =
     | { kind: 'editStarted' | 'editSaved' | 'editDiscarded'; id: number; revision: number }
     | { kind: 'edited'; id: number; text: string; revision: number } }
   | { type: 'composerEdited'; target: PresentationTarget; revision: number; text: string }
+  | { type: 'contentApplied'; target: PresentationTarget; revision: number }
+  | { type: 'contentManifest'; target: PresentationTarget; baseTarget?: PresentationTarget; revision: number; versions: ContentVersions; invalidBase?: true }
   | { type: 'contentSnapshotRequested'; target: PresentationTarget }
   | { type: 'markdownImageContext'; target: PresentationTarget }
   | { type: 'openTranscriptFile'; target: PresentationTarget; destination: string }

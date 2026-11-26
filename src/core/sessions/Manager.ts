@@ -22,7 +22,7 @@ import {
   type SlashCommand,
 } from '@/core/acp/AcpDriver';
 import type { ConnectionManager } from '@/core/acp/ConnectionManager';
-import { SessionUpdateHandler, type QualifiedSessionUpdate, type SessionIdentity, type SessionOrigin, type SessionRegistration, type SessionLoad } from '@/core/sessions/UpdateHandler';
+import type { SessionUpdateHandler, QualifiedSessionUpdate, SessionIdentity, SessionOrigin, SessionRegistration, SessionLoad } from '@/core/sessions/UpdateHandler';
 import {
   commandNotFound,
   renamesBetween,

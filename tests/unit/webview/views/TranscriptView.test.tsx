@@ -1041,6 +1041,35 @@ describe('tool calls', () => {
     ]);
   });
 
+  it('keeps an open tool call and does not jump to the end when recovery replaces its turn', async () => {
+    const view = renderChatView();
+    view.connect();
+    view.toolCall({ toolCallId: 'read', title: 'Read file', status: 'running', content: [{ kind: 'text', text: 'Partial result' }] });
+    const call = view.part<HTMLDetailsElement>('.tool-call-inline');
+    await toggle(call);
+    expect(call.open).toBe(true);
+    const { projection, entries, nextId } = view.store.getSnapshot().transcript;
+    const turn = entries[0];
+    assert.exists(projection);
+    assert(turn?.kind === 'turn');
+    const scroll = view.part('#transcriptScroll');
+    act(() => stickToBottom.setAtBottom(false));
+    stickToBottom.scrollToBottom.mockClear();
+
+    view.send({ type: 'contentPatch', target: projection.target, base: projection.revision, revision: projection.revision + 10,
+      currentTurn: null, nextId, usage: null, running: false, versions: { entries: [[turn.id, projection.revision + 10]], terminals: [] },
+      patches: [{ kind: 'replace', id: turn.id, entry: { kind: 'turn', id: turn.id, parts: [{ kind: 'toolCalls', collapsed: false,
+        toolCalls: [{ toolCallId: 'read', title: 'Read file', status: 'completed', open: false, content: [{ kind: 'text', text: 'Complete result' }] }],
+      }] } }],
+    });
+
+    expect(view.part('#transcriptScroll')).toBe(scroll);
+    expect(stickToBottom.scrollToBottom).not.toHaveBeenCalled();
+    expect(view.part<HTMLDetailsElement>('.tool-call-inline')).toBe(call);
+    expect(call.open).toBe(true);
+    expect(call.textContent).toContain('Complete result');
+  });
+
   it("heads each file with its operation and paths, and notes why a file shows no lines", async () => {
     const view = renderChatView();
     view.connect();

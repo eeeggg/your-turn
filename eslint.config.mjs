@@ -124,6 +124,11 @@ export default defineConfig(
     },
     rules: {
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+      "@typescript-eslint/consistent-type-imports": ["error", {
+        prefer: "type-imports",
+        fixStyle: "separate-type-imports",
+        disallowTypeAnnotations: true,
+      }],
       "@typescript-eslint/naming-convention": [
         "error",
         {
