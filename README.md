@@ -108,6 +108,27 @@ OpenCode installation on PATH:
 }
 ```
 
+The top-level `OpenCode` entry above applies to local workspaces. In a
+Remote-SSH workspace, put the agent entry in the group for its remote
+authority. For example, for the SSH host alias `dev`:
+
+```json
+"your-turn.agents": {
+  "ssh-remote+dev": {
+    "OpenCode": {
+      "command": "opencode",
+      "args": ["acp"]
+    }
+  }
+}
+```
+
+You can keep both entries in the same map. A remote workspace does not fall
+back to top-level entries. If you previously used a top-level entry over SSH,
+copy it into the matching group and check that the command runs on that host.
+**Detect Agents** searches the extension host's `PATH` and saves the selected
+agents in the current authority's group when connected remotely.
+
 Session listing, history replay, model controls, slash commands, and other
 agent-specific features depend on the capabilities the agent advertises.
 Your Turn speaks stable-channel ACP v1 and v2. Protocol compatibility does not
@@ -118,7 +139,7 @@ feature.
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
-| `your-turn.agents` | `{}` | Named agent commands, arguments, and optional environment variables. |
+| `your-turn.agents` | `{}` | Agent commands, arguments, and optional environment variables, at the top level for local workspaces or grouped by remote authority. |
 | `your-turn.review.presentation` | `diffEditor` | Native review diff editors, or `quickDiff` for inline review. |
 | `your-turn.autoApprovePermissions` | `ask` | Ask about agent permission requests, or automatically allow them with `allowAll`. |
 | `your-turn.includeActiveFile` | `false` | Opt in to attaching the active editor file as a resource link to prompts. |

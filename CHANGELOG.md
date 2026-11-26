@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.6.1 — 2026-11-26 — Beta
+
+### Sessions and chat
+
+- Catch up without reloading after a temporary Remote-SSH interruption when
+  the same extension host and chat view survive. Restore missed output and
+  session switches without discarding pending drafts or queue edits.
+- Open Markdown file links from the transcript in VS Code. Links can point
+  to a heading or a line range.
+- Keep Chat tab titles in sync with the Agents view refresh.
+
+### Agent setup and reliability
+
+- Configure different agent commands for local and remote workspaces. Remote
+  workspaces use only the group for their remote authority; they no longer use
+  top-level agent entries.
+- Upgrade the ACP SDK to reduce lost session updates when the agent connection
+  closes or fails. Support partial ACP v2 compaction status updates.
+
 ## 0.6.0 — 2026-11-22 — Beta
 
 ### Sessions and chat
