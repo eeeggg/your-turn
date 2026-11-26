@@ -1,4 +1,5 @@
 import { imageSize } from 'image-size';
+import { isDeepStrictEqual } from 'node:util';
 import { readMarkdownImage } from '@/core/MarkdownImageFiles';
 import { ImageLoads } from '@/core/ImageLoads';
 import { fetchMarkdownImage, type ImageNetwork } from '@/core/MarkdownImageNetwork';
@@ -11,6 +12,7 @@ import type {
   SlashCommand,
 } from '@/core/acp/AcpDriver';
 import type {
+  ContentVersions,
   DiffFile as WebviewDiffFile,
   ExtensionToWebviewMessage,
   PresentationTarget,
@@ -66,6 +68,11 @@ export type ChatSessions = Pick<
 
 /** Text arriving within this many milliseconds reaches the webview as one message, so it renders about once a frame at most. */
 const TEXT_CHUNK_WINDOW_MS = 16;
+const PATCH_RETRY_MS = 1_000;
+const MAX_PATCH_RETRY_MS = 8_000;
+const PATCH_JOURNAL_COUNT = 128;
+const PATCH_JOURNAL_BYTES = 4 * 1024 * 1024;
+type ProjectedPatch = Extract<ExtensionToWebviewMessage, { type: 'contentPatch' }>;
 
 type PresentedCall = Extract<Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'turn' }>['parts'][number], { kind: 'toolCalls' }>['toolCalls'][number];
 
@@ -169,9 +176,19 @@ export class ChatViewController {
   private readonly networkImageLoads = new ImageLoads(30000);
   private readonly markdownSources = new Map<number, { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }>();
   private projectionSequence = 0;
+  private firstRepairableProjection = 0;
   private presentedCalls = new WeakMap<object, PresentedCall>();
-  private projected: { snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>; state: SessionStateView; registration: SessionInfo | undefined } | undefined;
+  private projected: { snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>; state: SessionStateView; registration: SessionInfo | undefined; running: boolean } | undefined;
   private projectionTimer: ReturnType<typeof setTimeout> | undefined;
+  private patchRetry: ReturnType<typeof setTimeout> | undefined;
+  private patchRetryDelay = PATCH_RETRY_MS;
+  private appliedRevision = 0;
+  private invalidBaseRevision: number | undefined;
+  private pendingSelection: Extract<ExtensionToWebviewMessage, { type: 'viewSnapshot' }> | undefined;
+  private patchJournal: { message: ProjectedPatch; bytes: number }[] = [];
+  private patchJournalBytes = 0;
+  private entryVersions = new Map<number, number>();
+  private terminalVersions = new Map<string, number>();
   private presented = new WeakMap<object, Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number]
     | Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'turn' }>['parts'][number]>();
   private readonly tabs: SessionTabs;
@@ -293,18 +310,43 @@ export class ChatViewController {
     if (this.disposed) { return; }
     switch (message.type) {
       case 'queueChanged':
-        if (this.currentTarget(message.target)) {
+        if (this.currentTarget(message.target, 'revision' in message.change)) {
           this.sessions.changeQueuedPrompt(message.target, message.target.generation, message.change);
           this.sendContentPatch();
         }
         break;
       case 'composerEdited':
-        if (this.currentTarget(message.target)) {
+        if (this.currentTarget(message.target, true)) {
           this.sessions.editComposer(message.target, message.target.generation, message.revision, message.text);
         }
         break;
+      case 'contentApplied':
+        if (this.projected && samePresentationTarget(message.target, this.projected.snapshot.target)
+          && Number.isSafeInteger(message.revision) && message.revision >= 0
+          && (message.revision > this.appliedRevision || (this.pendingSelection && message.revision === this.appliedRevision))
+          && message.revision <= this.projected.snapshot.revision) {
+          this.pendingSelection = undefined;
+          this.appliedRevision = message.revision;
+          if (this.invalidBaseRevision !== undefined && message.revision > this.invalidBaseRevision) { this.invalidBaseRevision = undefined; }
+          for (const entry of this.patchJournal) {
+            if (entry.message.revision > this.appliedRevision) { break; }
+            this.patchJournalBytes -= entry.bytes;
+          }
+          this.patchJournal = this.patchJournal.filter(({ message: patch }) => patch.revision > this.appliedRevision);
+          this.cancelPatchRetry();
+          this.patchRetryDelay = PATCH_RETRY_MS;
+          this.schedulePatchRetry();
+        }
+        break;
       case 'contentSnapshotRequested':
-        if (this.projected && samePresentationTarget(message.target, this.projected.snapshot.target)) { this.sendContentSnapshot(); }
+        if (this.projected && samePresentationTarget(message.target, this.projected.snapshot.target)) { this.schedulePatchRetry(); }
+        break;
+      case 'contentManifest':
+        if (this.currentTarget(message.target)) {
+          if (message.revision === this.projected?.snapshot.revision) {
+            await this.handleMessage({ type: 'contentApplied', target: message.target, revision: message.revision });
+          } else { this.repairContent(message); }
+        }
         break;
       case 'loadMarkdownImage':
         if (this.currentMarkdownContext(message.context)) {
@@ -378,7 +420,7 @@ export class ChatViewController {
         }
         break;
       case 'sendPrompt':
-        if (!this.currentTarget(message.target)) { break; }
+        if (!this.currentTarget(message.target, true)) { break; }
         await this.sendPrompt(message.target, message.text);
         break;
       case 'cancelTurn':
@@ -395,7 +437,7 @@ export class ChatViewController {
         logInfo('Chat view ready');
         this.setTurnInProgress(this.hasRunningTurn);
         this.rememberTabStatuses(this.presentTabs());
-        this.sendContentSnapshot(true);
+        this.sendContentSnapshot(true, true);
         break;
       case 'openFile':
         await this.chooseDiffFile({ target: message.target, toolCallId: message.toolCallId, file: message.file, open: 'file' });
@@ -445,10 +487,13 @@ export class ChatViewController {
     }
   }
 
-  private currentTarget(target: PresentationTarget): boolean {
+  private currentTarget(target: PresentationTarget, allowUnconfirmedProjection = false): boolean {
     if (this.disposed) { return false; }
     const issued = this.projected?.snapshot.target;
-    if (!issued || !samePresentationTarget(target, issued)) { return false; }
+    if (!issued) { return false; }
+    if (!samePresentationTarget(target, issued) && !(allowUnconfirmedProjection && this.appliedRevision === -1
+      && Number.isSafeInteger(target.projection) && target.projection >= this.firstRepairableProjection
+      && target.projection < issued.projection && samePresentationTarget({ ...target, projection: issued.projection }, issued))) { return false; }
     const tabs = this.tabs.snapshot();
     const selected = this.sessions.getActiveSession() ?? tabs.tabs.find((tab) => tab.tabId === tabs.selectedTabId);
     return selected?.agentName === target.configuredName && selected.sessionId === target.sessionId
@@ -614,6 +659,7 @@ export class ChatViewController {
   dispose(): Promise<void> {
     if (this.disposal) { return this.disposal; }
     this.disposed = true;
+    this.resetPatchJournal();
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); }
     this.stopActivity();
     this.tabs.off('listedTitlesChanged', this.listedTitlesChanged);
@@ -843,14 +889,21 @@ export class ChatViewController {
     this.environment.post(message);
   }
 
-  private sendContentSnapshot(view = false): void {
-    const publish = (content: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> | null) => {
-      if (view) {
+  private sendContentSnapshot(view = false, newPage = false): void {
+    const previous = this.projected?.snapshot;
+    const pendingSelection = this.pendingSelection;
+    const previousEntryVersions = new Map(this.entryVersions);
+    const previousTerminalVersions = new Map(this.terminalVersions);
+    this.resetPatchJournal();
+    const publish = (content: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> | null, trackSelection = false) => {
+      if (view || trackSelection) {
         const selected = this.sessions.getActiveSession();
         this.shownLoad = selected && this.sessions.sessionLoad({ configuredName: selected.agentName, sessionId: selected.sessionId });
-        this.post({ type: 'viewSnapshot', state: this.currentState(), tabs: this.presentTabs(),
+        const message = { type: 'viewSnapshot' as const, state: this.currentState(), tabs: this.presentTabs(),
           running: this.hasRunningTurn, loading: this.shownLoad !== undefined,
-          questions: this.presentQuestions(), content });
+          questions: this.presentQuestions(), content };
+        if (trackSelection && content) { this.pendingSelection = message; }
+        this.post(message);
       } else if (content) { this.post(content); }
     };
     const tabs = this.tabs.snapshot();
@@ -859,6 +912,8 @@ export class ChatViewController {
     if (!owner) { publish(null); return; }
     const state = this.sessions.sessionState({ configuredName: owner.agentName, sessionId: owner.sessionId });
     if (!state) { publish(null); return; }
+    const continues = !newPage && previous?.target.configuredName === owner.agentName
+      && previous.target.sessionId === owner.sessionId && previous.target.generation === state.generation;
     const images = this.markdownImageOwner;
     if (images && (images.target.configuredName !== owner.agentName || images.target.sessionId !== owner.sessionId
       || images.target.generation !== state.generation || (registration && registration !== images.registration))) {
@@ -870,18 +925,36 @@ export class ChatViewController {
       if (!key.startsWith('["markdown",')) { this.imageBytes.delete(key); }
     }
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); this.projectionTimer = undefined; }
+    const revision = continues ? previous.revision + 1 : 0;
+    const entries = this.presentContent(state, owner);
+    const terminals = [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal }));
+    if (continues) {
+      const oldEntries = new Map(previous.entries.map((entry) => [entry.id, entry]));
+      const oldTerminals = new Map(previous.terminals.map((terminal) => [terminal.terminalId, terminal]));
+      for (const entry of entries) {
+        this.entryVersions.set(entry.id, isDeepStrictEqual(oldEntries.get(entry.id), entry) ? previousEntryVersions.get(entry.id) ?? 0 : revision);
+      }
+      for (const terminal of terminals) {
+        this.terminalVersions.set(terminal.terminalId, isDeepStrictEqual(oldTerminals.get(terminal.terminalId), terminal)
+          ? previousTerminalVersions.get(terminal.terminalId) ?? 0 : revision);
+      }
+    }
     const snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> = {
       type: 'contentSnapshot', target: { configuredName: owner.agentName, sessionId: owner.sessionId, generation: state.generation, projection: ++this.projectionSequence },
       markdownImageEpoch: this.markdownImageContext,
-      revision: 0, entries: this.presentContent(state, owner), currentTurn: state.content.currentTurn,
+      revision, entries, currentTurn: state.content.currentTurn,
       composer: { ...state.composer },
       queue: state.queue.map((entry) => ({ ...entry })),
       nextId: state.content.nextId, usage: state.usage,
-      terminals: [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal })),
+      terminals,
+      ...(continues ? { versions: { entries: [...this.entryVersions], terminals: [...this.terminalVersions] } } : {}),
 
     };
-    this.projected = { state, snapshot, registration };
-    publish(snapshot);
+    if (continues) { this.appliedRevision = -1; this.pendingSelection = pendingSelection; }
+    else { this.firstRepairableProjection = snapshot.target.projection; }
+    this.projected = { state, snapshot, registration, running: this.hasRunningTurn };
+    publish(snapshot, !continues && !newPage && (view || pendingSelection !== undefined));
+    this.schedulePatchRetry();
   }
 
   private sendContentPatch(): void {
@@ -890,10 +963,14 @@ export class ChatViewController {
     const registration = this.sessions.getActiveSession();
     if (!previous || previous.snapshot.target.sessionId !== registration?.sessionId || previous.snapshot.target.configuredName !== registration.agentName) { return; }
     const state = this.sessions.sessionState({ configuredName: registration.agentName, sessionId: registration.sessionId });
-    if (!state || state === previous.state) { return; }
+    const running = this.hasRunningTurn;
+    if (!state || (state === previous.state && running === previous.running)) { return; }
     if (state.generation !== previous.snapshot.target.generation) { this.sendContentSnapshot(); return; }
     const entries = this.presentContent(state, registration);
     const patches = [...contentPatches(previous.snapshot.entries, entries)];
+    for (const terminalId of previous.state.terminals.keys()) {
+      if (!state.terminals.has(terminalId)) { patches.push({ kind: 'removeTerminal', terminalId }); }
+    }
     for (const [terminalId, terminal] of state.terminals) {
       const before = previous.state.terminals.get(terminalId);
       if (before?.text !== terminal.text || before.truncated !== terminal.truncated || before.exitStatus !== terminal.exitStatus) {
@@ -901,15 +978,125 @@ export class ChatViewController {
       }
     }
     const revision = previous.snapshot.revision + 1;
+    for (const patch of patches) {
+      switch (patch.kind) {
+        case 'insert':
+        case 'spliceEntries':
+          for (const entry of patch.entries) { this.entryVersions.set(entry.id, revision); }
+          break;
+        case 'replace': this.entryVersions.set(patch.id, revision); break;
+        case 'terminal': this.terminalVersions.set(patch.terminalId, revision); break;
+        case 'removeTerminal': this.terminalVersions.delete(patch.terminalId); break;
+        default: this.entryVersions.set(patch.turnId, revision); break;
+      }
+    }
+    const entryIds = new Set(entries.map(({ id }) => id));
+    for (const id of this.entryVersions.keys()) { if (!entryIds.has(id)) { this.entryVersions.delete(id); } }
     const snapshot = { ...previous.snapshot, composer: { ...state.composer },
       queue: state.queue.map((entry) => ({ ...entry })),
       entries, revision, currentTurn: state.content.currentTurn, nextId: state.content.nextId, usage: state.usage,
       terminals: [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal })) };
-    this.projected = { ...previous, state, snapshot };
-    this.post({ type: 'contentPatch', target: snapshot.target, base: previous.snapshot.revision, revision, patches,
+    this.projected = { ...previous, state, snapshot, running };
+    const message: ProjectedPatch = { type: 'contentPatch', target: snapshot.target, base: previous.snapshot.revision, revision, patches,
       currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage,
+      ...(running === previous.running ? {} : { running }),
       ...(state.composer === previous.state.composer ? {} : { composer: snapshot.composer }),
-      ...(state.queue === previous.state.queue ? {} : { queue: snapshot.queue }) });
+      ...(state.queue === previous.state.queue ? {} : { queue: snapshot.queue }) };
+    const bytes = Buffer.byteLength(JSON.stringify(message));
+    this.patchJournal.push({ message, bytes });
+    this.patchJournalBytes += bytes;
+    while (this.patchJournalBytes > PATCH_JOURNAL_BYTES || this.patchJournal.length > PATCH_JOURNAL_COUNT) {
+      const oldest = this.patchJournal.shift();
+      if (!oldest) { break; }
+      this.patchJournalBytes -= oldest.bytes;
+    }
+    this.post(message);
+    this.schedulePatchRetry();
+  }
+
+  private cancelPatchRetry(): void {
+    if (this.patchRetry !== undefined) { clearTimeout(this.patchRetry); this.patchRetry = undefined; }
+  }
+
+  private resetPatchJournal(): void {
+    this.cancelPatchRetry();
+    this.patchRetryDelay = PATCH_RETRY_MS;
+    this.appliedRevision = 0;
+    this.invalidBaseRevision = undefined;
+    this.pendingSelection = undefined;
+    this.patchJournal = [];
+    this.patchJournalBytes = 0;
+    this.entryVersions.clear();
+    this.terminalVersions.clear();
+  }
+
+  private schedulePatchRetry(): void {
+    const target = this.projected?.snapshot.target;
+    if (this.disposed || !target || this.patchRetry !== undefined
+      || (!this.pendingSelection && this.projected?.snapshot.revision === this.appliedRevision)) { return; }
+    this.patchRetry = setTimeout(() => {
+      this.patchRetry = undefined;
+      if (!this.currentTarget(target)) { return; }
+      if (this.environment.visible) {
+        if (this.pendingSelection) { this.post(this.pendingSelection); }
+        if (this.projected?.snapshot.revision !== this.appliedRevision) {
+          if (this.invalidBaseRevision === undefined && this.patchJournal[0]?.message.base === this.appliedRevision) {
+            for (const { message } of this.patchJournal) { this.post(message); }
+          } else {
+            this.post({ type: 'contentManifestRequested', target });
+          }
+        }
+      }
+      this.patchRetryDelay = Math.min(this.patchRetryDelay * 2, MAX_PATCH_RETRY_MS);
+      this.schedulePatchRetry();
+    }, this.patchRetryDelay);
+  }
+
+  private repairContent({ revision, versions, baseTarget, invalidBase }: Extract<WebviewToExtensionMessage, { type: 'contentManifest' }>): void {
+    const projected = this.projected;
+    if (!projected || !Number.isSafeInteger(revision) || revision < this.appliedRevision || revision >= projected.snapshot.revision
+      || (!invalidBase && this.invalidBaseRevision === undefined && this.patchJournal[0]?.message.base === this.appliedRevision)) { return; }
+    const { snapshot, running } = projected;
+    if (baseTarget && (baseTarget.configuredName !== snapshot.target.configuredName || baseTarget.sessionId !== snapshot.target.sessionId
+      || baseTarget.generation !== snapshot.target.generation || !Number.isSafeInteger(baseTarget.projection)
+      || baseTarget.projection < this.firstRepairableProjection || baseTarget.projection >= snapshot.target.projection)) { return; }
+    if (invalidBase) { this.invalidBaseRevision = Math.max(this.invalidBaseRevision ?? revision, revision); }
+    const patches: ProjectedPatch['patches'][number][] = [];
+    const before = new Map(versions.entries);
+    const after = new Set(snapshot.entries.map(({ id }) => id));
+    const retained = versions.entries.map(([id]) => id).filter((id, index) => {
+      if (after.has(id)) { return true; }
+      patches.push({ kind: 'spliceEntries', index, remove: 1, entries: [] });
+      return false;
+    });
+    patches.reverse();
+    let kept = 0;
+    for (const [index, entry] of snapshot.entries.entries()) {
+      if (entry.id !== retained[kept]) {
+        patches.push({ kind: 'insert', index, entries: [entry] });
+      } else {
+        kept++;
+        if ((before.get(entry.id) ?? 0) !== (this.entryVersions.get(entry.id) ?? 0)) {
+          patches.push({ kind: 'replace', id: entry.id, entry });
+        }
+      }
+    }
+    const terminals = new Map(versions.terminals);
+    for (const terminal of snapshot.terminals) {
+      if (terminals.get(terminal.terminalId) !== (this.terminalVersions.get(terminal.terminalId) ?? 0)) {
+        patches.push({ kind: 'terminal', ...terminal });
+      }
+      terminals.delete(terminal.terminalId);
+    }
+    for (const terminalId of terminals.keys()) { patches.push({ kind: 'removeTerminal', terminalId }); }
+    const current: ContentVersions = {
+      entries: snapshot.entries.map(({ id }) => [id, this.entryVersions.get(id) ?? 0]),
+      terminals: snapshot.terminals.map(({ terminalId }) => [terminalId, this.terminalVersions.get(terminalId) ?? 0]),
+    };
+    this.post({ type: 'contentPatch', target: snapshot.target, base: revision, revision: snapshot.revision, patches,
+      ...(baseTarget ? { baseTarget } : {}),
+      currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage, running, versions: current,
+      composer: snapshot.composer, queue: snapshot.queue });
   }
 
   private presentContent(state: SessionStateView, owner: { agentName: string; sessionId: string; cwd: string }): Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'] {

@@ -11,8 +11,10 @@ import {
   type AcpDriver,
   type AuthMethod,
 } from '@/core/acp/AcpDriver';
+import type { SessionUpdateSink } from '@/core/acp/AcpDriver';
 import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
+import type { SessionLoad } from '@/core/sessions/UpdateHandler';
 import { Reviews } from '@/core/review/Reviews';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { deferred } from '@tests/unit/core/ChatViewControllerTestSupport';
@@ -94,7 +96,7 @@ describe('SessionManager', () => {
         }),
       other: sessionAgent(SECOND_SESSION).script,
     });
-    const sinks: import('@/core/acp/AcpDriver').SessionUpdateSink[] = [];
+    const sinks: SessionUpdateSink[] = [];
     const connect = connections.connect.bind(connections);
     vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, sink, closed) => {
       if (name === 'fake') { sinks.push(sink); }
@@ -696,7 +698,7 @@ describe('SessionManager', () => {
         return { sessionId: FIRST_SESSION };
       }),
     });
-    const sinks = new Map<string, import('@/core/acp/AcpDriver').SessionUpdateSink>();
+    const sinks = new Map<string, SessionUpdateSink>();
     const connect = connections.connect.bind(connections);
     vi.spyOn(connections, 'connect').mockImplementation((name, streams, id, sink, closed) => {
       sinks.set(name, sink);
@@ -2012,7 +2014,7 @@ describe('SessionManager', () => {
     it('drops a session the agent no longer has from the chat view, keeping its reference', async () => {
       const { manager, references, reference, workspace, takeEvents } = setup({ fake: replayingAgent() });
       await references.used(address('gone'));
-      let load: import('@/core/sessions/UpdateHandler').SessionLoad | undefined;
+      let load: SessionLoad | undefined;
       manager.once('session-load-start', (started) => { load = started; });
 
       await expect(manager.loadSession('fake', 'gone')).rejects.toThrow(UnknownSession);

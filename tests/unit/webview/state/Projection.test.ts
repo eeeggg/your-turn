@@ -12,16 +12,42 @@ const snapshot: ExtensionToWebviewMessage = { type: 'contentSnapshot', queue: []
   ] },
 ] };
 
-it('reissues pending image context after a snapshot refreshes the same projection owner', () => {
+it.each(['confirmed', 'already released'] as const)('keeps a queued save pending until the host reports it %s', (outcome) => {
+  const original = { id: 4, text: 'Original', draft: 'Edited', revision: 2 };
+  const starting = update(initialState, { ...snapshot, queue: [original] }, 0).state;
+  const saving = update(starting, { type: 'queuedPromptEditSaved', id: 4 }, 0);
+  expect(saving.outgoing).toEqual([{ type: 'queueChanged', target, change: { kind: 'editSaved', id: 4, revision: 3 } }]);
+  expect(saving.state.transcript.queued[0]).toMatchObject(original);
+  const queue = outcome === 'confirmed' ? [{ id: 4, text: 'Edited', draft: null, revision: 3 }] : [];
+  const repaired = update(saving.state, { type: 'contentPatch', target, base: 0, revision: 1, patches: [],
+    currentTurn: null, nextId: 3, usage: null, queue }, 0).state;
+  expect(repaired.transcript.queued).toEqual(queue.map((entry) => ({ ...entry, open: false })));
+});
+
+it.each(['snapshot', 'repair'] as const)('reissues pending image context after a %s changes the projection', (delivery) => {
   const state = update(initialState, snapshot, 0).state;
   const mounted = update(state, { type: 'markdownImageMounted', occurrence: 1, source: './tiny.gif' }, 0);
   expect(mounted.outgoing).toEqual([{ type: 'markdownImageContext', target }]);
   const next = { ...target, projection: 2 };
-  const refreshed = update(mounted.state, { ...snapshot, target: next }, 0);
+  const refreshed = update(mounted.state, delivery === 'snapshot' ? { ...snapshot, target: next } : {
+    type: 'contentPatch', target: next, baseTarget: target, base: 0, revision: 1, patches: [], currentTurn: 2, nextId: 3, usage: null,
+  }, 0);
   expect(refreshed.outgoing).toEqual([{ type: 'markdownImageContext', target: next }]);
   expect(update(refreshed.state, { type: 'markdownImageContext', target, context: 1 }, 0).outgoing).toEqual([]);
   expect(update(refreshed.state, { type: 'markdownImageContext', target: next, context: 1 }, 0).outgoing)
     .toEqual([{ type: 'resolveMarkdownImage', context: 1, occurrence: 1, source: './tiny.gif' }]);
+});
+
+it('keeps a resolved image and its consent context during projection repair', () => {
+  const state = update(initialState, snapshot, 0).state;
+  const mounted = update(state, { type: 'markdownImageMounted', occurrence: 1, source: 'https://example.com/tiny.gif' }, 0).state;
+  const contextualized = update(mounted, { type: 'markdownImageContext', target, context: 1 }, 0).state;
+  const resolved = update(contextualized, { type: 'markdownImage', context: 1, occurrence: 1, src: 'data:image/gif;base64,R0lG' }, 0).state;
+  const repaired = update(resolved, { type: 'contentPatch', target: { ...target, projection: 2 }, baseTarget: target,
+    base: 0, revision: 1, patches: [], currentTurn: 2, nextId: 3, usage: null }, 0);
+  expect(repaired.outgoing).toEqual([]);
+  expect(repaired.state.transcript.markdownContext).toBe(1);
+  expect(repaired.state.transcript.markdownImages.get(1)?.presentation?.src).toBe('data:image/gif;base64,R0lG');
 });
 
 it.each(['agentText', 'thoughtText', 'promptText', 'toolCall', 'plan', 'usage', 'compactionSummaryChunk'])('ignores obsolete %s content traffic instead of maintaining a second content authority', (type) => {
@@ -282,7 +308,8 @@ it.each(([
 ] satisfies Extract<ExtensionToWebviewMessage, { type: 'contentPatch' }>['patches'][]).map((patches) => ({ patches })))('recovers atomically from invalid patch addresses: %j', ({ patches }) => {
   const first = update(initialState, snapshot, 0).state;
   expect(update(first, { type: 'contentPatch', target, base: 0, revision: 1, currentTurn: 2, nextId: 3, usage: null, patches }, 1))
-    .toEqual({ state: first, outgoing: [{ type: 'contentSnapshotRequested', target }] });
+    .toEqual({ state: first, outgoing: [{ type: 'contentManifest', target, revision: 0, invalidBase: true,
+      versions: { entries: [[1, 0], [2, 0]], terminals: [] } }] });
 });
 
 it('matches presentation targets by fields, not serialized property order', () => {
@@ -300,6 +327,15 @@ it('rejects delayed snapshots after a newer selection or revision', () => {
   expect(update(advanced, snapshot, 0).state).toBe(advanced);
   const selected = update(advanced, { ...snapshot, target: { ...target, configuredName: 'other', projection: 2 } }, 0).state;
   expect(update(selected, snapshot, 0).state).toBe(selected);
+});
+
+it('ignores a delayed repair after selecting another session', () => {
+  const first = update(initialState, snapshot, 0).state;
+  const selected = update(first, { ...snapshot, target: { ...target, sessionId: 'other', projection: 3 } }, 0).state;
+  expect(update(selected, { type: 'contentPatch', target: { ...target, projection: 2 }, baseTarget: target,
+    base: 0, revision: 2, currentTurn: null, nextId: 4, usage: null, running: false,
+    patches: [{ kind: 'insert', index: 2, entries: [{ kind: 'prompt', id: 3, text: 'Do not show here' }] }],
+  }, 0)).toEqual({ state: selected, outgoing: [] });
 });
 
 it('preserves user thought expansion when a content replacement ends the thought', () => {

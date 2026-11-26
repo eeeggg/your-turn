@@ -2,7 +2,7 @@ import { flushSync } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
 import { ChatView } from '@/webview/views/ChatView';
-import { initialState, update, type Action, type RootState } from '@/webview/state/RootState';
+import { contentApplied, initialState, update, type Action, type RootState } from '@/webview/state/RootState';
 import { createStore, type Store } from '@/webview/state/Store';
 import { StoreContext } from '@/webview/views/StoreContext';
 import { postMessage } from '@/webview/VsCodeApi';
@@ -46,9 +46,25 @@ const store: Store<RootState, Action> = {
   },
 };
 
+let pendingApplied: ReturnType<typeof contentApplied>;
+let appliedTimer: ReturnType<typeof setTimeout> | undefined;
+
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
-  if (event.data.type === 'viewSnapshot' || event.data.type === 'contentSnapshot') { flushComposer(); }
-  store.dispatch(event.data);
+  const message = event.data;
+  if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot') { flushComposer(); }
+  const previousProjection = store.getSnapshot().transcript.projection?.target.projection;
+  store.dispatch(message);
+  const applied = contentApplied(store.getSnapshot(), message);
+  if (applied) {
+    if (message.type === 'contentPatch' && message.baseTarget && applied.target.projection !== previousProjection) { flushComposer(); }
+    pendingApplied = applied;
+    appliedTimer ??= setTimeout(() => {
+      const message = pendingApplied;
+      pendingApplied = undefined;
+      appliedTimer = undefined;
+      if (message) { postMessage(message); }
+    }, 50);
+  }
 });
 document.addEventListener('click', () => store.dispatch({ type: 'pickersClosed' }));
 

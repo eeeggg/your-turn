@@ -3,16 +3,18 @@ import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
 import { existsSync, watch } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import type * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, assert, expect, it, onTestFinished, vi } from 'vitest';
 import type { Page } from '@playwright/test';
+import type * as playwright from '@playwright/test';
 import { selectListedSession } from '@tests/ui/workbench';
 import { listenControl } from '@tests/ui/instrumentation/ControlChannel';
 
 const boundary = vi.hoisted(() => ({ launch: vi.fn(), download: vi.fn(), manifest: vi.fn() }));
 vi.mock('node:fs/promises', async (original) => {
-  const fs = await original<typeof import('node:fs/promises')>();
+  const fs = await original<typeof fsPromises>();
   return { ...fs, readFile: (...args: Parameters<typeof fs.readFile>) => {
     if (args[0] === resolve('test-results/ui-extension/package.json')) { return boundary.manifest() as Promise<string>; }
     return fs.readFile(...args);
@@ -458,7 +460,7 @@ it('preserves launch failure and removes directories before an application handl
 });
 
 it('real Playwright launch failure contains a detached descendant before returning', async () => {
-  const { _electron } = await vi.importActual<typeof import('@playwright/test')>('@playwright/test');
+  const { _electron } = await vi.importActual<typeof playwright>('@playwright/test');
   const directory = await mkdtemp(join(tmpdir(), 'ui-launch-failure-'));
   const ready = join(directory, 'ready');
   const release = join(directory, 'release');

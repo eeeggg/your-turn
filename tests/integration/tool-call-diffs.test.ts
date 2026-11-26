@@ -171,7 +171,18 @@ for (const version of [1, 2]) {
 
     test("Open File and Open Changes, given a link's context, open the file and the agent's change from what the extension keeps", async () => {
       await showDiffs(true);
+      posts.length = 0;
+      answers.length = 0;
+      const turnApplied = observed([api.chatPosts, api.chatMessages], () => {
+        const end = posts.find((post) => post.type === 'contentPatch' && post.running === false);
+        if (end?.type !== 'contentPatch') { return; }
+        const { target, revision } = end;
+        return answers.find((answer) => answer.type === 'contentApplied' && answer.revision === revision
+          && answer.target.configuredName === target.configuredName && answer.target.sessionId === target.sessionId
+          && answer.target.generation === target.generation && answer.target.projection === target.projection);
+      });
       await prompt();
+      await turnApplied;
       const a = join(dir, 'a.ts');
 
       answers.length = 0;
@@ -181,6 +192,7 @@ for (const version of [1, 2]) {
 
       await vscode.commands.executeCommand('your-turn.openToolCallChanges', fileContext(0));
       assert.deepStrictEqual(await shownChanges("a.ts (Agent's Change)"), { before: 'one\ntwo\n', after: 'one\nTWO\n' });
+      assert.deepStrictEqual(answers, []);
     });
 
     test(version === 1 ? "Open Changes on a new file shows it against an empty side" : "Open File on a deleted file shows what the agent removed", async () => {

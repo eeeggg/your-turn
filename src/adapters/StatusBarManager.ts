@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SessionManager } from '@/core/sessions/Manager';
+import type { SessionManager } from '@/core/sessions/Manager';
 
 /**
  * Manages the status bar item showing the selected session's agent.

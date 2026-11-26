@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type * as vitest from 'vitest';
 import type { AgentConnector } from '@agentclientprotocol/sdk';
 import {
   connectedDriver,
@@ -9,7 +10,7 @@ import {
 
 const hooks = vi.hoisted(() => ({ cleanup: [] as (() => Promise<void>)[] }));
 vi.mock('vitest', async (original) => ({
-  ...await original<typeof import('vitest')>(),
+  ...await original<typeof vitest>(),
   onTestFinished: (cleanup: () => Promise<void>) => { hooks.cleanup.push(cleanup); },
 }));
 

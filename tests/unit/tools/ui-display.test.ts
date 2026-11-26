@@ -1,9 +1,10 @@
 import { access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
+import type * as childProcess from 'node:child_process';
 import { afterEach, expect, it, vi } from 'vitest';
 
 vi.mock('node:child_process', async (original) => {
-  const actual = await original<typeof import('node:child_process')>();
+  const actual = await original<typeof childProcess>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
 afterEach(() => { vi.useRealTimers(); vi.mocked(spawn).mockClear(); });
@@ -51,7 +52,7 @@ it('closes the display after a test failure without replacing the failure', asyn
 });
 
 it.each(['early exit', 'invalid readiness', 'readiness timeout'] as const)('closes the owned server after %s without running the test', async (failure) => {
-  const actual = await vi.importActual<typeof import('node:child_process')>('node:child_process');
+  const actual = await vi.importActual<typeof childProcess>('node:child_process');
   const fixtures = await fixture();
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
   const script = failure === 'early exit'

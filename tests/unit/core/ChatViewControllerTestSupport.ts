@@ -11,8 +11,8 @@ import {
 import type { FileEditor } from '@/core/ReportedFiles';
 import type { SessionManager, SessionInfo } from '@/core/sessions/Manager';
 import type { SessionDelivery, SessionLoad } from '@/core/sessions/UpdateHandler';
-import type { ExtensionToWebviewMessage } from '@/shared/WebviewMessages';
-import { initialState, update } from '@/webview/state/RootState';
+import type { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '@/shared/WebviewMessages';
+import { contentApplied, initialState, update } from '@/webview/state/RootState';
 
 export const SESSION_ID = '32350bd8-7efa-4316-a84c-e051a33e7580';
 export const OTHER_SESSION_ID = 'ade937c1-4293-4a45-8fea-dcf147090866';
@@ -235,10 +235,13 @@ export class FakeEnvironment implements ChatViewEnvironment {
   };
   reveal = vi.fn<ChatViewEnvironment['reveal']>(async () => { this.visible = true; });
   posted: ExtensionToWebviewMessage[] = [];
+  acknowledge?: (message: Extract<WebviewToExtensionMessage, { type: 'contentApplied' }>) => void;
 
   post(message: ExtensionToWebviewMessage): void {
     this.posted.push(message);
     this.view = update(this.view, structuredClone(message), Date.now()).state;
+    const applied = contentApplied(this.view, message);
+    if (applied) { this.acknowledge?.(applied); }
   }
   executeCommand = vi.fn<ChatViewEnvironment['executeCommand']>(async () => {});
   showsDiffs = false;
@@ -323,6 +326,7 @@ export function setup(network?: ImageNetwork, finish?: (sessions: FakeSessions) 
     workspaceRoots: () => ({ cwd: '/work/project', additionalDirectories: ['/other'] }),
   }, network);
   environments.set(controller, environment);
+  environment.acknowledge = (message) => { void controller.handleMessage(message); };
   onTestFinished(async () => {
     const disposed = controller.dispose();
     if (vi.isFakeTimers()) { await vi.runAllTimersAsync(); }
