@@ -69,7 +69,7 @@ function formSchema<P>(schema: { title?: string | null; description?: string | n
 }
 
 function v1Property(property: V1.ElicitationPropertySchema): ElicitationProperty {
-  if (V1.ElicitationPropertySchema.isString(property)) { return stringProperty(property); }
+  if (V1.ElicitationPropertySchema.isString(property)) { return stringProperty(property, property.pattern ?? null); }
   if (V1.ElicitationPropertySchema.isNumber(property)) { return numberProperty('number', property); }
   if (V1.ElicitationPropertySchema.isInteger(property)) { return numberProperty('integer', property); }
   if (V1.ElicitationPropertySchema.isBoolean(property)) { return { type: 'boolean', ...labels(property), default: property.default ?? null }; }
@@ -106,10 +106,10 @@ function option(value: V1.EnumOption) {
   return { const: value.const, title: value.title, description: value.description ?? null };
 }
 
-function stringProperty(property: V1.StringPropertySchema | V2.StringPropertySchema): ElicitationProperty {
+function stringProperty(property: V1.StringPropertySchema | V2.StringPropertySchema, pattern: string | null = null): ElicitationProperty {
   return {
     type: 'string', ...labels(property), minLength: property.minLength ?? null, maxLength: property.maxLength ?? null,
-    pattern: property.pattern ?? null, format: property.format ?? null, default: property.default ?? null,
+    pattern, format: property.format ?? null, default: property.default ?? null,
     enum: property.enum ? [...property.enum] : null, oneOf: property.oneOf ? property.oneOf.map(option) : null,
   };
 }

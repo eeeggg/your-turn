@@ -53,6 +53,20 @@ describe('retained session content', () => {
     ] });
   });
 
+  it('preserves compaction timing on summary updates and resets it when progress resumes', () => {
+    const patch = { kind: 'compactionUpdate' as const, compactionId: 'c1', error: { present: false } as const };
+    const noSummary = { present: false } as const;
+    const summary = { present: true, value: [{ type: 'text', text: 'Updated summary' }] } as const;
+    let state = updateContent(initialContent, { ...patch, status: 'in_progress', summary: noSummary }, 1000);
+    state = updateContent(state, { ...patch, status: 'completed', summary: noSummary }, 2000);
+    state = updateContent(state, { ...patch, summary: { ...summary, value: [...summary.value] } }, 3000);
+    expect(state.entries).toMatchObject([{ status: 'completed', startedAt: 1000, endedAt: 2000, summary: summary.value }]);
+    state = updateContent(state, { ...patch, status: null, summary: noSummary }, 4000);
+    expect(state.entries).toMatchObject([{ status: 'in_progress', startedAt: 4000, endedAt: null, summary: summary.value }]);
+    state = updateContent(state, { ...patch, status: 'completed', summary: noSummary }, 5000);
+    expect(state.entries).toMatchObject([{ status: 'completed', startedAt: 4000, endedAt: 5000, summary: summary.value }]);
+  });
+
   it('retains tool patches and plans at their first position across later turns', () => {
     let state = updateContent(initialContent, { kind: 'toolCall', toolCallId: 't1', title: 'Read', status: 'running', content: [{ kind: 'text', text: 'Body' }] }, 0);
     state = updateContent(state, { kind: 'agentText', messageId: 'm1', text: 'Between' }, 0);

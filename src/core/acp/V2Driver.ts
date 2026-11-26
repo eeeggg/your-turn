@@ -463,7 +463,7 @@ class Translator {
       return {
         kind: 'compactionUpdate',
         compactionId: update.compactionId,
-        status: update.status,
+        ...(update.status === undefined ? {} : { status: update.status }),
         summary: update.summary === undefined
           ? { present: false }
           : { present: true, value: update.summary === null ? null : update.summary.map(compactionContent) },

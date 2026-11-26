@@ -1196,6 +1196,17 @@ describe('V2Driver', () => {
       ]);
     });
 
+    it('distinguishes omitted compaction status from an explicit reset', async () => {
+      const summary = [{ type: 'text' as const, text: 'Updated summary' }];
+      expect(await updatesFor(
+        { sessionUpdate: 'compaction_update', compactionId: 'c1', summary },
+        { sessionUpdate: 'compaction_update', compactionId: 'c1', status: null },
+      )).toEqual([
+        { kind: 'compactionUpdate', compactionId: 'c1', summary: { present: true, value: summary }, error: { present: false } },
+        { kind: 'compactionUpdate', compactionId: 'c1', status: null, summary: { present: false }, error: { present: false } },
+      ]);
+    });
+
     it('reports no cost for both absent and null cost', async () => {
       expect(await updatesFor(
         { sessionUpdate: 'usage_update', used: 1000, size: 200000 },
@@ -1332,7 +1343,7 @@ describe('V2Driver', () => {
       expect(received).toEqual([expect.objectContaining({ code: -32800 })]);
     });
 
-    it('notifies the agent before resolving its pending permission request as cancelled', async () => {
+    it('delivers Stop to the agent before the cancelled permission response', async () => {
       const events: string[] = [];
       let resolvePermission!: (outcome: PermissionOutcome) => void;
       let permissionStarted!: () => void;
@@ -1342,7 +1353,6 @@ describe('V2Driver', () => {
         permissionStarted();
       }));
       const cancelSession = vi.fn<ClientHandlers['permissions']['cancelSession']>(() => {
-        events.push('cancel-pending-permissions');
         resolvePermission({ kind: 'cancelled' });
       });
       const { driver } = await connectedDriver(() => fakeV2Agent()
@@ -1362,7 +1372,7 @@ describe('V2Driver', () => {
       await driver.cancel(SESSION_ID);
       await session;
 
-      expect(events).toEqual(['session-cancel', 'cancel-pending-permissions', 'permission:cancelled']);
+      expect(events).toEqual(['session-cancel', 'permission:cancelled']);
       expect(cancelSession).toHaveBeenCalledExactlyOnceWith(SESSION_ID);
     });
   });
