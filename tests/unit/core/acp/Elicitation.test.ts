@@ -95,7 +95,7 @@ describe('versioned elicitation translation', () => {
       const answer = translate(request, 'incoming', new AbortController().signal, requests);
       const interaction = requests.snapshot()[0];
       expect(interaction).toMatchObject({ mode: 'form', form: { title: 'Profile', description: 'Details', fields: [
-        { name: 'text', minLength: 1, maxLength: 8, pattern: '^a', format: null, default: 'abc' },
+        { name: 'text', minLength: 1, maxLength: 8, pattern: version === 1 ? '^a' : null, format: null, default: 'abc' },
         { name: 'choice', required: true, choices: [{ value: 'a', title: 'Alpha', description: 'First' }] },
         { name: 'count', minimum: 0, maximum: 2, default: 0 },
         { name: 'integer', type: 'integer', minimum: 0, maximum: 3, default: 1 },

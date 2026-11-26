@@ -612,7 +612,7 @@ describe('V1Driver', () => {
       expect(answers).toEqual([expect.objectContaining({ code: -32800 })]);
     });
 
-    it('notifies the agent of session cancellation before answering pending permission as cancelled', async () => {
+    it('delivers Stop to the agent before the cancelled permission response', async () => {
       const events: string[] = [];
       let permissionStarted!: () => void;
       const started = new Promise<void>((resolve) => { permissionStarted = resolve; });
@@ -627,10 +627,7 @@ describe('V1Driver', () => {
       const handlers: ClientHandlers = {
         permissions: {
           requestPermission: (permission, signal) => permissions.requestPermission(permission, signal),
-          cancelSession: (sessionId) => {
-            events.push('cancel-pending-permissions');
-            permissions.cancelSession(sessionId);
-          },
+          cancelSession: (sessionId) => permissions.cancelSession(sessionId),
         },
       };
       const { driver } = await connectedDriver(() => fakeAgent()
@@ -648,9 +645,9 @@ describe('V1Driver', () => {
 
       await started;
       await driver.cancel(SESSION_ID);
-      await turn;
+      await expect(turn).resolves.toEqual({ stopReason: 'cancelled' });
 
-      expect(events).toEqual(['session-cancel', 'cancel-pending-permissions', 'permission:cancelled']);
+      expect(events).toEqual(['session-cancel', 'permission:cancelled']);
     });
 
     it('passes request withdrawal to the permission handler and returns its cancelled-request error', async () => {

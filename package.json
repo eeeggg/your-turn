@@ -682,7 +682,7 @@
     "package:ci": "node tools/package-ci.mjs"
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "2.7.0",
+    "@agentclientprotocol/sdk": "2.12.0",
     "@xterm/headless": "^6.0.0",
     "currency-codes": "^2.2.0",
     "date-fns": "^4.4.0",

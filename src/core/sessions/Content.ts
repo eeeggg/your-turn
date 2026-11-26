@@ -118,11 +118,14 @@ export function updateContent(content: SessionContent, update: SessionUpdate, no
     case 'compactionUpdate':
     case 'compactionSummaryChunk': {
       const revise = (previous: Compaction): Compaction => {
-        const status = update.kind === 'compactionUpdate' ? update.status : previous.status;
+        const reported = update.kind === 'compactionUpdate' ? update.status : undefined;
+        const resetTiming = reported === null && previous.status !== 'in_progress';
+        const status = reported === undefined ? previous.status : reported ?? 'in_progress';
         const terminal = status === 'completed' || status === 'failed' || status === 'cancelled';
-        const startedAt = previous.startedAt ?? (!loading && previous.timingAllowed && status === 'in_progress' ? now : null);
-        const endedAt = previous.endedAt ?? (!loading && startedAt !== null && terminal ? now : null);
-        const revised = { ...previous, status, startedAt, endedAt, timingAllowed: previous.timingAllowed && !loading && !terminal };
+        const timingAllowed = (resetTiming || previous.timingAllowed) && !loading && !terminal;
+        const startedAt = (resetTiming ? null : previous.startedAt) ?? (timingAllowed && status === 'in_progress' ? now : null);
+        const endedAt = (resetTiming ? null : previous.endedAt) ?? (!loading && startedAt !== null && terminal ? now : null);
+        const revised = { ...previous, status, startedAt, endedAt, timingAllowed };
         return update.kind === 'compactionSummaryChunk'
           ? { ...revised, summary: [...previous.summary, update.content] }
           : { ...revised, summary: update.summary.present ? update.summary.value ?? [] : previous.summary,

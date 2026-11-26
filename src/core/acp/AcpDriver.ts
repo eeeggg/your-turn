@@ -178,7 +178,8 @@ type CompactionErrorPatch = { present: false } | { present: true; value: string 
 /** An ID-addressed compaction upsert; patch presence is preserved for the transcript reducer. */
 interface CompactionUpdate {
   compactionId: string;
-  status: string;
+  /** Omission retains status; null resets it to in_progress. */
+  status?: string | null;
   summary: CompactionSummaryPatch;
   error: CompactionErrorPatch;
 }
