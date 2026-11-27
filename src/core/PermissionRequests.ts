@@ -118,7 +118,8 @@ export class PermissionRequests implements Permissions, PermissionInteractions {
         }
       }
 
-      const detail = [request.subject, request.description].filter((part) => !!part).join(' — ');
+      const child = request.childLabel ? `Child session: ${request.childLabel}` : null;
+      const detail = [child, request.subject, request.description].filter((part) => !!part).join(' — ');
       const controller = new AbortController();
       pending.chooserController = controller;
       const choice = await Promise.race([

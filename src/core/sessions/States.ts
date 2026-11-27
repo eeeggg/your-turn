@@ -1,9 +1,10 @@
-import type { SessionUpdate, TerminalExitStatus } from '@/core/acp/AcpDriver';
+import type { ChildActivity, SessionUpdate, TerminalExitStatus } from '@/core/acp/AcpDriver';
 import {
   initialContent,
   updateContent,
   withSubmittedPrompt,
   withSettledQuestion,
+  withChildCompletion,
   withPromptError,
   endContentTurn,
   withCleanedToolContent,
@@ -36,12 +37,20 @@ interface SessionTerminal {
   readonly exitStatus: TerminalExitStatus | null;
 }
 
+interface ChildContent {
+  readonly parentId: string;
+  readonly title: string | null;
+  readonly content: SessionContent;
+  readonly activity: ChildActivity['state'] | null;
+}
+
 export interface SessionStateView {
   readonly queue: readonly QueuedSubmission[];
   readonly composer: { readonly text: string; readonly revision: number };
   readonly generation: number;
   readonly usage: Readonly<Usage> | null;
   readonly content: SessionContent;
+  readonly children?: ReadonlyMap<string, ChildContent>;
   readonly terminals: ReadonlyMap<string, SessionTerminal>;
   readonly reviewOpportunity: number | null;
   readonly turnOutcome: 'completed' | 'failed' | null;
@@ -58,6 +67,7 @@ interface SessionOutput {
   state: SessionStateView;
   published: boolean;
   released: boolean;
+  replay?: { readonly complete: Set<string>; readonly childActivity: Map<string, ChildContent['activity']> };
   continuation?: { readonly owner: SessionOutput; readonly changes: ({ readonly update: SessionUpdate; readonly now: number } | { readonly question: SettledQuestion })[] };
 }
 
@@ -68,6 +78,63 @@ function reduced(state: SessionStateView, update: SessionUpdate, now: number, lo
   }
   const content = updateContent(state.content, update, now, loading);
   return content === state.content ? state : { ...state, content };
+}
+
+function working(activity: ChildContent['activity'] | undefined): boolean {
+  return activity === 'running' || activity === 'requiresAction';
+}
+
+function reduceChild(owner: SessionOutput, sessionId: string, update: SessionUpdate, now: number): void {
+  const { state, replay } = owner;
+  const historical = replay !== undefined && !replay.complete.has(sessionId);
+  if (update.kind === 'replayComplete') {
+    replay?.complete.add(sessionId);
+    return;
+  }
+  let childId = sessionId;
+  let activity: ChildActivity | null | undefined;
+  let child = state.children?.get(sessionId);
+  const previous = child;
+  if (update.kind === 'childSession') {
+    childId = update.childId;
+    if (childId === sessionId || childId === owner.sessionId) { return; }
+    child = state.children?.get(childId);
+    if (child && child.parentId !== sessionId) { return; }
+    child ??= { parentId: sessionId, title: null, content: initialContent, activity: null };
+    if (update.title !== undefined && update.title !== child.title) { child = { ...child, title: update.title }; }
+    activity = update.activity;
+  } else if (!child) { return; }
+  else if (update.kind === 'foreground') {
+    // v2 does not replay direct state updates. Only a parent mirror can be historical.
+    if (historical) { return; }
+    activity = update.state === 'idle' ? { state: 'idle', stopReason: update.stopReason ?? null } : { state: update.state };
+  } else if (update.kind === 'activityUnknown') {
+    if (historical) { return; }
+    activity = { state: 'unknown' };
+  } else {
+    const content = updateContent(child.content, update, now, historical);
+    if (content !== child.content) { child = { ...child, content }; }
+  }
+
+  let content = state.content;
+  let completedParent: ChildContent | undefined;
+  if (activity !== undefined) {
+    const before = historical ? replay.childActivity.get(childId) : child.activity;
+    const after = activity?.state ?? null;
+    if (historical) { replay.childActivity.set(childId, after); }
+    else if (before !== after) { child = { ...child, activity: after }; }
+    if (activity?.state === 'idle' && working(before)) {
+      child = { ...child, content: endContentTurn(child.content, now) };
+      const parent = state.children?.get(child.parentId);
+      if (parent) { completedParent = { ...parent, content: withChildCompletion(parent.content, childId, activity.stopReason) }; }
+      else { content = withChildCompletion(content, childId, activity.stopReason); }
+    }
+  }
+  if (child !== (update.kind === 'childSession' ? state.children?.get(childId) : previous)) {
+    const children = new Map(state.children).set(childId, child);
+    if (completedParent) { children.set(child.parentId, completedParent); }
+    owner.state = { ...state, children, content };
+  }
 }
 
 /** Runtime-owned values retained independently of selected presentation. */
@@ -293,12 +360,44 @@ export class SessionStates {
     }
     owner.registrations.add(registration);
     const before = owner.state;
-    owner.state = reduced(before, update, now, pending !== undefined);
+    if (update.kind === 'childSession' || update.kind === 'replayComplete') { reduceChild(owner, owner.sessionId, update, now); }
+    else { owner.state = reduced(before, update, now, pending !== undefined); }
     this.ingestOutput(owner, owner.state, registration.sessionId, update);
     if (owner.state === before) { return; }
+    if (update.kind === 'childSession' && !pending) { this.changed(); }
     if (update.kind === 'toolCall' && update.content?.some((item) => item.kind === 'text')) {
       this.cleanToolCall(owner, update.toolCallId);
     }
+  }
+
+  /** Route only announced children, using the same staged output as their root during Load. */
+  acceptChild(origin: SessionOrigin, update: SessionUpdate, now: number, ownsRoot: (rootId: string) => boolean): { rootId: string; historical: boolean } | undefined {
+    const target = this.findChild(origin, ownsRoot);
+    if (!target) { return undefined; }
+    const historical = target.replay !== undefined && !target.replay.complete.has(origin.identity.sessionId);
+    const before = target.state;
+    reduceChild(target, origin.identity.sessionId, update, now);
+    if (target.published && target.state !== before) { this.changed(); }
+    return { rootId: target.sessionId, historical };
+  }
+
+  childPermissionLabel(origin: SessionOrigin, ownsRoot: (rootId: string) => boolean): string | undefined {
+    const child = this.findChild(origin, ownsRoot)?.state.children?.get(origin.identity.sessionId);
+    return child ? child.title?.trim() || origin.identity.sessionId : undefined;
+  }
+
+  private findChild(origin: SessionOrigin, ownsRoot: (rootId: string) => boolean): SessionOutput | undefined {
+    const { sourceId, identity: { configuredName, sessionId } } = origin;
+    const ownsChild = (owner: SessionOutput) => owner.sourceId === sourceId && owner.state.children?.has(sessionId);
+    for (const [registration, { output }] of this.loads) {
+      if (registration.agentName === configuredName && ownsChild(output)) { return output; }
+    }
+    for (const owner of this.entries.values()) {
+      if (owner !== this.entries.get(this.key({ configuredName, sessionId: owner.sessionId })) || !ownsRoot(owner.sessionId)
+        || [...owner.registrations].some((registration) => this.loads.has(registration))) { continue; }
+      if (ownsChild(owner)) { return owner; }
+    }
+    return undefined;
   }
 
   private cleanToolCall(owner: SessionOutput, toolCallId: string): void {
@@ -387,6 +486,9 @@ export class SessionStates {
     for (const output of this.entries.values()) {
       if (output.sourceId !== sourceId) { continue; }
       if (output.state.queue.length > 0) { output.state = { ...output.state, queue: [] }; }
+      if (output.state.children && [...output.state.children.values()].some((child) => child.activity !== null)) {
+        output.state = { ...output.state, children: new Map([...output.state.children].map(([id, child]) => [id, { ...child, activity: null }])) };
+      }
       output.terminals.endSession(output.sessionId);
     }
     this.opening.delete(sourceId);
@@ -408,7 +510,9 @@ export class SessionStates {
   beginLoad(load: SessionLoad): void {
     if (this.closedRegistrations.has(load.registration)) { return; }
     this.releaseOutput(this.loads.get(load.registration)?.output);
-    this.loads.set(load.registration, { load, output: this.newOutput({ configuredName: load.registration.agentName, sessionId: load.registration.sessionId }, load.registration.agentId) });
+    const output = this.newOutput({ configuredName: load.registration.agentName, sessionId: load.registration.sessionId }, load.registration.agentId);
+    output.replay = { complete: new Set(), childActivity: new Map() };
+    this.loads.set(load.registration, { load, output });
   }
 
   endLoad(load: SessionLoad, ok: boolean, keepTurnOpen = false): void {
@@ -416,6 +520,7 @@ export class SessionStates {
     if (pending?.load !== load) { return; }
     this.loads.delete(load.registration);
     if (ok) {
+      delete pending.output.replay;
       if (!keepTurnOpen) {
         pending.output.state = { ...pending.output.state, content: endContentTurn(pending.output.state.content, Date.now()) };
       }

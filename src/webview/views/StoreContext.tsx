@@ -3,6 +3,7 @@ import type { Action, RootState } from '@/webview/state/RootState';
 import type { Store } from '@/webview/state/Store';
 
 export const StoreContext = createContext<Store<RootState, Action> | null>(null);
+export const ChildTranscriptContext = createContext(false);
 
 export function useStore(): Store<RootState, Action> {
   const store = use(StoreContext);

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, assert, describe, expect, it, vi } from 'vitest';
 import type {
   DiffFile,
@@ -145,6 +145,28 @@ function renderChatView(retained = false) {
       }
     },
     target: () => store.getSnapshot().transcript.projection?.target,
+    childStop: (childId: string) => {
+      const registration = runtime?.sessions.session;
+      if (!runtime || !registration) { throw new Error('Missing retained session'); }
+      act(() => {
+        const origin = { identity: { configuredName: registration.agentName, sessionId: childId }, sourceId: registration.agentId };
+        runtime.sessions.retained.acceptChild(origin, { kind: 'foreground', state: 'running' }, time, () => true);
+        runtime.sessions.retained.acceptChild(origin, { kind: 'foreground', state: 'idle', stopReason: 'cancelled' }, time, () => true);
+      });
+    },
+    child: (parentId: string, childId: string, title: string, text: string) => {
+      if (!runtime) { throw new Error('Missing retained session'); }
+      const { sessions } = runtime;
+      const registration = sessions.session;
+      if (!registration) { throw new Error('Missing retained session'); }
+      const origin = (sessionId: string) => ({ identity: { configuredName: registration.agentName, sessionId }, sourceId: registration.agentId });
+      act(() => {
+        const announcement = { kind: 'childSession' as const, childId, title };
+        if (parentId === SESSION_ID) { sessions.retained.accept(registration, announcement, time); }
+        else { sessions.retained.acceptChild(origin(parentId), announcement, time, () => true); }
+        sessions.retained.acceptChild(origin(childId), { kind: 'agentText', messageId: null, text }, time, () => true);
+      });
+    },
     answer: (text: string) => {
       const registration = runtime?.sessions.session;
       if (runtime && registration) {
@@ -162,6 +184,67 @@ function renderChatView(retained = false) {
 }
 
 const retainedQueueView = () => renderChatView(true);
+
+it('shows a cancelled child stop in received order and returns to the completion entry', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.answer('Parent before stop');
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.childStop('child');
+  chat.answer('Parent after stop');
+  const completion = screen.getByRole('button', { name: 'Review tests — Cancelled' });
+  const transcript = chat.part('#messages');
+  expect(transcript.textContent).toMatch(/Parent before stop.*Review tests — Cancelled.*Parent after stop/s);
+  expect(transcript.textContent).not.toContain('Child transcript');
+  const parent = chat.part('#transcriptScroll');
+  parent.scrollTop = 120;
+  fireEvent.click(completion);
+  expect(screen.getByText('Child transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(completion);
+  expect(parent.scrollTop).toBe(120);
+});
+
+it('inspects immediate children and returns focus and scroll position one level at a time', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.answer('Parent transcript');
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.child('child', 'nested', 'Read fixtures', 'Nested transcript');
+  const parent = chat.part('#transcriptScroll');
+  parent.scrollTop = 120;
+  expect(screen.queryByRole('button', { name: 'Read fixtures' })).toBeNull();
+  const entry = screen.getByRole('button', { name: 'Review tests' });
+  entry.focus();
+  fireEvent.click(entry);
+  expect(screen.getByText('Child transcript')).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back' }));
+  expect(chat.part('#transcriptScroll').closest('[inert]')).not.toBeNull();
+  chat.child(SESSION_ID, 'child', 'Review tests', ' updated during inspection');
+  expect(screen.getByText('Child transcript updated during inspection')).toBeTruthy();
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back' }));
+  const nested = screen.getByRole('button', { name: 'Read fixtures' });
+  fireEvent.click(nested);
+  expect(screen.getByText('Nested transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Read fixtures' }));
+
+  chat.childStop('nested');
+  const completion = screen.getByRole('button', { name: 'Read fixtures — Cancelled' });
+  expect(chat.part('#messages').textContent).not.toContain('Read fixtures — Cancelled');
+  const childScroll = chat.part('[aria-label="Child transcript"] .messages');
+  childScroll.scrollTop = 85;
+  fireEvent.click(completion);
+  expect(screen.getByText('Nested transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Read fixtures — Cancelled' }));
+  expect(chat.part('[aria-label="Child transcript"] .messages').scrollTop).toBe(85);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(entry);
+  expect(parent.scrollTop).toBe(120);
+  expect(chat.takePosted().filter(({ type }) => type === 'sendPrompt' || type === 'cancelTurn')).toEqual([]);
+});
 
 /** Click the summary, as the user does, and wait for the `toggle` event the browser queues. */
 async function toggle(details: HTMLDetailsElement): Promise<void> {
@@ -208,7 +291,7 @@ describe('the chat view', () => {
   it('lays out the tabs, the transcript, the input area and the load overlay in that order', () => {
     const { container } = renderChatView();
 
-    expect([...container.children].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
+    expect([...container.querySelectorAll('#parentChat > *, #loadOverlay')].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
     expect([...container.querySelector('#questionAnchor')?.children ?? []].map((child) => child.id)).toEqual(['inputArea']);
   });
 
@@ -280,7 +363,7 @@ describe('the queue', () => {
     prompt(view, 'second');
     prompt(view, 'third');
 
-      expect([...view.container.children].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
+      expect([...view.container.querySelectorAll('#parentChat > *, #loadOverlay')].map((child) => child.id)).toEqual(['sessionTabs', 'sessionTabStatus', 'transcript', 'questionAnchor', 'loadOverlay']);
     expect([...view.part('#questionAnchor').children].map((child) => child.id)).toEqual(['queuedPrompts', 'inputArea']);
     expect(queue(view)?.getAttribute('aria-label')).toBe('Queued prompts');
     expect(queued(view)).toEqual([

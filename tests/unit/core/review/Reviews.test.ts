@@ -1166,6 +1166,21 @@ describe('Reviews', () => {
     expect(shownPaths()).toEqual(['/w/b.ts']);
   });
 
+  it('keeps admitted descendant evidence across Load without carrying partial tool calls into the new transcript', async () => {
+    const { reviews: subject, shownPaths } = reviews();
+    subject.activeSessionChanged(SESSION_ID);
+    const childReport = (update: SessionUpdate): QualifiedSessionUpdate => ({
+      ...input(OTHER_SESSION_ID, update, 'v2'), reviewOwner: load.origin.identity,
+    });
+    await subject.handleSessionUpdate(childReport(patched('done', '/w/a.ts', 'a', 'A')));
+    await subject.handleSessionUpdate(childReport({ ...patched('partial', '/w/b.ts', 'b', 'B'), status: 'running' }));
+    subject.loadStarted(load);
+    await subject.handleSessionUpdate(childReport(patched('replayed', '/w/b.ts', 'b', 'B')));
+    subject.loadEnded(load);
+    await subject.handleSessionUpdate(childReport({ kind: 'toolCall', toolCallId: 'partial', status: 'completed' }));
+    expect(shownPaths()).toEqual(['/w/a.ts']);
+  });
+
   it('keeps equal session and tool IDs from separate configurations in separate retained reviews', async () => {
     const { reviews: subject, shownPaths } = reviews();
     const a: SessionRegistration = { sessionId: SESSION_ID.sessionId, agentName: 'a', agentId: 'source-a' };

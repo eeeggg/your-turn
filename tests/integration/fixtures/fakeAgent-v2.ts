@@ -509,7 +509,20 @@ agent({ name: 'fake-agent' })
   })
   .onRequest(methods.agent.session.prompt, ({ params, client }) => {
     const text = promptText(params.prompt);
-    if (text === 'images') {
+    if (text === 'inspect child') {
+      void (async () => {
+        const childId = randomUUID();
+        await reportState(client, params.sessionId, { state: 'running' });
+        await client.notify(methods.client.session.update, {
+          sessionId: params.sessionId,
+          update: { sessionUpdate: 'subagent_update', sessionId: childId, title: 'Review fixtures', state: { state: 'running' } },
+        });
+        await say(client, childId, 'Child transcript detail.');
+        await say(client, params.sessionId, `${'Parent reading material.\n\n'.repeat(100)}Parent transcript ends here.`);
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+        await reportState(client, childId, { state: 'idle', stopReason: 'cancelled' });
+      })();
+    } else if (text === 'images') {
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });
         await images(client, params.sessionId);

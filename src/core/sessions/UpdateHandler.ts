@@ -13,6 +13,8 @@ export interface SessionOrigin {
 
 export interface QualifiedSessionUpdate {
   readonly origin: SessionOrigin;
+  /** The confirmed delegation root owns review associations; origin still identifies the reporter. */
+  readonly reviewOwner?: SessionIdentity;
   readonly update: SessionUpdate;
   readonly schema: AcpSchema;
 }

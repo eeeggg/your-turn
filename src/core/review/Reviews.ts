@@ -71,7 +71,7 @@ interface SessionReview {
   identity: SessionIdentity;
   summary: ReviewSummary;
   readonly view: ReviewView;
-  readonly guards: Map<string, { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard }>;
+  readonly guards: Map<string, Map<string, { readonly schema: AcpSchema; readonly guard: V1Guard | V2Guard }>>;
   readonly order: Map<string, number>;
 }
 
@@ -102,7 +102,7 @@ function sameSummary(a: ReviewSummary, b: ReviewSummary): boolean {
 }
 
 /**
- * Retains shared pending files and each configuration/session's associations independently of registration. Each source has its own guards;
+ * Retains shared pending files and each configuration/session's associations independently of registration. Guards are scoped to the reporting session and connection;
  * load attempts suppress only that source/session's replay. Removal preserves admitted evidence and does not retire
  * the source. The selected registration projects its associated shared files.
  */
@@ -378,15 +378,17 @@ export class Reviews {
   }
 
   /** Settles once the files its evidence names were read. */
-  handleSessionUpdate({ origin, update, schema }: QualifiedSessionUpdate): Promise<void> {
-    const sessionId = keyOf(origin.identity);
-    const sourceKey = JSON.stringify([origin.sourceId, origin.identity.sessionId]);
+  handleSessionUpdate({ origin, reviewOwner = origin.identity, update, schema }: QualifiedSessionUpdate): Promise<void> {
+    const sessionId = keyOf(reviewOwner);
+    const sourceKey = JSON.stringify([origin.sourceId, reviewOwner.sessionId]);
     if (this.disposed || this.loading.has(sourceKey)) { return Promise.resolve(); }
-    const session = this.session(origin.identity);
-    let guard = session.guards.get(origin.sourceId);
+    const session = this.session(reviewOwner);
+    let reporters = session.guards.get(origin.sourceId);
+    if (!reporters) { reporters = new Map(); session.guards.set(origin.sourceId, reporters); }
+    let guard = reporters.get(origin.identity.sessionId);
     if (guard?.schema !== schema) {
       guard = this.guard(schema, session);
-      session.guards.set(origin.sourceId, guard);
+      reporters.set(origin.identity.sessionId, guard);
     }
     const handled = guard.guard.handleSessionUpdate(update);
     this.pending.add(handled);
@@ -417,6 +419,13 @@ export class Reviews {
 
   loadStarted(load: SessionLoad): void {
     if (this.disposed) { return; }
+    // Load rebuilds confirmed descendants. A later status must not complete a tool call from the old output.
+    const reporters = this.sessions.get(keyOf(load.origin.identity))?.guards.get(load.origin.sourceId);
+    if (reporters) {
+      for (const reporter of reporters.keys()) {
+        if (reporter !== load.origin.identity.sessionId) { reporters.delete(reporter); }
+      }
+    }
     this.loading.set(JSON.stringify([load.origin.sourceId, load.origin.identity.sessionId]), load);
   }
 

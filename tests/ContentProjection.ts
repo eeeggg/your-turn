@@ -116,7 +116,7 @@ export class ContentProjection {
     type Part = Extract<Entry, { kind: 'turn' }>['parts'][number];
     const part = (value: Extract<SessionContent['entries'][number], { kind: 'turn' }>['parts'][number], ended: boolean): Part => {
       switch (value.kind) {
-        case 'message': return value;
+        case 'message': case 'childCompletion': return value;
         case 'thought': {
           const image = value.image && this.images.get(value.image.data);
           return { kind: 'thought', messageId: value.messageId, text: value.text, startedAt: value.startedAt, endedAt: value.endedAt, open: value.endedAt === null,
@@ -136,7 +136,7 @@ export class ContentProjection {
     return this.content.entries.map((entry): Entry => {
       switch (entry.kind) {
         case 'turn': return { kind: 'turn', id: entry.id, parts: entry.parts.map((value) => part(value, entry.id !== this.content.currentTurn)) };
-        case 'prompt': case 'error': return entry;
+        case 'prompt': case 'error': case 'childCompletion': return entry;
         case 'promptImage': return { kind: 'promptImage', id: entry.id, messageId: entry.messageId, text: '', src: null, ...this.images.get(entry.data) };
         case 'compaction': return { ...entry, open: entry.status !== 'completed' };
         case 'question': throw new Error('Supply settled questions as presentation patches');

@@ -137,7 +137,7 @@ describe('ConnectionManager', () => {
     await result;
     expect(wire.foreground).toEqual([
       { kind: 'foreground', state: 'running' },
-      { kind: 'foreground', state: 'idle', outcome: 'cancelled' },
+      { kind: 'foreground', state: 'idle', outcome: 'cancelled', stopReason: 'cancelled' },
     ]);
   });
 

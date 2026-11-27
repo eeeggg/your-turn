@@ -51,6 +51,174 @@ const LAST_PAGE_SESSION = '59e34b91-76f2-4b5b-9a78-73382d3fe8b1';
 const KEPT_SESSION = '1468854e-6b9b-4e7a-89e0-9f7b8771bdd7';
 
 describe('SessionManager', () => {
+  it('associates live descendant file evidence with the root review without sharing tool call IDs', async () => {
+    const edit = (path: string): V2.SessionUpdate => ({
+      sessionUpdate: 'tool_call_update', toolCallId: 'shared', title: 'Edit', status: 'in_progress',
+      content: [{ type: 'diff', changes: [{ operation: 'modify', path, fileType: 'text' }],
+        patch: { format: 'git_patch', text: `--- ${path}\n+++ ${path}\n@@ -1 +1 @@\n-before\n+after\n` } }],
+    });
+    const completed = { sessionUpdate: 'tool_call_update', toolCallId: 'shared', status: 'completed' } as const;
+    const { manager, updates } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.resume, async ({ client }) => {
+        const notify = (sessionId: string, update: V2.SessionUpdate) => client.notify(V2.methods.client.session.update, { sessionId, update });
+        await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'amber' });
+        await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'indigo' });
+        await notify('amber', { sessionUpdate: 'subagent_update', sessionId: 'nested' });
+        await notify('amber', { ...edit('/work/historical.ts'), status: 'completed' });
+        await notify('indigo', { ...edit('/work/replayed-pending.ts'), toolCallId: 'replayed-pending' });
+        for (const id of [FIRST_SESSION, 'amber', 'indigo', 'nested']) { await notify(id, { sessionUpdate: 'replay_complete' }); }
+        return {};
+      })
+      .onRequest(V2.methods.agent.session.prompt, async ({ client }) => {
+        const notify = (sessionId: string, update: V2.SessionUpdate) => client.notify(V2.methods.client.session.update, { sessionId, update });
+        await notify(FIRST_SESSION, { sessionUpdate: 'state_update', state: 'running' });
+        await notify('indigo', { ...completed, toolCallId: 'replayed-pending' });
+        await notify('amber', edit('/work/amber.ts'));
+        await notify('indigo', edit('/work/indigo.ts'));
+        await notify('nested', edit('/work/nested.ts'));
+        for (const id of ['indigo', 'amber', 'nested']) { await notify(id, completed); }
+        await notify(FIRST_SESSION, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+        return { messageId: 'prompt' };
+      }) });
+    const read = vi.fn(async (_path: string) => 'after\n');
+    const reviews = new Reviews({ read, restore: async () => {}, watch: () => ({ dispose() {} }), snapshot: () => undefined,
+      applyEdit: async () => { throw new Error('Unexpected edit'); }, save: async () => { throw new Error('Unexpected save'); },
+    }, manager);
+    onTestFinished(() => reviews.dispose());
+    manager.on('active-session-changed', (registration) => reviews.activeSessionChanged(registration));
+    manager.on('session-load-start', (load) => reviews.loadStarted(load));
+    manager.on('session-load-end', (load) => reviews.loadEnded(load));
+    const taking: Promise<void>[] = [];
+    const reporters: string[] = [];
+    updates.addListener(({ input }) => {
+      if (input.update.kind === 'toolCall') { reporters.push(input.origin.identity.sessionId); }
+      taking.push(reviews.handleSessionUpdate(input));
+    });
+
+    await manager.loadSession('fake', FIRST_SESSION);
+    await Promise.all(taking);
+    expect(read).not.toHaveBeenCalled();
+    await manager.sendPrompt(address(FIRST_SESSION), 'Delegate edits');
+    await Promise.all(taking);
+
+    expect(reviews.shown()?.files().map(({ path, baseline }) => [path, baseline])).toEqual([
+      ['/work/indigo.ts', 'before\n'], ['/work/amber.ts', 'before\n'], ['/work/nested.ts', 'before\n'],
+    ]);
+    expect(reporters).toEqual(['indigo', 'amber', 'indigo', 'nested', 'indigo', 'amber', 'nested']);
+    for (const id of ['amber', 'indigo', 'nested']) { expect(reviews.summary(address(id)).fileCount).toBe(0); }
+    expect(JSON.stringify(manager.sessionState(address(FIRST_SESSION))?.content)).not.toContain('shared');
+  });
+
+  it('retains interleaved v2 child output under the immediate parent without changing the parent transcript', async () => {
+    const cancelled = deferred<string>();
+    const { manager } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+      .onNotification(V2.methods.agent.session.cancel, ({ params }) => { cancelled.resolve(params.sessionId); })
+      .onRequest(V2.methods.agent.session.prompt, async ({ client }) => {
+        const notify = (sessionId: string, update: V2.SessionUpdate) =>
+          client.notify(V2.methods.client.session.update, { sessionId, update });
+        await notify(FIRST_SESSION, { sessionUpdate: 'state_update', state: 'running' });
+        await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'amber' });
+        await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'indigo' });
+        await notify('amber', { sessionUpdate: 'subagent_update', sessionId: 'nested' });
+        await notify('amber', { sessionUpdate: 'state_update', state: 'running' });
+        await notify('indigo', { sessionUpdate: 'state_update', state: 'running' });
+        for (const [sessionId, title] of [['amber', 'Read amber'], ['indigo', 'Read indigo'], ['nested', 'Read nested']] as const) {
+          await notify(sessionId, { sessionUpdate: 'tool_call_update', toolCallId: 'shared', title, status: 'pending' });
+        }
+        await notify('indigo', { sessionUpdate: 'tool_call_update', toolCallId: 'shared', status: 'completed' });
+        await notify('amber', { sessionUpdate: 'tool_call_update', toolCallId: 'shared', status: 'failed' });
+        await notify(FIRST_SESSION, { sessionUpdate: 'agent_message_chunk', messageId: 'parent', content: { type: 'text', text: 'Parent answer' } });
+        await notify(FIRST_SESSION, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+        await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'indigo', state: { state: 'idle', stopReason: 'max_tokens' } });
+        await notify('indigo', { sessionUpdate: 'state_update', state: 'idle', stopReason: 'max_tokens' });
+        return { messageId: 'prompt' };
+      }) });
+    await manager.newSession('fake');
+    await manager.sendPrompt(address(FIRST_SESSION), 'Delegate');
+    await manager.cancelTurn(address(FIRST_SESSION));
+    expect(await cancelled.promise).toBe(FIRST_SESSION);
+
+    const state = manager.sessionState(address(FIRST_SESSION));
+    expect(state).toBeDefined();
+    const children = state?.children;
+    expect([...children?.keys() ?? []]).toEqual(['amber', 'indigo', 'nested']);
+    for (const [id, parentId, title, status] of [
+      ['amber', FIRST_SESSION, 'Read amber', 'failed'],
+      ['indigo', FIRST_SESSION, 'Read indigo', 'completed'],
+      ['nested', 'amber', 'Read nested', 'pending'],
+    ] as const) {
+      expect(children?.get(id)).toMatchObject({ parentId, content: { entries: [{ kind: 'turn', parts: [{
+        kind: 'toolCalls', toolCalls: [{ toolCallId: 'shared', title, status }],
+      }] }] } });
+    }
+    expect(JSON.stringify(state?.content)).toContain('Parent answer');
+    expect(JSON.stringify(state?.content)).not.toContain('shared');
+    expect(children?.get('amber')).toHaveProperty('activity', 'running');
+    expect(children?.get('indigo')).toHaveProperty('activity', 'idle');
+    expect(state?.content.entries.filter((entry) => entry.kind === 'childCompletion')).toMatchObject([
+      { childId: 'indigo', stopReason: 'max_tokens' },
+    ]);
+  });
+
+  it.each([true, false])('publishes staged v2 child history only if Load succeeds (%s)', async (succeeds) => {
+    const loaded = deferred<undefined>();
+    const finish = deferred<undefined>();
+    const { manager } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.resume, async ({ client }) => {
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'replayed-child', state: { state: 'running' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'history-only', state: { state: 'running' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'mirror-only', state: { state: 'running' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child',
+          update: { sessionUpdate: 'tool_call_update', toolCallId: 'read', title: 'Replay only', status: 'completed' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'finished-first', state: { state: 'running' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'finished-first', state: { state: 'idle', stopReason: 'end_turn' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'agent_message_chunk', messageId: 'replayed-parent', content: { type: 'text', text: 'Parent replay between stops' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'finished-first', update: { sessionUpdate: 'replay_complete' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'replayed-child', state: { state: 'idle', stopReason: 'cancelled' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child', update: { sessionUpdate: 'replay_complete' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'history-only', update: { sessionUpdate: 'replay_complete' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'mirror-only', update: { sessionUpdate: 'replay_complete' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child',
+          update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'replay_complete' } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'mirror-only', state: { state: 'idle', stopReason: 'end_turn' } } });
+        loaded.resolve(undefined);
+        await finish.promise;
+        if (!succeeds) { throw new V2.RequestError(-32603, 'Incomplete child replay'); }
+        return {};
+      }) });
+    const loading = manager.loadSession('fake', FIRST_SESSION);
+    const settled = succeeds ? loading : expect(loading).rejects.toThrow('Incomplete child replay');
+    await loaded.promise;
+    try {
+      expect(manager.sessionState(address(FIRST_SESSION))?.children).toBeUndefined();
+    } finally { finish.resolve(undefined); }
+    await settled;
+    const child = manager.sessionState(address(FIRST_SESSION))?.children?.get('replayed-child');
+    if (succeeds) {
+      expect(child).toMatchObject({ parentId: FIRST_SESSION, activity: 'idle' });
+      expect(JSON.stringify(child?.content)).toContain('Replay only');
+      expect(manager.sessionState(address(FIRST_SESSION))?.children?.get('history-only')).toMatchObject({ activity: null });
+      expect(manager.sessionState(address(FIRST_SESSION))?.children?.get('mirror-only')).toMatchObject({ activity: 'idle' });
+      expect(manager.sessionState(address(FIRST_SESSION))?.content.entries).toMatchObject([
+        { kind: 'childCompletion', childId: 'finished-first', stopReason: 'end_turn' },
+        { kind: 'turn', parts: [
+          { kind: 'message', text: 'Parent replay between stops' },
+          { kind: 'childCompletion', childId: 'replayed-child', stopReason: 'cancelled' },
+        ] },
+      ]);
+    } else { expect(child).toBeUndefined(); }
+  });
+
   it.each([undefined, 'unknown'] as const)('holds automatic queue release after a v2 restart with activity %s', async (snapshot) => {
     const prompts: string[] = [];
     const { manager } = setup({ fake: () => fakeV2Agent()

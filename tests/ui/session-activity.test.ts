@@ -5,8 +5,11 @@ import {
   chooseAgentAction,
   chatStop,
   chatTranscript,
+  chatTranscriptScroll,
   chatUserMessages,
   chatViewTitle,
+  childSessions,
+  childTranscript,
   promptInput,
   queuedPrompts,
   sessionTabs
@@ -14,6 +17,45 @@ import {
 import { expect, test } from '@tests/ui/window';
 
 test.use({ agentVersion: 'v2' });
+
+test('Back from child inspection restores the parent reading position and keyboard focus', async ({ window }) => {
+  await yourTurnContainerControl(window).click();
+  await chooseAgentAction(window, 'fake-v2', 'New Session');
+  const prompt = promptInput(window);
+  await prompt.fill('inspect child');
+  await prompt.press('Enter');
+  const transcript = chatTranscript(window);
+  await expect(transcript).toContainText('Parent transcript ends here.');
+  await expect(chatStop(window)).toBeDisabled();
+  const scroll = chatTranscriptScroll(window);
+  await expect(transcript.getByText('Parent transcript ends here.', { exact: true })).toBeInViewport();
+  await scroll.hover();
+  await window.mouse.wheel(0, -700);
+  await expect(transcript.getByText('Parent transcript ends here.', { exact: true })).not.toBeInViewport();
+  const opener = childSessions(window).getByRole('button', { name: 'Review fixtures' });
+  await opener.focus();
+  const position = await scroll.evaluate((pane) => pane.scrollTop);
+  expect(position).toBeGreaterThan(0);
+  await opener.press('Enter');
+  const child = childTranscript(window);
+  await expect(child).toContainText('Child transcript detail.');
+  const back = child.getByRole('button', { name: 'Back' });
+  await expect(back).toBeFocused();
+  await back.press('Enter');
+  await expect(child).toBeHidden();
+  await expect(opener).toBeFocused();
+  await expect(scroll).toHaveJSProperty('scrollTop', position);
+
+  const completion = transcript.getByRole('button', { name: 'Review fixtures — Cancelled' });
+  await completion.focus();
+  await expect(completion).toBeInViewport();
+  const completionPosition = await scroll.evaluate((pane) => pane.scrollTop);
+  await completion.press('Enter');
+  await expect(child).toContainText('Child transcript detail.');
+  await back.press('Enter');
+  await expect(completion).toBeFocused();
+  await expect(scroll).toHaveJSProperty('scrollTop', completionPosition);
+});
 
 test('Stop returns for autonomous foreground work and cancels the active session', async ({ window, workspace }, testInfo) => {
   await yourTurnContainerControl(window).click();

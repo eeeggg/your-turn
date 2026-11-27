@@ -38,6 +38,9 @@ import {
 
 /** Everything the chat view shows. */
 export interface RootState {
+  readonly children?: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['children'];
+  readonly readingRequest?: number;
+  readonly inspection?: { readonly path: readonly string[]; readonly transcript: TranscriptState; readonly received: boolean } | undefined;
   readonly activeSession: ActiveSession | null;
   readonly sessionTabs: SessionTabsSnapshot;
   readonly tabAnnouncement: Extract<ExtensionToWebviewMessage, { type: 'sessionTabAnnouncement' }> | null;
@@ -49,6 +52,9 @@ export interface RootState {
 
 /** What the store is dispatched: webview messages from the extension, and user actions. */
 export type Action = ExtensionToWebviewMessage | PickerAction | PromptBoxAction | TranscriptAction | QuestionAction
+  | { type: 'childOpened'; id: string }
+  | { type: 'childBack' }
+  | { type: 'childTranscriptAction'; action: TranscriptAction }
   | { type: 'cancelTurnRequested' }
   | { type: 'sessionTabSelected' | 'sessionTabClosed'; tabId: string };
 
@@ -66,7 +72,7 @@ export const initialState: RootState = {
 export function contentApplied(state: RootState, message: ExtensionToWebviewMessage): Extract<WebviewToExtensionMessage, { type: 'contentApplied' }> | undefined {
   const content = message.type === 'viewSnapshot' ? message.content
     : message.type === 'contentSnapshot' || message.type === 'contentPatch' ? message : null;
-  const applied = state.transcript.projection;
+  const applied = content ? transcriptFor(state, content.target).projection : null;
   if (!content || !applied || applied.revision < content.revision) { return; }
   const { target } = applied;
   if (target.configuredName === content.target.configuredName && target.sessionId === content.target.sessionId
@@ -74,6 +80,16 @@ export function contentApplied(state: RootState, message: ExtensionToWebviewMess
     return { type: 'contentApplied', target, revision: applied.revision };
   }
   return;
+}
+
+function isReadingTarget(state: RootState, target: PresentationTarget): boolean {
+  const root = state.transcript.projection?.target;
+  return target.sessionId !== root?.sessionId && target.sessionId === state.inspection?.path.at(-1)
+    && target.configuredName === root?.configuredName && target.generation === root.generation;
+}
+
+function transcriptFor(state: RootState, target: PresentationTarget): TranscriptState {
+  return state.inspection && isReadingTarget(state, target) ? state.inspection.transcript : state.transcript;
 }
 
 function contentManifest(transcript: TranscriptState, target: PresentationTarget, invalidBase?: true): WebviewToExtensionMessage[] {
@@ -90,8 +106,30 @@ function contentManifest(transcript: TranscriptState, target: PresentationTarget
 }
 
 export function update(state: RootState, action: Action, now: number): Transition<RootState, WebviewToExtensionMessage> {
+  if (action.type === 'childOpened' || action.type === 'childBack') {
+    const target = state.transcript.projection?.target;
+    const path = state.inspection?.path ?? [];
+    if (!target || (action.type === 'childBack' ? path.length === 0
+      : !state.children?.some((child) => child.id === action.id && child.parentId === (path.at(-1) ?? target.sessionId)))) {
+      return { state, outgoing: [] };
+    }
+    const next = action.type === 'childBack' ? path.slice(0, -1) : [...path, action.id];
+    const request = (state.readingRequest ?? 0) + 1;
+    return { state: { ...state, readingRequest: request, inspection: next.length ? { path: next, transcript: initialTranscript, received: false } : undefined },
+      outgoing: [{ type: 'readTranscript', target, sessionId: next.at(-1) ?? null, request }] };
+  }
+  if (action.type === 'childTranscriptAction') {
+    const inspection = state.inspection;
+    if (!inspection) { return { state, outgoing: [] }; }
+    const { transcript } = inspection;
+    const next = updateTranscript(transcript, action.action, now).state;
+    return { state: next === transcript ? state : { ...state, inspection: { ...inspection, transcript: next } }, outgoing: [] };
+  }
+  if (action.type === 'loadSessionStart' || action.type === 'clearTranscript') {
+    state = state.inspection || state.children ? { ...state, inspection: undefined, children: undefined } : state;
+  }
   if (action.type === 'contentManifestRequested') {
-    return { state, outgoing: contentManifest(state.transcript, action.target) };
+    return { state, outgoing: contentManifest(transcriptFor(state, action.target), action.target) };
   }
   if (action.type === 'cancelTurnRequested') {
     const target = state.transcript.projection?.target;
@@ -110,15 +148,28 @@ export function update(state: RootState, action: Action, now: number): Transitio
       pickers: updatePickers(state.pickers, controls, action.content?.target).state,
       questions: updateQuestions(state.questions, { type: 'questions', questions: action.questions }, action.content?.target).state,
       transcript: action.content ? state.transcript : { ...updateTranscript(state.transcript, controls, now).state, projection: null },
+      ...(!action.content ? { children: undefined, inspection: undefined } : {}),
     };
     return action.content ? update(selected, { type: 'contentSnapshot', ...action.content }, now)
       : { state: selected, outgoing: [] };
   }
   if (action.type === 'contentSnapshot') {
-    const projection = state.transcript.projection;
+    const inspection = state.inspection;
+    if (action.readingRequest !== undefined && (!inspection || state.readingRequest !== action.readingRequest || !isReadingTarget(state, action.target))) {
+      return { state, outgoing: [] };
+    }
+    const reading = action.readingRequest === undefined ? undefined : inspection;
+    const transcript = reading?.transcript ?? state.transcript;
+    const projection = transcript.projection;
     if (projection && (action.target.projection < projection.target.projection
       || (action.target.projection === projection.target.projection && action.revision <= projection.revision))) {
       return { state, outgoing: [] };
+    }
+    if (reading) {
+      return { state: { ...state, inspection: { ...reading, received: true, transcript: { ...transcript,
+        sessionId: action.target.sessionId, entries: action.entries, nextId: action.nextId, currentTurn: action.currentTurn,
+        projection: { target: action.target, revision: action.revision, ...(action.versions ? { versions: action.versions } : {}) },
+      } } }, outgoing: [] };
     }
     const sameSession = projection
       ? projection.target.configuredName === action.target.configuredName && projection.target.sessionId === action.target.sessionId
@@ -130,7 +181,7 @@ export function update(state: RootState, action: Action, now: number): Transitio
     const outgoing: WebviewToExtensionMessage[] = initialDraft ? [{ type: 'composerEdited', target: action.target, revision: 1, text: promptBox.text }] : [];
     const imageRequest = keepImages && pendingImageContext(state.transcript, action.target);
     if (imageRequest) { outgoing.push(imageRequest); }
-    return { state: { ...state, promptBox, transcript: {
+    return { state: { ...state, promptBox, children: action.children, inspection: sameSession && !state.activeSession?.loading ? state.inspection : undefined, transcript: {
       ...(sameSession ? state.transcript : initialTranscript), sessionId: action.target.sessionId,
       markdownImageEpoch: action.markdownImageEpoch,
       ...(!keepImages ? { markdownContext: null, markdownContextRequested: false, markdownOrigin: null, markdownImages: initialTranscript.markdownImages } : {}),
@@ -142,7 +193,9 @@ export function update(state: RootState, action: Action, now: number): Transitio
     } }, outgoing };
   }
   if (action.type === 'contentPatch') {
-    const projection = state.transcript.projection;
+    const reading = isReadingTarget(state, action.target) ? state.inspection : undefined;
+    const transcript = reading?.transcript ?? state.transcript;
+    const projection = transcript.projection;
     if (projection?.target.configuredName !== action.target.configuredName || projection.target.sessionId !== action.target.sessionId
       || projection.target.generation !== action.target.generation || action.revision <= projection.revision
       || (action.baseTarget
@@ -153,8 +206,8 @@ export function update(state: RootState, action: Action, now: number): Transitio
       return { state, outgoing: [] };
     }
     if (action.base !== projection.revision) { return { state, outgoing: [{ type: 'contentSnapshotRequested', target: projection.target }] }; }
-    let entries = state.transcript.entries;
-    let terminals = state.transcript.terminals;
+    let entries = transcript.entries;
+    let terminals = transcript.terminals;
     const entryVersions = new Map(projection.versions?.entries);
     const terminalVersions = new Map(projection.versions?.terminals);
     for (const change of action.patches) {
@@ -185,7 +238,7 @@ export function update(state: RootState, action: Action, now: number): Transitio
             : part?.kind === 'toolCalls' && part.toolCalls.some((call) => call.toolCallId === patch.call.toolCallId));
         }
       }
-      if (!valid) { return { state, outgoing: contentManifest(state.transcript, action.target, true) }; }
+      if (!valid) { return { state, outgoing: contentManifest(transcript, action.target, true) }; }
       switch (patch.kind) {
         case 'insert':
         case 'spliceEntries':
@@ -231,7 +284,7 @@ export function update(state: RootState, action: Action, now: number): Transitio
             if (part.kind === 'toolCalls') {
               const previous = entry.parts.find((candidate) => candidate.kind === 'toolCalls' && candidate.toolCalls[0]?.toolCallId === part.toolCalls[0]?.toolCallId);
               if (previous?.kind === 'toolCalls') {
-                const override = state.transcript.toolGroupOverrides.get(`${entry.id}:${part.toolCalls[0]?.toolCallId ?? ''}`);
+                const override = transcript.toolGroupOverrides.get(`${entry.id}:${part.toolCalls[0]?.toolCallId ?? ''}`);
                 return { ...part, collapsed: override ?? part.collapsed, toolCalls: part.toolCalls.map((call) => {
                   const before = previous.toolCalls.find((candidate) => candidate.toolCallId === call.toolCallId);
                   return before && (before.status === 'failed' || call.status !== 'failed') ? { ...call, open: before.open } : call;
@@ -242,10 +295,10 @@ export function update(state: RootState, action: Action, now: number): Transitio
               const previous = entry.parts.find((candidate) => candidate.kind === 'compaction' && candidate.compactionId === part.compactionId);
               if (previous?.kind === 'compaction' && previous.status === part.status) { return { ...part, open: previous.open }; }
             }
-          const override = state.transcript.thoughtOverrides.get(`${entry.id}:${patch.index + index}`);
+          const override = transcript.thoughtOverrides.get(`${entry.id}:${patch.index + index}`);
           if (part.kind === 'thought' && previous?.kind === 'thought' && part.messageId === previous.messageId
             && part.startedAt === previous.startedAt && previous.endedAt === null && part.endedAt !== null
-            && part.text === previous.text && action.currentTurn === null && action.nextId === state.transcript.nextId
+            && part.text === previous.text && action.currentTurn === null && action.nextId === transcript.nextId
             && override === undefined) { return { ...part, open: previous.open }; }
             return part.kind === 'thought' && previous?.kind === 'thought' && part.messageId === previous.messageId
               && part.startedAt === previous.startedAt && override !== undefined ? { ...part, open: override } : part;
@@ -260,17 +313,21 @@ export function update(state: RootState, action: Action, now: number): Transitio
         }) };
       });
     }
-    const activeSession = action.running === undefined ? state.activeSession
-      : updateActiveSession(state.activeSession, { type: 'foregroundActivity', running: action.running });
-    const imageRequest = pendingImageContext(state.transcript, action.target);
-    return { state: { ...state, activeSession, promptBox: action.composer ? projectedComposer(state.promptBox, action.composer, true) : state.promptBox, transcript: { ...state.transcript, entries,
-      queued: action.queue ? projectedQueue(state.transcript.queued, action.queue) : state.transcript.queued,
+    const next: TranscriptState = { ...transcript, entries,
       projection: { target: action.target, revision: action.revision, versions: action.versions ?? {
         entries: entries.map(({ id }) => [id, entryVersions.get(id) ?? 0]),
         terminals: [...terminals.keys()].map((id) => [id, terminalVersions.get(id) ?? 0]),
       } }, currentTurn: action.currentTurn,
-      nextId: Math.max(state.transcript.nextId, action.nextId), usage: action.usage, terminals,
-    } }, outgoing: imageRequest ? [imageRequest] : [] };
+      nextId: Math.max(transcript.nextId, action.nextId), usage: action.usage, terminals,
+    };
+    if (reading) { return { state: { ...state, inspection: { ...reading, transcript: next } }, outgoing: [] }; }
+    const activeSession = action.running === undefined ? state.activeSession
+      : updateActiveSession(state.activeSession, { type: 'foregroundActivity', running: action.running });
+    const imageRequest = pendingImageContext(transcript, action.target);
+    return { state: { ...state, activeSession, children: action.children ?? state.children,
+      promptBox: action.composer ? projectedComposer(state.promptBox, action.composer, true) : state.promptBox,
+      transcript: { ...next, queued: action.queue ? projectedQueue(transcript.queued, action.queue) : transcript.queued },
+    }, outgoing: imageRequest ? [imageRequest] : [] };
   }
   if (action.type === 'sessionTabSelected' || action.type === 'sessionTabClosed') {
     return {

@@ -319,6 +319,38 @@ describe('SessionManager', () => {
     expect(posted.filter(({ type }) => type === 'sessionTabAnnouncement')).toHaveLength(1);
   });
 
+  it('identifies a v2 child in the native permission picker without reattributing its request', async () => {
+    const shown = deferred<Parameters<ConstructorParameters<typeof PermissionRequests>[0]['choose']>[0]>();
+    const choice = deferred<string>();
+    const permissions = new PermissionRequests({ autoApprove: () => 'ask', choose: (prompt) => {
+      shown.resolve(prompt);
+      return choice.promise;
+    } });
+    const { manager } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+      .onRequest(V2.methods.agent.session.prompt, async ({ client }) => {
+        const notify = (update: V2.SessionUpdate) => client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update });
+        await notify({ sessionUpdate: 'state_update', state: 'running' });
+        await notify({ sessionUpdate: 'subagent_update', sessionId: 'child', title: 'Review tests' });
+        expect(await client.request(V2.methods.client.session.requestPermission, {
+          sessionId: 'child', title: 'Read fixture?', options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+        })).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+        await notify({ sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+        return { messageId: 'prompt' };
+      }) }, undefined, () => ({ permissions, permissionInteractions: permissions }));
+    await manager.newSession('fake');
+    const prompt = manager.sendPrompt(address(FIRST_SESSION), 'Delegate');
+    try {
+      expect(await shown.promise).toEqual({ title: 'Read fixture?', detail: 'Child session: Review tests' });
+      expect(permissions.snapshot()).toMatchObject([{ sessionId: 'child' }]);
+      expect(manager.getActiveSession()?.sessionId).toBe(FIRST_SESSION);
+    } finally {
+      choice.resolve('allow');
+      await prompt;
+    }
+    expect(permissions.snapshot()).toEqual([]);
+  });
+
   it('observes native permission and URL requests before registration without creating retained session state', async () => {
     let permissionSeen!: () => void;
     const permissionArrived = new Promise<void>((resolve) => { permissionSeen = resolve; });

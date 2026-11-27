@@ -1,5 +1,7 @@
 import {
   memo,
+  createContext,
+  use,
   useEffect,
   useId,
   useLayoutEffect,
@@ -24,7 +26,7 @@ import { Chevron } from '@/webview/views/elements/Chevron';
 import type { PlanStepStatus, PresentationTarget, QuestionRecord, ToolCallStatus } from '@/shared/WebviewMessages';
 import { copyFeedbackDuration, Markdown } from '@/webview/views/Markdown';
 import { ToolCallDiffView } from '@/webview/views/ToolCallDiffView';
-import { useDispatch, useSelector } from '@/webview/views/StoreContext';
+import { ChildTranscriptContext, useDispatch, useSelector } from '@/webview/views/StoreContext';
 import {
   compactionBlocks,
   compactionSummary,
@@ -43,9 +45,46 @@ import {
   type ToolCall,
   type ToolCallGroup,
   type TranscriptEntry,
+  type TranscriptAction,
+  type ChildCompletion,
+  type TranscriptState,
   type Turn,
   type TurnPart,
 } from '@/webview/state/Transcript';
+
+export const OpenChildTranscript = createContext<((id: string, completionId: number) => void) | null>(null);
+
+function ChildCompletionEntry({ completion }: { completion: ChildCompletion }) {
+  const open = use(OpenChildTranscript);
+  const label = useSelector((state) => state.children?.find(({ id }) => id === completion.childId)?.label);
+  const reason = completion.stopReason;
+  const status = reason === 'end_turn' ? 'Finished' : reason === 'cancelled' ? 'Cancelled' : reason === 'error' ? 'Failed'
+    : reason === 'max_tokens' ? 'Token limit reached' : reason === 'max_turn_requests' ? 'Turn request limit reached'
+      : reason === 'refusal' ? 'Refused' : reason === null ? 'Stopped (no reason reported)' : `Stopped (${reason})`;
+  return <button type="button" data-child-completion={completion.id} disabled={!open || label === undefined}
+    className="self-start rounded-sm border border-border px-2 py-1 text-left text-sm text-link focus-visible:outline-1 focus-visible:outline-ring enabled:cursor-pointer enabled:hover:underline"
+    onClick={() => open?.(completion.childId, completion.id)}>{label ?? completion.childId} — {status}</button>;
+}
+
+function useTranscript<T>(select: (state: TranscriptState) => T): T {
+  const child = use(ChildTranscriptContext);
+  return useSelector((state) => select(child && state.inspection ? state.inspection.transcript : state.transcript));
+}
+
+function useTranscriptDispatch() {
+  const child = use(ChildTranscriptContext);
+  const dispatch = useDispatch();
+  return (action: TranscriptAction) => dispatch(child ? { type: 'childTranscriptAction', action } : action);
+}
+
+export function ChildTranscript() {
+  const entries = useTranscript((state) => state.entries);
+  const received = useSelector((state) => state.inspection?.received);
+  return <div className="messages flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
+    {!received ? <p role="status">Opening child transcript…</p> : entries.length === 0 && <p>No child transcript has been reported.</p>}
+    {entries.map((entry) => <Entry key={entry.id} entry={entry} />)}
+  </div>;
+}
 
 /**
  * The scrolling transcript, following the stream until the user scrolls up to read, with the empty state at its top
@@ -121,6 +160,8 @@ const plainText = 'whitespace-pre-wrap wrap-anywhere';
 
 const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
   switch (entry.kind) {
+    case 'childCompletion':
+      return <ChildCompletionEntry completion={entry} />;
     case 'prompt':
       return (
         <CopyableMessage
@@ -151,7 +192,7 @@ const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
 });
 
 function TurnView({ turn }: { turn: Turn }) {
-  const current = useSelector((state) => state.transcript.currentTurn === turn.id);
+  const current = useTranscript((state) => state.currentTurn === turn.id);
   if (!turnShown(turn)) {
     return null;
   }
@@ -180,6 +221,8 @@ const PartView = memo(function PartView({
     return null;
   }
   switch (part.kind) {
+    case 'childCompletion':
+      return <ChildCompletionEntry completion={part} />;
     case 'message':
       return <AgentMessageView message={part} streaming={streaming} />;
     case 'image':
@@ -211,7 +254,7 @@ function AgentImageView({ src, alt = 'Image from agent', reference, fallback }: 
 }
 
 const QuestionRecordBlock = memo(function QuestionRecordBlock({ record, open }: { record: QuestionRecord; open: boolean }) {
-  const dispatch = useDispatch();
+  const dispatch = useTranscriptDispatch();
   const outcome = record.response.action === 'accept' ? 'Submitted' : record.response.action === 'decline' ? 'Declined' : 'Cancelled';
   return <details className="question-record mb-1 w-full max-w-full" open={open} onToggle={(event) => {
     if (event.target === event.currentTarget && event.currentTarget.open !== open) {
@@ -242,7 +285,7 @@ const QuestionRecordBlock = memo(function QuestionRecordBlock({ record, open }: 
 });
 
 const CompactionBlock = memo(function CompactionBlock({ compaction }: { compaction: Compaction }) {
-  const dispatch = useDispatch();
+  const dispatch = useTranscriptDispatch();
   const blocks = useMemo(() => compactionBlocks(compaction.summary), [compaction.summary]);
   const progressing = compaction.status === 'in_progress';
   const header = <>
@@ -294,7 +337,7 @@ function CompactionError({ error }: { error: string }) {
 }
 
 const ThoughtBlock = memo(function ThoughtBlock({ turnId, index, thought }: { turnId: EntryId; index: PartIndex; thought: Thought }) {
-  const dispatch = useDispatch();
+  const dispatch = useTranscriptDispatch();
   const thinking = thought.endedAt === null;
   return (
     <details
@@ -477,7 +520,10 @@ function CopyMessageButton({
 }
 
 const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turnId: EntryId; index: PartIndex; group: ToolCallGroup }) {
-  const dispatch = useDispatch();
+  const dispatch = useTranscriptDispatch();
+  const child = use(ChildTranscriptContext);
+  const instance = useId();
+  const listId = child ? instance : `tc-list-${turnId}-${index}`;
   const { toolCalls, collapsed } = group;
   const count = toolCalls.length;
   return (
@@ -486,13 +532,13 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
         type="button"
         className="turn-tools-summary flex cursor-pointer items-center gap-1.5 py-0.5 text-xs text-muted-foreground select-none hover:text-foreground focus-visible:outline-1 focus-visible:outline-ring"
         aria-expanded={!collapsed}
-        aria-controls={`tc-list-${turnId}-${index}`}
+        aria-controls={listId}
         onClick={() => dispatch({ type: 'toolCallsToggled', turnId, part: index })}
       >
         <Chevron direction={collapsed ? 'right' : 'down'} />
         {`${count} tool call${count === 1 ? '' : 's'}`}
       </button>
-      <div id={`tc-list-${turnId}-${index}`} className={collapsed ? 'turn-tools-list collapsed hidden' : 'turn-tools-list'}>
+      <div id={listId} className={collapsed ? 'turn-tools-list collapsed hidden' : 'turn-tools-list'}>
         {!collapsed && toolCalls.map((call) => (
           <ToolCallView key={call.toolCallId} turnId={turnId} call={call} />
         ))}
@@ -503,15 +549,16 @@ const ToolCallList = memo(function ToolCallList({ turnId, index, group }: { turn
 
 /** Its body is mounted only while it is open, keeping closed tool calls lightweight. */
 const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: EntryId; call: ToolCall }) {
-  const dispatch = useDispatch();
-  const commandSource = useSelector((state) => firstCommandSource(call.content, state.transcript.terminals));
-  const identity = useSelector((state) => state.transcript.projection?.target);
+  const dispatch = useTranscriptDispatch();
+  const commandSource = useTranscript((state) => firstCommandSource(call.content, state.terminals));
+  const child = use(ChildTranscriptContext);
+  const identity = useTranscript((state) => child ? undefined : state.projection?.target);
   const title = call.title || 'Tool Call';
   const StatusIcon = statusIcon[call.status];
   return (
     <details
       className="tool-call-inline rounded-sm bg-muted px-1.5 py-0.75 text-sm opacity-85 open:opacity-100"
-      id={`tc-${call.toolCallId}`}
+      id={child ? undefined : `tc-${call.toolCallId}`}
       open={call.open}
       onToggle={(event) =>
         dispatch({ type: 'toolCallToggled', turnId, toolCallId: call.toolCallId, open: event.currentTarget.open })
@@ -519,7 +566,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
     >
       <summary
         className="tc-summary flex cursor-pointer items-center gap-1.5 rounded-sm select-none focus-visible:outline-1 focus-visible:outline-ring list-none"
-        data-vscode-context={commandSource !== undefined ? commandOutputContext(commandSource, identity, call.toolCallId, title) : undefined}
+        data-vscode-context={!child && commandSource !== undefined ? commandOutputContext(commandSource, identity, call.toolCallId, title) : undefined}
       >
         <span
           className={`tc-icon ${call.status} inline-flex size-3.5 flex-none items-center justify-center ${statusColor[call.status]}`}
@@ -539,8 +586,8 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
 });
 
 function ToolCallBody({ call, identity, title }: { call: ToolCall; identity: PresentationTarget | undefined; title: string }) {
-  const terminals = useSelector((state) => state.transcript.terminals);
-  const sessionEnded = useSelector((state) => state.transcript.sessionEnded);
+  const terminals = useTranscript((state) => state.terminals);
+  const sessionEnded = useTranscript((state) => state.sessionEnded);
   const { blocks, truncated } = useMemo(
     () => shownContent(call.content, { terminals, sessionEnded }, true),
     [call.content, terminals, sessionEnded],

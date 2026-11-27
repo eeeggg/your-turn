@@ -1,4 +1,4 @@
-import { useEffect, useState, type ComponentProps } from 'react';
+import { use, useEffect, useState, type ComponentProps } from 'react';
 import Copy from 'lucide-react/icons/copy';
 import Check from 'lucide-react/icons/check';
 import {
@@ -8,7 +8,7 @@ import {
   type Components,
   type ExtraProps
 } from 'streamdown';
-import { useDispatch, useSelector } from '@/webview/views/StoreContext';
+import { ChildTranscriptContext, useDispatch, useSelector } from '@/webview/views/StoreContext';
 
 export const copyFeedbackDuration = 2000;
 const DefaultLink = defaultComponents.a;
@@ -82,6 +82,7 @@ export function Markdown({ text, streaming }: { text: string; streaming: boolean
 let nextOccurrence = 1;
 
 function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
+  const child = use(ChildTranscriptContext);
   const owner = useSelector((state) => {
     const target = state.transcript.projection?.target;
     return JSON.stringify([target?.configuredName, target?.sessionId, target?.generation, state.transcript.markdownImageEpoch]);
@@ -93,7 +94,7 @@ function MarkdownImage({ alt, src }: ComponentProps<'img'> & ExtraProps) {
       source = decoded;
     } catch { /* An agent can supply malformed URLs in raw HTML. */ }
   }
-  return source ? <ValidatedImage key={owner} source={source} alt={alt ?? ''} />
+  return source && !child ? <ValidatedImage key={owner} source={source} alt={alt ?? ''} />
     : <span>{alt ? `${alt} — image not displayed` : 'Image not displayed'}</span>;
 }
 
@@ -124,6 +125,7 @@ function ValidatedImage({ source, alt }: { source: string; alt: string }) {
 }
 
 function Link(props: ComponentProps<'a'> & ExtraProps) {
+  const child = use(ChildTranscriptContext);
   const { href, className } = props;
   const dispatch = useDispatch();
   const target = useSelector((state) => state.transcript.projection?.target);
@@ -131,7 +133,7 @@ function Link(props: ComponentProps<'a'> & ExtraProps) {
     let destination: string;
     try { destination = decodeURIComponent(href.slice(fileLinkPrefix.length)); }
     catch { return <span>{props.children}</span>; }
-    return target && isFileLinkCandidate(destination)
+    return !child && target && isFileLinkCandidate(destination)
       ? <button type="button" role="link" title={props.title ?? destination} className={`cursor-pointer rounded-sm text-link underline focus-visible:outline-1 focus-visible:outline-ring ${className ?? ''}`}
           onClick={() => dispatch({ type: 'transcriptFileClicked', target, destination })}>{props.children}</button>
       : <span>{props.children}</span>;

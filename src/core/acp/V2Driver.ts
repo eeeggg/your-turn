@@ -8,6 +8,7 @@ import {
   type AcpDriver,
   type AgentDescription,
   type AuthMethod,
+  type ChildActivity,
   type ConfigCategory,
   type ConfigOption,
   type ConfigValue,
@@ -73,8 +74,11 @@ export class V2Driver implements AcpDriver {
         return v2Elicitation(params, requestId, signal, handlers.elicitations);
       })
       .onNotification(Acp.methods.client.elicitation.complete, ({ params }) => handlers.elicitations?.complete(params.elicitationId))
-      .onRequest(Acp.methods.client.session.requestPermission, async ({ params, signal }) =>
-        permissionResponse(await permissions.requestPermission(permissionRequest(params), signal)))
+      .onRequest(Acp.methods.client.session.requestPermission, async ({ params, signal }) => {
+        const request = permissionRequest(params);
+        const childLabel = updates.childPermissionLabel?.(request.sessionId);
+        return permissionResponse(await permissions.requestPermission(childLabel ? { ...request, childLabel } : request, signal));
+      })
       .onNotification(Acp.methods.client.session.update, ({ params }) => {
         logTrace('Received session update', { type: params.update.sessionUpdate, sessionId: params.sessionId });
         if (Acp.SessionUpdate.isStateUpdate(params.update)) {
@@ -87,7 +91,10 @@ export class V2Driver implements AcpDriver {
               kind: 'foreground',
               state: Acp.StateUpdate.isRequiresAction(params.update) ? 'requiresAction' : params.update.state,
               ...(outcome ? { outcome } : {}),
+              ...(Acp.StateUpdate.isIdle(params.update) && params.update.stopReason ? { stopReason: params.update.stopReason } : {}),
             }, 'v2');
+          } else {
+            updates.handleUpdate(params.sessionId, { kind: 'activityUnknown' }, 'v2');
           }
           return;
         }
@@ -339,6 +346,11 @@ class Translator {
   /** The session update for v2's, or null when the interface has no place for it. */
   translate(sessionId: string, update: Acp.SessionUpdate): SessionUpdate | null {
     const updates = Acp.SessionUpdate;
+    if (updates.isSubagentUpdate(update)) {
+      return { kind: 'childSession', childId: update.sessionId, ...(update.title === undefined ? {} : { title: update.title }),
+        ...(update.state === undefined ? {} : { activity: update.state === null ? null : childActivity(update.state) }) };
+    }
+    if (updates.isReplayComplete(update)) { return { kind: 'replayComplete' }; }
     if (updates.isAgentMessageChunk(update)) {
       const resource = imageResourceForUser(update.content);
       if (resource) { return { kind: 'agentImage', messageId: update.messageId, ...resource }; }
@@ -753,6 +765,13 @@ function slashCommand(command: Acp.AvailableCommand): SlashCommand {
   const hint = input && typeof input === 'object' && 'type' in input && input.type === 'text'
     && 'hint' in input && typeof input.hint === 'string' ? input.hint : null;
   return { name: command.name, description: command.description, takesInput: !!command.input, hint: hint || null };
+}
+
+function childActivity(state: Acp.StateUpdate): ChildActivity {
+  if (Acp.StateUpdate.isIdle(state)) { return { state: 'idle', stopReason: state.stopReason ?? null }; }
+  if (Acp.StateUpdate.isRunning(state)) { return { state: 'running' }; }
+  if (Acp.StateUpdate.isRequiresAction(state)) { return { state: 'requiresAction' }; }
+  return { state: 'unknown' };
 }
 
 function permissionRequest(params: Acp.RequestPermissionRequest): PermissionRequest {

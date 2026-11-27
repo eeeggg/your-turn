@@ -145,6 +145,14 @@ export function chatTranscript(window: Page): Locator {
   return chatFrame(window).locator('#messages');
 }
 
+export function childSessions(window: Page): Locator {
+  return chatFrame(window).getByRole('navigation', { name: 'Child sessions' });
+}
+
+export function childTranscript(window: Page): Locator {
+  return chatFrame(window).getByRole('region', { name: 'Child transcript' });
+}
+
 export async function measureTranscriptSwitch(window: Page, tabName: string, marker: string): Promise<number> {
   const tab = sessionTabs(window).getByRole('tab', { name: tabName, exact: true });
   const probe = await tab.evaluateHandle((button, target) => {

@@ -124,7 +124,7 @@ describe('V2Driver', () => {
       [SESSION_ID, { kind: 'foreground', state: 'idle' }],
       [SESSION_ID, { kind: 'foreground', state: 'running' }],
       [OTHER_SESSION_ID, { kind: 'foreground', state: 'requiresAction' }],
-      [SESSION_ID, { kind: 'foreground', state: 'idle', outcome: 'cancelled' }],
+      [SESSION_ID, { kind: 'foreground', state: 'idle', outcome: 'cancelled', stopReason: 'cancelled' }],
     ]);
   });
 
@@ -428,7 +428,7 @@ describe('V2Driver', () => {
       await driver.listSessions({});
       expect(updates).toEqual([
         [SESSION_ID, { kind: 'foreground', state: 'running' }],
-        [SESSION_ID, { kind: 'foreground', state: 'idle' }],
+        [SESSION_ID, { kind: 'foreground', state: 'idle', stopReason: 'end_turn' }],
         [SESSION_ID, { kind: 'promptMessage', messageId: 'other', text: 'external' }],
       ]);
     });
@@ -816,7 +816,7 @@ describe('V2Driver', () => {
       expect(updates).toEqual([...replay,
         [SESSION_ID, { kind: 'foreground', state: 'running' }],
         [SESSION_ID, { kind: 'agentText', messageId: 'a1', text: 'Done' }],
-        [SESSION_ID, { kind: 'foreground', state: 'idle' }],
+        [SESSION_ID, { kind: 'foreground', state: 'idle', stopReason: 'end_turn' }],
         ...replay]);
     });
 

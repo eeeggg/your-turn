@@ -46,23 +46,22 @@ const store: Store<RootState, Action> = {
   },
 };
 
-let pendingApplied: ReturnType<typeof contentApplied>;
+const pendingApplied = new Map<number, NonNullable<ReturnType<typeof contentApplied>>>();
 let appliedTimer: ReturnType<typeof setTimeout> | undefined;
 
 window.addEventListener('message', (event: MessageEvent<ExtensionToWebviewMessage>) => {
   const message = event.data;
-  if (message.type === 'viewSnapshot' || message.type === 'contentSnapshot') { flushComposer(); }
+  if (message.type === 'viewSnapshot' || (message.type === 'contentSnapshot' && message.readingRequest === undefined)) { flushComposer(); }
   const previousProjection = store.getSnapshot().transcript.projection?.target.projection;
   store.dispatch(message);
   const applied = contentApplied(store.getSnapshot(), message);
   if (applied) {
     if (message.type === 'contentPatch' && message.baseTarget && applied.target.projection !== previousProjection) { flushComposer(); }
-    pendingApplied = applied;
+    pendingApplied.set(applied.target.projection, applied);
     appliedTimer ??= setTimeout(() => {
-      const message = pendingApplied;
-      pendingApplied = undefined;
       appliedTimer = undefined;
-      if (message) { postMessage(message); }
+      for (const receipt of pendingApplied.values()) { postMessage(receipt); }
+      pendingApplied.clear();
     }, 50);
   }
 });

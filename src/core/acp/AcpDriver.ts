@@ -7,6 +7,7 @@
 
 export interface SessionUpdateSink {
   handleUpdate(sessionId: string, update: SessionUpdate, schema: AcpSchema): void;
+  childPermissionLabel?(sessionId: string): string | undefined;
 }
 
 /** Which past sessions the agent can work with. */
@@ -204,13 +205,19 @@ interface SessionUsage {
 export type AcpSchema = 'v1' | 'v2';
 
 export type ForegroundState = 'idle' | 'running' | 'requiresAction';
+export type ChildActivity =
+  | { state: 'idle'; stopReason: string | null }
+  | { state: 'running' | 'requiresAction' | 'unknown' };
 
 /**
  * Something new or changed in a session; what has no place here is dropped by the driver. Discriminated by `kind`,
  * not the webview messages' `type`, so an update cannot be posted to the webview as it is.
  */
 export type SessionUpdate =
-  | { kind: 'foreground'; state: ForegroundState; outcome?: 'cancelled' | 'failed' }
+  | { kind: 'foreground'; state: ForegroundState; outcome?: 'cancelled' | 'failed'; stopReason?: string }
+  | { kind: 'childSession'; childId: string; title?: string | null; activity?: ChildActivity | null }
+  | { kind: 'activityUnknown' }
+  | { kind: 'replayComplete' }
   | { kind: 'agentText'; messageId: string | null; text: string }
   | { kind: 'agentImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
   | { kind: 'thoughtImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
@@ -267,6 +274,7 @@ export interface PermissionOption {
 
 export interface PermissionRequest {
   sessionId: string;
+  childLabel?: string;
   /** Null when the agent gave none. */
   title: string | null;
   /** Why the agent asks; null when it gave no reason. */

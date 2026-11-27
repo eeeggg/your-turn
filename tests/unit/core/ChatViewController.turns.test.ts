@@ -103,6 +103,57 @@ describe('ChatViewController', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('recovers a lost grandchild completion only in its immediate parent’s transcript', async () => {
+    const { controller, environment, sessions } = setup();
+    const root = sessions.requireSession();
+    const origin = (sessionId: string) => ({ identity: { configuredName: root.agentName, sessionId }, sourceId: root.agentId });
+    sessions.retained.accept(root, { kind: 'childSession', childId: 'child' }, 0);
+    sessions.retained.acceptChild(origin('child'), { kind: 'childSession', childId: 'grandchild' }, 0, () => true);
+    sessions.retained.acceptChild(origin('grandchild'), { kind: 'foreground', state: 'running' }, 0, () => true);
+
+    vi.useFakeTimers();
+    try {
+      let view = initialState;
+      const sent: Parameters<typeof environment.post>[0][] = [];
+      environment.post = (message) => { sent.push(message); };
+      const dispatch = (action: Parameters<typeof update>[1]) => {
+        const result = update(view, action, 0);
+        view = result.state;
+        for (const reply of result.outgoing) { void controller.handleMessage(reply); }
+      };
+      const deliver = () => {
+        while (sent.length) {
+          for (const message of sent.splice(0)) {
+            dispatch(message);
+            const applied = contentApplied(view, message);
+            if (applied) { void controller.handleMessage(applied); }
+          }
+        }
+      };
+      await controller.handleMessage({ type: 'ready' });
+      deliver();
+      const rootTarget = view.transcript.projection?.target;
+      dispatch({ type: 'childOpened', id: 'child' });
+      deliver();
+      expect(view.inspection?.received).toBe(true);
+
+      // Drop the completion delivery. Do not send any more child updates.
+      sessions.retained.acceptChild(origin('grandchild'), { kind: 'foreground', state: 'idle', stopReason: 'cancelled' }, 0, () => true);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(sent.splice(0)).toMatchObject([{ type: 'contentPatch', target: { sessionId: 'child' } }]);
+      expect(view.inspection?.transcript.entries).toEqual([]);
+      await vi.advanceTimersByTimeAsync(2_000);
+      deliver();
+
+      expect(view.inspection?.transcript.entries).toMatchObject([
+        { kind: 'childCompletion', childId: 'grandchild', stopReason: 'cancelled' },
+      ]);
+      expect(view.transcript.entries).toEqual([]);
+      expect(view.transcript.projection?.target).toEqual(rootTarget);
+      expect(view.activeSession?.sessionId).toBe(root.sessionId);
+    } finally { vi.useRealTimers(); }
+  });
+
   it.each(['revision gap', 'invalid base'] as const)('recovers a quiet transcript with a contiguous journal after %s', async (failure) => {
     const parts = setup();
     const { controller, environment } = parts;

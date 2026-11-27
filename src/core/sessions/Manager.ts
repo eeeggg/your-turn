@@ -628,6 +628,9 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     try {
       driver = await this.connectionManager.connect(agentName, agentProcess, agentProcess.id, {
         handleUpdate: (sessionId, update, schema) => this.acceptUpdate(agentProcess, sessionId, update, schema),
+        childPermissionLabel: (sessionId) => lifetime.accepting ? this.retained.childPermissionLabel(
+          { identity: { configuredName: lifetime.name, sessionId }, sourceId: agentProcess.id },
+          (rootId) => this.getSession({ configuredName: lifetime.name, sessionId: rootId })?.agentId === agentProcess.id) : undefined,
       }, () => {
         this.retireSource(agentProcess);
         if (this.agents.get(lifetime.name)?.process === agentProcess) {
@@ -702,8 +705,21 @@ export class SessionManager extends EventEmitter<SessionManagerEvents> implement
     const identity: SessionIdentity = { configuredName: lifetime.name, sessionId };
     const origin: SessionOrigin = { identity, sourceId: process.id };
     const now = Date.now();
+    const child = !registration && schema === 'v2' && this.retained.acceptChild(origin, update, now,
+      (rootId) => this.getSession({ configuredName: lifetime.name, sessionId: rootId })?.agentId === process.id);
+    if (child) {
+      if (!child.historical) {
+        if (update.kind === 'foreground') { this.applyForegroundState(identity, update.state, process.id, update.outcome); }
+        if (update.kind === 'toolCall') {
+          const reviewOwner = { configuredName: lifetime.name, sessionId: child.rootId };
+          this.updates.handleUpdate({ input: { origin, reviewOwner, update, schema }, registration: undefined });
+        }
+      }
+      return;
+    }
     if (registration) { this.retained.accept(registration, update, now); }
     else if (this.acceptsOpening(process.id, sessionId)) { this.retained.acceptOpening(origin, update, now); }
+    if (update.kind === 'childSession' || update.kind === 'replayComplete' || update.kind === 'activityUnknown') { return; }
     // Early metadata is source-local even when another source currently owns this raw ID.
     switch (update.kind) {
       case 'configOptions':

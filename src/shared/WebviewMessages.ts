@@ -173,6 +173,13 @@ interface PresentedToolCall {
   readonly markdownRevision?: number;
 }
 
+interface PresentedChildCompletion {
+  readonly kind: 'childCompletion';
+  readonly id: number;
+  readonly childId: string;
+  readonly stopReason: string | null;
+}
+
 type PresentedPart =
   | { readonly kind: 'message'; readonly messageId: string | null; readonly text: string; readonly markdownRevision?: number }
   | ({ readonly kind: 'image'; readonly messageId: string | null } & Readonly<ImagePresentation>)
@@ -180,10 +187,11 @@ type PresentedPart =
     readonly open: boolean; readonly markdownRevision?: number; readonly imageSrc?: string | null; readonly imageReference?: true; readonly imageFallback?: string }
   | { readonly kind: 'toolCalls'; readonly toolCalls: readonly PresentedToolCall[]; readonly collapsed: boolean }
   | { readonly kind: 'plan'; readonly steps: readonly PlanStep[] }
-  | PresentedCompaction
+  | PresentedCompaction | PresentedChildCompletion
   | { readonly kind: 'question'; readonly record: QuestionRecord; readonly open: boolean };
 
 type PresentedEntry =
+  | PresentedChildCompletion
   | { readonly kind: 'prompt'; readonly id: number; readonly messageId?: string; readonly text: string }
   | ({ readonly kind: 'promptImage'; readonly id: number; readonly messageId: string | null; readonly text: '' } & Readonly<ImagePresentation>)
   | { readonly kind: 'turn'; readonly id: number; readonly parts: readonly PresentedPart[] }
@@ -206,6 +214,8 @@ export interface ContentVersions {
 }
 
 interface ContentSnapshot {
+  readonly readingRequest?: number;
+  readonly children?: readonly { readonly id: string; readonly parentId: string; readonly label: string }[];
   readonly versions?: ContentVersions;
   readonly queue: readonly { readonly id: number; readonly text: string; readonly draft: string | null; readonly revision?: number }[];
   readonly composer: { readonly text: string; readonly revision: number };
@@ -226,7 +236,7 @@ export type ExtensionToWebviewMessage =
   | ({ type: 'contentSnapshot' } & ContentSnapshot)
   | { type: 'contentPatch'; target: PresentationTarget; base: number; revision: number; patches: readonly ContentPatch[];
       currentTurn: number | null; nextId: number; usage: SessionUsage | null; running?: boolean; composer?: { readonly text: string; readonly revision: number };
-    queue?: ContentSnapshot['queue']; versions?: ContentVersions; baseTarget?: PresentationTarget }
+     queue?: ContentSnapshot['queue']; children?: ContentSnapshot['children']; versions?: ContentVersions; baseTarget?: PresentationTarget }
   | { type: 'contentManifestRequested'; target: PresentationTarget }
   | { type: 'markdownImageContext'; target: PresentationTarget; context: number; origin?: string }
   | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)
@@ -251,6 +261,7 @@ export type ExtensionToWebviewMessage =
   | { type: 'loadSessionEnd'; ok: boolean };
 
 export type WebviewToExtensionMessage =
+  | { type: 'readTranscript'; target: PresentationTarget; sessionId: string | null; request: number }
   | { type: 'queueChanged'; target: PresentationTarget; change:
     | { kind: 'cancelled' | 'steer' | 'stop'; id: number }
     | { kind: 'editStarted' | 'editSaved' | 'editDiscarded'; id: number; revision: number }

@@ -73,6 +73,24 @@ const MAX_PATCH_RETRY_MS = 8_000;
 const PATCH_JOURNAL_COUNT = 128;
 const PATCH_JOURNAL_BYTES = 4 * 1024 * 1024;
 type ProjectedPatch = Extract<ExtensionToWebviewMessage, { type: 'contentPatch' }>;
+type Snapshot = Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>;
+interface Projection { snapshot: Snapshot; running: boolean }
+
+function deliveryState() {
+  return {
+    retry: undefined as ReturnType<typeof setTimeout> | undefined,
+    retryDelay: PATCH_RETRY_MS,
+    applied: 0,
+    invalidBase: undefined as number | undefined,
+    pending: undefined as Snapshot | Extract<ExtensionToWebviewMessage, { type: 'viewSnapshot' }> | undefined,
+    journal: [] as { message: ProjectedPatch; bytes: number }[],
+    bytes: 0,
+    entries: new Map<number, number>(),
+    terminals: new Map<string, number>(),
+    firstRepairable: 0,
+  };
+}
+type Delivery = ReturnType<typeof deliveryState>;
 
 type PresentedCall = Extract<Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'turn' }>['parts'][number], { kind: 'toolCalls' }>['toolCalls'][number];
 
@@ -176,19 +194,11 @@ export class ChatViewController {
   private readonly networkImageLoads = new ImageLoads(30000);
   private readonly markdownSources = new Map<number, { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }>();
   private projectionSequence = 0;
-  private firstRepairableProjection = 0;
   private presentedCalls = new WeakMap<object, PresentedCall>();
   private projected: { snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>; state: SessionStateView; registration: SessionInfo | undefined; running: boolean } | undefined;
   private projectionTimer: ReturnType<typeof setTimeout> | undefined;
-  private patchRetry: ReturnType<typeof setTimeout> | undefined;
-  private patchRetryDelay = PATCH_RETRY_MS;
-  private appliedRevision = 0;
-  private invalidBaseRevision: number | undefined;
-  private pendingSelection: Extract<ExtensionToWebviewMessage, { type: 'viewSnapshot' }> | undefined;
-  private patchJournal: { message: ProjectedPatch; bytes: number }[] = [];
-  private patchJournalBytes = 0;
-  private entryVersions = new Map<number, number>();
-  private terminalVersions = new Map<string, number>();
+  private rootDelivery = deliveryState();
+  private reading: { projection: Projection; delivery: Delivery; content: SessionStateView['content'] } | undefined;
   private presented = new WeakMap<object, Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number]
     | Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'turn' }>['parts'][number]>();
   private readonly tabs: SessionTabs;
@@ -309,6 +319,25 @@ export class ChatViewController {
   async handleMessage(message: WebviewToExtensionMessage): Promise<void> {
     if (this.disposed) { return; }
     switch (message.type) {
+      case 'readTranscript':
+        if (this.currentTarget(message.target, true)) {
+          const state = this.sessions.sessionState(message.target);
+          this.closeReading();
+          const child = message.sessionId === null ? undefined : state?.children?.get(message.sessionId);
+          if (child && message.sessionId !== null && Number.isSafeInteger(message.request)) {
+            const target = { ...message.target, sessionId: message.sessionId, projection: ++this.projectionSequence };
+            const snapshot: Snapshot = { type: 'contentSnapshot', target, readingRequest: message.request, revision: 0,
+              entries: this.presentContent(child.content, { agentName: target.configuredName, sessionId: target.sessionId, cwd: '' }, new Map()),
+              currentTurn: child.content.currentTurn, nextId: child.content.nextId, usage: null, terminals: [], composer: { text: '', revision: 0 }, queue: [] };
+            const delivery = deliveryState();
+            delivery.firstRepairable = target.projection;
+            delivery.pending = snapshot;
+            this.reading = { projection: { snapshot, running: false }, delivery, content: child.content };
+            this.post(snapshot);
+            this.schedulePatchRetry(delivery);
+          }
+        }
+        break;
       case 'queueChanged':
         if (this.currentTarget(message.target, 'revision' in message.change)) {
           this.sessions.changeQueuedPrompt(message.target, message.target.generation, message.change);
@@ -320,34 +349,40 @@ export class ChatViewController {
           this.sessions.editComposer(message.target, message.target.generation, message.revision, message.text);
         }
         break;
-      case 'contentApplied':
-        if (this.projected && samePresentationTarget(message.target, this.projected.snapshot.target)
-          && Number.isSafeInteger(message.revision) && message.revision >= 0
-          && (message.revision > this.appliedRevision || (this.pendingSelection && message.revision === this.appliedRevision))
-          && message.revision <= this.projected.snapshot.revision) {
-          this.pendingSelection = undefined;
-          this.appliedRevision = message.revision;
-          if (this.invalidBaseRevision !== undefined && message.revision > this.invalidBaseRevision) { this.invalidBaseRevision = undefined; }
-          for (const entry of this.patchJournal) {
-            if (entry.message.revision > this.appliedRevision) { break; }
-            this.patchJournalBytes -= entry.bytes;
+      case 'contentApplied': {
+        const addressed = this.addressedProjection(message.target);
+        if (addressed && Number.isSafeInteger(message.revision) && message.revision >= 0) {
+          const { projection, delivery } = addressed;
+          if (message.revision > projection.snapshot.revision
+            || !(message.revision > delivery.applied || (delivery.pending && message.revision === delivery.applied))) { break; }
+          delivery.pending = undefined;
+          delivery.applied = message.revision;
+          if (delivery.invalidBase !== undefined && message.revision > delivery.invalidBase) { delivery.invalidBase = undefined; }
+          for (const entry of delivery.journal) {
+            if (entry.message.revision > delivery.applied) { break; }
+            delivery.bytes -= entry.bytes;
           }
-          this.patchJournal = this.patchJournal.filter(({ message: patch }) => patch.revision > this.appliedRevision);
-          this.cancelPatchRetry();
-          this.patchRetryDelay = PATCH_RETRY_MS;
-          this.schedulePatchRetry();
+          delivery.journal = delivery.journal.filter(({ message: patch }) => patch.revision > delivery.applied);
+          this.cancelPatchRetry(delivery);
+          delivery.retryDelay = PATCH_RETRY_MS;
+          this.schedulePatchRetry(delivery);
         }
         break;
-      case 'contentSnapshotRequested':
-        if (this.projected && samePresentationTarget(message.target, this.projected.snapshot.target)) { this.schedulePatchRetry(); }
+      }
+      case 'contentSnapshotRequested': {
+        const addressed = this.addressedProjection(message.target);
+        if (addressed) { this.schedulePatchRetry(addressed.delivery); }
         break;
-      case 'contentManifest':
-        if (this.currentTarget(message.target)) {
-          if (message.revision === this.projected?.snapshot.revision) {
+      }
+      case 'contentManifest': {
+        const addressed = this.addressedProjection(message.target);
+        if (addressed) {
+          if (message.revision === addressed.projection.snapshot.revision) {
             await this.handleMessage({ type: 'contentApplied', target: message.target, revision: message.revision });
-          } else { this.repairContent(message); }
+          } else { this.repairContent(addressed.projection, addressed.delivery, message); }
         }
         break;
+      }
       case 'loadMarkdownImage':
         if (this.currentMarkdownContext(message.context)) {
           const slot = this.markdownSources.get(message.occurrence);
@@ -491,8 +526,8 @@ export class ChatViewController {
     if (this.disposed) { return false; }
     const issued = this.projected?.snapshot.target;
     if (!issued) { return false; }
-    if (!samePresentationTarget(target, issued) && !(allowUnconfirmedProjection && this.appliedRevision === -1
-      && Number.isSafeInteger(target.projection) && target.projection >= this.firstRepairableProjection
+    if (!samePresentationTarget(target, issued) && !(allowUnconfirmedProjection && this.rootDelivery.applied === -1
+      && Number.isSafeInteger(target.projection) && target.projection >= this.rootDelivery.firstRepairable
       && target.projection < issued.projection && samePresentationTarget({ ...target, projection: issued.projection }, issued))) { return false; }
     const tabs = this.tabs.snapshot();
     const selected = this.sessions.getActiveSession() ?? tabs.tabs.find((tab) => tab.tabId === tabs.selectedTabId);
@@ -628,6 +663,7 @@ export class ChatViewController {
    */
   notifyLoadSessionStart(load: SessionLoad): void {
     if (load.registration !== this.sessions.getActiveSession()) { return; }
+    this.closeReading();
     this.shownLoad = load;
     this.imageBytes.clear();
     this.resetMarkdownImages();
@@ -651,6 +687,7 @@ export class ChatViewController {
 
   /** Clear the transcript, as when a new session starts. */
   clearTranscript(): void {
+    this.closeReading();
     this.imageBytes.clear();
     this.resetMarkdownImages();
     this.post({ type: 'clearTranscript' });
@@ -659,7 +696,8 @@ export class ChatViewController {
   dispose(): Promise<void> {
     if (this.disposal) { return this.disposal; }
     this.disposed = true;
-    this.resetPatchJournal();
+    this.cancelPatchRetry(this.rootDelivery);
+    this.closeReading();
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); }
     this.stopActivity();
     this.tabs.off('listedTitlesChanged', this.listedTitlesChanged);
@@ -838,22 +876,22 @@ export class ChatViewController {
     this.markdownImageContext++;
   }
 
-  private boundedImage(key: string, data: string, mimeType: string, reference?: true): { src: string | null; fallback?: string; reference?: true } {
+  private boundedImage(key: string, data: string, mimeType: string, reference?: true, budget = this.imageBytes): { src: string | null; fallback?: string; reference?: true } {
     if (reference) { return { src: null, reference: true }; }
     const src = imageSource(data, mimeType);
     if (src.src === null) { return src; }
     const bytes = Buffer.byteLength(data, 'base64');
-    const total = [...this.imageBytes.values()].reduce((sum, size) => sum + size, 0);
+    const total = [...budget.values()].reduce((sum, size) => sum + size, 0);
     if (total + bytes > 50 * 1024 * 1024) { return { src: null, fallback: 'Session image budget exceeded' }; }
-    this.imageBytes.set(key, (this.imageBytes.get(key) ?? 0) + bytes);
+    budget.set(key, (budget.get(key) ?? 0) + bytes);
     return src;
   }
 
   /** The tool call's content as the contract has it; its diffs' files as shown, only while `your-turn.showToolCallDiffs` is on. */
-  private toolCallContent(sessionId: string, toolCallId: string, content: readonly ShownContent[], retainedOwner?: SessionIdentity & { cwd: string }): WebviewToolCallContent[] {
+  private toolCallContent(sessionId: string, toolCallId: string, content: readonly ShownContent[], retainedOwner?: SessionIdentity & { cwd: string }, childBudget?: Map<string, number>): WebviewToolCallContent[] {
     const imageBudgetKey = imageKey('tool', toolCallId);
-    this.imageBytes.delete(imageBudgetKey);
-    const showsDiffs = this.environment.showsToolCallDiffs();
+    (childBudget ?? this.imageBytes).delete(imageBudgetKey);
+    const showsDiffs = !childBudget && this.environment.showsToolCallDiffs();
     const registration = this.sessions.getActiveSession();
     const owner = retainedOwner ?? (registration && { configuredName: registration.agentName, sessionId, cwd: registration.cwd });
     const shown = showsDiffs && owner ? this.sessions.sessionToolCallDiffs(owner, toolCallId, owner.cwd) ?? [] : [];
@@ -863,7 +901,7 @@ export class ChatViewController {
         case 'text':
           return [{ kind: 'text', text: item.text }];
         case 'image':
-          return [{ kind: 'image', ...this.boundedImage(imageBudgetKey, item.data, item.mimeType, item.reference) }];
+          return [{ kind: 'image', ...this.boundedImage(imageBudgetKey, item.data, item.mimeType, item.reference, childBudget) }];
         case 'commandOutput':
           return [{ kind: 'commandOutput', text: item.output.text, truncated: item.output.truncated }];
         case 'diff':
@@ -891,10 +929,9 @@ export class ChatViewController {
 
   private sendContentSnapshot(view = false, newPage = false): void {
     const previous = this.projected?.snapshot;
-    const pendingSelection = this.pendingSelection;
-    const previousEntryVersions = new Map(this.entryVersions);
-    const previousTerminalVersions = new Map(this.terminalVersions);
-    this.resetPatchJournal();
+    const before = this.rootDelivery;
+    this.cancelPatchRetry(before);
+    const delivery = this.rootDelivery = deliveryState();
     const publish = (content: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> | null, trackSelection = false) => {
       if (view || trackSelection) {
         const selected = this.sessions.getActiveSession();
@@ -902,16 +939,16 @@ export class ChatViewController {
         const message = { type: 'viewSnapshot' as const, state: this.currentState(), tabs: this.presentTabs(),
           running: this.hasRunningTurn, loading: this.shownLoad !== undefined,
           questions: this.presentQuestions(), content };
-        if (trackSelection && content) { this.pendingSelection = message; }
+        if (trackSelection && content) { delivery.pending = message; }
         this.post(message);
       } else if (content) { this.post(content); }
     };
     const tabs = this.tabs.snapshot();
     const registration = this.sessions.getActiveSession();
     const owner = registration ?? tabs.tabs.find((tab) => tab.tabId === tabs.selectedTabId);
-    if (!owner) { publish(null); return; }
+    if (!owner) { this.closeReading(); publish(null); return; }
     const state = this.sessions.sessionState({ configuredName: owner.agentName, sessionId: owner.sessionId });
-    if (!state) { publish(null); return; }
+    if (!state) { this.closeReading(); publish(null); return; }
     const continues = !newPage && previous?.target.configuredName === owner.agentName
       && previous.target.sessionId === owner.sessionId && previous.target.generation === state.generation;
     const images = this.markdownImageOwner;
@@ -926,17 +963,17 @@ export class ChatViewController {
     }
     if (this.projectionTimer) { clearTimeout(this.projectionTimer); this.projectionTimer = undefined; }
     const revision = continues ? previous.revision + 1 : 0;
-    const entries = this.presentContent(state, owner);
+    const entries = this.presentContent(state.content, owner);
     const terminals = [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal }));
     if (continues) {
       const oldEntries = new Map(previous.entries.map((entry) => [entry.id, entry]));
       const oldTerminals = new Map(previous.terminals.map((terminal) => [terminal.terminalId, terminal]));
       for (const entry of entries) {
-        this.entryVersions.set(entry.id, isDeepStrictEqual(oldEntries.get(entry.id), entry) ? previousEntryVersions.get(entry.id) ?? 0 : revision);
+        delivery.entries.set(entry.id, isDeepStrictEqual(oldEntries.get(entry.id), entry) ? before.entries.get(entry.id) ?? 0 : revision);
       }
       for (const terminal of terminals) {
-        this.terminalVersions.set(terminal.terminalId, isDeepStrictEqual(oldTerminals.get(terminal.terminalId), terminal)
-          ? previousTerminalVersions.get(terminal.terminalId) ?? 0 : revision);
+        delivery.terminals.set(terminal.terminalId, isDeepStrictEqual(oldTerminals.get(terminal.terminalId), terminal)
+          ? before.terminals.get(terminal.terminalId) ?? 0 : revision);
       }
     }
     const snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> = {
@@ -947,14 +984,16 @@ export class ChatViewController {
       queue: state.queue.map((entry) => ({ ...entry })),
       nextId: state.content.nextId, usage: state.usage,
       terminals,
-      ...(continues ? { versions: { entries: [...this.entryVersions], terminals: [...this.terminalVersions] } } : {}),
+      ...(state.children ? { children: childSessions(state) } : {}),
+      ...(continues ? { versions: { entries: [...delivery.entries], terminals: [...delivery.terminals] } } : {}),
 
     };
-    if (continues) { this.appliedRevision = -1; this.pendingSelection = pendingSelection; }
-    else { this.firstRepairableProjection = snapshot.target.projection; }
+    if (continues) { delivery.applied = -1; delivery.pending = before.pending; }
+    delivery.firstRepairable = continues ? before.firstRepairable : snapshot.target.projection;
     this.projected = { state, snapshot, registration, running: this.hasRunningTurn };
-    publish(snapshot, !continues && !newPage && (view || pendingSelection !== undefined));
-    this.schedulePatchRetry();
+    if (!continues || this.shownLoad) { this.closeReading(); }
+    publish(snapshot, !continues && !newPage && (view || before.pending !== undefined));
+    this.schedulePatchRetry(delivery);
   }
 
   private sendContentPatch(): void {
@@ -966,7 +1005,15 @@ export class ChatViewController {
     const running = this.hasRunningTurn;
     if (!state || (state === previous.state && running === previous.running)) { return; }
     if (state.generation !== previous.snapshot.target.generation) { this.sendContentSnapshot(); return; }
-    const entries = this.presentContent(state, registration);
+    this.updateReading(state);
+    const identities = state.children === previous.state.children ? previous.snapshot.children : childSessions(state);
+    const children = isDeepStrictEqual(identities, previous.snapshot.children) ? previous.snapshot.children : identities;
+    if (state.content === previous.state.content && state.terminals === previous.state.terminals && state.usage === previous.state.usage
+      && state.composer === previous.state.composer && state.queue === previous.state.queue && running === previous.running && children === previous.snapshot.children) {
+      this.projected = { ...previous, state };
+      return;
+    }
+    const entries = this.presentContent(state.content, registration);
     const patches = [...contentPatches(previous.snapshot.entries, entries)];
     for (const terminalId of previous.state.terminals.keys()) {
       if (!state.terminals.has(terminalId)) { patches.push({ kind: 'removeTerminal', terminalId }); }
@@ -977,90 +1024,98 @@ export class ChatViewController {
         patches.push({ kind: 'terminal', terminalId, ...terminal });
       }
     }
-    const revision = previous.snapshot.revision + 1;
+    const snapshot = { ...previous.snapshot, composer: { ...state.composer },
+      queue: state.queue.map((entry) => ({ ...entry })),
+      ...(children ? { children } : {}),
+      entries, revision: previous.snapshot.revision + 1, currentTurn: state.content.currentTurn, nextId: state.content.nextId, usage: state.usage,
+      terminals: [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal })) };
+    this.projected = { ...previous, state, snapshot, running };
+    this.publishPatch(this.rootDelivery, snapshot, patches, {
+      ...(running === previous.running ? {} : { running }),
+      ...(state.composer === previous.state.composer ? {} : { composer: snapshot.composer }),
+      ...(children !== previous.snapshot.children ? { children } : {}),
+      ...(state.queue === previous.state.queue ? {} : { queue: snapshot.queue }),
+    });
+  }
+
+  private publishPatch(delivery: Delivery, snapshot: Snapshot, patches: ProjectedPatch['patches'], controls: Pick<ProjectedPatch, 'running' | 'composer' | 'children' | 'queue'> = {}): void {
+    const { revision, entries } = snapshot;
     for (const patch of patches) {
       switch (patch.kind) {
         case 'insert':
         case 'spliceEntries':
-          for (const entry of patch.entries) { this.entryVersions.set(entry.id, revision); }
+        for (const entry of patch.entries) { delivery.entries.set(entry.id, revision); }
           break;
-        case 'replace': this.entryVersions.set(patch.id, revision); break;
-        case 'terminal': this.terminalVersions.set(patch.terminalId, revision); break;
-        case 'removeTerminal': this.terminalVersions.delete(patch.terminalId); break;
-        default: this.entryVersions.set(patch.turnId, revision); break;
+      case 'replace': delivery.entries.set(patch.id, revision); break;
+      case 'terminal': delivery.terminals.set(patch.terminalId, revision); break;
+      case 'removeTerminal': delivery.terminals.delete(patch.terminalId); break;
+      default: delivery.entries.set(patch.turnId, revision); break;
       }
     }
     const entryIds = new Set(entries.map(({ id }) => id));
-    for (const id of this.entryVersions.keys()) { if (!entryIds.has(id)) { this.entryVersions.delete(id); } }
-    const snapshot = { ...previous.snapshot, composer: { ...state.composer },
-      queue: state.queue.map((entry) => ({ ...entry })),
-      entries, revision, currentTurn: state.content.currentTurn, nextId: state.content.nextId, usage: state.usage,
-      terminals: [...state.terminals].map(([terminalId, terminal]) => ({ terminalId, ...terminal })) };
-    this.projected = { ...previous, state, snapshot, running };
-    const message: ProjectedPatch = { type: 'contentPatch', target: snapshot.target, base: previous.snapshot.revision, revision, patches,
-      currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage,
-      ...(running === previous.running ? {} : { running }),
-      ...(state.composer === previous.state.composer ? {} : { composer: snapshot.composer }),
-      ...(state.queue === previous.state.queue ? {} : { queue: snapshot.queue }) };
+    for (const id of delivery.entries.keys()) { if (!entryIds.has(id)) { delivery.entries.delete(id); } }
+    const message: ProjectedPatch = { type: 'contentPatch', target: snapshot.target, base: revision - 1, revision, patches,
+      currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage, ...controls };
     const bytes = Buffer.byteLength(JSON.stringify(message));
-    this.patchJournal.push({ message, bytes });
-    this.patchJournalBytes += bytes;
-    while (this.patchJournalBytes > PATCH_JOURNAL_BYTES || this.patchJournal.length > PATCH_JOURNAL_COUNT) {
-      const oldest = this.patchJournal.shift();
+    delivery.journal.push({ message, bytes });
+    delivery.bytes += bytes;
+    while (delivery.bytes > PATCH_JOURNAL_BYTES || delivery.journal.length > PATCH_JOURNAL_COUNT) {
+      const oldest = delivery.journal.shift();
       if (!oldest) { break; }
-      this.patchJournalBytes -= oldest.bytes;
+      delivery.bytes -= oldest.bytes;
     }
     this.post(message);
-    this.schedulePatchRetry();
+    this.schedulePatchRetry(delivery);
   }
 
-  private cancelPatchRetry(): void {
-    if (this.patchRetry !== undefined) { clearTimeout(this.patchRetry); this.patchRetry = undefined; }
+  private closeReading(): void {
+    if (this.reading) { this.cancelPatchRetry(this.reading.delivery); }
+    this.reading = undefined;
   }
 
-  private resetPatchJournal(): void {
-    this.cancelPatchRetry();
-    this.patchRetryDelay = PATCH_RETRY_MS;
-    this.appliedRevision = 0;
-    this.invalidBaseRevision = undefined;
-    this.pendingSelection = undefined;
-    this.patchJournal = [];
-    this.patchJournalBytes = 0;
-    this.entryVersions.clear();
-    this.terminalVersions.clear();
+  private addressedProjection(target: PresentationTarget): { projection: Projection; delivery: Delivery } | undefined {
+    if (this.reading && samePresentationTarget(this.reading.projection.snapshot.target, target)
+      && this.projected && this.currentTarget(this.projected.snapshot.target)) { return this.reading; }
+    if (this.projected && this.currentTarget(target)) { return { projection: this.projected, delivery: this.rootDelivery }; }
+    return undefined;
   }
 
-  private schedulePatchRetry(): void {
-    const target = this.projected?.snapshot.target;
-    if (this.disposed || !target || this.patchRetry !== undefined
-      || (!this.pendingSelection && this.projected?.snapshot.revision === this.appliedRevision)) { return; }
-    this.patchRetry = setTimeout(() => {
-      this.patchRetry = undefined;
-      if (!this.currentTarget(target)) { return; }
+  private cancelPatchRetry(delivery: Delivery): void {
+    if (delivery.retry !== undefined) { clearTimeout(delivery.retry); delivery.retry = undefined; }
+  }
+
+  private schedulePatchRetry(delivery: Delivery): void {
+    const projection = delivery === this.rootDelivery ? this.projected : this.reading?.delivery === delivery ? this.reading.projection : undefined;
+    const target = projection?.snapshot.target;
+    if (this.disposed || !target || delivery.retry !== undefined
+      || (!delivery.pending && projection.snapshot.revision === delivery.applied)) { return; }
+    delivery.retry = setTimeout(() => {
+      delivery.retry = undefined;
+      const addressed = this.addressedProjection(target);
+      if (addressed?.delivery !== delivery) { return; }
       if (this.environment.visible) {
-        if (this.pendingSelection) { this.post(this.pendingSelection); }
-        if (this.projected?.snapshot.revision !== this.appliedRevision) {
-          if (this.invalidBaseRevision === undefined && this.patchJournal[0]?.message.base === this.appliedRevision) {
-            for (const { message } of this.patchJournal) { this.post(message); }
+        if (delivery.pending) { this.post(delivery.pending); }
+        if (addressed.projection.snapshot.revision !== delivery.applied) {
+          if (delivery.invalidBase === undefined && delivery.journal[0]?.message.base === delivery.applied) {
+            for (const { message } of delivery.journal) { this.post(message); }
           } else {
             this.post({ type: 'contentManifestRequested', target });
           }
         }
       }
-      this.patchRetryDelay = Math.min(this.patchRetryDelay * 2, MAX_PATCH_RETRY_MS);
-      this.schedulePatchRetry();
-    }, this.patchRetryDelay);
+      delivery.retryDelay = Math.min(delivery.retryDelay * 2, MAX_PATCH_RETRY_MS);
+      this.schedulePatchRetry(delivery);
+    }, delivery.retryDelay);
   }
 
-  private repairContent({ revision, versions, baseTarget, invalidBase }: Extract<WebviewToExtensionMessage, { type: 'contentManifest' }>): void {
-    const projected = this.projected;
-    if (!projected || !Number.isSafeInteger(revision) || revision < this.appliedRevision || revision >= projected.snapshot.revision
-      || (!invalidBase && this.invalidBaseRevision === undefined && this.patchJournal[0]?.message.base === this.appliedRevision)) { return; }
+  private repairContent(projected: Projection, delivery: Delivery, { revision, versions, baseTarget, invalidBase }: Extract<WebviewToExtensionMessage, { type: 'contentManifest' }>): void {
+    if (!Number.isSafeInteger(revision) || revision < delivery.applied || revision >= projected.snapshot.revision
+      || (!invalidBase && delivery.invalidBase === undefined && delivery.journal[0]?.message.base === delivery.applied)) { return; }
     const { snapshot, running } = projected;
     if (baseTarget && (baseTarget.configuredName !== snapshot.target.configuredName || baseTarget.sessionId !== snapshot.target.sessionId
       || baseTarget.generation !== snapshot.target.generation || !Number.isSafeInteger(baseTarget.projection)
-      || baseTarget.projection < this.firstRepairableProjection || baseTarget.projection >= snapshot.target.projection)) { return; }
-    if (invalidBase) { this.invalidBaseRevision = Math.max(this.invalidBaseRevision ?? revision, revision); }
+      || baseTarget.projection < delivery.firstRepairable || baseTarget.projection >= snapshot.target.projection)) { return; }
+    if (invalidBase) { delivery.invalidBase = Math.max(delivery.invalidBase ?? revision, revision); }
     const patches: ProjectedPatch['patches'][number][] = [];
     const before = new Map(versions.entries);
     const after = new Set(snapshot.entries.map(({ id }) => id));
@@ -1076,32 +1131,56 @@ export class ChatViewController {
         patches.push({ kind: 'insert', index, entries: [entry] });
       } else {
         kept++;
-        if ((before.get(entry.id) ?? 0) !== (this.entryVersions.get(entry.id) ?? 0)) {
+        if ((before.get(entry.id) ?? 0) !== (delivery.entries.get(entry.id) ?? 0)) {
           patches.push({ kind: 'replace', id: entry.id, entry });
         }
       }
     }
     const terminals = new Map(versions.terminals);
     for (const terminal of snapshot.terminals) {
-      if (terminals.get(terminal.terminalId) !== (this.terminalVersions.get(terminal.terminalId) ?? 0)) {
+      if (terminals.get(terminal.terminalId) !== (delivery.terminals.get(terminal.terminalId) ?? 0)) {
         patches.push({ kind: 'terminal', ...terminal });
       }
       terminals.delete(terminal.terminalId);
     }
     for (const terminalId of terminals.keys()) { patches.push({ kind: 'removeTerminal', terminalId }); }
     const current: ContentVersions = {
-      entries: snapshot.entries.map(({ id }) => [id, this.entryVersions.get(id) ?? 0]),
-      terminals: snapshot.terminals.map(({ terminalId }) => [terminalId, this.terminalVersions.get(terminalId) ?? 0]),
+      entries: snapshot.entries.map(({ id }) => [id, delivery.entries.get(id) ?? 0]),
+      terminals: snapshot.terminals.map(({ terminalId }) => [terminalId, delivery.terminals.get(terminalId) ?? 0]),
     };
     this.post({ type: 'contentPatch', target: snapshot.target, base: revision, revision: snapshot.revision, patches,
       ...(baseTarget ? { baseTarget } : {}),
-      currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage, running, versions: current,
-      composer: snapshot.composer, queue: snapshot.queue });
+      currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage, versions: current,
+      ...(delivery === this.rootDelivery ? { running, composer: snapshot.composer, queue: snapshot.queue, ...(snapshot.children ? { children: snapshot.children } : {}) } : {}) });
   }
 
-  private presentContent(state: SessionStateView, owner: { agentName: string; sessionId: string; cwd: string }): Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'] {
+  private updateReading(state: SessionStateView): void {
+    const reading = this.reading;
+    if (!reading) { return; }
+    const previous = reading.projection.snapshot;
+    const target = previous.target;
+    const child = state.children?.get(target.sessionId);
+    if (!child || child.content === reading.content) { return; }
+    reading.content = child.content;
+    const projected = this.presentContent(child.content, { agentName: target.configuredName, sessionId: target.sessionId, cwd: '' }, new Map());
+    // Child image budgets reset on projection. Keep equal entries and parts stable for incremental patches.
+    const entries = projected.map((entry, index) => {
+      const old = previous.entries[index];
+      if (isDeepStrictEqual(old, entry) && old) { return old; }
+      if (old?.kind !== 'turn' || entry.kind !== 'turn' || old.id !== entry.id) { return entry; }
+      return { ...entry, parts: entry.parts.map((part, at) => {
+        const prior = old.parts[at];
+        return prior && isDeepStrictEqual(prior, part) ? prior : part;
+      }) };
+    });
+    const snapshot = { ...previous, entries, revision: previous.revision + 1, currentTurn: child.content.currentTurn, nextId: child.content.nextId };
+    reading.projection.snapshot = snapshot;
+    this.publishPatch(reading.delivery, snapshot, contentPatches(previous.entries, entries));
+  }
+
+  private presentContent(content: SessionStateView['content'], owner: { agentName: string; sessionId: string; cwd: string }, childBudget?: Map<string, number>): Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'] {
     const imageKeys = new Set<string>();
-    for (const entry of state.content.entries) {
+    for (const entry of childBudget ? [] : content.entries) {
       if (entry.kind === 'promptImage') { imageKeys.add(imageKey('prompt', entry.messageId)); }
       if (entry.kind !== 'turn') { continue; }
       for (const part of entry.parts) {
@@ -1114,60 +1193,68 @@ export class ChatViewController {
         }
       }
     }
-    for (const key of this.imageBytes.keys()) {
+    for (const key of childBudget ? [] : this.imageBytes.keys()) {
       if (!key.startsWith('["markdown",') && !imageKeys.has(key)) { this.imageBytes.delete(key); }
     }
     type Entry = Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number];
     type Part = Extract<Entry, { kind: 'turn' }>['parts'][number];
+    const presented = childBudget ? new WeakMap<object, Entry | Part>() : this.presented;
+    const presentedCalls = childBudget ? new WeakMap<object, PresentedCall>() : this.presentedCalls;
     const presentPart = (part: Extract<SessionStateView['content']['entries'][number], { kind: 'turn' }>['parts'][number], ended: boolean): Part => {
-      const cached = this.presented.get(part);
+      const cached = presented.get(part);
       if (cached && !('id' in cached) && !(part.kind === 'toolCalls' && cached.kind === 'toolCalls'
         && cached.collapsed !== (ended && part.toolCalls.length > 3))) { return cached; }
       let shown: Part;
       switch (part.kind) {
+        case 'childCompletion': return part;
         case 'question': shown = { kind: 'question', record: this.questionRecord(part.record), open: false }; break;
         case 'message': shown = part; break;
         case 'thought': {
-          const image = part.image && this.boundedImage(imageKey('thought', part.messageId), part.image.data, part.image.mimeType, part.image.reference);
+          const image = part.image && this.boundedImage(imageKey('thought', part.messageId), part.image.data, part.image.mimeType, part.image.reference, childBudget);
           shown = { kind: 'thought', messageId: part.messageId, text: part.text, startedAt: part.startedAt, endedAt: part.endedAt,
           open: part.endedAt === null, ...(part.markdownRevision !== undefined ? { markdownRevision: part.markdownRevision } : {}),
           ...(image ? { imageSrc: image.src, ...(image.reference ? { imageReference: true } : {}), ...(image.fallback ? { imageFallback: image.fallback } : {}) } : {}),
         }; break;
         }
-        case 'image': shown = { kind: 'image', messageId: part.messageId, ...this.boundedImage(imageKey('agent', part.messageId), part.data, part.mimeType, part.reference) }; break;
+        case 'image': shown = { kind: 'image', messageId: part.messageId, ...this.boundedImage(imageKey('agent', part.messageId), part.data, part.mimeType, part.reference, childBudget) }; break;
         case 'plan': shown = { kind: 'plan', steps: part.steps.map(planStep) }; break;
         case 'compaction': shown = { ...part, open: part.status !== 'completed' }; break;
         case 'toolCalls': shown = { kind: 'toolCalls', collapsed: ended && part.toolCalls.length > 3, toolCalls: part.toolCalls.map((call) => {
-          const cached = this.presentedCalls.get(call);
+          const cached = presentedCalls.get(call);
           if (cached) { return cached; }
-          const content = call.toolKind === 'execute' ? call.content.filter((item) => item.kind !== 'text') : call.content;
+          const content = !childBudget && call.toolKind === 'execute' ? call.content.filter((item) => item.kind !== 'text') : call.content;
           const shown = { ...call, open: call.status === 'failed', content: this.toolCallContent(owner.sessionId, call.toolCallId, content,
-            { configuredName: owner.agentName, sessionId: owner.sessionId, cwd: owner.cwd }) };
-          this.presentedCalls.set(call, shown);
+            { configuredName: owner.agentName, sessionId: owner.sessionId, cwd: owner.cwd }, childBudget) };
+          presentedCalls.set(call, shown);
           return shown;
         }) }; break;
       }
-      this.presented.set(part, shown);
+      presented.set(part, shown);
       return shown;
     };
-    return state.content.entries.map((entry): Entry => {
-      const cached = this.presented.get(entry);
+    return content.entries.map((entry): Entry => {
+      const cached = presented.get(entry);
       if (cached && 'id' in cached) { return cached; }
       let shown: Entry;
       switch (entry.kind) {
         case 'question': shown = { kind: 'question', id: entry.id, record: this.questionRecord(entry.record), open: false }; break;
         case 'error':
+        case 'childCompletion':
         case 'prompt': shown = entry; break;
         case 'promptImage': shown = { kind: 'promptImage', id: entry.id, messageId: entry.messageId, text: '',
-          ...this.boundedImage(imageKey('prompt', entry.messageId), entry.data, entry.mimeType, entry.reference) }; break;
-        case 'turn': shown = { kind: 'turn', id: entry.id, parts: entry.parts.map((part) => presentPart(part, entry.id !== state.content.currentTurn)) }; break;
+          ...this.boundedImage(imageKey('prompt', entry.messageId), entry.data, entry.mimeType, entry.reference, childBudget) }; break;
+        case 'turn': shown = { kind: 'turn', id: entry.id, parts: entry.parts.map((part) => presentPart(part, entry.id !== content.currentTurn)) }; break;
         case 'compaction': shown = { ...entry, open: entry.status !== 'completed' }; break;
       }
-      this.presented.set(entry, shown);
+      presented.set(entry, shown);
       return shown;
     });
   }
 
+}
+
+function childSessions(state: SessionStateView) {
+  return [...state.children ?? []].map(([id, child]) => ({ id, parentId: child.parentId, label: child.title?.trim() || id }));
 }
 
 function samePresentationTarget(a: PresentationTarget, b: PresentationTarget): boolean {

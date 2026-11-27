@@ -69,17 +69,31 @@ interface Compaction {
   readonly timingAllowed: boolean;
 }
 
-type ContentPart = Message | Thought | Image | Compaction | { readonly kind: 'question'; readonly record: SettledQuestion }
+interface ChildCompletion {
+  readonly kind: 'childCompletion';
+  readonly id: number;
+  readonly childId: string;
+  readonly stopReason: string | null;
+}
+
+type ContentPart = Message | Thought | Image | Compaction | ChildCompletion | { readonly kind: 'question'; readonly record: SettledQuestion }
   | { readonly kind: 'toolCalls'; readonly toolCalls: readonly ToolCall[] }
   | { readonly kind: 'plan'; readonly steps: Extract<SessionUpdate, { kind: 'plan' }>['steps'] };
 
 export interface SessionContent {
-  readonly entries: readonly (Prompt | PromptImage | Turn | (Compaction & { readonly id: number }) | { readonly kind: 'question'; readonly id: number; readonly record: SettledQuestion } | { readonly kind: 'error'; readonly id: number; readonly text: string })[];
+  readonly entries: readonly (Prompt | PromptImage | Turn | ChildCompletion | (Compaction & { readonly id: number }) | { readonly kind: 'question'; readonly id: number; readonly record: SettledQuestion } | { readonly kind: 'error'; readonly id: number; readonly text: string })[];
   readonly currentTurn: number | null;
   readonly nextId: number;
 }
 
 export const initialContent: SessionContent = { entries: [], currentTurn: null, nextId: 1 };
+
+export function withChildCompletion(content: SessionContent, childId: string, stopReason: string | null): SessionContent {
+  const entry: ChildCompletion = { kind: 'childCompletion', id: content.nextId, childId, stopReason };
+  const next = { ...content, nextId: content.nextId + 1 };
+  return content.currentTurn === null ? { ...next, entries: [...content.entries, entry] }
+    : withTurn(next, content.currentTurn, (turn) => ({ ...turn, parts: [...turn.parts, entry] }));
+}
 
 export function withSettledQuestion(content: SessionContent, record: SettledQuestion, now: number): SessionContent {
   const question = { kind: 'question' as const, record };
