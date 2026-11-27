@@ -134,6 +134,10 @@ describe('ChatViewController', () => {
       deliver();
       const rootTarget = view.transcript.projection?.target;
       dispatch({ type: 'childOpened', id: 'child' });
+      const snapshot = sent.find((message) => message.type === 'contentSnapshot' && message.target.sessionId === 'child');
+      expect(snapshot).toBeDefined();
+      expect(snapshot).not.toHaveProperty('composer');
+      expect(snapshot).not.toHaveProperty('queue');
       deliver();
       expect(view.inspection?.received).toBe(true);
 

@@ -45,8 +45,10 @@ flowchart LR
   delayed work. Load stages replay and commits it on success. Retained
   transcript content is in memory; the agent owns persistence.
 - **Reading is not control.** The selected session owns the composer, queue,
-  Prompt, and Stop. Inspection changes which transcript the user reads, not
-  which session the user controls. A transcript address does not authorize
+  Prompt, and Stop. Inspection snapshots omit composer and queue state. The
+  webview decides where to show the composer; core validates command targets.
+  Inspection changes which transcript the user reads, not which session the
+  user controls. A transcript address does not authorize
   commands. A child completion belongs only in its immediate parent's
   transcript.
 - **The webview is a projection.** Core owns transcript content. The selected

@@ -155,9 +155,6 @@ export function update(state: RootState, action: Action, now: number): Transitio
   }
   if (action.type === 'contentSnapshot') {
     const inspection = state.inspection;
-    if (action.readingRequest !== undefined && (!inspection || state.readingRequest !== action.readingRequest || !isReadingTarget(state, action.target))) {
-      return { state, outgoing: [] };
-    }
     const reading = action.readingRequest === undefined ? undefined : inspection;
     const transcript = reading?.transcript ?? state.transcript;
     const projection = transcript.projection;
@@ -165,7 +162,10 @@ export function update(state: RootState, action: Action, now: number): Transitio
       || (action.target.projection === projection.target.projection && action.revision <= projection.revision))) {
       return { state, outgoing: [] };
     }
-    if (reading) {
+    if (action.readingRequest !== undefined) {
+      if (!reading || state.readingRequest !== action.readingRequest || !isReadingTarget(state, action.target)) {
+        return { state, outgoing: [] };
+      }
       return { state: { ...state, inspection: { ...reading, received: true, transcript: { ...transcript,
         sessionId: action.target.sessionId, entries: action.entries, nextId: action.nextId, currentTurn: action.currentTurn,
         projection: { target: action.target, revision: action.revision, ...(action.versions ? { versions: action.versions } : {}) },
@@ -386,7 +386,7 @@ function pendingImageContext(transcript: TranscriptState, target: PresentationTa
     ? { type: 'markdownImageContext', target } : undefined;
 }
 
-function projectedQueue(previous: TranscriptState['queued'], queue: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['queue']): TranscriptState['queued'] {
+function projectedQueue(previous: TranscriptState['queued'], queue: NonNullable<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['queue']>): TranscriptState['queued'] {
   return queue.map((entry) => {
     const shown = previous.find((item) => item.id === entry.id);
     if (shown && (shown.revision ?? 0) > (entry.revision ?? 0)) { return shown; }

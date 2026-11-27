@@ -214,11 +214,8 @@ export interface ContentVersions {
 }
 
 interface ContentSnapshot {
-  readonly readingRequest?: number;
   readonly children?: readonly { readonly id: string; readonly parentId: string; readonly label: string }[];
   readonly versions?: ContentVersions;
-  readonly queue: readonly { readonly id: number; readonly text: string; readonly draft: string | null; readonly revision?: number }[];
-  readonly composer: { readonly text: string; readonly revision: number };
   readonly target: PresentationTarget;
   /** Changes when image consent and pending reads are invalidated, not on every snapshot. */
   readonly markdownImageEpoch?: number;
@@ -230,13 +227,25 @@ interface ContentSnapshot {
   readonly terminals: readonly { readonly terminalId: string; readonly text: string; readonly truncated: boolean; readonly exitStatus: ExitStatus | null }[];
 }
 
+interface SelectedSnapshot extends ContentSnapshot {
+  readonly readingRequest?: never;
+  readonly queue: readonly { readonly id: number; readonly text: string; readonly draft: string | null; readonly revision?: number }[];
+  readonly composer: { readonly text: string; readonly revision: number };
+}
+
+interface InspectionSnapshot extends ContentSnapshot {
+  readonly readingRequest: number;
+  readonly queue?: never;
+  readonly composer?: never;
+}
+
 export type ExtensionToWebviewMessage =
   | { type: 'viewSnapshot'; state: { activeSessionId: string | null; session: SessionSnapshot | null };
-    tabs: SessionTabsSnapshot; running: boolean; loading: boolean; questions: Question[]; content: ContentSnapshot | null }
-  | ({ type: 'contentSnapshot' } & ContentSnapshot)
+    tabs: SessionTabsSnapshot; running: boolean; loading: boolean; questions: Question[]; content: SelectedSnapshot | null }
+  | ({ type: 'contentSnapshot' } & (SelectedSnapshot | InspectionSnapshot))
   | { type: 'contentPatch'; target: PresentationTarget; base: number; revision: number; patches: readonly ContentPatch[];
       currentTurn: number | null; nextId: number; usage: SessionUsage | null; running?: boolean; composer?: { readonly text: string; readonly revision: number };
-     queue?: ContentSnapshot['queue']; children?: ContentSnapshot['children']; versions?: ContentVersions; baseTarget?: PresentationTarget }
+     queue?: SelectedSnapshot['queue']; children?: ContentSnapshot['children']; versions?: ContentVersions; baseTarget?: PresentationTarget }
   | { type: 'contentManifestRequested'; target: PresentationTarget }
   | { type: 'markdownImageContext'; target: PresentationTarget; context: number; origin?: string }
   | ({ type: 'markdownImage'; context: number; occurrence: number; status?: 'consent' | 'loading' | 'retry' } & ImagePresentation)

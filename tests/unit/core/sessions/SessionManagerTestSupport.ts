@@ -33,7 +33,8 @@ import {
 } from '@tests/unit/core/InProcessAgents';
 
 export function promptTarget(posts: readonly ExtensionToWebviewMessage[]) {
-  const snapshot = [...posts].reverse().flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : [] : message.type === 'contentSnapshot' ? [message] : [])[0];
+  const snapshot = [...posts].reverse().flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : []
+    : message.type === 'contentSnapshot' && message.readingRequest === undefined ? [message] : [])[0];
   if (!snapshot) { throw new Error('Missing issued projection'); }
   return snapshot.target;
 }

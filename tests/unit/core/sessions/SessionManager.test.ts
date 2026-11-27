@@ -950,9 +950,7 @@ describe('SessionManager', () => {
     await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'requires_action' } });
     await manager.listSessions('fake');
     await chatView.handleMessage({ type: 'ready' });
-    const snapshot = [...posted].reverse().flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : [] : message.type === 'contentSnapshot' ? [message] : [])[0];
-    if (!snapshot) { throw new Error('Missing projection'); }
-    await chatView.handleMessage({ type: 'cancelTurn', target: snapshot.target });
+    await chatView.handleMessage({ type: 'cancelTurn', target: promptTarget(posted) });
     expect(await cancelled).toBe(FIRST_SESSION);
     expect(chatView.hasRunningTurn).toBe(true);
     await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' } });

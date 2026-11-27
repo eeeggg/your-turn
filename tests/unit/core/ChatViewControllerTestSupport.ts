@@ -18,7 +18,8 @@ export const SESSION_ID = '32350bd8-7efa-4316-a84c-e051a33e7580';
 export const OTHER_SESSION_ID = 'ade937c1-4293-4a45-8fea-dcf147090866';
 
 export function contentSnapshots(messages: readonly ExtensionToWebviewMessage[]) {
-  return messages.flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : [] : message.type === 'contentSnapshot' ? [message] : []);
+  return messages.flatMap((message) => message.type === 'viewSnapshot' ? message.content ? [message.content] : []
+    : message.type === 'contentSnapshot' && message.readingRequest === undefined ? [message] : []);
 }
 
 export function questionSnapshots(messages: readonly ExtensionToWebviewMessage[]) {

@@ -74,6 +74,7 @@ const PATCH_JOURNAL_COUNT = 128;
 const PATCH_JOURNAL_BYTES = 4 * 1024 * 1024;
 type ProjectedPatch = Extract<ExtensionToWebviewMessage, { type: 'contentPatch' }>;
 type Snapshot = Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>;
+type SelectedSnapshot = Extract<Snapshot, { readingRequest?: never }>;
 interface Projection { snapshot: Snapshot; running: boolean }
 
 function deliveryState() {
@@ -195,7 +196,7 @@ export class ChatViewController {
   private readonly markdownSources = new Map<number, { source: string; status: 'consent' | 'loading' | 'retry' | 'done' }>();
   private projectionSequence = 0;
   private presentedCalls = new WeakMap<object, PresentedCall>();
-  private projected: { snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>; state: SessionStateView; registration: SessionInfo | undefined; running: boolean } | undefined;
+  private projected: { snapshot: SelectedSnapshot; state: SessionStateView; registration: SessionInfo | undefined; running: boolean } | undefined;
   private projectionTimer: ReturnType<typeof setTimeout> | undefined;
   private rootDelivery = deliveryState();
   private reading: { projection: Projection; delivery: Delivery; content: SessionStateView['content'] } | undefined;
@@ -328,7 +329,7 @@ export class ChatViewController {
             const target = { ...message.target, sessionId: message.sessionId, projection: ++this.projectionSequence };
             const snapshot: Snapshot = { type: 'contentSnapshot', target, readingRequest: message.request, revision: 0,
               entries: this.presentContent(child.content, { agentName: target.configuredName, sessionId: target.sessionId, cwd: '' }, new Map()),
-              currentTurn: child.content.currentTurn, nextId: child.content.nextId, usage: null, terminals: [], composer: { text: '', revision: 0 }, queue: [] };
+              currentTurn: child.content.currentTurn, nextId: child.content.nextId, usage: null, terminals: [] };
             const delivery = deliveryState();
             delivery.firstRepairable = target.projection;
             delivery.pending = snapshot;
@@ -932,7 +933,7 @@ export class ChatViewController {
     const before = this.rootDelivery;
     this.cancelPatchRetry(before);
     const delivery = this.rootDelivery = deliveryState();
-    const publish = (content: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> | null, trackSelection = false) => {
+    const publish = (content: SelectedSnapshot | null, trackSelection = false) => {
       if (view || trackSelection) {
         const selected = this.sessions.getActiveSession();
         this.shownLoad = selected && this.sessions.sessionLoad({ configuredName: selected.agentName, sessionId: selected.sessionId });
@@ -976,7 +977,7 @@ export class ChatViewController {
           ? before.terminals.get(terminal.terminalId) ?? 0 : revision);
       }
     }
-    const snapshot: Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }> = {
+    const snapshot: SelectedSnapshot = {
       type: 'contentSnapshot', target: { configuredName: owner.agentName, sessionId: owner.sessionId, generation: state.generation, projection: ++this.projectionSequence },
       markdownImageEpoch: this.markdownImageContext,
       revision, entries, currentTurn: state.content.currentTurn,
@@ -1151,7 +1152,7 @@ export class ChatViewController {
     this.post({ type: 'contentPatch', target: snapshot.target, base: revision, revision: snapshot.revision, patches,
       ...(baseTarget ? { baseTarget } : {}),
       currentTurn: snapshot.currentTurn, nextId: snapshot.nextId, usage: snapshot.usage, versions: current,
-      ...(delivery === this.rootDelivery ? { running, composer: snapshot.composer, queue: snapshot.queue, ...(snapshot.children ? { children: snapshot.children } : {}) } : {}) });
+      ...(snapshot.readingRequest === undefined ? { running, composer: snapshot.composer, queue: snapshot.queue, ...(snapshot.children ? { children: snapshot.children } : {}) } : {}) });
   }
 
   private updateReading(state: SessionStateView): void {
