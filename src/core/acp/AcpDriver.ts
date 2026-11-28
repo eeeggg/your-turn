@@ -218,6 +218,8 @@ export type SessionUpdate =
   | { kind: 'childSession'; childId: string; title?: string | null; activity?: ChildActivity | null }
   | { kind: 'activityUnknown' }
   | { kind: 'replayComplete' }
+  | { kind: 'sessionMessage'; messageId: string; senderId?: string | null; recipientId?: string | null; text?: string }
+  | { kind: 'sessionMessageChunk'; messageId: string; text: string }
   | { kind: 'agentText'; messageId: string | null; text: string }
   | { kind: 'agentImage'; messageId: string | null; data: string; mimeType: string; reference?: true }
   | { kind: 'thoughtImage'; messageId: string | null; data: string; mimeType: string; reference?: true }

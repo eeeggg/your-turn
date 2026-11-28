@@ -83,7 +83,7 @@ function setup(controlledPrompts = false) {
       }
     });
   });
-  const summary = () => store.getSnapshot().transcript.entries.map((entry) => (entry.kind === 'turn' ? 'turn' : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : entry.kind === 'question' ? `question: ${entry.record.interactionId}` : entry.kind === 'childCompletion' ? `childCompletion: ${entry.childId}` : `${entry.kind}: ${entry.text}`));
+  const summary = () => store.getSnapshot().transcript.entries.map((entry) => (entry.kind === 'turn' ? 'turn' : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : entry.kind === 'question' ? `question: ${entry.record.interactionId}` : entry.kind === 'childCompletion' ? `childCompletion: ${entry.childId}` : `${entry.kind}: ${entry.text ?? 'Announced'}`));
   return { agents, manager, store, controller, prompts, replies, messages, turnInProgress, prompt, nextPrompt, stateChanged, summary };
 }
 

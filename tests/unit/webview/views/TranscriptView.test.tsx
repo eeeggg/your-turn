@@ -144,7 +144,27 @@ function renderChatView(retained = false) {
         });
       }
     },
-    target: () => store.getSnapshot().transcript.projection?.target,
+  target: () => store.getSnapshot().transcript.projection?.target,
+    assign: (childId: string, text: string, senderId = SESSION_ID) => {
+      const registration = runtime?.sessions.session;
+      if (!runtime || !registration) { throw new Error('Missing retained session'); }
+      const update = { kind: 'sessionMessage' as const, messageId: 'assignment', senderId, recipientId: childId, text };
+      act(() => {
+        if (senderId === registration.sessionId) { runtime.sessions.retained.accept(registration, update, time); }
+        else {
+          const origin = { sourceId: registration.agentId, identity: { configuredName: registration.agentName, sessionId: senderId } };
+          runtime.sessions.retained.acceptChild(origin, update, time, () => true);
+        }
+      });
+    },
+    childActivity: (childId: string, state: 'running' | 'requiresAction' | 'idle') => {
+      const registration = runtime?.sessions.session;
+      if (!runtime || !registration) { throw new Error('Missing retained session'); }
+      act(() => {
+        runtime.sessions.retained.acceptChild({ identity: { configuredName: registration.agentName, sessionId: childId },
+          sourceId: registration.agentId }, state === 'idle' ? { kind: 'foreground', state, stopReason: 'end_turn' } : { kind: 'foreground', state }, time, () => true);
+      });
+    },
     childStop: (childId: string) => {
       const registration = runtime?.sessions.session;
       if (!runtime || !registration) { throw new Error('Missing retained session'); }
@@ -185,6 +205,173 @@ function renderChatView(retained = false) {
 
 const retainedQueueView = () => renderChatView(true);
 
+it('holds a running child outside the parent scroll pane and releases it only on the child stop', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.childActivity('child', 'running');
+  const held = screen.getByRole('region', { name: 'Active child sessions' });
+  expect(held.textContent).toContain('Review tests');
+  expect(chat.part('#transcriptScroll').contains(held)).toBe(false);
+  const opener = held.querySelector('button');
+  assert.exists(opener);
+  fireEvent.click(opener);
+  expect(screen.getByText('Child transcript')).toBeTruthy();
+  chat.send({ type: 'foregroundActivity', running: false });
+  expect(held.isConnected).toBe(true);
+  chat.childActivity('child', 'idle');
+  chat.childActivity('child', 'idle');
+  expect(screen.getByText('Child transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(screen.queryByRole('region', { name: 'Active child sessions' })).toBeNull();
+  const released = screen.getByRole('button', { name: 'Review tests — Finished' });
+  expect(chat.part('#messages').contains(released)).toBe(true);
+  expect(document.activeElement).toBe(released);
+});
+
+it('summarizes a grandchild at the root and restores its individual opener in the immediate parent', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.child('child', 'nested', 'Inspect fixtures', 'Nested transcript');
+  chat.childActivity('nested', 'running');
+  expect(screen.getByRole('region', { name: 'Active child sessions' }).textContent).toContain('Review tests · 1 descendant working');
+  fireEvent.click(screen.getByRole('button', { name: 'Open child transcript' }));
+  const openHeld = () => screen.getByRole('region', { name: 'Active child sessions' }).querySelector('button');
+  const opener = openHeld();
+  assert.exists(opener);
+  fireEvent.click(opener);
+  expect(screen.getByText('Nested transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(openHeld());
+});
+
+it('releases the coordinator once while rolling up working and needs-action descendants at any depth', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.child(SESSION_ID, 'coordinator', 'Coordinate audit', 'Coordinator transcript');
+  chat.child('coordinator', 'worker', 'Audit tests', 'Worker transcript');
+  chat.child('worker', 'deep', 'Inspect fixtures', 'Deep transcript');
+  chat.childActivity('coordinator', 'running');
+  chat.childActivity('worker', 'requiresAction');
+  chat.childActivity('deep', 'running');
+  const held = () => screen.getByRole('region', { name: 'Active child sessions' });
+  expect(held().textContent).toContain('Coordinate audit · 1 descendant working · 1 descendant needs action');
+  expect(held().querySelectorAll('button')).toHaveLength(1);
+
+  chat.childActivity('coordinator', 'idle');
+  const released = screen.getByRole('button', { name: 'Coordinate audit — Turn ended' });
+  expect(chat.part('#messages').contains(released)).toBe(true);
+  expect(held().textContent).toContain('Coordinate audit · 1 descendant working · 1 descendant needs action');
+  const opener = held().querySelector('button');
+  assert.exists(opener);
+  fireEvent.click(opener);
+  expect(held().textContent).toContain('Audit tests · 1 descendant working');
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(opener);
+
+  chat.childActivity('worker', 'idle');
+  expect(held().textContent).toBe('Coordinate audit · 1 descendant working');
+  chat.childActivity('deep', 'idle');
+  expect(screen.queryByRole('region', { name: 'Active child sessions' })).toBeNull();
+  expect(screen.getAllByRole('button', { name: 'Coordinate audit — Turn ended' })).toEqual([released]);
+  expect(screen.queryByRole('button', { name: 'Coordinate audit — Finished' })).toBeNull();
+});
+
+it('restores Reading position and focuses the transcript if the released child row is offscreen', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.childActivity('child', 'running');
+  act(() => stickToBottom.setAtBottom(false));
+  const pane = chat.part('#transcriptScroll');
+  pane.scrollTop = 120;
+  const opener = screen.getByRole('region', { name: 'Active child sessions' }).querySelector('button');
+  assert.exists(opener);
+  fireEvent.click(opener);
+  chat.childActivity('child', 'idle');
+  pane.scrollTop = 0;
+  const released = chat.part<HTMLButtonElement>('[aria-label="Review tests — Finished"]');
+  vi.spyOn(released, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 300, 10, 10));
+  vi.spyOn(pane, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 100, 100));
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(pane.scrollTop).toBe(120);
+  expect(document.activeElement).toBe(pane);
+});
+
+it('updates the announced card in place and enables its chevron only when instructions arrive', async () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  const announced = screen.getByText('Review tests — Announced');
+  expect(announced.closest('details')).toBeNull();
+  const opener = screen.getByRole('button', { name: 'Open child transcript' });
+  chat.answer('Reported between the announcement and assignment.');
+  fireEvent.click(opener);
+  chat.assign('child', '');
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(screen.getByText('Review tests — Assigned').closest('details')).toBeNull();
+  expect(document.activeElement).toBe(opener);
+  chat.assign('child', 'Read the fixtures.');
+  expect(screen.getByRole('button', { name: 'Open child transcript' })).toBe(opener);
+  expect(chat.part('#messages').textContent).toMatch(/Review tests — Assigned.*Reported between/s);
+  const details = screen.getByText('Review tests — Assigned').closest('details');
+  assert.exists(details);
+  const chevron = () => details.querySelector('summary svg');
+
+  expect(chevron()?.classList.contains('lucide-chevron-right')).toBe(true);
+  await toggle(details);
+  expect(chevron()?.classList.contains('lucide-chevron-down')).toBe(true);
+  await toggle(details);
+  expect(chevron()?.classList.contains('lucide-chevron-right')).toBe(true);
+});
+
+it('opens the assigned child and returns to the assignment rather than the completion', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.answer('Before assignment');
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.assign('child', 'Read the fixtures.');
+  chat.childStop('child');
+  chat.answer('After completion');
+  expect(chat.part('#messages').textContent).toMatch(/Before assignment.*Review tests — Assigned.*Read the fixtures\..*Review tests — Cancelled.*After completion/s);
+  const assignment = screen.getByText('Review tests — Assigned');
+  const details = assignment.closest('details');
+  assert.exists(details);
+  expect(details.open).toBe(false);
+  fireEvent.click(assignment);
+  expect(details.open).toBe(true);
+  expect(screen.getByText('Read the fixtures.').closest('.tc-body-content')).not.toBeNull();
+  expect(screen.queryByRole('button', { name: 'Back' })).toBeNull();
+  fireEvent.click(assignment);
+  expect(details.open).toBe(false);
+  fireEvent.click(assignment);
+  const open = screen.getByRole('button', { name: 'Open child transcript' });
+  const scroll = chat.part('#transcriptScroll');
+  scroll.scrollTop = 120;
+  fireEvent.click(open);
+  expect(screen.getByText('Child transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(document.activeElement).toBe(open);
+  expect(details.open).toBe(true);
+  expect(scroll.scrollTop).toBe(120);
+});
+
+it('keeps an expanded assignment when Back reopens an inspected parent', () => {
+  const chat = renderChatView(true);
+  chat.connect();
+  chat.child(SESSION_ID, 'child', 'Review tests', 'Child transcript');
+  chat.child('child', 'nested', 'Inspect fixtures', 'Nested transcript');
+  chat.assign('nested', 'Read one fixture.', 'child');
+  fireEvent.click(screen.getByRole('button', { name: 'Open child transcript' }));
+  fireEvent.click(screen.getByText('Inspect fixtures — Assigned'));
+  fireEvent.click(screen.getByRole('button', { name: 'Open child transcript' }));
+  expect(screen.getByText('Nested transcript')).toBeTruthy();
+  fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+  expect(screen.getByText('Inspect fixtures — Assigned').closest('details')?.open).toBe(true);
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open child transcript' }));
+});
+
 it('shows a cancelled child stop in received order and returns to the completion entry', () => {
   const chat = renderChatView(true);
   chat.connect();
@@ -213,21 +400,26 @@ it('inspects immediate children and returns focus and scroll position one level 
   chat.child('child', 'nested', 'Read fixtures', 'Nested transcript');
   const parent = chat.part('#transcriptScroll');
   parent.scrollTop = 120;
-  expect(screen.queryByRole('button', { name: 'Read fixtures' })).toBeNull();
-  const entry = screen.getByRole('button', { name: 'Review tests' });
+  expect(screen.queryByRole('navigation', { name: 'Child sessions' })).toBeNull();
+  expect(screen.queryByText('Read fixtures — Announced')).toBeNull();
+  expect(screen.getByText('Review tests — Announced')).toBeTruthy();
+  const entry = screen.getByRole('button', { name: 'Open child transcript' });
   entry.focus();
   fireEvent.click(entry);
   expect(screen.getByText('Child transcript')).toBeTruthy();
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back' }));
   expect(chat.part('#transcriptScroll').closest('[inert]')).not.toBeNull();
   chat.child(SESSION_ID, 'child', 'Review tests', ' updated during inspection');
-  expect(screen.getByText('Child transcript updated during inspection')).toBeTruthy();
+  expect(screen.getByText('updated during inspection')).toBeTruthy();
+  expect(screen.getAllByText('Read fixtures — Announced')).toHaveLength(1);
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Back' }));
-  const nested = screen.getByRole('button', { name: 'Read fixtures' });
+  expect(screen.queryByRole('navigation', { name: 'Child sessions' })).toBeNull();
+  expect(screen.getByText('Read fixtures — Announced')).toBeTruthy();
+  const nested = screen.getByRole('button', { name: 'Open child transcript' });
   fireEvent.click(nested);
   expect(screen.getByText('Nested transcript')).toBeTruthy();
   fireEvent.click(screen.getByRole('button', { name: 'Back' }));
-  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Read fixtures' }));
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Open child transcript' }));
 
   chat.childStop('nested');
   const completion = screen.getByRole('button', { name: 'Read fixtures — Cancelled' });

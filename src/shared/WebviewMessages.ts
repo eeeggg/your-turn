@@ -178,6 +178,14 @@ interface PresentedChildCompletion {
   readonly id: number;
   readonly childId: string;
   readonly stopReason: string | null;
+  readonly descendantsActive?: true;
+}
+
+interface PresentedChildAssignment {
+  readonly kind: 'childAssignment';
+  readonly id: number;
+  readonly childId: string;
+  readonly text: string | null;
 }
 
 type PresentedPart =
@@ -187,11 +195,11 @@ type PresentedPart =
     readonly open: boolean; readonly markdownRevision?: number; readonly imageSrc?: string | null; readonly imageReference?: true; readonly imageFallback?: string }
   | { readonly kind: 'toolCalls'; readonly toolCalls: readonly PresentedToolCall[]; readonly collapsed: boolean }
   | { readonly kind: 'plan'; readonly steps: readonly PlanStep[] }
-  | PresentedCompaction | PresentedChildCompletion
+  | PresentedCompaction | PresentedChildCompletion | PresentedChildAssignment
   | { readonly kind: 'question'; readonly record: QuestionRecord; readonly open: boolean };
 
 type PresentedEntry =
-  | PresentedChildCompletion
+  | PresentedChildCompletion | PresentedChildAssignment
   | { readonly kind: 'prompt'; readonly id: number; readonly messageId?: string; readonly text: string }
   | ({ readonly kind: 'promptImage'; readonly id: number; readonly messageId: string | null; readonly text: '' } & Readonly<ImagePresentation>)
   | { readonly kind: 'turn'; readonly id: number; readonly parts: readonly PresentedPart[] }
@@ -214,7 +222,9 @@ export interface ContentVersions {
 }
 
 interface ContentSnapshot {
-  readonly children?: readonly { readonly id: string; readonly parentId: string; readonly label: string }[];
+  readonly children?: readonly { readonly id: string; readonly parentId: string; readonly label: string;
+    readonly held?: { readonly entryId: number; readonly status: 'running' | 'requiresAction' };
+    readonly descendants?: { readonly running: number; readonly requiresAction: number } }[];
   readonly versions?: ContentVersions;
   readonly target: PresentationTarget;
   /** Changes when image consent and pending reads are invalidated, not on every snapshot. */

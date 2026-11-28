@@ -1,6 +1,7 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  activeChildSessions,
   yourTurnContainerControl,
   chooseAgentAction,
   chatStop,
@@ -8,7 +9,6 @@ import {
   chatTranscriptScroll,
   chatUserMessages,
   chatViewTitle,
-  childSessions,
   childTranscript,
   promptInput,
   queuedPrompts,
@@ -17,6 +17,37 @@ import {
 import { expect, test } from '@tests/ui/window';
 
 test.use({ agentVersion: 'v2' });
+
+test('subagent row variants align their icons, titles, and Open buttons', async ({ window }) => {
+  await yourTurnContainerControl(window).click();
+  await chooseAgentAction(window, 'fake-v2', 'New Session');
+  const prompt = promptInput(window);
+  await prompt.fill('compare delegation chevrons');
+  await prompt.press('Enter');
+  const transcript = chatTranscript(window);
+  const group = transcript.getByRole('button', { name: '1 tool call', exact: true });
+  await group.click();
+  await expect(group).toHaveAttribute('aria-expanded', 'false');
+  const layout = (label: string, scope = transcript) => scope.getByText(label, { exact: true }).evaluate((title) => {
+    const icon = title.previousElementSibling;
+    const open = title.closest('.child-row, div.border-l-2')?.querySelector('button[data-child-entry]');
+    if (!icon || !open) { throw new Error('Missing row icon or Open button'); }
+    let opacity = 1;
+    for (let node: Element | null = title; node; node = node.parentElement) {
+      opacity *= Number(getComputedStyle(node).opacity);
+    }
+    return { iconX: icon.getBoundingClientRect().left, titleX: title.getBoundingClientRect().left,
+      openX: open.getBoundingClientRect().left, font: getComputedStyle(title).font, opacity };
+  });
+  const toolX = await group.locator('svg').evaluate((icon) => icon.getBoundingClientRect().left);
+  const held = await layout('Inspect fixtures', activeChildSessions(window));
+  expect(held.iconX).toBe(toolX);
+  expect(held.titleX - held.iconX).toBe(20);
+  expect(held.opacity).toBe(1);
+  for (const label of ['Inspect logs — Announced', 'Inspect fixtures — Assigned', 'Inspect logs — Finished']) {
+    expect(await layout(label), label).toEqual(held);
+  }
+});
 
 test('Back from child inspection restores the parent reading position and keyboard focus', async ({ window }) => {
   await yourTurnContainerControl(window).click();
@@ -32,8 +63,9 @@ test('Back from child inspection restores the parent reading position and keyboa
   await scroll.hover();
   await window.mouse.wheel(0, -700);
   await expect(transcript.getByText('Parent transcript ends here.', { exact: true })).not.toBeInViewport();
-  const opener = childSessions(window).getByRole('button', { name: 'Review fixtures' });
-  await opener.focus();
+  await expect(transcript.getByText('Review fixtures — Announced', { exact: true })).toBeVisible();
+  const opener = transcript.getByRole('button', { name: 'Open child transcript' });
+  await opener.evaluate((button) => button.focus({ preventScroll: true }));
   const position = await scroll.evaluate((pane) => pane.scrollTop);
   expect(position).toBeGreaterThan(0);
   await opener.press('Enter');

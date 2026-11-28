@@ -9,7 +9,6 @@ import { Chevron } from '@/webview/views/elements/Chevron';
 
 /** The whole page of the chat view. */
 export function ChatView() {
-  const rootId = useSelector((state) => state.transcript.projection?.target.sessionId);
   const children = useSelector((state) => state.children);
   const path = useSelector((state) => state.inspection?.path);
   const received = useSelector((state) => state.inspection?.received);
@@ -18,25 +17,40 @@ export function ChatView() {
   const parent = useRef<HTMLDivElement>(null);
   const focused = useRef<HTMLElement>(null);
   const back = useRef<HTMLButtonElement>(null);
-  const positions = useRef<{ id: string; completionId?: number; scrollTop: number }[]>([]);
+  const positions = useRef<{ entryId: number | string; expanded: boolean | undefined; scrollTop: number; held: boolean; following: boolean }[]>([]);
   const returning = useRef(false);
   const pendingReturn = useRef<(typeof positions.current)[number] | undefined>(undefined);
   const scrollPane = useCallback((child: boolean) => {
     return child ? focused.current?.querySelector<HTMLElement>('.messages') : parent.current?.querySelector<HTMLElement>('#transcriptScroll');
   }, []);
-  const open = useCallback((id: string, completionId?: number) => {
-    positions.current.push({ id, ...(completionId === undefined ? {} : { completionId }), scrollTop: scrollPane(childId !== undefined)?.scrollTop ?? 0 });
+  const open = useCallback((id: string, entryId: number | string, expanded?: boolean, held = false) => {
+    const pane = scrollPane(childId !== undefined);
+    const scrollTop = pane?.scrollTop ?? 0;
+    const following = pane ? childId === undefined ? pane.dataset['following'] === 'true'
+      : pane.scrollHeight - pane.clientHeight - scrollTop <= 1 : false;
+    positions.current.push({ entryId, expanded, scrollTop, held, following });
     dispatch({ type: 'childOpened', id });
   }, [childId, dispatch, scrollPane]);
   const restore = useCallback((position: (typeof positions.current)[number], child: boolean) => {
     const pane = scrollPane(child);
-    if (pane) { pane.scrollTop = position.scrollTop; }
     const container = child ? focused.current : parent.current;
-    const completion = position.completionId === undefined ? undefined
-      : container?.querySelector<HTMLButtonElement>(`[data-child-completion="${position.completionId}"]`);
-    const opener = Array.from(container?.querySelectorAll<HTMLButtonElement>('[data-child-session]') ?? [])
-      .find((button) => button.dataset['childSession'] === position.id);
-    (completion ?? opener ?? back.current)?.focus({ preventScroll: true });
+    const entry = typeof position.entryId === 'number'
+      ? container?.querySelector<HTMLButtonElement>(`[data-child-entry="${position.entryId}"]`)
+      : Array.from(container?.querySelectorAll<HTMLButtonElement>('[data-held-child]') ?? [])
+        .find((button) => button.dataset['childBranch'] === position.entryId);
+    const details = entry?.previousElementSibling;
+    if (position.expanded !== undefined && details instanceof HTMLDetailsElement) { details.open = position.expanded; }
+    if (position.held && pane && entry && !entry.hasAttribute('data-held-child') && position.following) {
+      pane.scrollTop += entry.getBoundingClientRect().bottom - pane.getBoundingClientRect().bottom;
+      entry.focus({ preventScroll: true });
+      return;
+    }
+    if (pane) { pane.scrollTop = position.scrollTop; }
+    if (position.held && pane && (!entry || (!entry.hasAttribute('data-held-child') && !isVisibleInPane(entry, pane)))) {
+      pane.focus({ preventScroll: true });
+      return;
+    }
+    (entry ?? back.current)?.focus({ preventScroll: true });
   }, [scrollPane]);
   useLayoutEffect(() => {
     if (!returning.current) {
@@ -58,23 +72,11 @@ export function ChatView() {
     }
   }, [childId, received, restore]);
 
-  const list = (id: string | undefined) => {
-    const immediate = children?.filter((child) => child.parentId === id);
-    return immediate?.length ? <nav aria-label="Child sessions" className="shrink-0 border-b border-border px-3 py-1 text-sm">
-      <p className="text-muted-foreground">Child sessions</p>
-      <ul className="flex max-h-24 flex-wrap gap-x-3 overflow-y-auto">
-        {immediate.map((child) => <li key={child.id} className="min-w-0"><button type="button" data-child-session={child.id}
-          className="cursor-pointer wrap-anywhere text-left text-link underline focus-visible:outline-1 focus-visible:outline-ring"
-          onClick={() => open(child.id)}>{child.label}</button></li>)}
-      </ul>
-    </nav> : null;
-  };
   return (
     <OpenChildTranscript value={open}>
     <div id="chatLayers" className="relative flex min-h-0 flex-1 flex-col">
       <div id="parentChat" ref={parent} className="relative z-0 flex min-h-0 flex-1 flex-col" inert={childId !== undefined} aria-hidden={childId === undefined ? undefined : true}>
         <SessionTabs />
-        {list(rootId)}
         <TranscriptView />
         <Questions>
           <QueuedPrompts />
@@ -87,7 +89,6 @@ export function ChatView() {
             onClick={() => { returning.current = true; dispatch({ type: 'childBack' }); }}>Back</button>
           <h2 className="min-w-0 wrap-anywhere font-semibold">{children?.find((child) => child.id === childId)?.label ?? childId}</h2>
         </header>
-        {list(childId)}
         <ChildTranscriptContext value={true}>
           <ChildTranscript key={childId} />
         </ChildTranscriptContext>
@@ -96,6 +97,12 @@ export function ChatView() {
     </div>
     </OpenChildTranscript>
   );
+}
+
+function isVisibleInPane(entry: HTMLElement, pane: HTMLElement): boolean {
+  const row = entry.getBoundingClientRect();
+  const viewport = pane.getBoundingClientRect();
+  return row.top >= viewport.top && row.bottom <= viewport.bottom;
 }
 
 /** Runtime queue projection, oldest first; pinned outside the scrolling transcript. */

@@ -351,6 +351,16 @@ class Translator {
         ...(update.state === undefined ? {} : { activity: update.state === null ? null : childActivity(update.state) }) };
     }
     if (updates.isReplayComplete(update)) { return { kind: 'replayComplete' }; }
+    if (updates.isSessionMessage(update)) {
+      return { kind: 'sessionMessage', messageId: update.messageId,
+        ...(update.senderSessionId === undefined ? {} : { senderId: update.senderSessionId }),
+        ...(update.recipientSessionId === undefined ? {} : { recipientId: update.recipientSessionId }),
+        ...(update.content === undefined ? {} : { text: messageText(update.content) }) };
+    }
+    if (updates.isSessionMessageChunk(update)) {
+      const text = textForUser(update.content);
+      return text === null ? null : { kind: 'sessionMessageChunk', messageId: update.messageId, text };
+    }
     if (updates.isAgentMessageChunk(update)) {
       const resource = imageResourceForUser(update.content);
       if (resource) { return { kind: 'agentImage', messageId: update.messageId, ...resource }; }

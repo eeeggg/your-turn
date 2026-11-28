@@ -144,15 +144,20 @@ describe('ChatViewController', () => {
       // Drop the completion delivery. Do not send any more child updates.
       sessions.retained.acceptChild(origin('grandchild'), { kind: 'foreground', state: 'idle', stopReason: 'cancelled' }, 0, () => true);
       await vi.advanceTimersByTimeAsync(100);
-      expect(sent.splice(0)).toMatchObject([{ type: 'contentPatch', target: { sessionId: 'child' } }]);
-      expect(view.inspection?.transcript.entries).toEqual([]);
+      const completion = sent.shift();
+      expect(completion).toMatchObject({ type: 'contentPatch', target: { sessionId: 'child' } });
+      expect(sent).toMatchObject([{ type: 'contentPatch', target: { sessionId: root.sessionId }, patches: [],
+        children: [{ id: 'child' }, { id: 'grandchild' }] }]);
+      deliver();
+      expect(view.inspection?.transcript.entries).toMatchObject([{ kind: 'childAssignment', childId: 'grandchild', text: null }]);
       await vi.advanceTimersByTimeAsync(2_000);
       deliver();
 
       expect(view.inspection?.transcript.entries).toMatchObject([
+        { kind: 'childAssignment', childId: 'grandchild', text: null },
         { kind: 'childCompletion', childId: 'grandchild', stopReason: 'cancelled' },
       ]);
-      expect(view.transcript.entries).toEqual([]);
+      expect(view.transcript.entries).toMatchObject([{ kind: 'childAssignment', childId: 'child', text: null }]);
       expect(view.transcript.projection?.target).toEqual(rootTarget);
       expect(view.activeSession?.sessionId).toBe(root.sessionId);
     } finally { vi.useRealTimers(); }

@@ -16,6 +16,7 @@ import { ConnectionManager } from '@/core/acp/ConnectionManager';
 import { SessionUpdateHandler } from '@/core/sessions/UpdateHandler';
 import type { SessionLoad } from '@/core/sessions/UpdateHandler';
 import { Reviews } from '@/core/review/Reviews';
+import type { SessionContent } from '@/core/sessions/Content';
 import { AgentManager, commandNotFound, type AgentConfigEntry } from '@/core/AgentManager';
 import { deferred } from '@tests/unit/core/ChatViewControllerTestSupport';
 import {
@@ -51,6 +52,55 @@ const LAST_PAGE_SESSION = '59e34b91-76f2-4b5b-9a78-73382d3fe8b1';
 const KEPT_SESSION = '1468854e-6b9b-4e7a-89e0-9f7b8771bdd7';
 
 describe('SessionManager', () => {
+  it.each(['live', 'Load'] as const)('keeps confirmed assignments in the immediate parent transcript on %s', async (mode) => {
+    const { manager } = setup({ fake: () => fakeV2Agent()
+      .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
+      .onRequest(V2.methods.agent.session.resume, async ({ client }) => {
+        await report((sessionId, update) => client.notify(V2.methods.client.session.update, { sessionId, update }));
+        return {};
+      })
+      .onRequest(V2.methods.agent.session.prompt, async ({ client }) => {
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'running' } });
+        await report((sessionId, update) => client.notify(V2.methods.client.session.update, { sessionId, update }));
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+        return { messageId: 'prompt' };
+      }) });
+  async function report(notify: (sessionId: string, update: V2.SessionUpdate) => Promise<void>) {
+    await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'child', title: 'Inspect' });
+    await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'unassigned', title: 'Available' });
+    await notify(FIRST_SESSION, { sessionUpdate: 'subagent_update', sessionId: 'child', title: 'Inspect fixtures' });
+      await notify('child', { sessionUpdate: 'subagent_update', sessionId: 'nested', title: 'Inspect' });
+      const first = { sessionUpdate: 'session_message', messageId: 'first', senderSessionId: FIRST_SESSION, recipientSessionId: 'child',
+        content: [{ type: 'text', text: 'Read fixtures.' }] } as const;
+      await notify(FIRST_SESSION, { ...first, content: [...first.content] });
+      await notify('child', { ...first, content: [...first.content] });
+      await notify(FIRST_SESSION, { sessionUpdate: 'session_message', messageId: 'first', content: [{ type: 'text', text: 'Read all fixtures.' }] });
+      await notify(FIRST_SESSION, { sessionUpdate: 'session_message_chunk', messageId: 'second', content: { type: 'text', text: 'Check' } });
+      await notify(FIRST_SESSION, { sessionUpdate: 'session_message', messageId: 'second', senderSessionId: FIRST_SESSION, recipientSessionId: 'child' });
+      await notify(FIRST_SESSION, { sessionUpdate: 'session_message_chunk', messageId: 'second', content: { type: 'text', text: ' tests.' } });
+      await notify(FIRST_SESSION, { sessionUpdate: 'session_message_chunk', messageId: 'second', content: { type: 'text', text: 'Private.', annotations: { audience: ['assistant'] } } });
+      await notify('child', { ...first, senderSessionId: 'child', recipientSessionId: 'nested', content: [{ type: 'text', text: 'Read one test.' }] });
+      await notify(FIRST_SESSION, { ...first, messageId: 'bad', recipientSessionId: 'nested', content: [{ type: 'text', text: 'Not a direct child.' }] });
+    }
+    if (mode === 'Load') { await manager.loadSession('fake', FIRST_SESSION); }
+    else {
+      await manager.newSession('fake');
+      await manager.sendPrompt(address(FIRST_SESSION), 'Delegate');
+    }
+    const state = manager.sessionState(address(FIRST_SESSION));
+    const assignments = (content: SessionContent | undefined) => content?.entries
+      .flatMap((entry) => entry.kind === 'turn' ? entry.parts.filter((part) => part.kind === 'childAssignment')
+        : entry.kind === 'childAssignment' ? [entry] : []);
+    expect(assignments(state?.content)).toMatchObject([
+      { kind: 'childAssignment', childId: 'child', text: 'Read all fixtures.' },
+      { kind: 'childAssignment', childId: 'unassigned', text: null },
+      { kind: 'childAssignment', childId: 'child', text: 'Check tests.' },
+    ]);
+    expect(assignments(state?.children?.get('child')?.content)).toMatchObject([
+      { kind: 'childAssignment', childId: 'nested', text: 'Read one test.' },
+    ]);
+  });
+
   it('associates live descendant file evidence with the root review without sharing tool call IDs', async () => {
     const edit = (path: string): V2.SessionUpdate => ({
       sessionUpdate: 'tool_call_update', toolCallId: 'shared', title: 'Edit', status: 'in_progress',
@@ -109,7 +159,7 @@ describe('SessionManager', () => {
     expect(JSON.stringify(manager.sessionState(address(FIRST_SESSION))?.content)).not.toContain('shared');
   });
 
-  it('retains interleaved v2 child output under the immediate parent without changing the parent transcript', async () => {
+  it('keeps interleaved child tool output out of its immediate parent transcript', async () => {
     const cancelled = deferred<string>();
     const { manager } = setup({ fake: () => fakeV2Agent()
       .onRequest(V2.methods.agent.session.new, () => ({ sessionId: FIRST_SESSION }))
@@ -148,7 +198,9 @@ describe('SessionManager', () => {
       ['indigo', FIRST_SESSION, 'Read indigo', 'completed'],
       ['nested', 'amber', 'Read nested', 'pending'],
     ] as const) {
-      expect(children?.get(id)).toMatchObject({ parentId, content: { entries: [{ kind: 'turn', parts: [{
+      expect(children?.get(id)).toMatchObject({ parentId, content: { entries: [
+        ...(id === 'amber' ? [{ kind: 'childAssignment', childId: 'nested', text: null }] : []),
+        { kind: 'turn', parts: [{
         kind: 'toolCalls', toolCalls: [{ toolCallId: 'shared', title, status }],
       }] }] } });
     }
@@ -177,17 +229,32 @@ describe('SessionManager', () => {
         await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
           update: { sessionUpdate: 'subagent_update', sessionId: 'finished-first', state: { state: 'running' } } });
         await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
-          update: { sessionUpdate: 'subagent_update', sessionId: 'finished-first', state: { state: 'idle', stopReason: 'end_turn' } } });
+          update: { sessionUpdate: 'session_message', messageId: 'original', senderSessionId: FIRST_SESSION,
+            recipientSessionId: 'replayed-child', content: [{ type: 'text', text: 'Original task' }] } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child',
+          update: { sessionUpdate: 'subagent_update', sessionId: 'nested', state: { state: 'running' } } });
         await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
           update: { sessionUpdate: 'agent_message_chunk', messageId: 'replayed-parent', content: { type: 'text', text: 'Parent replay between stops' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'session_message', messageId: 'later', senderSessionId: FIRST_SESSION,
+            recipientSessionId: 'replayed-child', content: [{ type: 'text', text: 'Later task' }] } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'finished-first', state: { state: 'idle', stopReason: 'end_turn' } } });
         await client.notify(V2.methods.client.session.update, { sessionId: 'finished-first', update: { sessionUpdate: 'replay_complete' } });
         await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
           update: { sessionUpdate: 'subagent_update', sessionId: 'replayed-child', state: { state: 'idle', stopReason: 'cancelled' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'replayed-child', state: { state: 'running' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
+          update: { sessionUpdate: 'subagent_update', sessionId: 'replayed-child', state: { state: 'idle', stopReason: 'end_turn' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child',
+          update: { sessionUpdate: 'subagent_update', sessionId: 'nested', state: { state: 'idle', stopReason: 'end_turn' } } });
+        await client.notify(V2.methods.client.session.update, { sessionId: 'nested', update: { sessionUpdate: 'replay_complete' } });
         await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child', update: { sessionUpdate: 'replay_complete' } });
         await client.notify(V2.methods.client.session.update, { sessionId: 'history-only', update: { sessionUpdate: 'replay_complete' } });
         await client.notify(V2.methods.client.session.update, { sessionId: 'mirror-only', update: { sessionUpdate: 'replay_complete' } });
         await client.notify(V2.methods.client.session.update, { sessionId: 'replayed-child',
-          update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'cancelled' } });
+          update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
         await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION, update: { sessionUpdate: 'replay_complete' } });
         await client.notify(V2.methods.client.session.update, { sessionId: FIRST_SESSION,
           update: { sessionUpdate: 'subagent_update', sessionId: 'mirror-only', state: { state: 'idle', stopReason: 'end_turn' } } });
@@ -207,13 +274,24 @@ describe('SessionManager', () => {
     if (succeeds) {
       expect(child).toMatchObject({ parentId: FIRST_SESSION, activity: 'idle' });
       expect(JSON.stringify(child?.content)).toContain('Replay only');
+      expect(child?.content.entries).toMatchObject([{ kind: 'turn', parts: [
+        { kind: 'toolCalls', toolCalls: [{ title: 'Replay only' }] },
+        { kind: 'childAssignment', childId: 'nested', text: null },
+        { kind: 'childCompletion', childId: 'nested', stopReason: 'end_turn' },
+      ] }]);
       expect(manager.sessionState(address(FIRST_SESSION))?.children?.get('history-only')).toMatchObject({ activity: null });
       expect(manager.sessionState(address(FIRST_SESSION))?.children?.get('mirror-only')).toMatchObject({ activity: 'idle' });
       expect(manager.sessionState(address(FIRST_SESSION))?.content.entries).toMatchObject([
+        { kind: 'childAssignment', childId: 'replayed-child', text: 'Original task' },
+        { kind: 'childCompletion', childId: 'replayed-child', stopReason: 'cancelled' },
+        { kind: 'childCompletion', childId: 'replayed-child', stopReason: 'end_turn' },
+        { kind: 'childAssignment', childId: 'history-only', text: null },
+        { kind: 'childAssignment', childId: 'mirror-only', text: null },
+        { kind: 'childAssignment', childId: 'finished-first', text: null },
         { kind: 'childCompletion', childId: 'finished-first', stopReason: 'end_turn' },
         { kind: 'turn', parts: [
           { kind: 'message', text: 'Parent replay between stops' },
-          { kind: 'childCompletion', childId: 'replayed-child', stopReason: 'cancelled' },
+          { kind: 'childAssignment', childId: 'replayed-child', text: 'Later task' },
         ] },
       ]);
     } else { expect(child).toBeUndefined(); }

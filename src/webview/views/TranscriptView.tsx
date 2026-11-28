@@ -14,10 +14,16 @@ import {
 import ArrowDown from 'lucide-react/icons/arrow-down';
 import ArrowRight from 'lucide-react/icons/arrow-right';
 import Check from 'lucide-react/icons/check';
+import CircleAlert from 'lucide-react/icons/circle-alert';
+import CircleCheck from 'lucide-react/icons/circle-check';
 import CircleDashed from 'lucide-react/icons/circle-dashed';
 import CircleDot from 'lucide-react/icons/circle-dot';
+import CircleMinus from 'lucide-react/icons/circle-minus';
+import CircleStop from 'lucide-react/icons/circle-stop';
+import CircleX from 'lucide-react/icons/circle-x';
 import Copy from 'lucide-react/icons/copy';
 import Square from 'lucide-react/icons/square';
+import SquareArrowRightExit from 'lucide-react/icons/square-arrow-right-exit';
 import SquareCheck from 'lucide-react/icons/square-check';
 import X from 'lucide-react/icons/x';
 import type { LucideIcon } from 'lucide-react';
@@ -52,18 +58,82 @@ import {
   type TurnPart,
 } from '@/webview/state/Transcript';
 
-export const OpenChildTranscript = createContext<((id: string, completionId: number) => void) | null>(null);
+export const OpenChildTranscript = createContext<((id: string, entryId: number | string, expanded?: boolean, held?: boolean) => void) | null>(null);
 
-function ChildCompletionEntry({ completion }: { completion: ChildCompletion }) {
+const childRow = 'child-row relative min-w-0 border-l-2 border-subagent-accent pl-2.5';
+const childFrame = 'rounded-sm bg-muted py-0.75 text-sm';
+const childHeader = 'flex min-h-5 items-center gap-1.5 pr-7';
+const childTitle = 'min-w-0 flex-1 truncate';
+const childOpen = 'absolute top-0.75 right-1.5 inline-flex size-5 items-center justify-center rounded-sm text-link focus-visible:outline-1 focus-visible:outline-ring enabled:cursor-pointer enabled:hover:bg-background disabled:opacity-50';
+
+function ChildEntry({ entry }: { entry: ChildCompletion | Extract<TranscriptEntry, { kind: 'childAssignment' }> }) {
   const open = use(OpenChildTranscript);
-  const label = useSelector((state) => state.children?.find(({ id }) => id === completion.childId)?.label);
-  const reason = completion.stopReason;
-  const status = reason === 'end_turn' ? 'Finished' : reason === 'cancelled' ? 'Cancelled' : reason === 'error' ? 'Failed'
+  const assignment = useRef<HTMLDetailsElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  const label = useSelector((state) => state.children?.find(({ id }) => id === entry.childId)?.label);
+  const title = label ?? entry.childId;
+  if (entry.kind === 'childAssignment') {
+    const expandable = Boolean(entry.text?.trim());
+    const header = <>
+      <Chevron direction={expandable && expanded ? 'down' : 'right'} className={expandable ? '' : 'text-muted-foreground'} />
+      <span className={childTitle}>{title} — {entry.text === null ? 'Announced' : 'Assigned'}</span>
+    </>;
+    return <div className={childRow}>
+      {expandable ? <details ref={assignment} className={childFrame} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+        <summary className={`${childHeader} cursor-pointer list-none rounded-sm select-none focus-visible:outline-1 focus-visible:outline-ring`}>{header}</summary>
+        <div className={`${toolCallBody} px-1.5`}>
+          <div className={`${toolCallBodyContent} ${plainText}`}>{entry.text}</div>
+        </div>
+      </details> : <div className={childFrame}><div className={childHeader}>{header}</div></div>}
+      <button type="button" aria-label="Open child transcript" title={`Open ${title} transcript`}
+        data-child-entry={entry.id} disabled={!open || label === undefined}
+        className={childOpen}
+        onClick={() => open?.(entry.childId, entry.id, assignment.current?.open)}>
+        <SquareArrowRightExit size={14} aria-hidden="true" />
+      </button>
+    </div>;
+  }
+  return <ChildSummary childId={entry.childId} entryId={entry.id} stopReason={entry.stopReason} foregroundOnly={entry.descendantsActive === true} />;
+}
+
+function ChildSummary({ childId, entryId, activity, stopReason: reason, foregroundOnly, descendants }: { childId: string; entryId: number | string;
+  activity?: 'running' | 'requiresAction'; stopReason?: string | null; foregroundOnly?: boolean;
+  descendants?: { readonly running: number; readonly requiresAction: number } }) {
+  const open = use(OpenChildTranscript);
+  const label = useSelector((state) => state.children?.find(({ id }) => id === childId)?.label);
+  const title = label ?? childId;
+  const status = reason === 'end_turn' ? foregroundOnly ? 'Turn ended' : 'Finished' : reason === 'cancelled' ? 'Cancelled' : reason === 'error' ? 'Failed'
     : reason === 'max_tokens' ? 'Token limit reached' : reason === 'max_turn_requests' ? 'Turn request limit reached'
-      : reason === 'refusal' ? 'Refused' : reason === null ? 'Stopped (no reason reported)' : `Stopped (${reason})`;
-  return <button type="button" data-child-completion={completion.id} disabled={!open || label === undefined}
-    className="self-start rounded-sm border border-border px-2 py-1 text-left text-sm text-link focus-visible:outline-1 focus-visible:outline-ring enabled:cursor-pointer enabled:hover:underline"
-    onClick={() => open?.(completion.childId, completion.id)}>{label ?? completion.childId} — {status}</button>;
+      : reason === 'refusal' ? 'Refused' : reason === null ? 'Stopped (no reason reported)' : reason === undefined
+        ? activity === 'running' ? 'Running' : activity === 'requiresAction' ? 'Requires action' : 'Active descendants' : `Stopped (${reason})`;
+  const running = activity === 'running' || (activity === undefined && (descendants?.running ?? 0) > 0);
+  const Icon = activity === 'requiresAction' || (descendants?.requiresAction ?? 0) > 0 ? CircleAlert : running ? CircleDot : reason === 'end_turn' ? CircleCheck
+    : reason === 'cancelled' ? CircleStop : reason === 'error' ? CircleX : CircleMinus;
+  const counts = descendants ? `${descendants.running ? ` · ${descendants.running} descendant${descendants.running === 1 ? '' : 's'} working` : ''}${descendants.requiresAction ? ` · ${descendants.requiresAction} descendant${descendants.requiresAction === 1 ? ' needs' : 's need'} action` : ''}` : '';
+  const held = reason === undefined;
+  return <div className={childRow}>
+    <div className={childFrame}>
+      <div className={childHeader}>
+        <Icon size={14} aria-hidden="true" className={Icon === CircleDot ? 'flex-none animate-pulse text-progress motion-reduce:animate-none' : 'flex-none text-muted-foreground'} />
+        <span className={childTitle}>{title}{!held && ` — ${status}`}{counts}</span>
+      </div>
+    </div>
+    <button type="button" aria-label={`${title} — ${status}${counts}`} title={`Open ${title} transcript (${status}${counts})`}
+      data-child-entry={entryId} data-held-child={held ? '' : undefined} data-child-branch={held ? `branch:${childId}` : undefined}
+      disabled={!open || label === undefined}
+      className={childOpen} onClick={() => open?.(childId, entryId, undefined, held)}>
+      <SquareArrowRightExit size={14} aria-hidden="true" />
+    </button>
+  </div>;
+}
+
+function HeldChildren({ parentId }: { parentId: string | null | undefined }) {
+  const children = useSelector((state) => state.children);
+  const held = children?.filter((child) => child.parentId === parentId && (child.held ?? child.descendants) !== undefined);
+  return held?.length ? <section aria-label="Active child sessions" className="flex max-h-32 shrink-0 flex-col gap-1 overflow-y-auto px-3 py-1">
+    {held.map(({ id, held, descendants }) => <ChildSummary key={id} childId={id} entryId={held?.entryId ?? `branch:${id}`}
+      {...(held ? { activity: held.status } : {})} {...(descendants ? { descendants } : {})} />)}
+  </section> : null;
 }
 
 function useTranscript<T>(select: (state: TranscriptState) => T): T {
@@ -79,11 +149,12 @@ function useTranscriptDispatch() {
 
 export function ChildTranscript() {
   const entries = useTranscript((state) => state.entries);
+  const sessionId = useTranscript((state) => state.sessionId);
   const received = useSelector((state) => state.inspection?.received);
-  return <div className="messages flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
+  return <><div tabIndex={-1} className="messages flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-3">
     {!received ? <p role="status">Opening child transcript…</p> : entries.length === 0 && <p>No child transcript has been reported.</p>}
     {entries.map((entry) => <Entry key={entry.id} entry={entry} />)}
-  </div>;
+  </div>{received && <HeldChildren parentId={sessionId} />}</>;
 }
 
 /**
@@ -92,6 +163,7 @@ export function ChildTranscript() {
  */
 export function TranscriptView() {
   const entries = useSelector((state) => state.transcript.entries);
+  const sessionId = useSelector((state) => state.transcript.sessionId);
   const empty = useSelector((state) => showsEmptyState(state.transcript, state.activeSession));
   const followRequests = useSelector((state) => state.transcript.followRequests);
   const turnRunning = useSelector((state) => state.activeSession?.turnRunning ?? false);
@@ -106,10 +178,12 @@ export function TranscriptView() {
     void scrollToBottom();
   }, [followRequests, scrollToBottom]);
 
-  return (
+  return <>
     <div className="transcript relative flex min-h-0 flex-1 flex-col" id="transcript">
       <div
         className="transcript-scroll flex-1 overflow-y-auto"
+        tabIndex={-1}
+        data-following={isAtBottom}
         id="transcriptScroll"
         ref={scrollRef}
         data-vscode-context='{"preventDefaultContextMenuItems":true}'
@@ -123,7 +197,8 @@ export function TranscriptView() {
       </div>
       {jumpOffered && <JumpToEnd onClick={() => void scrollToBottom()} />}
     </div>
-  );
+    <HeldChildren parentId={sessionId} />
+  </>;
 }
 
 function JumpToEnd({ onClick }: { onClick: () => void }) {
@@ -157,11 +232,16 @@ function EmptyState({ shown }: { shown: boolean }) {
 
 const messageBox = 'max-w-[95%] rounded-lg px-3 py-2 leading-normal';
 const plainText = 'whitespace-pre-wrap wrap-anywhere';
+const toolCallFrame = 'tool-call-inline rounded-sm bg-muted px-1.5 py-0.75 text-sm opacity-85 open:opacity-100';
+const toolCallSummary = 'tc-summary flex cursor-pointer items-center gap-1.5 rounded-sm select-none focus-visible:outline-1 focus-visible:outline-ring list-none';
+const toolCallBody = 'tc-body mt-1 border-t border-border pt-1';
+const toolCallBodyContent = 'tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90';
 
 const Entry = memo(function Entry({ entry }: { entry: TranscriptEntry }) {
   switch (entry.kind) {
+    case 'childAssignment':
     case 'childCompletion':
-      return <ChildCompletionEntry completion={entry} />;
+      return <ChildEntry entry={entry} />;
     case 'prompt':
       return (
         <CopyableMessage
@@ -221,8 +301,9 @@ const PartView = memo(function PartView({
     return null;
   }
   switch (part.kind) {
+    case 'childAssignment':
     case 'childCompletion':
-      return <ChildCompletionEntry completion={part} />;
+      return <ChildEntry entry={part} />;
     case 'message':
       return <AgentMessageView message={part} streaming={streaming} />;
     case 'image':
@@ -557,7 +638,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
   const StatusIcon = statusIcon[call.status];
   return (
     <details
-      className="tool-call-inline rounded-sm bg-muted px-1.5 py-0.75 text-sm opacity-85 open:opacity-100"
+      className={toolCallFrame}
       id={child ? undefined : `tc-${call.toolCallId}`}
       open={call.open}
       onToggle={(event) =>
@@ -565,7 +646,7 @@ const ToolCallView = memo(function ToolCallView({ turnId, call }: { turnId: Entr
       }
     >
       <summary
-        className="tc-summary flex cursor-pointer items-center gap-1.5 rounded-sm select-none focus-visible:outline-1 focus-visible:outline-ring list-none"
+        className={toolCallSummary}
         data-vscode-context={!child && commandSource !== undefined ? commandOutputContext(commandSource, identity, call.toolCallId, title) : undefined}
       >
         <span
@@ -594,8 +675,8 @@ function ToolCallBody({ call, identity, title }: { call: ToolCall; identity: Pre
   );
   const { scrollRef, contentRef } = useStickToBottom({ initial: 'instant', resize: 'instant' });
   return (
-    <div className="tc-body mt-1 border-t border-border pt-1" style={blocks.length === 0 ? { display: 'none' } : undefined}>
-      <div ref={scrollRef} className="tc-body-content max-h-80 overflow-y-auto font-mono text-[0.95em] leading-[1.45] opacity-90">
+    <div className={toolCallBody} style={blocks.length === 0 ? { display: 'none' } : undefined}>
+      <div ref={scrollRef} className={toolCallBodyContent}>
         <div ref={contentRef} className="tc-body-inner">
           {blocks.map((block, index) => {
             switch (block.kind) {

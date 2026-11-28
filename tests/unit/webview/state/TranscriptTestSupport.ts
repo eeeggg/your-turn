@@ -120,7 +120,7 @@ export function chatView(retained = false) {
     toolCalls: () => partsOf('toolCalls').flatMap((group) => group.toolCalls),
     /** Each entry as `kind: text`, and a turn as its parts in order, the way a reader would summarize the transcript. */
     summary: () =>
-      transcript().entries.map((entry) => (entry.kind === 'turn' ? `turn: ${entry.parts.map(partSummary).join(' | ')}` : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : entry.kind === 'question' ? `question: ${entry.record.interactionId}` : entry.kind === 'childCompletion' ? `childCompletion: ${entry.childId}` : `${entry.kind}: ${entry.text}`)),
+      transcript().entries.map((entry) => (entry.kind === 'turn' ? `turn: ${entry.parts.map(partSummary).join(' | ')}` : entry.kind === 'compaction' ? `compaction: ${entry.compactionId}` : entry.kind === 'question' ? `question: ${entry.record.interactionId}` : entry.kind === 'childCompletion' ? `childCompletion: ${entry.childId}` : `${entry.kind}: ${entry.text ?? 'Announced'}`)),
     emptyState: () => showsEmptyState(transcript(), store.getSnapshot().activeSession),
     at: (now: number) => {
       time = now;
@@ -159,6 +159,8 @@ export function retainedChatView() { return chatView(true); }
 
 function partSummary(part: TurnPart): string {
   switch (part.kind) {
+    case 'childAssignment':
+      return `childAssignment ${part.childId}: ${part.text ?? 'Announced'}`;
     case 'childCompletion':
       return `childCompletion ${part.childId}`;
     case 'message':

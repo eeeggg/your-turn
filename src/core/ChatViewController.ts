@@ -26,7 +26,7 @@ import type {
   WebviewToExtensionMessage,
 } from '@/shared/WebviewMessages';
 import type { SessionEnvironment, SessionInfo, SessionManager } from '@/core/sessions/Manager';
-import type { SessionStateView } from '@/core/sessions/States';
+import { descendantActivity, type SessionStateView } from '@/core/sessions/States';
 import type { SessionDelivery, SessionLoad, SessionIdentity, SessionRegistration } from '@/core/sessions/UpdateHandler';
 import type { CommandSource } from '@/core/AgentTerminals';
 import type { ShownContent } from '@/core/CommandOutput';
@@ -1207,6 +1207,7 @@ export class ChatViewController {
         && cached.collapsed !== (ended && part.toolCalls.length > 3))) { return cached; }
       let shown: Part;
       switch (part.kind) {
+        case 'childAssignment':
         case 'childCompletion': return part;
         case 'question': shown = { kind: 'question', record: this.questionRecord(part.record), open: false }; break;
         case 'message': shown = part; break;
@@ -1240,6 +1241,7 @@ export class ChatViewController {
       switch (entry.kind) {
         case 'question': shown = { kind: 'question', id: entry.id, record: this.questionRecord(entry.record), open: false }; break;
         case 'error':
+        case 'childAssignment':
         case 'childCompletion':
         case 'prompt': shown = entry; break;
         case 'promptImage': shown = { kind: 'promptImage', id: entry.id, messageId: entry.messageId, text: '',
@@ -1255,7 +1257,16 @@ export class ChatViewController {
 }
 
 function childSessions(state: SessionStateView) {
-  return [...state.children ?? []].map(([id, child]) => ({ id, parentId: child.parentId, label: child.title?.trim() || id }));
+  if (!state.children) { return []; }
+  const totals = descendantActivity(state.children);
+  return [...state.children].map(([id, child]) => {
+    const descendants = totals.get(id);
+    return { id, parentId: child.parentId, label: child.title?.trim() || id,
+      ...(descendants ? { descendants } : {}),
+      ...(child.heldId !== undefined && (child.activity === 'running' || child.activity === 'requiresAction')
+        ? { held: { entryId: child.heldId, status: child.activity } } : {}),
+    };
+  });
 }
 
 function samePresentationTarget(a: PresentationTarget, b: PresentationTarget): boolean {

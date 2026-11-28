@@ -21,6 +21,7 @@
   --color-secondary-foreground: var(--vscode-button-secondaryForeground);
   --color-secondary-hover: var(--vscode-button-secondaryHoverBackground);
   --color-link: var(--vscode-textLink-foreground);
+  --color-subagent-accent: color-mix(in oklab, var(--vscode-textLink-foreground) 25%, transparent);
   --color-code: var(--vscode-textCodeBlock-background);
   --color-input: var(--vscode-input-background);
   --color-input-foreground: var(--vscode-input-foreground);
@@ -76,6 +77,16 @@
 
 .session-tab-selected {
   box-shadow: inset 0 0 0 1px var(--vscode-contrastActiveBorder, transparent);
+}
+
+/* Child rows use the transcript edge even when recorded inside a turn. */
+.turn:has(> .child-row) {
+  width: 100%;
+  max-width: none;
+}
+
+.turn:has(> .child-row) > :not(.child-row) {
+  max-width: 95%;
 }
 
 @layer base {

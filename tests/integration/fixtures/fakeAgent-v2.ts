@@ -522,6 +522,25 @@ agent({ name: 'fake-agent' })
         await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
         await reportState(client, childId, { state: 'idle', stopReason: 'cancelled' });
       })();
+    } else if (text === 'compare delegation chevrons') {
+      void (async () => {
+        const announced = randomUUID();
+        const assigned = randomUUID();
+        await reportState(client, params.sessionId, { state: 'running' });
+        await client.notify(methods.client.session.update, { sessionId: params.sessionId,
+          update: { sessionUpdate: 'tool_call_update', toolCallId: 'read', title: 'Read fixtures', status: 'completed' } });
+        for (const [sessionId, title] of [[announced, 'Inspect logs'], [assigned, 'Inspect fixtures']] as const) {
+          await client.notify(methods.client.session.update, { sessionId: params.sessionId,
+            update: { sessionUpdate: 'subagent_update', sessionId, title } });
+        }
+        await client.notify(methods.client.session.update, { sessionId: params.sessionId,
+          update: { sessionUpdate: 'session_message', messageId: 'assignment', senderSessionId: params.sessionId,
+            recipientSessionId: assigned, content: [{ type: 'text', text: 'Read the fixtures.' }] } });
+        await reportState(client, announced, { state: 'running' });
+        await reportState(client, announced, { state: 'idle', stopReason: 'end_turn' });
+        await reportState(client, assigned, { state: 'running' });
+        await reportState(client, params.sessionId, { state: 'idle', stopReason: 'end_turn' });
+      })();
     } else if (text === 'images') {
       void (async () => {
         await reportState(client, params.sessionId, { state: 'running' });

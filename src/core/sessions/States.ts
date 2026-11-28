@@ -5,6 +5,9 @@ import {
   withSubmittedPrompt,
   withSettledQuestion,
   withChildCompletion,
+  withReplayedChildCompletion,
+  withChildAnnouncement,
+  withChildAssignment,
   withPromptError,
   endContentTurn,
   withCleanedToolContent,
@@ -42,6 +45,7 @@ interface ChildContent {
   readonly title: string | null;
   readonly content: SessionContent;
   readonly activity: ChildActivity['state'] | null;
+  readonly heldId?: number | undefined;
 }
 
 export interface SessionStateView {
@@ -84,8 +88,32 @@ function working(activity: ChildContent['activity'] | undefined): boolean {
   return activity === 'running' || activity === 'requiresAction';
 }
 
+export function descendantActivity(children: NonNullable<SessionStateView['children']>) {
+  const totals = new Map<string, { running: number; requiresAction: number }>();
+  for (const child of children.values()) {
+    const activity = child.activity;
+    if (activity !== 'running' && activity !== 'requiresAction') { continue; }
+    for (let parent = child.parentId; ; ) {
+      const ancestor = children.get(parent);
+      if (!ancestor) { break; }
+      const total = totals.get(parent) ?? { running: 0, requiresAction: 0 };
+      total[activity]++;
+      totals.set(parent, total);
+      parent = ancestor.parentId;
+    }
+  }
+  return totals;
+}
+
 function reduceChild(owner: SessionOutput, sessionId: string, update: SessionUpdate, now: number): void {
   const { state, replay } = owner;
+  if (update.kind === 'sessionMessage' || update.kind === 'sessionMessageChunk') {
+    const child = state.children?.get(sessionId);
+    const content = withChildAssignment(child?.content ?? state.content, update, sessionId,
+      (id) => state.children?.get(id)?.parentId === sessionId);
+    owner.state = child ? { ...state, children: new Map(state.children).set(sessionId, { ...child, content }) } : { ...state, content };
+    return;
+  }
   const historical = replay !== undefined && !replay.complete.has(sessionId);
   if (update.kind === 'replayComplete') {
     replay?.complete.add(sessionId);
@@ -95,12 +123,18 @@ function reduceChild(owner: SessionOutput, sessionId: string, update: SessionUpd
   let activity: ChildActivity | null | undefined;
   let child = state.children?.get(sessionId);
   const previous = child;
+  let content = state.content;
+  let updatedParent: ChildContent | undefined;
   if (update.kind === 'childSession') {
     childId = update.childId;
     if (childId === sessionId || childId === owner.sessionId) { return; }
     child = state.children?.get(childId);
     if (child && child.parentId !== sessionId) { return; }
-    child ??= { parentId: sessionId, title: null, content: initialContent, activity: null };
+    if (!child) {
+      child = { parentId: sessionId, title: null, content: initialContent, activity: null };
+      if (previous) { updatedParent = { ...previous, content: withChildAnnouncement(previous.content, childId) }; }
+      else { content = withChildAnnouncement(content, childId); }
+    }
     if (update.title !== undefined && update.title !== child.title) { child = { ...child, title: update.title }; }
     activity = update.activity;
   } else if (!child) { return; }
@@ -116,23 +150,35 @@ function reduceChild(owner: SessionOutput, sessionId: string, update: SessionUpd
     if (content !== child.content) { child = { ...child, content }; }
   }
 
-  let content = state.content;
-  let completedParent: ChildContent | undefined;
   if (activity !== undefined) {
     const before = historical ? replay.childActivity.get(childId) : child.activity;
     const after = activity?.state ?? null;
+    const parent = updatedParent ?? state.children?.get(child.parentId);
+    const heldId = historical ? undefined : child.heldId;
+    let parentContent = parent?.content ?? content;
     if (historical) { replay.childActivity.set(childId, after); }
-    else if (before !== after) { child = { ...child, activity: after }; }
+    else if (before !== after) {
+      const nextHeldId = working(after) ? heldId ?? parentContent.nextId : undefined;
+      if (nextHeldId !== undefined && heldId === undefined) {
+        parentContent = { ...parentContent, nextId: nextHeldId + 1 };
+      }
+      child = { ...child, activity: after, heldId: nextHeldId };
+    }
     if (activity?.state === 'idle' && working(before)) {
       child = { ...child, content: endContentTurn(child.content, now) };
-      const parent = state.children?.get(child.parentId);
-      if (parent) { completedParent = { ...parent, content: withChildCompletion(parent.content, childId, activity.stopReason) }; }
-      else { content = withChildCompletion(content, childId, activity.stopReason); }
+      parentContent = historical ? withReplayedChildCompletion(parentContent, childId, activity.stopReason)
+        : withChildCompletion(parentContent, childId, activity.stopReason, heldId,
+          activity.stopReason === 'end_turn' && state.children !== undefined && descendantActivity(state.children).has(childId));
+    }
+    if (parent) {
+      if (parent.content !== parentContent) { updatedParent = { ...parent, content: parentContent }; }
+    } else {
+      content = parentContent;
     }
   }
   if (child !== (update.kind === 'childSession' ? state.children?.get(childId) : previous)) {
     const children = new Map(state.children).set(childId, child);
-    if (completedParent) { children.set(child.parentId, completedParent); }
+    if (updatedParent) { children.set(child.parentId, updatedParent); }
     owner.state = { ...state, children, content };
   }
 }
@@ -360,11 +406,13 @@ export class SessionStates {
     }
     owner.registrations.add(registration);
     const before = owner.state;
-    if (update.kind === 'childSession' || update.kind === 'replayComplete') { reduceChild(owner, owner.sessionId, update, now); }
+    if (update.kind === 'childSession' || update.kind === 'replayComplete' || update.kind === 'sessionMessage' || update.kind === 'sessionMessageChunk') {
+      reduceChild(owner, owner.sessionId, update, now);
+    }
     else { owner.state = reduced(before, update, now, pending !== undefined); }
     this.ingestOutput(owner, owner.state, registration.sessionId, update);
     if (owner.state === before) { return; }
-    if (update.kind === 'childSession' && !pending) { this.changed(); }
+    if ((update.kind === 'childSession' || update.kind === 'sessionMessage' || update.kind === 'sessionMessageChunk') && !pending) { this.changed(); }
     if (update.kind === 'toolCall' && update.content?.some((item) => item.kind === 'text')) {
       this.cleanToolCall(owner, update.toolCallId);
     }
@@ -487,7 +535,7 @@ export class SessionStates {
       if (output.sourceId !== sourceId) { continue; }
       if (output.state.queue.length > 0) { output.state = { ...output.state, queue: [] }; }
       if (output.state.children && [...output.state.children.values()].some((child) => child.activity !== null)) {
-        output.state = { ...output.state, children: new Map([...output.state.children].map(([id, child]) => [id, { ...child, activity: null }])) };
+        output.state = { ...output.state, children: new Map([...output.state.children].map(([id, child]) => [id, { ...child, activity: null, heldId: undefined }])) };
       }
       output.terminals.endSession(output.sessionId);
     }

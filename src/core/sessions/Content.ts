@@ -74,25 +74,126 @@ interface ChildCompletion {
   readonly id: number;
   readonly childId: string;
   readonly stopReason: string | null;
+  readonly descendantsActive?: true;
 }
 
-type ContentPart = Message | Thought | Image | Compaction | ChildCompletion | { readonly kind: 'question'; readonly record: SettledQuestion }
+interface ChildAssignment {
+  readonly kind: 'childAssignment';
+  readonly id: number;
+  readonly childId: string;
+  readonly text: string | null;
+}
+
+interface SessionMessage {
+  readonly senderId?: string | null;
+  readonly recipientId?: string | null;
+  readonly text: string;
+  readonly entry?: ChildAssignment;
+  readonly announcement?: ChildAssignment;
+}
+
+type ContentPart = Message | Thought | Image | Compaction | ChildCompletion | ChildAssignment | { readonly kind: 'question'; readonly record: SettledQuestion }
   | { readonly kind: 'toolCalls'; readonly toolCalls: readonly ToolCall[] }
   | { readonly kind: 'plan'; readonly steps: Extract<SessionUpdate, { kind: 'plan' }>['steps'] };
 
 export interface SessionContent {
-  readonly entries: readonly (Prompt | PromptImage | Turn | ChildCompletion | (Compaction & { readonly id: number }) | { readonly kind: 'question'; readonly id: number; readonly record: SettledQuestion } | { readonly kind: 'error'; readonly id: number; readonly text: string })[];
+  readonly entries: readonly (Prompt | PromptImage | Turn | ChildCompletion | ChildAssignment | (Compaction & { readonly id: number }) | { readonly kind: 'question'; readonly id: number; readonly record: SettledQuestion } | { readonly kind: 'error'; readonly id: number; readonly text: string })[];
+  readonly sessionMessages?: ReadonlyMap<string, SessionMessage>;
+  readonly pendingChildAnnouncements?: ReadonlyMap<string, ChildAssignment>;
   readonly currentTurn: number | null;
   readonly nextId: number;
 }
 
 export const initialContent: SessionContent = { entries: [], currentTurn: null, nextId: 1 };
 
-export function withChildCompletion(content: SessionContent, childId: string, stopReason: string | null): SessionContent {
-  const entry: ChildCompletion = { kind: 'childCompletion', id: content.nextId, childId, stopReason };
-  const next = { ...content, nextId: content.nextId + 1 };
-  return content.currentTurn === null ? { ...next, entries: [...content.entries, entry] }
-    : withTurn(next, content.currentTurn, (turn) => ({ ...turn, parts: [...turn.parts, entry] }));
+export function withChildAnnouncement(content: SessionContent, childId: string): SessionContent {
+  const entry: ChildAssignment = { kind: 'childAssignment', id: content.nextId, childId, text: null };
+  return appendChildEntry({ ...content, pendingChildAnnouncements: new Map(content.pendingChildAnnouncements).set(childId, entry) }, entry);
+}
+
+export function withChildAssignment(content: SessionContent, update: Extract<SessionUpdate, { kind: 'sessionMessage' | 'sessionMessageChunk' }>,
+  parentId: string, isChild: (id: string) => boolean): SessionContent {
+  const previous = content.sessionMessages?.get(update.messageId);
+  const senderId = update.kind === 'sessionMessage' && update.senderId !== undefined ? update.senderId : previous?.senderId;
+  const recipientId = update.kind === 'sessionMessage' && update.recipientId !== undefined ? update.recipientId : previous?.recipientId;
+  const text = update.kind === 'sessionMessageChunk' ? (previous?.text ?? '') + update.text : update.text ?? previous?.text ?? '';
+  let old = previous?.entry;
+  let announcement = previous?.announcement;
+  const childId = senderId === parentId && recipientId != null && isChild(recipientId) ? recipientId : undefined;
+  if (old && old.childId !== childId) {
+    content = replaceChildAssignment(content, old, announcement);
+    if (announcement) {
+      content = { ...content, pendingChildAnnouncements: new Map(content.pendingChildAnnouncements).set(old.childId, announcement) };
+    }
+    old = undefined;
+    announcement = undefined;
+  }
+  if (!old && childId !== undefined) {
+    announcement = content.pendingChildAnnouncements?.get(childId);
+    if (announcement) {
+      const pendingChildAnnouncements = new Map(content.pendingChildAnnouncements);
+      pendingChildAnnouncements.delete(childId);
+      content = { ...content, pendingChildAnnouncements };
+      old = announcement;
+    }
+  }
+  const entry: ChildAssignment | undefined = childId === undefined ? undefined
+    : old?.text === text ? old : { kind: 'childAssignment', id: old?.id ?? content.nextId, childId, text };
+  const sessionMessages = new Map(content.sessionMessages).set(update.messageId, {
+    ...(senderId === undefined ? {} : { senderId }), ...(recipientId === undefined ? {} : { recipientId }), text,
+    ...(entry ? { entry } : {}), ...(announcement ? { announcement } : {}),
+  });
+  const next = { ...content, sessionMessages };
+  if (!entry || entry === old) { return next; }
+  return old ? replaceChildAssignment(next, old, entry) : appendChildEntry(next, entry);
+}
+
+function replaceChildAssignment(content: SessionContent, old: ChildAssignment, entry: ChildAssignment | undefined): SessionContent {
+  return { ...content, entries: content.entries.flatMap<SessionContent['entries'][number]>((item) => {
+    if (item === old) { return entry ? [entry] : []; }
+    if (item.kind !== 'turn' || !item.parts.includes(old)) { return [item]; }
+    return [{ ...item, parts: item.parts.flatMap((part) => part === old ? entry ? [entry] : [] : [part]) }];
+  }) };
+}
+
+export function withChildCompletion(content: SessionContent, childId: string, stopReason: string | null, heldId?: number, descendantsActive = false): SessionContent {
+  const entry: ChildCompletion = { kind: 'childCompletion', id: heldId ?? content.nextId, childId, stopReason,
+    ...(descendantsActive ? { descendantsActive: true } : {}) };
+  return heldId === undefined ? appendChildEntry(content, entry) : placeChildEntry(content, entry);
+}
+
+export function withReplayedChildCompletion(content: SessionContent, childId: string, stopReason: string | null): SessionContent {
+  const completion: ChildCompletion = { kind: 'childCompletion', id: content.nextId, childId, stopReason };
+  const afterCard = (items: readonly (SessionContent['entries'][number] | ContentPart)[], index: number) => {
+    let end = index + 1;
+    for (let item = items[end]; item?.kind === 'childCompletion' && item.childId === childId; item = items[end]) {
+      end++;
+    }
+    return end;
+  };
+  for (const [index, entry] of content.entries.entries()) {
+    if (entry.kind === 'childAssignment' && entry.childId === childId) {
+      const end = afterCard(content.entries, index);
+      return { ...content, nextId: completion.id + 1, entries: [...content.entries.slice(0, end), completion, ...content.entries.slice(end)] };
+    }
+    if (entry.kind === 'turn') {
+      const card = entry.parts.findIndex((part) => part.kind === 'childAssignment' && part.childId === childId);
+      if (card === -1) { continue; }
+      const end = afterCard(entry.parts, card);
+      return withTurn({ ...content, nextId: completion.id + 1 }, entry.id,
+        (turn) => ({ ...turn, parts: [...turn.parts.slice(0, end), completion, ...turn.parts.slice(end)] }));
+    }
+  }
+  return appendChildEntry(content, completion);
+}
+
+function appendChildEntry(content: SessionContent, entry: ChildAssignment | ChildCompletion): SessionContent {
+  return placeChildEntry({ ...content, nextId: content.nextId + 1 }, entry);
+}
+
+function placeChildEntry(content: SessionContent, entry: ChildAssignment | ChildCompletion): SessionContent {
+  return content.currentTurn === null ? { ...content, entries: [...content.entries, entry] }
+    : withTurn(content, content.currentTurn, (turn) => ({ ...turn, parts: [...turn.parts, entry] }));
 }
 
 export function withSettledQuestion(content: SessionContent, record: SettledQuestion, now: number): SessionContent {

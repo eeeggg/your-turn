@@ -45,8 +45,9 @@ export interface Turn {
 }
 
 export type ChildCompletion = Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'childCompletion' }>;
+type ChildAssignment = Extract<Extract<ExtensionToWebviewMessage, { type: 'contentSnapshot' }>['entries'][number], { kind: 'childAssignment' }>;
 
-export type TurnPart = AgentMessage | AgentImage | Thought | ToolCallGroup | Plan | Compaction | SettledQuestion | ChildCompletion;
+export type TurnPart = AgentMessage | AgentImage | Thought | ToolCallGroup | Plan | Compaction | SettledQuestion | ChildCompletion | ChildAssignment;
 
 interface AgentImage extends Readonly<ImagePresentation> {
   readonly kind: 'image';
@@ -131,7 +132,7 @@ interface TranscriptError {
   readonly text: string;
 }
 
-export type TranscriptEntry = Prompt | PromptImage | Turn | TranscriptError | ChildCompletion | ((Compaction | SettledQuestion) & { readonly id: EntryId });
+export type TranscriptEntry = Prompt | PromptImage | Turn | TranscriptError | ChildCompletion | ChildAssignment | ((Compaction | SettledQuestion) & { readonly id: EntryId });
 
 /** An agent's terminal as last reported; its command runs while `exitStatus` is null. */
 interface Terminal {
